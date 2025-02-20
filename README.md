@@ -17,7 +17,7 @@
   - [2b. Using the rust ts-storage library](#2b-using-the-rust-ts-storage-library)
   - [2c. Using custom scripts and programs](#2c-using-custom-scripts-and-programs)
 - [Citing TCBee](#citing-tcbee)
-- [Preview of UniCorn-P4](#preview-of-unicorn-p4)
+- [Preview of TCBee](#preview-of-tcbee)
   - [Recording TCP Flows](#recording-tcp-flows)
   - [Visualizing CWND Size](#visualizing-cwnd-size)
   - [Visualizing Multiple Flows](#visualizing-multiple-flows)
@@ -133,7 +133,7 @@ If you use TCBee in any of your publications, please cite the following paper:
 
 TODO: ARXIV Link
 
-## Preview of UniCorn-P4
+## Preview of TCBee
 
 ### Recording TCP Flows
 <img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.png"/>
