@@ -1,0 +1,8 @@
+[package]
+name = "ts_storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlite = "0.36.1"
+thiserror = "1.0.60"
