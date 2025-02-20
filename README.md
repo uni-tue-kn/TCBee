@@ -1,5 +1,5 @@
 <div align="center">
- <img src="./imgs/logo.png" height=150/>
+ <img src="./imgs/tcbee.png" height=150/>
  <h2>TCBee: A High-Performance and Extensible Tool For TCP Flow Analysis Using eBPF </h2>
 </div>
 
