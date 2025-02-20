@@ -1,93 +1,145 @@
-# EBPF Tcp Probe
+<div align="center">
+ <img src="./imgs/logo.png" height=150/>
+ <h2>TCBee: A High-Performance and Extensible Tool For TCP Flow Analysis Using eBPF </h2>
+</div>
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+  - [1. Record](#1-record)
+  - [2. Process](#2-process)
+  - [3. Visualize](#3-visualize)
+- [Prerequisites](#prerequisites)
+- [Working with TCBee](#working-with-tcbee)
+  - [1. Recording Traffic](#1-recording-traffic)
+  - [2. Postprocessing Recorded Data](#2-postprocessing-recorded-data)
+  - [2. Visualizing Data](#2-visualizing-data)
+  - [2a. Using TCBee-Viz](#2a-using-tcbee-viz)
+  - [2b. Using the rust ts-storage library](#2b-using-the-rust-ts-storage-library)
+  - [2c. Using custom scripts and programs](#2c-using-custom-scripts-and-programs)
+- [Citing TCBee](#citing-tcbee)
+- [Preview of UniCorn-P4](#preview-of-unicorn-p4)
+  - [Recording TCP Flows](#recording-tcp-flows)
+  - [Visualizing CWND Size](#visualizing-cwnd-size)
+  - [Visualizing Multiple Flows](#visualizing-multiple-flows)
+
+## Overview
+This repository contains the source code for a TCP flow analysis and visualization tool that can monitor any number of TCP flows with up to 1.4 Mpps in total. It uses the Rust programming languages and monitors both packet headers with XDP and TC, and kernel metrics using eBPF kernel tracepoints.
+
+TCBee
+
+* provides a command-line program to record flows and track current data rates
+* monitors both packet headers and kernel metrics for TCP flows
+* stores recorded data in a structured flow database
+* provides a simple plugin interface to calculate metrics from recorded data and store the results
+* comes with a visualization tool to analyse and compare TCP flow metrics
+* provides a rust library to access flow data for custom visualization tools
 
 
+## Architecture
+The architecture of the TCP analysis tool focuses on achieving a high online processing speed while still being extensible.
+To that end, the structure of the tool consists of the three phases: **record**, **process**, and **visualize**.
 
-## Getting started
+<img src="./imgs/architecture.png" height=150/>
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+### 1. Record
+The tool monitors incoming and outgoing TCP traffic, identifies flows and stores all available information in a database.
+For each flow, the TCP header of every single packet is collected over an eBPF XDP for incoming packets or TC hook for outgoing packets and stored with an associated timestamp.
+Further, the eBPF tracepoints monitor kernel metrics such as the congestion window size and store them in the same way.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+### 2. Process
+Here, more complex metrics are extracted such as duplicate ACK events or retransmissions which would otherwise slow down the live recording.
+Further, TCBee provides a plugin system to define the calculation of new metrics.
+Writing such a plugin uses a simple interfaces and requires no knowledge about the code of TCBee.
 
-## Add your files
+### 3. Visualize
+The information from the database can be read by visualization tools that generate graphs or use a GUI to analyze the results.
+TCBee uses a strucutred format with SQLite or InfluxDB databases to simplify access for custom scripts and visualization tools.
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+## Prerequisites
+TODO: Add linux kernel version!
+*Note: TCBee was developed on and is designed for linux systems only. It will not work on MacOS or Windows.*
+To compile and run the program, the following requirements need to be fulfilled:
+- Rust (> Version TODO), install via rustup
+- Stable Rust toolchain `rustup toolchain install stable`
+- Nightly Rust toolchain `rustup toolchain install nightly --component rust-src`
+- BPF linker `cargo install bpf-linker`
 
-```
-cd existing_repo
-git remote add origin https://kn-gitlab.cs.uni-tuebingen.de/projectwork/eBPF-tcp-probe.git
-git branch -M main
-git push -uf origin main
-```
+After that you can start each individual component using `cargo run --release`.
 
-## Integrate with your tools
+## Working with TCBee
+*Note: TCBee is currently split into three programs due to development reasons. It may be aggregated into a single program later on.*
+### 1. Recording Traffic
+`tcbee` contains the code for capturing TCP packets and kernel metrics.
+It uses a terminal UI to display information about event and packet rates.
+To run the recording with cargo: 
 
-- [ ] [Set up project integrations](https://kn-gitlab.cs.uni-tuebingen.de/projectwork/eBPF-tcp-probe/-/settings/integrations)
+`cargo run --release --config 'target."cfg(all())".runner="sudo -E"'  -- [interface]`
 
-## Collaborate with your team
+Or, you can run the compiled version after using `cargo build --release` using:
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+`sudo target/release/tcbee [interface]`
 
-## Test and Deploy
+Available flags are:
+- `-q`, `--quiet` run the program without the UI
+- `f`, `--file` path to store the output (CURRENTLY NOT IMPLEMENTED)
 
-Use the built-in continuous integration in GitLab.
+TCBee will store the recorded data under `/tmp/` as `.tcp` files. These files contain the packet headers and kernel tracepoint data as raw bytes.
+If you want to read the raw bytes from your own program, take a look at `tcbee/tcbee-common/bindings` to find the appropriate structs (struct names that are written end with `_entry`).
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+### 2. Postprocessing Recorded Data
+`db` contains the code to read the `/tmp/*.tcp` files into a structured database format.
+To run the postprocessing with cargo use:
 
-***
+`cargo run --release --config 'target."cfg(all())".runner="sudo -E"'`
 
-# Editing this README
+Or, you can run the compiled version after using `cargo build --release` using:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+`sudo target/release/db_backend`
 
-## Suggestions for a good README
+Currently, this will generate a db.sqlite file. 
+If this file exists, the program will try to write to the same DB and exit as soon as it detects duplicate data.
+In future releases, the DB backend will support both Sqlite and InfluxDB and custom file paths.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+### 2. Visualizing Data
 
-## Name
-Choose a self-explaining name for your project.
+The reocrded data can be visualized in three possible ways.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+### 2a. Using TCBee-Viz
+`viz-tool` contains the code to read the `db.sqlite` file and visualize the stored flow data.
+It plots the recorded metrics of multiple flows over a shared timebase, has a zoom function and can store images.
+You can start the visualization tool with cargo:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+`cargo run --release`
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Or, you can run the compiled version after using `cargo build --release` using:
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+`target/release/viz-tool`
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+Then, you can select a database file to load and use the navbar to access the different functions.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### 2b. Using the rust ts-storage library
+`ts-storage` contains a database interface created for TCBee.
+It uses an abstract `TSDBInterface` that provides the same interface independant of the used database systems.
+For example code, see `ts-storage/README.md`.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+### 2c. Using custom scripts and programs
+You can generate custom graphs and visualization using your own tools and scripts by accessing the flow database directly.
+To that end, you either need to implement access over SQLite or InfluxDB depending on the storage format.
+For a guide on how to read flow data, see `ts-storage/ACCESS.md`.
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+## Citing TCBee
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+If you use TCBee in any of your publications, please cite the following paper:
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+TODO: ARXIV Link
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+## Preview of UniCorn-P4
 
-## License
-For open source projects, say how it is licensed.
+### Recording TCP Flows
+<img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.png"/>
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+### Visualizing CWND Size
+<img alt="TCBee-Viz" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize.png"/>
+
+### Visualizing Multiple Flows
+<img alt="TCBee-Viz Multiple Flows" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_multiple_flows.png"/>
