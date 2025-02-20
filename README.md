@@ -13,9 +13,9 @@
   - [1. Recording Traffic](#1-recording-traffic)
   - [2. Postprocessing Recorded Data](#2-postprocessing-recorded-data)
   - [2. Visualizing Data](#2-visualizing-data)
-  - [2a. Using TCBee-Viz](#2a-using-tcbee-viz)
-  - [2b. Using the rust ts-storage library](#2b-using-the-rust-ts-storage-library)
-  - [2c. Using custom scripts and programs](#2c-using-custom-scripts-and-programs)
+    - [2a. Using TCBee-Viz](#2a-using-tcbee-viz)
+    - [2b. Using the rust ts-storage library](#2b-using-the-rust-ts-storage-library)
+    - [2c. Using custom scripts and programs](#2c-using-custom-scripts-and-programs)
 - [Citing TCBee](#citing-tcbee)
 - [Preview of TCBee](#preview-of-tcbee)
   - [Recording TCP Flows](#recording-tcp-flows)
@@ -104,7 +104,7 @@ In future releases, the DB backend will support both Sqlite and InfluxDB and cus
 
 The reocrded data can be visualized in three possible ways.
 
-### 2a. Using TCBee-Viz
+#### 2a. Using TCBee-Viz
 `viz-tool` contains the code to read the `db.sqlite` file and visualize the stored flow data.
 It plots the recorded metrics of multiple flows over a shared timebase, has a zoom function and can store images.
 You can start the visualization tool with cargo:
@@ -117,12 +117,12 @@ Or, you can run the compiled version after using `cargo build --release` using:
 
 Then, you can select a database file to load and use the navbar to access the different functions.
 
-### 2b. Using the rust ts-storage library
+#### 2b. Using the rust ts-storage library
 `ts-storage` contains a database interface created for TCBee.
 It uses an abstract `TSDBInterface` that provides the same interface independant of the used database systems.
 For example code, see `ts-storage/README.md`.
 
-### 2c. Using custom scripts and programs
+#### 2c. Using custom scripts and programs
 You can generate custom graphs and visualization using your own tools and scripts by accessing the flow database directly.
 To that end, you either need to implement access over SQLite or InfluxDB depending on the storage format.
 For a guide on how to read flow data, see `ts-storage/ACCESS.md`.
