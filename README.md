@@ -58,8 +58,10 @@ TCBee uses a strucutred format with SQLite or InfluxDB databases to simplify acc
 ## Prerequisites
 TODO: Add linux kernel version!
 *Note: TCBee was developed on and is designed for linux systems only. It will not work on MacOS or Windows.*
+This project was built using the aya rust template: https://github.com/aya-rs/aya-template. You can visiit the project for more information on prerequisites and compiling the project for different architectures.
+
 To compile and run the program, the following requirements need to be fulfilled:
-- Rust (> Version TODO), install via rustup
+- Rust (> Version TODO), e.g. install via [rustup](https://rustup.rs/)
 - Stable Rust toolchain `rustup toolchain install stable`
 - Nightly Rust toolchain `rustup toolchain install nightly --component rust-src`
 - BPF linker `cargo install bpf-linker`
