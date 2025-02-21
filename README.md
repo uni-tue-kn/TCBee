@@ -147,6 +147,8 @@ TODO: ARXIV Link
 ### Recording TCP Flows
 <img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.png"/>
 
+<img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.gif"/>
+
 ### Visualizing CWND Size
 <img alt="TCBee-Viz" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize.png"/>
 
