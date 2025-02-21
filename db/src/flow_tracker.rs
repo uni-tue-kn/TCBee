@@ -12,12 +12,6 @@ use crate::{
 };
 const BUFFER_SIZE: usize = 10000;
 
-fn shorten_to_ipv6(arg: [u8; 28]) -> [u8; 16] {
-    std::array::from_fn(|i| arg[i + 4])
-}
-fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
-    std::array::from_fn(|i| arg[i + 4])
-}
 pub const AF_INET: u16 = 2;
 
 pub trait EventIndexer {

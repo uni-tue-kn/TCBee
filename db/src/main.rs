@@ -30,8 +30,12 @@ use std::{
     slice::Windows,
 };
 
+// Kernel sometimes uses a 28 Byte IP Address struct
+// First 4 Bytes are IP Version, Port
+// Next 4 Bytes are IPv4 Address (0 if IPv6)
+// Next 16 Bytes are IPv6 Address (0 if IPv4)
 fn shorten_to_ipv6(arg: [u8; 28]) -> [u8; 16] {
-    std::array::from_fn(|i| arg[i + 4])
+    std::array::from_fn(|i| arg[i + 8])
 }
 fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
     std::array::from_fn(|i| arg[i + 4])
