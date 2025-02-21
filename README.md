@@ -64,10 +64,14 @@ TODO: Add linux kernel version!
 This project was built using the aya rust template: https://github.com/aya-rs/aya-template. You can visiit the project for more information on prerequisites and compiling the project for different architectures.
 
 To compile and run the program, the following requirements need to be fulfilled:
+- Clang and LLVM (e.g. for Ubuntu `sudo apt install -y llvm clang libelf-dev libclang-dev`)
 - Rust (> Version TODO), e.g. install via [rustup](https://rustup.rs/)
 - Stable Rust toolchain `rustup toolchain install stable`
 - Nightly Rust toolchain `rustup toolchain install nightly --component rust-src`
 - BPF linker `cargo install bpf-linker`
+
+For the visualization tool:
+- Pkg-config and fontconfig (e.g. for Ubuntu `sudo apt install -y pkg-config fontconfig libfontconfig1-dev`)
 
 After that you can start each individual component using `cargo run --release`.
 
