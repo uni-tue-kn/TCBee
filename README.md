@@ -1,6 +1,9 @@
 <div align="center">
  <img src="./imgs/tcbee.png" height=150/>
  <h2>TCBee: A High-Performance and Extensible Tool For TCP Flow Analysis Using eBPF </h2>
+
+ ![image](https://img.shields.io/badge/licence-Apache%202.0-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/v-0.1.0-yellow) 
+ 
 </div>
 
 - [Overview](#overview)
