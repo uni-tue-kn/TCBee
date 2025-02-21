@@ -2,6 +2,7 @@ use aya_ebpf::{
     bindings::xdp_action::XDP_PASS, helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf,
     programs::XdpContext,
 };
+use aya_log_ebpf::info;
 use tcbee_common::bindings::{
     eth_header::ethhdr,
     ip4_header::iphdr,
@@ -53,7 +54,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
     unsafe {
         // Read value by dereferencing pointer
         // Original bytes are in big endian
-        ethertype = (*eth_hdr_ptr).h_proto;
+        ethertype = u16::from_be((*eth_hdr_ptr).h_proto);
 
         // Not IPv4 or IPv6, do not process packet
         if ethertype != ETHERTYPE_IPV4 && ethertype != ETHERTYPE_IPV6 {
