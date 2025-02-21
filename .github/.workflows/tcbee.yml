@@ -1,0 +1,26 @@
+name: TCBee build
+
+on:
+  push:
+    branches: [ "main"]
+  pull_request:
+    branches: [ "main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: TCBee Build
+      run: cd tcbee && cargo build --release
+
+    - name: DB Build
+      run: cd db && cargo build --release
+
+    - name: Visualization Build
+      run: cd viz-tool && cargo build --release      
