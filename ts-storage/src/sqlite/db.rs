@@ -4,6 +4,7 @@ use crate::sqlite::SQLiteTSDB;
 use crate::error::TSDBError;
 
 use std::error::Error;
+use std::f64;
 use sqlite::{State, Value};
 
 impl SQLiteTSDB {
@@ -669,16 +670,34 @@ impl TSDBInterface for SQLiteTSDB {
     }
     fn get_flow_bounds(&self, flow: &Flow) -> Result<TSBounds, Box<dyn Error>> {
 
-        let ts = self.list_time_series(flow)?.next();
+        // Goal: find smalles and largest x over all time series in flow
+        let mut bounds: TSBounds = TSBounds {
+            xmax: f64::MIN,
+            xmin: f64::MAX,
+            ymin: None,
+            ymax: None
+        };
 
-        if ts.is_none() {
-            return Err(Box::new(TSDBError::TimeSeriesNotFoundError { ts_id: 1 }))
+        let mut found_ts: bool = false;
+
+        // Iterate over all TimeSeries stored for this flow
+        let mut flow_ts = self.list_time_series(flow)?;
+        while let Some(ts) = flow_ts.next() {
+            // Flag to show that some values were processed
+            found_ts = true;
+
+            let new_bounds = self.get_time_series_bounds(&ts)?;
+
+            // Compare bounds to known and store larger/smaller one
+            bounds.xmax = bounds.xmax.max(new_bounds.xmax);
+            bounds.xmin = bounds.xmin.min(new_bounds.xmin);
         }
 
-        let ts_ref = ts.unwrap();
-
-        let bounds = self.get_time_series_bounds(&ts_ref)?;
-
+        // No TS for flow, return error
+        if !found_ts {
+            return Err(Box::new(TSDBError::TimeSeriesNotFoundError { ts_id: 1 }))
+        }
+        
         Ok(bounds)
 
     }

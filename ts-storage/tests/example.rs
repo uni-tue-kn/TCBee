@@ -1,5 +1,5 @@
-use rust_ts_storage::sqlite::SQLiteTSDB;
-use rust_ts_storage::{
+use ts_storage::sqlite::SQLiteTSDB;
+use ts_storage::{
     database_factory, DBBackend, DataPoint, DataValue, FlowAttribute, IpTuple, TSDBInterface,
 };
 use std::error::Error;
@@ -10,7 +10,7 @@ use std::str::FromStr;
 fn all_func() {
     // Create database interface
     // dyn Boxes are needed since we dont know the type of the returned object, only that it implements the TSDBInterface trait
-    let db_call: Result<Box<dyn TSDBInterface>, Box<dyn Error>> =
+    let db_call: Result<Box<dyn TSDBInterface + Send>, Box<dyn Error>> =
         database_factory::<SQLiteTSDB>(DBBackend::SQLite("db.sqlite".to_owned()));
     let db = db_call.expect("Failed to open database!");
 
