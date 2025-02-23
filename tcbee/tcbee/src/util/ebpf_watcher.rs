@@ -1,10 +1,8 @@
 use std::{
-    error::Error,
-    io::{self, Write},
-    ops::{AddAssign, Sub},
-    thread::sleep,
-    time::{Duration, Instant},
+    error::Error, fs::File, io::{self, Read, Write}, ops::{AddAssign, Sub}, os::linux::fs::MetadataExt, path::Path, thread::sleep, time::{Duration, Instant}
 };
+
+use glob;
 
 use aya::{maps::PerCpuArray, util::nr_cpus, Pod};
 use log::{error, info};
@@ -87,7 +85,7 @@ impl<T: Pod + AddAssign + Default + Sub> RateWatcher<T> {
             Ok(counters) => {
                 // Iterate and sum over array
                 if let Ok(num_cpus) = nr_cpus() {
-                    for i in 0..=num_cpus {
+                    for i in 0..num_cpus {
                         sum += counters[i];
                     }
                 } else {
@@ -98,14 +96,32 @@ impl<T: Pod + AddAssign + Default + Sub> RateWatcher<T> {
         sum
     }
 
+    // TODO: Cache this? Since rate and count is called multiple times in one loop iteration
+    pub fn get_counter_sum_string(&self) -> String
+    where u64: From<T> {
+        let Ok(sum) = u64::try_from(self.get_counter_sum());
+        RateWatcher::<T>::format_sum(sum, "")      
+    }
+
     // TODO: prettier?
-    fn format_rate(val: f64, suffix: &str) -> String {
+    pub fn format_rate(val: f64, suffix: &str) -> String {
         if val > 1_000_000_000.0 {
-            return format!("{} G{}", val, suffix);
+            return format!("{:.2} G{}", val/1_000_000_000.0, suffix);
         } else if val > 1_000_000.0 {
-            return format!("{} M{}", val, suffix);
-        } else if val > 1_0000.0 {
-            return format!("{} K{}", val, suffix);
+            return format!("{:.2} M{}", val/1_000_000.0, suffix);
+        } else if val > 1_000.0 {
+            return format!("{:.2} K{}", val/1_000.0, suffix);
+        } else {
+            return format!("{:.2} {}", val, suffix);
+        }
+    }
+    fn format_sum(val: u64, suffix: &str) -> String {
+        if val > 1_000_000_000 {
+            return format!("{} G{}", val/1_000_000_000, suffix);
+        } else if val > 1_000_000 {
+            return format!("{} M{}", val/1_000_000, suffix);
+        } else if val > 1_000 {
+            return format!("{} K{}", val/1_0000, suffix);
         } else {
             return format!("{} {}", val, suffix);
         }
@@ -211,15 +227,29 @@ impl EBPFWatcher {
         }
     }
 
+    // TODO: move elements to separate files!
     pub fn run(&mut self) -> () {
-        // Rate trcking for
-        let mut last_dropped: u32 = 0;
-        let mut last_handled: u32 = 0;
-        let mut last_ingress: u32 = 0;
-        let mut last_egress: u32 = 0;
+        // Rate tracking for graph bounds
         let mut max_rate: f64 = 0.0;
 
+        // Open all .tcp files to watch file size!
+        let mut files: Vec<File> = Vec::new();
+        if let Ok(paths) = glob::glob("/tmp/*.tcp") {
+            for p in paths {
+                if let Ok(path) = p {
+                    let open = File::open(path);
+                    if open.is_ok() {
+                        files.push(open.unwrap());
+                    }
+                }
+            }
+        } else {
+            error!("Cannot read files at /tmp for size watcher!")
+        }
+        let mut last_size: u64 = 0;
+
         let application_start = Instant::now();
+        let mut last_loop: Duration = Duration::default();
 
         // For plotting
         // TODO: Add max number of entries handling!
@@ -227,13 +257,18 @@ impl EBPFWatcher {
         let mut egress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
 
         while !self.token.is_cancelled() {
-            let elapsed = application_start.elapsed();
+            let elapsed = application_start.elapsed() - last_loop;
 
-            // Get current counter values
-            let dropped = self.events_drops.get_rate_string(elapsed);
-            let handled = self.events_handled.get_rate_string(elapsed);
-            let ingress = self.ingress_counter.get_rate_string(elapsed);
-            let egress = self.egress_counter.get_rate_string(elapsed);
+            // Get sum of file sizes
+            let mut files_size: u64 = 0;
+            for f in files.iter() {
+                if let Ok(meta) = f.metadata() {
+                    files_size = files_size + meta.st_size();
+                } else {
+                    println!("ERR");
+                }
+            }
+            let file_rate = RateWatcher::<u64>::format_rate((files_size - last_size) as f64 * (1.0/elapsed.as_secs_f64()), "Byte/s");
 
             // For graph plotting
             let ingress_rate = self.ingress_counter.get_rate(elapsed);
@@ -244,7 +279,7 @@ impl EBPFWatcher {
             }
 
             if egress_rate > max_rate {
-                max_rate =egress_rate;
+                max_rate = egress_rate;
             }
 
             // Add rates for graph
@@ -255,21 +290,27 @@ impl EBPFWatcher {
             let elapsed = application_start.elapsed();
             let time_string = format!("{}s {}ms", elapsed.as_secs(), elapsed.subsec_millis());
 
+            // Sum of handled and dropped
+            let event_rate = RateWatcher::<u32>::format_rate(self.events_handled.get_rate(elapsed) + self.events_drops.get_rate(elapsed), " Events/s");
+
+            // Check if packets were lost
+            let mut dropped_style: Style  = Style::default();
+            if self.events_drops.get_counter_sum() > 0 {
+                dropped_style = dropped_style.bg(Color::Red).fg(Color::White);
+            }
 
             // Blocks for UI
-
-
-
-            // Generate Paragraph text
-            let to_draw = Paragraph::new(format!(
-                "{} handled\n{} dropped\n{} events/s\n{} drops/s\n{} ingress packets/s\n{} egress packets/s\n{} time elapsed",
-                self.events_handled.get_counter_sum(), self.events_drops.get_counter_sum(), handled, dropped,ingress_rate,egress_rate, time_string
-            ));
-            // Block that contains paragraph
-            let events_block = Block::bordered().borders(Borders::ALL).title("Event stats");
+            let status_blocks = vec![
+                Paragraph::new(time_string).block(Block::bordered().borders(Borders::BOTTOM).title("Time Elapsed")),
+                Paragraph::new(self.events_handled.get_counter_sum_string()).block(Block::bordered().borders(Borders::BOTTOM).title("Events Handled")),
+                Paragraph::new(self.events_drops.get_counter_sum_string()).block(Block::bordered().borders(Borders::BOTTOM).title("Events Dropped")).style(dropped_style),
+                Paragraph::new(event_rate).block(Block::bordered().borders(Borders::BOTTOM).title("Event Rate")),
+                Paragraph::new(RateWatcher::<u64>::format_sum(files_size, "Byte")).block(Block::bordered().borders(Borders::BOTTOM).title("Disk File Size")),
+                Paragraph::new(file_rate).block(Block::bordered().borders(Borders::BOTTOM).title("Write Speed")),
+            ]; 
 
             // Tooltips
-            let keybindings = Paragraph::new("Close application: q | Esc");
+            let keybindings = Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (Giga)");
             let keybindings_block = Block::bordered().borders(Borders::ALL).title("Keybindings");
 
             // Rate chart labels
@@ -279,11 +320,11 @@ impl EBPFWatcher {
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}", max_rate / 2.0),
+                    format!("{}", RateWatcher::<u32>::format_rate(max_rate / 2.0, "pps")),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}", max_rate),
+                    format!("{}", RateWatcher::<u32>::format_rate(max_rate, "pps")),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
             ];
@@ -294,11 +335,11 @@ impl EBPFWatcher {
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}", elapsed.as_secs() as f64 / 2.0),
+                    format!("{}s", elapsed.as_secs() as f64 / 2.0),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}", elapsed.as_secs()),
+                    format!("{}s", elapsed.as_secs()),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
             ];
@@ -325,14 +366,12 @@ impl EBPFWatcher {
             )
             .x_axis(
                 Axis::default()
-                    .title("Time (s)")
                     .style(Style::default().fg(Color::White))
                     .bounds([0.0, elapsed.as_secs_f64()])
                     .labels(x_labels),
             )
             .y_axis(
                 Axis::default()
-                    .title("Packets/s")
                     .style(Style::default().fg(Color::White))
                     .bounds([0.0, max_rate])
                     .labels(y_labels),
@@ -353,11 +392,29 @@ impl EBPFWatcher {
                     .constraints(vec![Constraint::Percentage(20), Constraint::Percentage(80)])
                     .split(areas[0]);
 
-                frame.render_widget(to_draw.block(events_block), top_areas[0]);
-                frame.render_widget(chart, top_areas[1]);
+                // Top Sidebar layout
+                let mut constraints = vec![Constraint::Max(3); status_blocks.len()];
+                constraints.push(Constraint::Min(0));
 
+                let sidebar = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(constraints)
+                    .split(top_areas[0]);
+
+                // Render each status bar block
+                let mut i = 0;
+                for block in status_blocks {
+                    frame.render_widget(block, sidebar[i]);
+                    i = i + 1;
+                }
+
+                frame.render_widget(chart, top_areas[1]);
                 frame.render_widget(keybindings.block(keybindings_block), areas[1]);
             });
+
+            // Store time after calculation for rate calculation
+            last_loop = application_start.elapsed();
+            last_size = files_size;
 
             // Wait for key event for 0.5s and check key presses inbetween runs
             let start = Instant::now();
