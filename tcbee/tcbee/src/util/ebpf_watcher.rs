@@ -257,7 +257,8 @@ impl EBPFWatcher {
         let mut egress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
 
         while !self.token.is_cancelled() {
-            let elapsed = application_start.elapsed() - last_loop;
+            let start_elapsed = application_start.elapsed();
+            let loop_elapsed = start_elapsed - last_loop;
 
             // Get sum of file sizes
             let mut files_size: u64 = 0;
@@ -268,11 +269,11 @@ impl EBPFWatcher {
                     println!("ERR");
                 }
             }
-            let file_rate = RateWatcher::<u64>::format_rate((files_size - last_size) as f64 * (1.0/elapsed.as_secs_f64()), "Byte/s");
+            let file_rate = RateWatcher::<u64>::format_rate((files_size - last_size) as f64 * (1.0/loop_elapsed.as_secs_f64()), "Byte/s");
 
             // For graph plotting
-            let ingress_rate = self.ingress_counter.get_rate(elapsed);
-            let egress_rate = self.egress_counter.get_rate(elapsed);
+            let ingress_rate = self.ingress_counter.get_rate(loop_elapsed);
+            let egress_rate = self.egress_counter.get_rate(loop_elapsed);
 
             if ingress_rate > max_rate {
                 max_rate = ingress_rate;
@@ -283,15 +284,14 @@ impl EBPFWatcher {
             }
 
             // Add rates for graph
-            ingress_rates.push((application_start.elapsed().as_secs_f64(), ingress_rate as f64));
-            egress_rates.push((application_start.elapsed().as_secs_f64(), egress_rate as f64));
+            ingress_rates.push((start_elapsed.as_secs_f64(), ingress_rate as f64));
+            egress_rates.push((start_elapsed.as_secs_f64(), egress_rate as f64));
 
             // Time elapsed
-            let elapsed = application_start.elapsed();
-            let time_string = format!("{}s {}ms", elapsed.as_secs(), elapsed.subsec_millis());
+            let time_string = format!("{}s {}ms", start_elapsed.as_secs(), start_elapsed.subsec_millis());
 
             // Sum of handled and dropped
-            let event_rate = RateWatcher::<u32>::format_rate(self.events_handled.get_rate(elapsed) + self.events_drops.get_rate(elapsed), " Events/s");
+            let event_rate = RateWatcher::<u32>::format_rate(self.events_handled.get_rate(loop_elapsed) + self.events_drops.get_rate(loop_elapsed), " Events/s");
 
             // Check if packets were lost
             let mut dropped_style: Style  = Style::default();
@@ -335,11 +335,11 @@ impl EBPFWatcher {
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}s", elapsed.as_secs() as f64 / 2.0),
+                    format!("{}s", start_elapsed.as_secs() as f64 / 2.0),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}s", elapsed.as_secs()),
+                    format!("{}s", start_elapsed.as_secs()),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
             ];
@@ -367,7 +367,7 @@ impl EBPFWatcher {
             .x_axis(
                 Axis::default()
                     .style(Style::default().fg(Color::White))
-                    .bounds([0.0, elapsed.as_secs_f64()])
+                    .bounds([0.0, start_elapsed.as_secs_f64()])
                     .labels(x_labels),
             )
             .y_axis(
