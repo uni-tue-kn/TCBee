@@ -249,37 +249,6 @@ impl eBPFRunner {
         // ###########################
         info!("Starting eBPF probes!");
 
-        // Load map that counts event drops
-        let events_drops: PerCpuArray<aya::maps::MapData, u32> =
-            PerCpuArray::try_from(ebpf.take_map("EVENTS_DROPPED").unwrap())?;
-        let events_handled: PerCpuArray<aya::maps::MapData, u32> =
-            PerCpuArray::try_from(ebpf.take_map("EVENTS_HANDLED").unwrap())?;
-        let ingress_counter: PerCpuArray<aya::maps::MapData, u32> =
-            PerCpuArray::try_from(ebpf.take_map("INGRESS_EVENTS").unwrap())?;
-        let egress_counter: PerCpuArray<aya::maps::MapData, u32> =
-            PerCpuArray::try_from(ebpf.take_map("EGRESS_EVENTS").unwrap())?;
-        // Start watcher thread
-        // Stop token is cloned such that cancellation affects all other threads
-        let mut watcher = EBPFWatcher::new(
-            events_drops,
-            events_handled,
-            ingress_counter,
-            egress_counter,
-            self.stop_token.clone(),
-            self.do_tui,
-        )?; // Start thread and store join handle
-        let watcher_thread: JoinHandle<()>;
-        if self.do_tui {
-            watcher_thread = spawn_blocking(move || {
-                watcher.run();
-            });
-        } else {
-            watcher_thread = spawn_blocking(move || {
-                watcher.run_no_tui();
-            });
-        }
-        self.threads.push(watcher_thread);
-
         self.add_tc_tracer(
             &mut ebpf,
             self.iface.clone(),
@@ -338,10 +307,45 @@ impl eBPFRunner {
             orig_e: e,
         })?;
 
+        
+
+        info!("Finished loading tracepoints, starting processing!");
+
+        // START UI
+        // Load map that counts event drops
+        let events_drops: PerCpuArray<aya::maps::MapData, u32> =
+            PerCpuArray::try_from(ebpf.take_map("EVENTS_DROPPED").unwrap())?;
+        let events_handled: PerCpuArray<aya::maps::MapData, u32> =
+            PerCpuArray::try_from(ebpf.take_map("EVENTS_HANDLED").unwrap())?;
+        let ingress_counter: PerCpuArray<aya::maps::MapData, u32> =
+            PerCpuArray::try_from(ebpf.take_map("INGRESS_EVENTS").unwrap())?;
+        let egress_counter: PerCpuArray<aya::maps::MapData, u32> =
+            PerCpuArray::try_from(ebpf.take_map("EGRESS_EVENTS").unwrap())?;
+        // Start watcher thread
+        // Stop token is cloned such that cancellation affects all other threads
+        let mut watcher = EBPFWatcher::new(
+            events_drops,
+            events_handled,
+            ingress_counter,
+            egress_counter,
+            self.stop_token.clone(),
+            self.do_tui,
+        )?; // Start thread and store join handle
+        let watcher_thread: JoinHandle<()>;
+        if self.do_tui {
+            watcher_thread = spawn_blocking(move || {
+                watcher.run();
+            });
+        } else {
+            watcher_thread = spawn_blocking(move || {
+                watcher.run_no_tui();
+            });
+        }
+        self.threads.push(watcher_thread);
+
         // Store ebpf to ensure that it is not dropped after this function finishes!
         self.ebpf = Some(ebpf);
 
-        info!("Finished loading tracepoints, starting processing!");
         // Yield to let created tasks work
         task::yield_now().await;
 
