@@ -1,21 +1,28 @@
 use std::{
-    error::Error, fs::File, io::{self, Read, Write}, ops::{AddAssign, Sub}, os::linux::fs::MetadataExt, path::Path, thread::sleep, time::{Duration, Instant}
+    collections::HashMap, error::Error, fs::File, io::{self, Read, Write}, net::{IpAddr, Ipv4Addr, Ipv6Addr}, ops::{AddAssign, Sub}, os::linux::fs::MetadataExt, path::Path, thread::sleep, time::{Duration, Instant}
 };
 
 use glob;
 
-use aya::{maps::PerCpuArray, util::nr_cpus, Pod};
-use log::{error, info};
+use crate::viz::flow_tracker::FlowTracker;
+
+use aya::{
+    maps::{PerCpuArray, PerCpuHashMap},
+    util::nr_cpus,
+    Pod,
+};
+use log::{error, info, warn};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, KeyCode, KeyEventKind},
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Modifier, Style, Stylize},
     symbols,
     text::Span,
-    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Widget},
+    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, List, Paragraph, Row, Table, Widget},
     DefaultTerminal,
 };
+use tcbee_common::bindings::flow::IpTuple;
 use tokio_util::sync::CancellationToken;
 
 enum Counter {
@@ -98,41 +105,48 @@ impl<T: Pod + AddAssign + Default + Sub> RateWatcher<T> {
 
     // TODO: Cache this? Since rate and count is called multiple times in one loop iteration
     pub fn get_counter_sum_string(&self) -> String
-    where u64: From<T> {
+    where
+        u64: From<T>,
+    {
         let Ok(sum) = u64::try_from(self.get_counter_sum());
-        RateWatcher::<T>::format_sum(sum, "")      
+        RateWatcher::<T>::format_sum(sum, "")
     }
 
     // TODO: prettier?
     pub fn format_rate(val: f64, suffix: &str) -> String {
         if val > 1_000_000_000.0 {
-            return format!("{:.2} G{}", val/1_000_000_000.0, suffix);
+            return format!("{:.2} G{}", val / 1_000_000_000.0, suffix);
         } else if val > 1_000_000.0 {
-            return format!("{:.2} M{}", val/1_000_000.0, suffix);
+            return format!("{:.2} M{}", val / 1_000_000.0, suffix);
         } else if val > 1_000.0 {
-            return format!("{:.2} K{}", val/1_000.0, suffix);
+            return format!("{:.2} K{}", val / 1_000.0, suffix);
         } else {
             return format!("{:.2} {}", val, suffix);
         }
     }
     fn format_sum(val: u64, suffix: &str) -> String {
-        if val > 1_000_000_000 {
-            return format!("{} G{}", val/1_000_000_000, suffix);
-        } else if val > 1_000_000 {
-            return format!("{} M{}", val/1_000_000, suffix);
-        } else if val > 1_000 {
-            return format!("{} K{}", val/1_0000, suffix);
+        let val = val as f64;
+        if val > 1_000_000_000.0 {
+            return format!("{:.2} G{}", val / 1_000_000_000.0, suffix);
+        } else if val > 1_000_000.0 {
+            return format!("{:.2} M{}", val / 1_000_000.0, suffix);
+        } else if val > 1_000.0 {
+            return format!("{:.2} K{}", val / 1_0000.0, suffix);
         } else {
-            return format!("{} {}", val, suffix);
+            return format!("{:.0} {}", val, suffix);
         }
     }
 }
+
+
+
 
 pub struct EBPFWatcher {
     events_drops: RateWatcher<u32>,
     events_handled: RateWatcher<u32>,
     ingress_counter: RateWatcher<u32>,
     egress_counter: RateWatcher<u32>,
+    flow_tracker: FlowTracker,
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
 }
@@ -144,6 +158,7 @@ impl EBPFWatcher {
         events_handled: PerCpuArray<aya::maps::MapData, u32>,
         ingress_counter: PerCpuArray<aya::maps::MapData, u32>,
         egress_counter: PerCpuArray<aya::maps::MapData, u32>,
+        flow_tracker: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple>,
         token: CancellationToken,
         do_tui: bool,
     ) -> Result<EBPFWatcher, Box<dyn Error>> {
@@ -173,6 +188,8 @@ impl EBPFWatcher {
             "Egress Packets".to_string(),
         );
 
+        let flow_tracker = FlowTracker::new(flow_tracker);
+
         if do_tui {
             color_eyre::install()?;
             let terminal: DefaultTerminal = ratatui::init();
@@ -182,6 +199,7 @@ impl EBPFWatcher {
                 events_handled,
                 ingress_counter,
                 egress_counter,
+                flow_tracker,
                 token,
                 terminal: Some(terminal),
             })
@@ -191,6 +209,7 @@ impl EBPFWatcher {
                 events_handled,
                 ingress_counter,
                 egress_counter,
+                flow_tracker,
                 token,
                 terminal: None,
             })
@@ -220,6 +239,7 @@ impl EBPFWatcher {
             );
 
             print!("{to_display}");
+
             let _ = io::stdout().flush();
 
             // Sleep until next calc
@@ -260,6 +280,10 @@ impl EBPFWatcher {
             let start_elapsed = application_start.elapsed();
             let loop_elapsed = start_elapsed - last_loop;
 
+            // Update tracker of alll flows internal list and then print it
+            self.flow_tracker.read_flows();
+            let flows = self.flow_tracker.get_flows();
+
             // Get sum of file sizes
             let mut files_size: u64 = 0;
             for f in files.iter() {
@@ -269,7 +293,10 @@ impl EBPFWatcher {
                     println!("ERR");
                 }
             }
-            let file_rate = RateWatcher::<u64>::format_rate((files_size - last_size) as f64 * (1.0/loop_elapsed.as_secs_f64()), "Byte/s");
+            let file_rate = RateWatcher::<u64>::format_rate(
+                (files_size - last_size) as f64 * (1.0 / loop_elapsed.as_secs_f64()),
+                "Byte/s",
+            );
 
             // For graph plotting
             let ingress_rate = self.ingress_counter.get_rate(loop_elapsed);
@@ -288,29 +315,64 @@ impl EBPFWatcher {
             egress_rates.push((start_elapsed.as_secs_f64(), egress_rate as f64));
 
             // Time elapsed
-            let time_string = format!("{}s {}ms", start_elapsed.as_secs(), start_elapsed.subsec_millis());
+            let time_string = format!(
+                "{}s {}ms",
+                start_elapsed.as_secs(),
+                start_elapsed.subsec_millis()
+            );
 
             // Sum of handled and dropped
-            let event_rate = RateWatcher::<u32>::format_rate(self.events_handled.get_rate(loop_elapsed) + self.events_drops.get_rate(loop_elapsed), " Events/s");
+            let event_rate = RateWatcher::<u32>::format_rate(
+                self.events_handled.get_rate(loop_elapsed)
+                    + self.events_drops.get_rate(loop_elapsed),
+                " Events/s",
+            );
 
             // Check if packets were lost
-            let mut dropped_style: Style  = Style::default();
+            let mut dropped_style: Style = Style::default();
             if self.events_drops.get_counter_sum() > 0 {
-                dropped_style = dropped_style.bg(Color::Red).fg(Color::White);
+                dropped_style = dropped_style.bg(Color::LightRed);
             }
 
             // Blocks for UI
             let status_blocks = vec![
-                Paragraph::new(time_string).block(Block::bordered().borders(Borders::BOTTOM).title("Time Elapsed")),
-                Paragraph::new(self.events_handled.get_counter_sum_string()).block(Block::bordered().borders(Borders::BOTTOM).title("Events Handled")),
-                Paragraph::new(self.events_drops.get_counter_sum_string()).block(Block::bordered().borders(Borders::BOTTOM).title("Events Dropped")).style(dropped_style),
-                Paragraph::new(event_rate).block(Block::bordered().borders(Borders::BOTTOM).title("Event Rate")),
-                Paragraph::new(RateWatcher::<u64>::format_sum(files_size, "Byte")).block(Block::bordered().borders(Borders::BOTTOM).title("Disk File Size")),
-                Paragraph::new(file_rate).block(Block::bordered().borders(Borders::BOTTOM).title("Write Speed")),
-            ]; 
+                Paragraph::new(time_string).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Time Elapsed"),
+                ),
+                Paragraph::new(self.events_handled.get_counter_sum_string()).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Events Handled"),
+                ),
+                Paragraph::new(self.events_drops.get_counter_sum_string())
+                    .block(
+                        Block::bordered()
+                            .borders(Borders::BOTTOM)
+                            .title("Events Dropped"),
+                    )
+                    .style(dropped_style),
+                Paragraph::new(event_rate).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Event Rate"),
+                ),
+                Paragraph::new(RateWatcher::<u64>::format_sum(files_size, "Byte")).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Disk File Size"),
+                ),
+                Paragraph::new(file_rate).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Write Speed"),
+                ),
+            ];
 
             // Tooltips
-            let keybindings = Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (Giga)");
+            let keybindings =
+                Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (Giga)");
             let keybindings_block = Block::bordered().borders(Borders::ALL).title("Keybindings");
 
             // Rate chart labels
@@ -396,6 +458,12 @@ impl EBPFWatcher {
                 let mut constraints = vec![Constraint::Max(3); status_blocks.len()];
                 constraints.push(Constraint::Min(0));
 
+                // Top graph layout
+                let mut graphs = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(top_areas[1]);
+
                 let sidebar = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints(constraints)
@@ -408,7 +476,8 @@ impl EBPFWatcher {
                     i = i + 1;
                 }
 
-                frame.render_widget(chart, top_areas[1]);
+                frame.render_widget(chart, graphs[0]);
+                frame.render_widget(flows, graphs[1]);
                 frame.render_widget(keybindings.block(keybindings_block), areas[1]);
             });
 
@@ -446,5 +515,4 @@ impl EBPFWatcher {
         // Restore terminal view
         ratatui::restore();
     }
-
 }

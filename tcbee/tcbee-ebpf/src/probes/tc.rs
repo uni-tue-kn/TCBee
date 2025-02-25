@@ -4,10 +4,7 @@ use aya_ebpf::{
 };
 use memoffset::offset_of;
 use tcbee_common::bindings::{
-    eth_header::ethhdr,
-    ip4_header::iphdr,
-    ip6_header::ipv6hdr,
-    tcp_header::{tcp_packet_trace, tcphdr},
+    eth_header::ethhdr, flow::IpTuple, ip4_header::iphdr, ip6_header::ipv6hdr, tcp_header::{tcp_packet_trace, tcphdr}
 };
 
 use crate::{
@@ -24,7 +21,7 @@ use crate::{
         try_dropped_counter, 
         try_egress_counter, 
         try_handled_counter
-    },
+    }, flow_tracker::try_flow_tracker,
 };
 
 #[map(name = "TCP_PACKETS_EGRESS")]
@@ -94,6 +91,19 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                 flag_syn: tcp_hdr.syn().to_be() == 1,
                 checksum: tcp_hdr.check.to_be(),
             };
+
+            let mut src = [0; 16];
+            let mut dst = [0; 16];
+            src[12..16].copy_from_slice(&ip4_hdr.saddr.to_le_bytes());
+            dst[12..16].copy_from_slice(&ip4_hdr.daddr.to_le_bytes());
+            
+            let _ = try_flow_tracker(IpTuple {
+                src_ip: src,
+                dst_ip: dst,
+                sport: tcp_hdr.source,
+                dport: tcp_hdr.dest,
+                protocol: 6,
+            });
         }
     } else {
         // Get IPv6 header
@@ -125,10 +135,23 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                 flag_syn: tcp_hdr.syn().to_be() == 1,
                 checksum: tcp_hdr.check.to_be(),
             };
+
+            // Write to flow tracker
+        let a = try_flow_tracker(IpTuple {
+            src_ip: packet_trace.saddr_v6,
+            dst_ip: packet_trace.daddr_v6,
+            sport: tcp_hdr.source,
+            dport: tcp_hdr.dest,
+            protocol: 6,
+        });
+        
         }
     }
 
     unsafe {
+
+        
+
         // Prepare ringbuf entry
         let reserved = TCP_PACKETS_EGRESS.reserve::<tcp_packet_trace>(0);
 

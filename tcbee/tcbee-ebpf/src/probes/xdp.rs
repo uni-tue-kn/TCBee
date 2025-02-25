@@ -2,9 +2,10 @@ use aya_ebpf::{
     bindings::xdp_action::XDP_PASS, helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf,
     programs::XdpContext,
 };
-use aya_log_ebpf::info;
+use aya_log_ebpf::{info, warn};
 use tcbee_common::bindings::{
     eth_header::ethhdr,
+    flow::IpTuple,
     ip4_header::iphdr,
     ip6_header::ipv6hdr,
     tcp_header::{tcp_packet_trace, tcphdr},
@@ -12,20 +13,11 @@ use tcbee_common::bindings::{
 
 use crate::{
     config::{
-        ETHERTYPE_IPV4, 
-        ETHERTYPE_IPV6, 
-        ETH_HDR_LEN, 
-        IP6_HDR_LEN, 
-        IP_HDR_LEN, 
-        TCP_HDR_LEN,
-        TCP_PROTOCOL, 
-        XDP_BUF_SIZE,
+        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TCP_HDR_LEN,
+        TCP_PROTOCOL, XDP_BUF_SIZE,
     },
-    counters::{
-        try_dropped_counter, 
-        try_handled_counter, 
-        try_ingress_counter
-    },
+    counters::{try_dropped_counter, try_handled_counter, try_ingress_counter},
+    flow_tracker::try_flow_tracker,
 };
 
 #[map(name = "TCP_PACKETS_INGRESS")]
@@ -113,6 +105,22 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                 flag_syn: tcp_hdr.syn().to_be() == 1,
                 checksum: tcp_hdr.check.to_be(),
             };
+
+            // Write to flow tracker
+            
+            let mut src = [0; 16];
+            let mut dst = [0; 16];
+            src[12..16].copy_from_slice(&ip4_hdr.saddr.to_le_bytes());
+            dst[12..16].copy_from_slice(&ip4_hdr.daddr.to_le_bytes());
+
+            let _ = try_flow_tracker(IpTuple {
+                src_ip: src,
+                dst_ip: dst,
+                sport: tcp_hdr.source,
+                dport: tcp_hdr.dest,
+                protocol: 6,
+            });
+            
         }
 
         // Check if next protocol is tcp
@@ -166,6 +174,15 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                 flag_syn: tcp_hdr.syn().to_be() == 1,
                 checksum: tcp_hdr.check.to_be(),
             };
+
+            // Write to flow tracker
+            let _ = try_flow_tracker(IpTuple {
+                src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
+                dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
+                sport: tcp_hdr.source,
+                dport: tcp_hdr.dest,
+                protocol: 6,
+            });
         }
     } else {
         // Should never be reached!
