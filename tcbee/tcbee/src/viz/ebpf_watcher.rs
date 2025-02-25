@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, error::Error, fs::File, io::{self, Read, Write}, net::{IpAddr, Ipv4Addr, Ipv6Addr}, ops::{AddAssign, Sub}, os::linux::fs::MetadataExt, path::Path, thread::sleep, time::{Duration, Instant}
+    collections::HashMap, error::Error, fs::File, io::{self, Read, Write}, net::{IpAddr, Ipv4Addr, Ipv6Addr}, num, ops::{AddAssign, Sub}, os::linux::fs::MetadataExt, path::Path, thread::sleep, time::{Duration, Instant}
 };
 
 use glob;
@@ -15,11 +15,14 @@ use log::{error, info, warn};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, KeyCode, KeyEventKind},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style, Stylize},
     symbols,
     text::Span,
-    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, List, Paragraph, Row, Table, Widget},
+    widgets::{
+        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, List, Paragraph, Row,
+        ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, Widget,
+    },
     DefaultTerminal,
 };
 use tcbee_common::bindings::flow::IpTuple;
@@ -31,7 +34,6 @@ enum Counter {
     Ingress,
     Egress,
 }
-
 
 pub struct EBPFWatcher {
     events_drops: RateWatcher<u32>,
@@ -168,12 +170,20 @@ impl EBPFWatcher {
         let mut ingress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
         let mut egress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
 
+        let mut scrollbar_state = ScrollbarState::new(0);
+        let mut scroll_index: usize = 0;
+        let mut num_flows: usize = 0;
+
         while !self.token.is_cancelled() {
             let start_elapsed = application_start.elapsed();
             let loop_elapsed = start_elapsed - last_loop;
 
             // Update tracker of alll flows internal list and then print it
             self.flow_tracker.read_flows();
+            // Update size of scrollbar
+            scrollbar_state = self.flow_tracker.update_scrollbar_state(scrollbar_state);
+            scrollbar_state.next();
+            num_flows = self.flow_tracker.num_flows;
             let flows = self.flow_tracker.get_flows();
 
             // Get sum of file sizes
@@ -368,8 +378,37 @@ impl EBPFWatcher {
                     i = i + 1;
                 }
 
+                // Scrollbar
+                let scrollbar = Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None);
+
+                scrollbar_state =
+                    scrollbar_state.viewport_content_length(graphs[1].height as usize);
+
                 frame.render_widget(chart, graphs[0]);
                 frame.render_widget(flows, graphs[1]);
+
+                // Render scrollbar when more entries than height
+                if num_flows
+                    > (graphs[1]
+                        .inner(Margin {
+                            vertical: 1,
+                            horizontal: 1,
+                        })
+                        .height - 1) as usize
+                {
+                    frame.render_stateful_widget(
+                        scrollbar,
+                        graphs[1].inner(Margin {
+                            vertical: 1,
+                            horizontal: 1,
+                        }),
+                        &mut scrollbar_state,
+                    );
+                }
+
                 frame.render_widget(keybindings.block(keybindings_block), areas[1]);
             });
 
@@ -399,6 +438,18 @@ impl EBPFWatcher {
                     // Check for esc or q to cancel
                     if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
                         self.token.cancel();
+                    }
+
+                    if key.code == KeyCode::Up {
+                        scrollbar_state.scroll(ScrollDirection::Backward);
+                        // Limit index to number of flows
+                        scroll_index = (scroll_index + 1).max(self.flow_tracker.num_flows);
+                    }
+
+                    if key.code == KeyCode::Down {
+                        scrollbar_state.scroll(ScrollDirection::Forward);
+                        // Limit index to be 0 at min
+                        scroll_index = (scroll_index - 1).min(0);
                     }
                 }
             }
