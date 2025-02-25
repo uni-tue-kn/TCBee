@@ -2,6 +2,7 @@
 mod config;
 mod handlers;
 mod util;
+mod viz;
 use util::ebpf_runner::eBPFRunner;
 
 // Error handling
