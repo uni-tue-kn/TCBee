@@ -1,14 +1,13 @@
 use std::error::Error;
 
 use aya::{
-    maps::{PerCpuArray, RingBuf},
+    maps::{PerCpuArray, PerCpuHashMap, RingBuf},
     programs::{tc, SchedClassifier, TcAttachType, TracePoint, Xdp, XdpFlags},
     Ebpf,
 };
 use log::{debug, info, warn};
 use tcbee_common::bindings::{
-    tcp_bad_csum::tcp_bad_csum_entry, tcp_header::tcp_packet_trace, tcp_probe::tcp_probe_entry,
-    tcp_retransmit_synack::tcp_retransmit_synack_entry, EBPFTracePointType,
+    flow::IpTuple, tcp_bad_csum::tcp_bad_csum_entry, tcp_header::tcp_packet_trace, tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry, EBPFTracePointType
 };
 use tokio::task::{self, spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -321,6 +320,8 @@ impl eBPFRunner {
             PerCpuArray::try_from(ebpf.take_map("INGRESS_EVENTS").unwrap())?;
         let egress_counter: PerCpuArray<aya::maps::MapData, u32> =
             PerCpuArray::try_from(ebpf.take_map("EGRESS_EVENTS").unwrap())?;
+        let flows_map: PerCpuHashMap<aya::maps::MapData, IpTuple,IpTuple> =
+            PerCpuHashMap::try_from(ebpf.take_map("FLOWS").unwrap())?;
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
         let mut watcher = EBPFWatcher::new(
@@ -328,6 +329,7 @@ impl eBPFRunner {
             events_handled,
             ingress_counter,
             egress_counter,
+            flows_map,
             self.stop_token.clone(),
             self.do_tui,
         )?; // Start thread and store join handle
