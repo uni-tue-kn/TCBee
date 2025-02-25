@@ -42,7 +42,7 @@ impl FlowTracker {
         let rows = self.flows.iter().enumerate().map(|(i, (flow,is_ipv6))| {
             let color = match i % 2 {
                 0 => Color::Reset,
-                _ => Color::Gray,
+                _ => Color::DarkGray,
             };
 
             let src = flow.src.to_string();
