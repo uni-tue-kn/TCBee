@@ -15,6 +15,9 @@ pub const TC_BUF_SIZE: u32 = (size_of::<tcp_packet_trace>() * 100000) as u32;
 pub const TCP_BAD_CSUM_BUF_SIZE: u32 = (size_of::<tcp_packet_trace>() * 100000) as u32;
 pub const TCP_RETRANSMIT_SYNACK_BUF_SIZE: u32 = (size_of::<tcp_packet_trace>() * 100000) as u32;
 
+// For hashmap
+pub const MAX_FLOWS: u32 = 100;
+
 // Type fields
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
 pub const ETHERTYPE_IPV6: u16 = 0x86DD;

@@ -1,138 +1,50 @@
 use std::{
-    error::Error, fs::File, io::{self, Read, Write}, ops::{AddAssign, Sub}, os::linux::fs::MetadataExt, path::Path, thread::sleep, time::{Duration, Instant}
+    collections::HashMap,
+    error::Error,
+    fs::File,
+    io::{self, Read, Write},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    num,
+    ops::{AddAssign, Sub},
+    os::linux::fs::MetadataExt,
+    path::Path,
+    thread::sleep,
+    time::{Duration, Instant},
 };
 
 use glob;
 
-use aya::{maps::PerCpuArray, util::nr_cpus, Pod};
-use log::{error, info};
+use crate::{config::UI_UPDATE_MS_INTERVAL, viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher}};
+
+use aya::{
+    maps::{PerCpuArray, PerCpuHashMap},
+    util::nr_cpus,
+    Pod,
+};
+use log::{error, info, warn};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{self, KeyCode, KeyEventKind},
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
+    style::{Color, Modifier, Style, Stylize},
     symbols,
     text::Span,
-    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Widget},
+    widgets::{
+        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, LegendPosition, List, Paragraph, Row, ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Widget
+    },
     DefaultTerminal,
 };
+use tcbee_common::bindings::flow::IpTuple;
 use tokio_util::sync::CancellationToken;
 
-enum Counter {
-    Dropped,
-    Handled,
-    Ingress,
-    Egress,
-}
-
-// TODO: make more generic to handle float maps as well?
-pub struct RateWatcher<T: Pod + AddAssign + Sub> {
-    map: PerCpuArray<aya::maps::MapData, T>,
-    suffix: String,
-    last_val: T,
-    name: String,
-}
-
-impl<T: Pod + AddAssign + Default + Sub> RateWatcher<T> {
-    pub fn new(
-        map: PerCpuArray<aya::maps::MapData, T>,
-        suffix: String,
-        init_val: T,
-        name: String,
-    ) -> RateWatcher<T> {
-        RateWatcher {
-            map: map,
-            suffix: suffix,
-            last_val: init_val,
-            name: name,
-        }
-    }
-    pub fn get_rate_string(&mut self, elapsed: Duration) -> String
-    where
-        f64: From<<T as Sub>::Output>,
-    {
-        let rate = self.get_rate(elapsed);
-        RateWatcher::<T>::format_rate(rate, &self.suffix)
-    }
-
-    pub fn get_rate(&mut self, elapsed: Duration) -> f64
-    where
-        f64: From<<T as Sub>::Output>,
-    {
-        let sum = self.get_counter_sum();
-
-        // TODO: better handling?
-        let rate = f64::try_from(sum - self.last_val).unwrap_or_else(|_| -1.0)
-            * (1.0 / elapsed.as_secs_f64());
-
-        self.last_val = sum;
-
-        rate
-    }
-
-    pub fn get_counter_sum(&self) -> T {
-        // Counter is per CPU, sum will hold sum across CPUs
-        let mut sum: T = T::default();
-
-        // Get counter array
-        let values = self.map.get(&0, 0);
-
-        // Check if error erturned
-        match values {
-            Err(err) => {
-                error!("Failed to read event counter {}: {}!", self.name, err);
-            }
-            Ok(counters) => {
-                // Iterate and sum over array
-                if let Ok(num_cpus) = nr_cpus() {
-                    for i in 0..num_cpus {
-                        sum += counters[i];
-                    }
-                } else {
-                    error!("Failed to get number of CPUs for {}", self.name);
-                }
-            }
-        }
-        sum
-    }
-
-    // TODO: Cache this? Since rate and count is called multiple times in one loop iteration
-    pub fn get_counter_sum_string(&self) -> String
-    where u64: From<T> {
-        let Ok(sum) = u64::try_from(self.get_counter_sum());
-        RateWatcher::<T>::format_sum(sum, "")      
-    }
-
-    // TODO: prettier?
-    pub fn format_rate(val: f64, suffix: &str) -> String {
-        if val > 1_000_000_000.0 {
-            return format!("{:.2} G{}", val/1_000_000_000.0, suffix);
-        } else if val > 1_000_000.0 {
-            return format!("{:.2} M{}", val/1_000_000.0, suffix);
-        } else if val > 1_000.0 {
-            return format!("{:.2} K{}", val/1_000.0, suffix);
-        } else {
-            return format!("{:.2} {}", val, suffix);
-        }
-    }
-    fn format_sum(val: u64, suffix: &str) -> String {
-        if val > 1_000_000_000 {
-            return format!("{} G{}", val/1_000_000_000, suffix);
-        } else if val > 1_000_000 {
-            return format!("{} M{}", val/1_000_000, suffix);
-        } else if val > 1_000 {
-            return format!("{} K{}", val/1_0000, suffix);
-        } else {
-            return format!("{} {}", val, suffix);
-        }
-    }
-}
+use super::file_tracker::{self, FileTracker};
 
 pub struct EBPFWatcher {
     events_drops: RateWatcher<u32>,
     events_handled: RateWatcher<u32>,
     ingress_counter: RateWatcher<u32>,
     egress_counter: RateWatcher<u32>,
+    flow_tracker: FlowTracker,
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
 }
@@ -144,6 +56,7 @@ impl EBPFWatcher {
         events_handled: PerCpuArray<aya::maps::MapData, u32>,
         ingress_counter: PerCpuArray<aya::maps::MapData, u32>,
         egress_counter: PerCpuArray<aya::maps::MapData, u32>,
+        flow_tracker: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple>,
         token: CancellationToken,
         do_tui: bool,
     ) -> Result<EBPFWatcher, Box<dyn Error>> {
@@ -173,6 +86,8 @@ impl EBPFWatcher {
             "Egress Packets".to_string(),
         );
 
+        let flow_tracker = FlowTracker::new(flow_tracker);
+
         if do_tui {
             color_eyre::install()?;
             let terminal: DefaultTerminal = ratatui::init();
@@ -182,6 +97,7 @@ impl EBPFWatcher {
                 events_handled,
                 ingress_counter,
                 egress_counter,
+                flow_tracker,
                 token,
                 terminal: Some(terminal),
             })
@@ -191,6 +107,7 @@ impl EBPFWatcher {
                 events_handled,
                 ingress_counter,
                 egress_counter,
+                flow_tracker,
                 token,
                 terminal: None,
             })
@@ -220,6 +137,7 @@ impl EBPFWatcher {
             );
 
             print!("{to_display}");
+
             let _ = io::stdout().flush();
 
             // Sleep until next calc
@@ -232,20 +150,6 @@ impl EBPFWatcher {
         // Rate tracking for graph bounds
         let mut max_rate: f64 = 0.0;
 
-        // Open all .tcp files to watch file size!
-        let mut files: Vec<File> = Vec::new();
-        if let Ok(paths) = glob::glob("/tmp/*.tcp") {
-            for p in paths {
-                if let Ok(path) = p {
-                    let open = File::open(path);
-                    if open.is_ok() {
-                        files.push(open.unwrap());
-                    }
-                }
-            }
-        } else {
-            error!("Cannot read files at /tmp for size watcher!")
-        }
         let mut last_size: u64 = 0;
 
         let application_start = Instant::now();
@@ -256,61 +160,107 @@ impl EBPFWatcher {
         let mut ingress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
         let mut egress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
 
+        let mut scrollbar_state = ScrollbarState::new(0);
+        let mut scroll_index: usize = 0;
+        let mut num_flows: usize = 0;
+
+        let file_tracker = FileTracker::new();
+
         while !self.token.is_cancelled() {
             let start_elapsed = application_start.elapsed();
             let loop_elapsed = start_elapsed - last_loop;
 
-            // Get sum of file sizes
-            let mut files_size: u64 = 0;
-            for f in files.iter() {
-                if let Ok(meta) = f.metadata() {
-                    files_size = files_size + meta.st_size();
-                } else {
-                    println!("ERR");
-                }
-            }
-            let file_rate = RateWatcher::<u64>::format_rate((files_size - last_size) as f64 * (1.0/loop_elapsed.as_secs_f64()), "Byte/s");
+            // Update tracker of alll flows internal list and then print it
+            self.flow_tracker.read_flows();
+            // Update size of scrollbar
+            scrollbar_state = self.flow_tracker.update_scrollbar_state(scrollbar_state);
+            scrollbar_state = scrollbar_state.position(scroll_index);
+            scrollbar_state.next();
+            num_flows = self.flow_tracker.num_flows;
+            
+            let flows = self.flow_tracker.get_flows().block(
+                Block::bordered()
+                    .borders(Borders::ALL)
+                    .title(format!("Tracking {} Flows. Scroll with arrows or mousewheel.", num_flows)),
+            );
+            let mut flows_state = TableState::new().with_offset(scroll_index);
 
-            // For graph plotting
+            // Track file size and rate
+            let files_size = file_tracker.get_file_size();
+            let file_rate = RateWatcher::<u64>::format_rate(
+                (files_size - last_size) as f64 * (1.0 / loop_elapsed.as_secs_f64()),
+                "Byte/s",
+            );
+
+            // Get ingress and egress packets per second
             let ingress_rate = self.ingress_counter.get_rate(loop_elapsed);
             let egress_rate = self.egress_counter.get_rate(loop_elapsed);
-
-            if ingress_rate > max_rate {
-                max_rate = ingress_rate;
-            }
-
-            if egress_rate > max_rate {
-                max_rate = egress_rate;
-            }
-
-            // Add rates for graph
+            // Add rates fto graph lines
             ingress_rates.push((start_elapsed.as_secs_f64(), ingress_rate as f64));
             egress_rates.push((start_elapsed.as_secs_f64(), egress_rate as f64));
+            // Get maximum packet rate to set y-limit of graph
+            max_rate = max_rate.max(ingress_rate);
+            max_rate = max_rate.max(egress_rate);
 
             // Time elapsed
-            let time_string = format!("{}s {}ms", start_elapsed.as_secs(), start_elapsed.subsec_millis());
+            let time_string = format!(
+                "{}s {}ms",
+                start_elapsed.as_secs(),
+                start_elapsed.subsec_millis()
+            );
 
-            // Sum of handled and dropped
-            let event_rate = RateWatcher::<u32>::format_rate(self.events_handled.get_rate(loop_elapsed) + self.events_drops.get_rate(loop_elapsed), " Events/s");
+            // Track rate of all events as sum of dropped and handled
+            let event_rate = RateWatcher::<u32>::format_rate(
+                self.events_handled.get_rate(loop_elapsed)
+                    + self.events_drops.get_rate(loop_elapsed),
+                " Events/s",
+            );
 
             // Check if packets were lost
-            let mut dropped_style: Style  = Style::default();
+            let mut dropped_style: Style = Style::default();
             if self.events_drops.get_counter_sum() > 0 {
-                dropped_style = dropped_style.bg(Color::Red).fg(Color::White);
+                dropped_style = dropped_style.bg(Color::LightRed);
             }
 
             // Blocks for UI
             let status_blocks = vec![
-                Paragraph::new(time_string).block(Block::bordered().borders(Borders::BOTTOM).title("Time Elapsed")),
-                Paragraph::new(self.events_handled.get_counter_sum_string()).block(Block::bordered().borders(Borders::BOTTOM).title("Events Handled")),
-                Paragraph::new(self.events_drops.get_counter_sum_string()).block(Block::bordered().borders(Borders::BOTTOM).title("Events Dropped")).style(dropped_style),
-                Paragraph::new(event_rate).block(Block::bordered().borders(Borders::BOTTOM).title("Event Rate")),
-                Paragraph::new(RateWatcher::<u64>::format_sum(files_size, "Byte")).block(Block::bordered().borders(Borders::BOTTOM).title("Disk File Size")),
-                Paragraph::new(file_rate).block(Block::bordered().borders(Borders::BOTTOM).title("Write Speed")),
-            ]; 
+                Paragraph::new(time_string).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Time Elapsed"),
+                ),
+                Paragraph::new(self.events_handled.get_counter_sum_string()).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Events Handled"),
+                ),
+                Paragraph::new(self.events_drops.get_counter_sum_string())
+                    .block(
+                        Block::bordered()
+                            .borders(Borders::BOTTOM)
+                            .title("Events Dropped"),
+                    )
+                    .style(dropped_style),
+                Paragraph::new(event_rate).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Event Rate"),
+                ),
+                Paragraph::new(RateWatcher::<u64>::format_sum(files_size, "Byte")).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Disk File Size"),
+                ),
+                Paragraph::new(file_rate).block(
+                    Block::bordered()
+                        .borders(Borders::BOTTOM)
+                        .title("Write Speed"),
+                ),
+            ];
 
             // Tooltips
-            let keybindings = Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (Giga)");
+            let keybindings =
+                Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (G)iga");
             let keybindings_block = Block::bordered().borders(Borders::ALL).title("Keybindings");
 
             // Rate chart labels
@@ -348,13 +298,13 @@ impl EBPFWatcher {
             let chart = Chart::new(vec![
                 Dataset::default()
                     .name("Ingress")
-                    .marker(symbols::Marker::Dot)
+                    .marker(symbols::Marker::Braille)
                     .style(Style::default().fg(Color::Cyan))
                     .graph_type(GraphType::Line)
                     .data(&ingress_rates),
                 Dataset::default()
                     .name("Egress")
-                    .marker(symbols::Marker::Dot)
+                    .marker(symbols::Marker::Braille)
                     .style(Style::default().fg(Color::LightGreen))
                     .graph_type(GraphType::Line)
                     .data(&egress_rates),
@@ -375,7 +325,8 @@ impl EBPFWatcher {
                     .style(Style::default().fg(Color::White))
                     .bounds([0.0, max_rate])
                     .labels(y_labels),
-            );
+            )
+            .legend_position(Some(LegendPosition::TopLeft));
 
             // Render function
             // TODO: move to own function
@@ -396,6 +347,12 @@ impl EBPFWatcher {
                 let mut constraints = vec![Constraint::Max(3); status_blocks.len()];
                 constraints.push(Constraint::Min(0));
 
+                // Top graph layout
+                let mut graphs = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(top_areas[1]);
+
                 let sidebar = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints(constraints)
@@ -408,7 +365,38 @@ impl EBPFWatcher {
                     i = i + 1;
                 }
 
-                frame.render_widget(chart, top_areas[1]);
+                // Scrollbar
+                let scrollbar = Scrollbar::default()
+                    .orientation(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None);
+
+                scrollbar_state =
+                    scrollbar_state.viewport_content_length(graphs[1].height as usize);
+
+                frame.render_widget(chart, graphs[0]);
+                frame.render_stateful_widget(flows, graphs[1],&mut flows_state);
+
+                // Render scrollbar when more entries than height
+                if num_flows
+                    > (graphs[1]
+                        .inner(Margin {
+                            vertical: 1,
+                            horizontal: 1,
+                        })
+                        .height
+                        - 1) as usize
+                {
+                    frame.render_stateful_widget(
+                        scrollbar,
+                        graphs[1].inner(Margin {
+                            vertical: 1,
+                            horizontal: 1,
+                        }),
+                        &mut scrollbar_state,
+                    );
+                }
+
                 frame.render_widget(keybindings.block(keybindings_block), areas[1]);
             });
 
@@ -416,11 +404,11 @@ impl EBPFWatcher {
             last_loop = application_start.elapsed();
             last_size = files_size;
 
+            // Main visualization and processing part is done now!
             // Wait for key event for 0.5s and check key presses inbetween runs
             let start = Instant::now();
-
             // Loop until 500ms elapsed
-            while start.elapsed().as_millis() < 500 {
+            while start.elapsed().as_millis() < UI_UPDATE_MS_INTERVAL  {
                 // Poll for eavent ready
                 // Timout after 10ms
                 // On Error continue to next loop iteration
@@ -439,6 +427,20 @@ impl EBPFWatcher {
                     if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
                         self.token.cancel();
                     }
+
+                    if key.code == KeyCode::Down {
+                        // Limit index to number of flows
+                        scroll_index = (scroll_index + 1).min(self.flow_tracker.num_flows);
+                    }
+
+                    if key.code == KeyCode::Up {
+                        // Limit index to be 0 at min
+                        // Cant be with .min() due to overflow at 0 - 1
+                        if scroll_index > 0 {
+                            scroll_index = scroll_index - 1;
+                        }
+                        
+                    }
                 }
             }
         }
@@ -446,5 +448,4 @@ impl EBPFWatcher {
         // Restore terminal view
         ratatui::restore();
     }
-
 }

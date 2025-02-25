@@ -5,6 +5,7 @@ pub mod tcp_header;
 pub mod eth_header;
 pub mod ip4_header;
 pub mod ip6_header;
+pub mod flow;
 
 #[cfg(feature = "user")]
 use aya::Pod;
