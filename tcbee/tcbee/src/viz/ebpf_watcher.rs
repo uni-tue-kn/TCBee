@@ -1,10 +1,20 @@
 use std::{
-    collections::HashMap, error::Error, fs::File, io::{self, Read, Write}, net::{IpAddr, Ipv4Addr, Ipv6Addr}, num, ops::{AddAssign, Sub}, os::linux::fs::MetadataExt, path::Path, thread::sleep, time::{Duration, Instant}
+    collections::HashMap,
+    error::Error,
+    fs::File,
+    io::{self, Read, Write},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    num,
+    ops::{AddAssign, Sub},
+    os::linux::fs::MetadataExt,
+    path::Path,
+    thread::sleep,
+    time::{Duration, Instant},
 };
 
 use glob;
 
-use crate::viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher};
+use crate::{config::UI_UPDATE_MS_INTERVAL, viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher}};
 
 use aya::{
     maps::{PerCpuArray, PerCpuHashMap},
@@ -20,20 +30,14 @@ use ratatui::{
     symbols,
     text::Span,
     widgets::{
-        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, List, Paragraph, Row,
-        ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, Widget,
+        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, LegendPosition, List, Paragraph, Row, ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Widget
     },
     DefaultTerminal,
 };
 use tcbee_common::bindings::flow::IpTuple;
 use tokio_util::sync::CancellationToken;
 
-enum Counter {
-    Dropped,
-    Handled,
-    Ingress,
-    Egress,
-}
+use super::file_tracker::{self, FileTracker};
 
 pub struct EBPFWatcher {
     events_drops: RateWatcher<u32>,
@@ -146,20 +150,6 @@ impl EBPFWatcher {
         // Rate tracking for graph bounds
         let mut max_rate: f64 = 0.0;
 
-        // Open all .tcp files to watch file size!
-        let mut files: Vec<File> = Vec::new();
-        if let Ok(paths) = glob::glob("/tmp/*.tcp") {
-            for p in paths {
-                if let Ok(path) = p {
-                    let open = File::open(path);
-                    if open.is_ok() {
-                        files.push(open.unwrap());
-                    }
-                }
-            }
-        } else {
-            error!("Cannot read files at /tmp for size watcher!")
-        }
         let mut last_size: u64 = 0;
 
         let application_start = Instant::now();
@@ -174,6 +164,8 @@ impl EBPFWatcher {
         let mut scroll_index: usize = 0;
         let mut num_flows: usize = 0;
 
+        let file_tracker = FileTracker::new();
+
         while !self.token.is_cancelled() {
             let start_elapsed = application_start.elapsed();
             let loop_elapsed = start_elapsed - last_loop;
@@ -182,39 +174,33 @@ impl EBPFWatcher {
             self.flow_tracker.read_flows();
             // Update size of scrollbar
             scrollbar_state = self.flow_tracker.update_scrollbar_state(scrollbar_state);
+            scrollbar_state = scrollbar_state.position(scroll_index);
             scrollbar_state.next();
             num_flows = self.flow_tracker.num_flows;
-            let flows = self.flow_tracker.get_flows();
+            
+            let flows = self.flow_tracker.get_flows().block(
+                Block::bordered()
+                    .borders(Borders::ALL)
+                    .title(format!("Tracking {} Flows. Scroll with arrows or mousewheel.", num_flows)),
+            );
+            let mut flows_state = TableState::new().with_offset(scroll_index);
 
-            // Get sum of file sizes
-            let mut files_size: u64 = 0;
-            for f in files.iter() {
-                if let Ok(meta) = f.metadata() {
-                    files_size = files_size + meta.st_size();
-                } else {
-                    println!("ERR");
-                }
-            }
+            // Track file size and rate
+            let files_size = file_tracker.get_file_size();
             let file_rate = RateWatcher::<u64>::format_rate(
                 (files_size - last_size) as f64 * (1.0 / loop_elapsed.as_secs_f64()),
                 "Byte/s",
             );
 
-            // For graph plotting
+            // Get ingress and egress packets per second
             let ingress_rate = self.ingress_counter.get_rate(loop_elapsed);
             let egress_rate = self.egress_counter.get_rate(loop_elapsed);
-
-            if ingress_rate > max_rate {
-                max_rate = ingress_rate;
-            }
-
-            if egress_rate > max_rate {
-                max_rate = egress_rate;
-            }
-
-            // Add rates for graph
+            // Add rates fto graph lines
             ingress_rates.push((start_elapsed.as_secs_f64(), ingress_rate as f64));
             egress_rates.push((start_elapsed.as_secs_f64(), egress_rate as f64));
+            // Get maximum packet rate to set y-limit of graph
+            max_rate = max_rate.max(ingress_rate);
+            max_rate = max_rate.max(egress_rate);
 
             // Time elapsed
             let time_string = format!(
@@ -223,7 +209,7 @@ impl EBPFWatcher {
                 start_elapsed.subsec_millis()
             );
 
-            // Sum of handled and dropped
+            // Track rate of all events as sum of dropped and handled
             let event_rate = RateWatcher::<u32>::format_rate(
                 self.events_handled.get_rate(loop_elapsed)
                     + self.events_drops.get_rate(loop_elapsed),
@@ -312,13 +298,13 @@ impl EBPFWatcher {
             let chart = Chart::new(vec![
                 Dataset::default()
                     .name("Ingress")
-                    .marker(symbols::Marker::Dot)
+                    .marker(symbols::Marker::Braille)
                     .style(Style::default().fg(Color::Cyan))
                     .graph_type(GraphType::Line)
                     .data(&ingress_rates),
                 Dataset::default()
                     .name("Egress")
-                    .marker(symbols::Marker::Dot)
+                    .marker(symbols::Marker::Braille)
                     .style(Style::default().fg(Color::LightGreen))
                     .graph_type(GraphType::Line)
                     .data(&egress_rates),
@@ -339,7 +325,8 @@ impl EBPFWatcher {
                     .style(Style::default().fg(Color::White))
                     .bounds([0.0, max_rate])
                     .labels(y_labels),
-            );
+            )
+            .legend_position(Some(LegendPosition::TopLeft));
 
             // Render function
             // TODO: move to own function
@@ -388,7 +375,7 @@ impl EBPFWatcher {
                     scrollbar_state.viewport_content_length(graphs[1].height as usize);
 
                 frame.render_widget(chart, graphs[0]);
-                frame.render_widget(flows, graphs[1]);
+                frame.render_stateful_widget(flows, graphs[1],&mut flows_state);
 
                 // Render scrollbar when more entries than height
                 if num_flows
@@ -397,7 +384,8 @@ impl EBPFWatcher {
                             vertical: 1,
                             horizontal: 1,
                         })
-                        .height - 1) as usize
+                        .height
+                        - 1) as usize
                 {
                     frame.render_stateful_widget(
                         scrollbar,
@@ -416,11 +404,11 @@ impl EBPFWatcher {
             last_loop = application_start.elapsed();
             last_size = files_size;
 
+            // Main visualization and processing part is done now!
             // Wait for key event for 0.5s and check key presses inbetween runs
             let start = Instant::now();
-
             // Loop until 500ms elapsed
-            while start.elapsed().as_millis() < 500 {
+            while start.elapsed().as_millis() < UI_UPDATE_MS_INTERVAL  {
                 // Poll for eavent ready
                 // Timout after 10ms
                 // On Error continue to next loop iteration
@@ -440,16 +428,18 @@ impl EBPFWatcher {
                         self.token.cancel();
                     }
 
-                    if key.code == KeyCode::Up {
-                        scrollbar_state.scroll(ScrollDirection::Backward);
+                    if key.code == KeyCode::Down {
                         // Limit index to number of flows
-                        scroll_index = (scroll_index + 1).max(self.flow_tracker.num_flows);
+                        scroll_index = (scroll_index + 1).min(self.flow_tracker.num_flows);
                     }
 
-                    if key.code == KeyCode::Down {
-                        scrollbar_state.scroll(ScrollDirection::Forward);
+                    if key.code == KeyCode::Up {
                         // Limit index to be 0 at min
-                        scroll_index = (scroll_index - 1).min(0);
+                        // Cant be with .min() due to overflow at 0 - 1
+                        if scroll_index > 0 {
+                            scroll_index = scroll_index - 1;
+                        }
+                        
                     }
                 }
             }

@@ -90,18 +90,12 @@ impl FlowTracker {
                 Constraint::Percentage(33),
             ],
         )
-        .header(header)
-        .block(
-            Block::bordered()
-                .borders(Borders::ALL)
-                .title("Tracked Flows"),
-        );
+        .header(header);
 
         tab
     }
 
     pub fn read_flows(&mut self) {
-        let mut tuples: Vec<String> = Vec::new();
         let mut i: u16 = 1;
 
         for entry in self.map.iter() {

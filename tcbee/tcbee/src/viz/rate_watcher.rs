@@ -103,7 +103,7 @@ impl<T: Pod + AddAssign + Default + Sub> RateWatcher<T> {
         } else if val > 1_000_000.0 {
             return format!("{:.2} M{}", val / 1_000_000.0, suffix);
         } else if val > 1_000.0 {
-            return format!("{:.2} K{}", val / 1_0000.0, suffix);
+            return format!("{:.2} K{}", val / 1_000.0, suffix);
         } else {
             return format!("{:.0} {}", val, suffix);
         }
