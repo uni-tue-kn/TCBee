@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     handlers::{tracepoints::HandlerConstraints, BufferHandler, BufferHandlerImpl},
-    util::ebpf_watcher::EBPFWatcher,
+    viz::ebpf_watcher::EBPFWatcher,
 };
 
 use super::errors::EBPFRunnerError;

@@ -264,7 +264,7 @@ impl EBPFWatcher {
 
             // Tooltips
             let keybindings =
-                Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (Giga)");
+                Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (G)iga");
             let keybindings_block = Block::bordered().borders(Borders::ALL).title("Keybindings");
 
             // Rate chart labels
