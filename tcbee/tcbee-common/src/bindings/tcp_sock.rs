@@ -46474,8 +46474,10 @@ impl xsk_buff_pool {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub struct sock_trace_entry {
+    pub time: u64,
     pub addr_v4: u64,
     pub src_v6: [u8; 16],
     pub dst_v6: [u8; 16],
-    pub ports: u32
+    pub ports: u32,
+    pub family: u16
 }
