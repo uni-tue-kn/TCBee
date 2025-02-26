@@ -1,5 +1,6 @@
 pub mod tracepoints;
 pub mod xdp_handler;
+pub mod socks;
 
 use std::marker::PhantomData;
 
@@ -35,7 +36,7 @@ pub struct BufferHandler<T> {
 }
 
 // TODO: T should be restricted to structs that are used for tracepoint queues!
-impl<T: std::fmt::Debug + Clone + Copy + serde::ser::Serialize> BufferHandler<T> {
+impl<T: std::fmt::Debug + Clone + Copy> BufferHandler<T> {
     pub fn new<Entry>(
         name: &str,
         token: CancellationToken,

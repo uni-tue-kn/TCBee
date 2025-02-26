@@ -23,6 +23,8 @@ pub const ETHERTYPE_IPV4: u16 = 0x0800;
 pub const ETHERTYPE_IPV6: u16 = 0x86DD;
 pub const TCP_PROTOCOL: u8 = 0x06;
 
+pub const AF_INET6: u16 = 10;
+
 // Header lengths
 // TODO: import from aya_ebpf?
 pub const ETH_HDR_LEN: usize = mem::size_of::<ethhdr>();

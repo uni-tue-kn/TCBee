@@ -1,13 +1,14 @@
 use std::error::Error;
 
+use anyhow::Context;
 use aya::{
     maps::{PerCpuArray, PerCpuHashMap, RingBuf},
-    programs::{tc, SchedClassifier, TcAttachType, TracePoint, Xdp, XdpFlags},
-    Ebpf,
+    programs::{tc, FExit, SchedClassifier, TcAttachType, TracePoint, Xdp, XdpFlags},
+    Btf, Ebpf,
 };
 use log::{debug, info, warn};
 use tcbee_common::bindings::{
-    flow::IpTuple, tcp_bad_csum::tcp_bad_csum_entry, tcp_header::tcp_packet_trace, tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry, EBPFTracePointType
+    flow::IpTuple, tcp_bad_csum::tcp_bad_csum_entry, tcp_header::tcp_packet_trace, tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry, tcp_sock::sock_trace_entry, EBPFTracePointType
 };
 use tokio::task::{self, spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -54,6 +55,49 @@ impl eBPFRunner {
         for t in self.threads {
             let _ = t.await;
         }
+    }
+
+    fn add_tcp_sock_tracer(
+        &mut self,
+        ebpf: &mut Ebpf,
+        token: CancellationToken,
+    ) -> Result<(), Box<dyn Error>> {
+        let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
+        let program: &mut FExit = ebpf.program_mut("sock_sendmsg").unwrap().try_into()?;
+        program.load("tcp_sendmsg", &btf)?;
+        program.attach()?;
+
+        let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
+        let program2: &mut FExit = ebpf.program_mut("sock_recvmsg").unwrap().try_into()?;
+        program2.load("tcp_recvmsg", &btf)?;
+        program2.attach()?;
+
+        // Start handling function
+        // Get queue from
+        let map =
+            ebpf.take_map("TCP_SOCK_EVENTS")
+                .ok_or(EBPFRunnerError::QueueNotFoundError {
+                    name: "TCP_SOCK_EVENTS".to_string(),
+                    trace: "Socket Tracer".to_string(),
+                })?;
+
+        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+
+        // Create handler object
+        // TODO: handling of None!
+        let mut handler: BufferHandler<sock_trace_entry> =
+            BufferHandler::<sock_trace_entry>::new("TCP_SOCKET_TRACE", token, buff,"/tmp/sock.tcp".to_string()).unwrap();
+
+        // Start thread and store join handle
+        let thread: JoinHandle<()> = task::spawn(async move {
+            handler.run().await;
+        });
+
+        // Store join handle to wait for threads to finish on quit
+        self.threads.push(thread);
+
+
+        Ok(())
     }
 
     // TODO: add possibility for multiple interfaces?
@@ -274,7 +318,7 @@ impl eBPFRunner {
         // Loads program associated into kernel
         // TODO: move this to another module to select which tracepoints are active
         // TODO: Derive paths to files from passed event struct
-        
+
         self.add_tracepoint::<tcp_probe_entry>(
             &mut ebpf,
             self.stop_token.child_token(),
@@ -284,7 +328,6 @@ impl eBPFRunner {
             name: tcp_probe_entry::NAME.to_string(),
             orig_e: e,
         })?;
-        
 
         self.add_tracepoint::<tcp_retransmit_synack_entry>(
             &mut ebpf,
@@ -306,7 +349,11 @@ impl eBPFRunner {
             orig_e: e,
         })?;
 
-        
+        self.add_tcp_sock_tracer(&mut ebpf, self.stop_token.child_token())
+            .map_err(|e| EBPFRunnerError::TracepointKernelLoadError {
+                name: "TCP SOCKET TRACER".to_string(),
+                orig_e: e,
+            })?;
 
         info!("Finished loading tracepoints, starting processing!");
 
@@ -320,7 +367,7 @@ impl eBPFRunner {
             PerCpuArray::try_from(ebpf.take_map("INGRESS_EVENTS").unwrap())?;
         let egress_counter: PerCpuArray<aya::maps::MapData, u32> =
             PerCpuArray::try_from(ebpf.take_map("EGRESS_EVENTS").unwrap())?;
-        let flows_map: PerCpuHashMap<aya::maps::MapData, IpTuple,IpTuple> =
+        let flows_map: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple> =
             PerCpuHashMap::try_from(ebpf.take_map("FLOWS").unwrap())?;
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
