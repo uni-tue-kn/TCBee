@@ -4,6 +4,8 @@ use ts_storage::{DataValue, IpTuple};
 
 use crate::{db_writer::DBOperation, flow_tracker::{EventIndexer, AF_INET}, reader::FromBuffer};
 
+use arrayref::array_ref;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub struct sock_trace_entry {
@@ -46,9 +48,19 @@ impl EventIndexer for sock_trace_entry {
 
         print!("Family: {}",self.family);
 
+
         if self.family == AF_INET {
-            src = IpAddr::V4(Ipv4Addr::from((self.addr_v4 > 32) as u32));
-            dst = IpAddr::V4(Ipv4Addr::from((self.addr_v4 & 0xffffffff) as u32));
+            // TODO: check offsets
+            let mut bytes = self.addr_v4.to_be_bytes();
+
+            let mut srcbytes = array_ref![bytes,0,4].clone();
+            let mut dstbytes = array_ref![bytes,4,4].clone();
+            //srcbytes.reverse();
+
+            srcbytes.reverse();
+            dstbytes.reverse();
+            src = IpAddr::V4(Ipv4Addr::from(srcbytes));
+            dst = IpAddr::V4(Ipv4Addr::from(dstbytes));
         } else {
             src = IpAddr::V6(Ipv6Addr::from(self.src_v6));
             dst = IpAddr::V6(Ipv6Addr::from(self.dst_v6));
