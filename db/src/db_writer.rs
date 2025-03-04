@@ -101,10 +101,13 @@ impl DBWriter {
                         println!(
                             "Malformed!: {:?},div: {}",sock,sock.div
                         );
+                        panic!("Malformed packet!");
                     } else {
-                        println!(
-                            "Packet!: {:?}",sock.get_ip_tuple()
-                        );
+                        if sock.family == 2 && sock.snd_cwnd > 0 {
+                            println!("Time: {}, Stream: {:?} CWND: {:?}",sock.time,sock.get_ip_tuple(),sock.snd_cwnd.to_le_bytes());
+                        }
+                        //println!(
+                        //    "Packet!: {:?}, CWND: {}",sock.get_ip_tuple(),sock.snd_cwnd                        );
                     }
                     //let a = sock.get_ip_tuple();
                     //println!("Socket: {:?}",sock.get_ip_tuple());

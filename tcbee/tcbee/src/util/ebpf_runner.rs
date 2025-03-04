@@ -3,7 +3,7 @@ use std::error::Error;
 use anyhow::Context;
 use aya::{
     maps::{PerCpuArray, PerCpuHashMap, RingBuf},
-    programs::{tc, FExit, SchedClassifier, TcAttachType, TracePoint, Xdp, XdpFlags},
+    programs::{tc, FEntry, FExit, SchedClassifier, TcAttachType, TracePoint, Xdp, XdpFlags},
     Btf, Ebpf,
 };
 use log::{debug, info, warn};
@@ -63,12 +63,12 @@ impl eBPFRunner {
         token: CancellationToken,
     ) -> Result<(), Box<dyn Error>> {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
-        let program: &mut FExit = ebpf.program_mut("sock_sendmsg").unwrap().try_into()?;
+        let program: &mut FEntry = ebpf.program_mut("sock_sendmsg").unwrap().try_into()?;
         program.load("tcp_sendmsg", &btf)?;
         program.attach()?;
 
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
-        let program2: &mut FExit = ebpf.program_mut("sock_recvmsg").unwrap().try_into()?;
+        let program2: &mut FEntry = ebpf.program_mut("sock_recvmsg").unwrap().try_into()?;
         program2.load("tcp_recvmsg", &btf)?;
         program2.attach()?;
 

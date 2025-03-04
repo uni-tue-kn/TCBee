@@ -15,9 +15,10 @@ pub struct sock_trace_entry {
     pub dst_v6: [u8; 16],
     pub ports: u32,
     pub family: u16,
-    pub div: u32
+    pub snd_cwnd: u32,
+    pub padding: [u8; 4], // TODO: this is somehow added when writing the header to file, find reason and fix!
+    pub div: u32,
 }
-
 
 impl FromBuffer for sock_trace_entry {
     fn from_buffer(buf: &Vec<u8>) -> Self {
@@ -46,7 +47,7 @@ impl EventIndexer for sock_trace_entry {
         let src: IpAddr;
         let dst: IpAddr;
 
-        print!("Family: {}",self.family);
+        //print!("Family: {}",self.family);
 
 
         if self.family == AF_INET {
@@ -66,8 +67,13 @@ impl EventIndexer for sock_trace_entry {
             dst = IpAddr::V6(Ipv6Addr::from(self.dst_v6));
         }
 
-        let sport = (self.ports >> 16) as u16;
-        let dport = (self.ports & 0xffff) as u16;
+        let port_bytes = self.ports.to_be_bytes();
+
+        let srcbytes = array_ref![port_bytes,0,2].clone();
+        let dstbytes = array_ref![port_bytes,2,2].clone();
+
+        let sport = u16::from_le_bytes(srcbytes);
+        let dport = u16::from_le_bytes(dstbytes);
 
         IpTuple {
             src: src,

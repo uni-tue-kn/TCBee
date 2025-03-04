@@ -18,26 +18,26 @@ pub mod flow_tracker;
 
 use aya_ebpf::{
     bindings::{xdp_action, TC_ACT_PIPE},
-    macros::{classifier, fexit, tracepoint, xdp},
-    programs::{FExitContext, TcContext, TracePointContext, XdpContext},
+    macros::{classifier, fentry, fexit, tracepoint, xdp},
+    programs::{FEntryContext, FExitContext, TcContext, TracePointContext, XdpContext},
 };
 
 
 
 use probes::{
-    tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_tcp_recv_socket, try_tcp_send_socket}, xdp::xdp_hook
+    tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_sock_sendmsg, try_tcp_recv_socket}, xdp::xdp_hook
 };
 
-#[fexit(function="tcp_sendmsg")]
-pub fn sock_sendmsg(ctx: FExitContext) -> u32 {
-    match try_tcp_send_socket(ctx) {
+#[fentry(function="tcp_sendmsg")]
+pub fn sock_sendmsg(ctx: FEntryContext) -> u32 {
+    match try_sock_sendmsg(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret
     }
 }
 
-#[fexit(function="tcp_recvmsg")]
-pub fn sock_recvmsg(ctx: FExitContext) -> u32 {
+#[fentry(function="tcp_recvmsg")]
+pub fn sock_recvmsg(ctx: FEntryContext) -> u32 {
     match try_tcp_recv_socket(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret
