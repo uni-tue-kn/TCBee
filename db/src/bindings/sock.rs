@@ -15,9 +15,37 @@ pub struct sock_trace_entry {
     pub dst_v6: [u8; 16],
     pub ports: u32,
     pub family: u16,
+    // SOCK Stats
+    pub pacing_rate: u64,
+    pub max_pacing_rate: u64,
+    // INET_CONN Stats
+    pub backoff: u8,
+    pub rto: u32,
+    // INET_CONN -> icsk_ack
+    pub ato: u32,
+    pub rcv_mss: u16,
+    // TCP_SOCK Stats
     pub snd_cwnd: u32,
-    pub padding: [u8; 4], // TODO: this is somehow added when writing the header to file, find reason and fix!
-    pub div: u32,
+    pub bytes_acked: u64,
+    pub snd_ssthresh: u32,
+    pub total_retrans: u32,
+    pub probes: u8,
+    pub lost: u32,
+    pub sacked_out: u32,
+    pub retrans: u32,
+    pub rcv_ssthresh: u32,
+    pub rttvar: u32,
+    pub advmss: u16,
+    pub reordering: u32,
+    pub rcv_rtt: u32,
+    pub rcv_space: u32,
+    pub bytes_received: u64,
+    pub segs_out: u32,
+    pub segs_in: u32,
+    // TCP_SOCK -> tcp_options_received
+    pub snd_wscale: u16,
+    pub rcv_wscale: u16,
+    pub div: u32
 }
 
 impl FromBuffer for sock_trace_entry {
@@ -72,6 +100,8 @@ impl EventIndexer for sock_trace_entry {
         let srcbytes = array_ref![port_bytes,0,2].clone();
         let dstbytes = array_ref![port_bytes,2,2].clone();
 
+        // TODO: check byte order if ports are correct
+        // Dport could be be bytes
         let sport = u16::from_le_bytes(srcbytes);
         let dport = u16::from_le_bytes(dstbytes);
 

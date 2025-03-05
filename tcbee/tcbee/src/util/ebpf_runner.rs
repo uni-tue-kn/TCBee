@@ -72,21 +72,43 @@ impl eBPFRunner {
         program2.load("tcp_recvmsg", &btf)?;
         program2.attach()?;
 
-        // Start handling function
+        // Start SOCK_SEND handling
         // Get queue from
         let map =
-            ebpf.take_map("TCP_SOCK_EVENTS")
+            ebpf.take_map("TCP_SEND_SOCK_EVENTS")
                 .ok_or(EBPFRunnerError::QueueNotFoundError {
-                    name: "TCP_SOCK_EVENTS".to_string(),
-                    trace: "Socket Tracer".to_string(),
+                    name: "TCP_SEND_SOCK_EVENTS".to_string(),
+                    trace: "Socket Tracer tcp_sendmsg".to_string(),
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
 
         // Create handler object
-        // TODO: handling of None!
         let mut handler: BufferHandler<sock_trace_entry> =
-            BufferHandler::<sock_trace_entry>::new("TCP_SOCKET_TRACE", token, buff,"/tmp/sock.tcp".to_string()).unwrap();
+            BufferHandler::<sock_trace_entry>::new("TCP_SEND_SOCK_EVENTS", token.clone(), buff,"/tmp/sock_send.tcp".to_string()).unwrap();
+
+        // Start thread and store join handle
+        let thread: JoinHandle<()> = task::spawn(async move {
+            handler.run().await;
+        });
+
+        // Store join handle to wait for threads to finish on quit
+        self.threads.push(thread);
+
+        // Start SOCK_RECV handling
+        // Get queue from
+        let map =
+            ebpf.take_map("TCP_RECV_SOCK_EVENTS")
+                .ok_or(EBPFRunnerError::QueueNotFoundError {
+                    name: "TCP_RECV_SOCK_EVENTS".to_string(),
+                    trace: "Socket Tracer tcp_recvmsg".to_string(),
+                })?;
+
+        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+
+        // Create handler object
+        let mut handler: BufferHandler<sock_trace_entry> =
+            BufferHandler::<sock_trace_entry>::new("TCP_RECV_SOCK_EVENTS", token, buff,"/tmp/sock_recv.tcp".to_string()).unwrap();
 
         // Start thread and store join handle
         let thread: JoinHandle<()> = task::spawn(async move {
@@ -367,6 +389,10 @@ impl eBPFRunner {
             PerCpuArray::try_from(ebpf.take_map("INGRESS_EVENTS").unwrap())?;
         let egress_counter: PerCpuArray<aya::maps::MapData, u32> =
             PerCpuArray::try_from(ebpf.take_map("EGRESS_EVENTS").unwrap())?;
+        let tcp_sock_send: PerCpuArray<aya::maps::MapData, u32> =
+            PerCpuArray::try_from(ebpf.take_map("SEND_TCP_SOCK").unwrap())?;
+        let tcp_sock_recv: PerCpuArray<aya::maps::MapData, u32> =
+            PerCpuArray::try_from(ebpf.take_map("RECV_TCP_SOCK").unwrap())?;
         let flows_map: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple> =
             PerCpuHashMap::try_from(ebpf.take_map("FLOWS").unwrap())?;
         // Start watcher thread
@@ -376,6 +402,8 @@ impl eBPFRunner {
             events_handled,
             ingress_counter,
             egress_counter,
+            tcp_sock_send,
+            tcp_sock_recv,
             flows_map,
             self.stop_token.clone(),
             self.do_tui,

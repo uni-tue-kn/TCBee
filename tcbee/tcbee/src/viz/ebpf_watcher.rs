@@ -14,7 +14,10 @@ use std::{
 
 use glob;
 
-use crate::{config::UI_UPDATE_MS_INTERVAL, viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher}};
+use crate::{
+    config::UI_UPDATE_MS_INTERVAL,
+    viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
+};
 
 use aya::{
     maps::{PerCpuArray, PerCpuHashMap},
@@ -30,7 +33,9 @@ use ratatui::{
     symbols,
     text::Span,
     widgets::{
-        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, LegendPosition, List, Paragraph, Row, ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Widget
+        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, LegendPosition, List, Paragraph,
+        Row, ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
+        Widget,
     },
     DefaultTerminal,
 };
@@ -44,6 +49,8 @@ pub struct EBPFWatcher {
     events_handled: RateWatcher<u32>,
     ingress_counter: RateWatcher<u32>,
     egress_counter: RateWatcher<u32>,
+    tcp_sock_send: RateWatcher<u32>,
+    tcp_sock_recv: RateWatcher<u32>,
     flow_tracker: FlowTracker,
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
@@ -56,6 +63,8 @@ impl EBPFWatcher {
         events_handled: PerCpuArray<aya::maps::MapData, u32>,
         ingress_counter: PerCpuArray<aya::maps::MapData, u32>,
         egress_counter: PerCpuArray<aya::maps::MapData, u32>,
+        tcp_sock_send: PerCpuArray<aya::maps::MapData, u32>,
+        tcp_sock_recv: PerCpuArray<aya::maps::MapData, u32>,
         flow_tracker: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple>,
         token: CancellationToken,
         do_tui: bool,
@@ -85,6 +94,18 @@ impl EBPFWatcher {
             0,
             "Egress Packets".to_string(),
         );
+        let tcp_sock_send = RateWatcher::<u32>::new(
+            tcp_sock_send,
+            "Calls/s".to_string(),
+            0,
+            "TCP Sendmsg".to_string(),
+        );
+        let tcp_sock_recv = RateWatcher::<u32>::new(
+            tcp_sock_recv,
+            "Calls/s".to_string(),
+            0,
+            "TCP Recvmsg".to_string(),
+        );
 
         let flow_tracker = FlowTracker::new(flow_tracker);
 
@@ -97,6 +118,8 @@ impl EBPFWatcher {
                 events_handled,
                 ingress_counter,
                 egress_counter,
+                tcp_sock_send,
+                tcp_sock_recv,
                 flow_tracker,
                 token,
                 terminal: Some(terminal),
@@ -107,6 +130,8 @@ impl EBPFWatcher {
                 events_handled,
                 ingress_counter,
                 egress_counter,
+                tcp_sock_send,
+                tcp_sock_recv,
                 flow_tracker,
                 token,
                 terminal: None,
@@ -149,6 +174,7 @@ impl EBPFWatcher {
     pub fn run(&mut self) -> () {
         // Rate tracking for graph bounds
         let mut max_rate: f64 = 0.0;
+        let mut tcp_sock_max_rate: f64 = 0.0;
 
         let mut last_size: u64 = 0;
 
@@ -159,6 +185,8 @@ impl EBPFWatcher {
         // TODO: Add max number of entries handling!
         let mut ingress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
         let mut egress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+        let mut tcp_send_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+        let mut tcp_recv_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
 
         let mut scrollbar_state = ScrollbarState::new(0);
         let mut scroll_index: usize = 0;
@@ -177,12 +205,14 @@ impl EBPFWatcher {
             scrollbar_state = scrollbar_state.position(scroll_index);
             scrollbar_state.next();
             num_flows = self.flow_tracker.num_flows;
-            
-            let flows = self.flow_tracker.get_flows().block(
-                Block::bordered()
-                    .borders(Borders::ALL)
-                    .title(format!("Tracking {} Flows. Scroll with arrows or mousewheel.", num_flows)),
-            );
+
+            let flows =
+                self.flow_tracker
+                    .get_flows()
+                    .block(Block::bordered().borders(Borders::ALL).title(format!(
+                        "Tracking {} Flows. Scroll with arrows or mousewheel.",
+                        num_flows
+                    )));
             let mut flows_state = TableState::new().with_offset(scroll_index);
 
             // Track file size and rate
@@ -201,6 +231,16 @@ impl EBPFWatcher {
             // Get maximum packet rate to set y-limit of graph
             max_rate = max_rate.max(ingress_rate);
             max_rate = max_rate.max(egress_rate);
+
+            // Get ingress and egress tcp segments per second
+            let tcp_send_rate = self.tcp_sock_send.get_rate(loop_elapsed);
+            let tcp_recv_rate = self.tcp_sock_recv.get_rate(loop_elapsed);
+            // Add rates fto graph lines
+            tcp_send_rates.push((start_elapsed.as_secs_f64(), tcp_send_rate as f64));
+            tcp_recv_rates.push((start_elapsed.as_secs_f64(), tcp_recv_rate as f64));
+            // Get maximum packet rate to set y-limit of graph
+            tcp_sock_max_rate = tcp_sock_max_rate.max(tcp_send_rate);
+            tcp_sock_max_rate = tcp_sock_max_rate.max(tcp_recv_rate);
 
             // Time elapsed
             let time_string = format!(
@@ -326,7 +366,74 @@ impl EBPFWatcher {
                     .bounds([0.0, max_rate])
                     .labels(y_labels),
             )
-            .legend_position(Some(LegendPosition::TopLeft));
+            .legend_position(Some(LegendPosition::TopLeft))
+            .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)));
+
+            // Rate chart labels
+            let y_labels = vec![
+                Span::styled(
+                    format!("{}", 0),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}", RateWatcher::<u32>::format_rate(tcp_sock_max_rate / 2.0, "Calls/s")),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}", RateWatcher::<u32>::format_rate(tcp_sock_max_rate, "Calls/s")),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ];
+
+            let x_labels = vec![
+                Span::styled(
+                    format!("{}", 0),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}s", start_elapsed.as_secs() as f64 / 2.0),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}s", start_elapsed.as_secs()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ];
+
+            // TCP sock chart
+            let tcp_sock_chart = Chart::new(vec![
+                Dataset::default()
+                    .name("tcp_sendmsg")
+                    .marker(symbols::Marker::Braille)
+                    .style(Style::default().fg(Color::Red))
+                    .graph_type(GraphType::Line)
+                    .data(&tcp_send_rates),
+                Dataset::default()
+                    .name("tcp_recvmsg")
+                    .marker(symbols::Marker::Braille)
+                    .style(Style::default().fg(Color::LightBlue))
+                    .graph_type(GraphType::Line)
+                    .data(&tcp_recv_rates),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("TCP Kernel Function Calls"),
+            )
+            .x_axis(
+                Axis::default()
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, start_elapsed.as_secs_f64()])
+                    .labels(x_labels),
+            )
+            .y_axis(
+                Axis::default()
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, tcp_sock_max_rate])
+                    .labels(y_labels),
+            )
+            .legend_position(Some(LegendPosition::TopLeft))
+            .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)));
 
             // Render function
             // TODO: move to own function
@@ -353,6 +460,12 @@ impl EBPFWatcher {
                     .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
                     .split(top_areas[1]);
 
+                // Split into two graphs
+                let mut sub_graphs = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(graphs[0]);
+
                 let sidebar = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints(constraints)
@@ -374,8 +487,9 @@ impl EBPFWatcher {
                 scrollbar_state =
                     scrollbar_state.viewport_content_length(graphs[1].height as usize);
 
-                frame.render_widget(chart, graphs[0]);
-                frame.render_stateful_widget(flows, graphs[1],&mut flows_state);
+                frame.render_widget(chart, sub_graphs[0]);
+                frame.render_widget(tcp_sock_chart, sub_graphs[1]);
+                frame.render_stateful_widget(flows, graphs[1], &mut flows_state);
 
                 // Render scrollbar when more entries than height
                 if num_flows
@@ -408,7 +522,7 @@ impl EBPFWatcher {
             // Wait for key event for 0.5s and check key presses inbetween runs
             let start = Instant::now();
             // Loop until 500ms elapsed
-            while start.elapsed().as_millis() < UI_UPDATE_MS_INTERVAL  {
+            while start.elapsed().as_millis() < UI_UPDATE_MS_INTERVAL {
                 // Poll for eavent ready
                 // Timout after 10ms
                 // On Error continue to next loop iteration
@@ -439,7 +553,6 @@ impl EBPFWatcher {
                         if scroll_index > 0 {
                             scroll_index = scroll_index - 1;
                         }
-                        
                     }
                 }
             }
