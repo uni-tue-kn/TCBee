@@ -100,8 +100,8 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
             let _ = try_flow_tracker(IpTuple {
                 src_ip: src,
                 dst_ip: dst,
-                sport: tcp_hdr.source,
-                dport: tcp_hdr.dest,
+                sport: tcp_hdr.source.to_be(),
+                dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
         }
@@ -140,8 +140,8 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
         let a = try_flow_tracker(IpTuple {
             src_ip: packet_trace.saddr_v6,
             dst_ip: packet_trace.daddr_v6,
-            sport: tcp_hdr.source,
-            dport: tcp_hdr.dest,
+            sport: tcp_hdr.source.to_be(),
+            dport: tcp_hdr.dest.to_be(),
             protocol: 6,
         });
         

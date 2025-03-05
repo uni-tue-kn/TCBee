@@ -116,8 +116,8 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             let _ = try_flow_tracker(IpTuple {
                 src_ip: src,
                 dst_ip: dst,
-                sport: tcp_hdr.source,
-                dport: tcp_hdr.dest,
+                sport: tcp_hdr.source.to_be(),
+                dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
             
@@ -179,8 +179,8 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             let _ = try_flow_tracker(IpTuple {
                 src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
                 dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
-                sport: tcp_hdr.source,
-                dport: tcp_hdr.dest,
+                sport: tcp_hdr.source.to_be(),
+                dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
         }
