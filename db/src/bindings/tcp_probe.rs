@@ -83,7 +83,7 @@ impl EventIndexer for TcpProbe {
     fn get_ip_tuple(&self) -> IpTuple {
         let src: IpAddr;
         let dst: IpAddr;
-
+        
         if self.family == AF_INET {
             //IPv4
             src = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.saddr)));

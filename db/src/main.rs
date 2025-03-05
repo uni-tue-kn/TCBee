@@ -6,9 +6,10 @@ mod bindings {
     pub mod tcp_packet;
     pub mod tcp_probe;
     pub mod ctypes;
+    pub mod sock;
 }
 
-use bindings::{tcp_packet::TcpPacket, tcp_probe::TcpProbe};
+use bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe};
 use db_writer::{DBOperation, DBWriter};
 use flow_tracker::{EventIndexer, EventType, FlowTracker, TsTracker};
 use log::{error, info};
@@ -99,9 +100,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start all tasks
     let threads = vec![
-        start_file_reader::<TcpPacket>("/tmp/xdp.tcp", tx.clone(), stop_token.clone()).await,
-        start_file_reader::<TcpPacket>("/tmp/tc.tcp", tx.clone(), stop_token.clone()).await,
-        start_file_reader::<TcpProbe>("/tmp/probe.tcp", tx.clone(), stop_token.clone()).await,
+        //start_file_reader::<TcpPacket>("/tmp/xdp.tcp", tx.clone(), stop_token.clone()).await,
+        //start_file_reader::<TcpPacket>("/tmp/tc.tcp", tx.clone(), stop_token.clone()).await,
+        //start_file_reader::<TcpProbe>("/tmp/probe.tcp", tx.clone(), stop_token.clone()).await,
+        start_file_reader::<sock_trace_entry>("/tmp/sock.tcp", tx.clone(), stop_token.clone()).await
     ];
 
     // Wait for file threads to finish!

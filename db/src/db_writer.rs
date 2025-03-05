@@ -4,12 +4,13 @@ use log::error;
 use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, IpTuple, TSDBInterface};
 use tokio::sync::mpsc::Receiver;
 
-use crate::{bindings::{tcp_packet::TcpPacket, tcp_probe::TcpProbe}, flow_tracker::{EventIndexer, EventType, FlowTracker}};
+use crate::{bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe}, flow_tracker::{EventIndexer, EventType, FlowTracker}};
 
 #[derive(Debug)]
 pub enum DBOperation {
     Packet(TcpPacket),
-    Probe(TcpProbe)
+    Probe(TcpProbe),
+    Socket(sock_trace_entry)
 }
 
 
@@ -94,7 +95,24 @@ impl DBWriter {
 
                     //println!("Probe {:?}",data.ssthresh);
 
+                },
+                DBOperation::Socket(sock) => {
+                    if sock.div != 0xffffffff {
+                        println!(
+                            "Malformed!: {:?},div: {}",sock,sock.div
+                        );
+                        panic!("Malformed packet!");
+                    } else {
+                        if sock.family == 2 && sock.snd_cwnd > 0 {
+                            println!("Time: {}, Stream: {:?} CWND: {:?}",sock.time,sock.get_ip_tuple(),sock.snd_cwnd.to_le_bytes());
+                        }
+                        //println!(
+                        //    "Packet!: {:?}, CWND: {}",sock.get_ip_tuple(),sock.snd_cwnd                        );
+                    }
+                    //let a = sock.get_ip_tuple();
+                    //println!("Socket: {:?}",sock.get_ip_tuple());
                 }
+
             }
         }
 

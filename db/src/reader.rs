@@ -54,6 +54,7 @@ impl<T: EventIndexer + Debug + FromBuffer> FileReader<T> {
         // TODO: I DONT KNOW WHY THIS 4 BYTE MISALIGNMENT HAPPENS, IT JUST DOES
         // FIX THIS!
         let entry_size = core::mem::size_of::<T>() - 4;
+        //let entry_size = 68;
 
         debug!("Entry size: {} bytes for {}", entry_size, self.path);
 

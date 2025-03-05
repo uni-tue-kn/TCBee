@@ -1,5 +1,6 @@
 use aya_ebpf::{
     helpers::gen::bpf_ktime_get_ns, 
+    helpers::bpf_tcp_sock,
     macros::map, maps::RingBuf, 
     programs::TracePointContext,
 };

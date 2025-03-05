@@ -6,6 +6,7 @@ pub mod eth_header;
 pub mod ip4_header;
 pub mod ip6_header;
 pub mod flow;
+pub mod tcp_sock;
 
 #[cfg(feature = "user")]
 use aya::Pod;
@@ -13,6 +14,7 @@ use tcp_bad_csum::tcp_bad_csum_entry;
 use tcp_probe::tcp_probe_entry;
 use tcp_retransmit_synack::tcp_retransmit_synack_entry;
 use tcp_header::tcp_packet_trace;
+use tcp_sock::sock_trace_entry;
 
 #[repr(C)]
 #[derive(Default)]
@@ -82,6 +84,12 @@ impl EBPFTracePointType for tcp_bad_csum_entry {
     const NAME: &'static str = "tcp_bad_csum";
     const CATEGORY: &'static str = "tcp";
 }
+
+impl EBPFTracePointType for sock_trace_entry {
+    const QUEUE_NAME: &'static str = "TCP_SOCK";
+    const NAME: &'static str = "tcp_sock";
+    const CATEGORY: &'static str = "tcp";
+}
 #[cfg(feature = "user")]
 // Needed to be able to parse as queue entry from eBPF queue
 unsafe impl Pod for tcp_probe_entry {}
@@ -89,3 +97,5 @@ unsafe impl Pod for tcp_probe_entry {}
 unsafe impl Pod for tcp_retransmit_synack_entry {}
 #[cfg(feature = "user")]
 unsafe impl Pod for tcp_bad_csum_entry {}
+#[cfg(feature = "user")]
+unsafe impl Pod for sock_trace_entry {}
