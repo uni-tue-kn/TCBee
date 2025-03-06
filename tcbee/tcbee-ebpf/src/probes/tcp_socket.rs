@@ -43,7 +43,8 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
     let sport = (ports >> 16) as u16;
 
     unsafe {
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
+        // dport needs to be called to_be otherwise value is wrong
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
             //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
             return Ok(0);
         }
@@ -111,11 +112,12 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let dport = (ports & 0xFFFF) as u16;
+    let dport = (ports.to_be() & 0xFFFF) as u16;
     let sport = (ports >> 16) as u16;
 
     unsafe {
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
+        // dport needs to be called to_be otherwise value is wrong
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
             return Ok(0);
         }
         
