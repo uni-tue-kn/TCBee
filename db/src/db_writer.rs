@@ -1,23 +1,25 @@
 use std::{collections::HashMap, error::Error};
 
 use log::error;
-use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, IpTuple, TSDBInterface};
 use tokio::sync::mpsc::Receiver;
+use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, IpTuple, TSDBInterface};
 
-use crate::{bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe}, flow_tracker::{EventIndexer, EventType, FlowTracker}};
+use crate::{
+    bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe},
+    flow_tracker::{EventIndexer, EventType, FlowTracker},
+};
 
 #[derive(Debug)]
 pub enum DBOperation {
     Packet(TcpPacket),
     Probe(TcpProbe),
-    Socket(sock_trace_entry)
+    Socket(sock_trace_entry),
 }
-
 
 pub struct DBWriter {
     db: Box<dyn TSDBInterface + Send>,
     streams: HashMap<IpTuple, FlowTracker>,
-    rx: Receiver<DBOperation>
+    rx: Receiver<DBOperation>,
 }
 
 impl DBWriter {
@@ -25,24 +27,21 @@ impl DBWriter {
         let db: Box<dyn TSDBInterface + Send> =
             database_factory::<SQLiteTSDB>(DBBackend::SQLite(file.to_string()))?;
 
-
         let streams: HashMap<IpTuple, FlowTracker> = HashMap::new();
 
         Ok(DBWriter {
             db: db,
             streams: streams,
-            rx: rx
+            rx: rx,
         })
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
-
         // Time of first entry, will be used to normalize all other times
         // TODO: if order is scrambled, does this fail?
         let time_base: f64 = 0.0;
 
         while let Some(event) = self.rx.blocking_recv() {
-
             match event {
                 DBOperation::Packet(data) => {
                     if data.div != 0xFFFFFFFF {
@@ -57,19 +56,20 @@ impl DBWriter {
 
                         // TODO: remove unwrap, error handling!
                         self.streams.insert(tuple.clone(), new_tracker);
-                    } 
+                    }
 
                     let tracker = self.streams.get_mut(&tuple).unwrap();
 
                     let res = tracker.add_event(&self.db, EventType::Packet, &data);
 
                     if res.is_err() {
-                        error!("Failed to trace packet: {:?}. Error: {}",data,res.err().unwrap());
+                        error!(
+                            "Failed to trace packet: {:?}. Error: {}",
+                            data,
+                            res.err().unwrap()
+                        );
                     }
-
-                    
-
-                },
+                }
                 DBOperation::Probe(data) => {
                     if data.div != 0xFFFFFFFF {
                         panic!("Misaligned PROBE: {:?}. Something went horribly wrong during recording!",data);
@@ -83,36 +83,50 @@ impl DBWriter {
 
                         // TODO: remove unwrap, error handling!
                         self.streams.insert(tuple.clone(), new_tracker);
-                    } 
+                    }
 
                     let tracker = self.streams.get_mut(&tuple).unwrap();
 
                     let res = tracker.add_event(&self.db, EventType::TcpProbe, &data);
 
                     if res.is_err() {
-                        error!("Failed to trace packet: {:?}. Error: {}",data,res.err().unwrap());
+                        error!(
+                            "Failed to trace packet: {:?}. Error: {}",
+                            data,
+                            res.err().unwrap()
+                        );
                     }
 
                     //println!("Probe {:?}",data.ssthresh);
-
-                },
-                DBOperation::Socket(sock) => {
-                    if sock.div != 0xffffffff {
-                        println!(
-                            "Malformed!: {:?},div: {}",sock,sock.div
-                        );
-                        panic!("Malformed packet!");
-                    } else {
-                        if sock.family == 2 && sock.snd_cwnd > 0 {
-                            println!("Time: {}, Stream: {:?} CWND: {:?}",sock.time,sock.get_ip_tuple(),sock.snd_cwnd.to_le_bytes());
-                        }
-                        //println!(
-                        //    "Packet!: {:?}, CWND: {}",sock.get_ip_tuple(),sock.snd_cwnd                        );
-                    }
-                    //let a = sock.get_ip_tuple();
-                    //println!("Socket: {:?}",sock.get_ip_tuple());
                 }
+                DBOperation::Socket(sock) => {
+                    if sock.div != 0xFFFFFFFF {
+                        panic!("Misaligned SOCKET: {:?}. Something went horribly wrong during recording!",sock);
+                    }
 
+                    let tuple = sock.get_ip_tuple();
+
+                    // Insert stream if not known
+                    if !self.streams.contains_key(&tuple) {
+                        let new_tracker = FlowTracker::new(&self.db, &tuple);
+
+                        // TODO: remove unwrap, error handling!
+                        self.streams.insert(tuple.clone(), new_tracker);
+                    }
+
+                    let tracker = self.streams.get_mut(&tuple).unwrap();
+
+                    let res = tracker.add_event(&self.db, EventType::Socket, &sock);
+
+                    if res.is_err() {
+                        error!(
+                            "Failed to trace socket: {:?}. Error: {}",
+                            sock,
+                            res.err().unwrap()
+                        );
+                    }
+                } //let a = sock.get_ip_tuple();
+                  //println!("Socket: {:?}",sock.get_ip_tuple());
             }
         }
 

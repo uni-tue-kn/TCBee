@@ -7,7 +7,7 @@ use std::{
 use ts_storage::{DataPoint, DataValue, Flow, IpTuple, TSDBInterface, TimeSeries};
 
 use crate::{
-    bindings::{tcp_packet::TcpPacket, tcp_probe::TcpProbe},
+    bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe},
     db_writer::DBOperation,
 };
 const BUFFER_SIZE: usize = 10000;
@@ -24,6 +24,7 @@ pub trait EventIndexer {
     fn get_max_index(&self) -> usize;
     fn get_timestamp(&self) -> f64;
     fn as_db_op(self) -> DBOperation;
+    fn get_struct_length(&self) -> usize;
 }
 #[derive(Debug)]
 pub struct TsTracker {
@@ -85,16 +86,16 @@ impl TsTracker {
             // Delete time series as it does not contain any values
             if self.handled < 1 {
                 // no events handled, delete time series
-                println!(
+                info!(
                     "Deleting TS {} for flow {:?} due to no entries!",
                     self.name, flow.tuple
                 );
                 let res = db.delete_time_series(flow, &self.ts);
 
                 if res.is_err() {
-                    println!("Error on TS delete: {}",res.err().unwrap());
+                    error!("Error on TS delete: {}",res.err().unwrap());
                 } else {
-                    println!("Done! {}",res.unwrap());
+                    info!("Done! {}",res.unwrap());
                 }
             }
             return Ok(());
@@ -111,6 +112,7 @@ impl TsTracker {
 pub enum EventType {
     Packet,
     TcpProbe,
+    Socket
 }
 
 #[derive(Debug)]
@@ -118,6 +120,7 @@ pub struct FlowTracker {
     flow: Flow,
     packet_trackers: Vec<TsTracker>,
     probe_trackers: Vec<TsTracker>,
+    sock_trackers: Vec<TsTracker>,
 }
 
 impl FlowTracker {
@@ -125,14 +128,17 @@ impl FlowTracker {
         let flow = db.create_flow(tuple).expect("Failed to create flow entry!");
         let packet = TcpPacket::default();
         let probe = TcpProbe::default();
+        let sock = sock_trace_entry::default();
 
         let packet_tracker = FlowTracker::create_time_series::<TcpPacket>(db, &flow, &packet);
         let probe_tracker = FlowTracker::create_time_series::<TcpProbe>(db, &flow, &probe);
+        let sock_tracker = FlowTracker::create_time_series::<sock_trace_entry>(db, &flow, &sock);
 
         FlowTracker {
             flow: flow,
             packet_trackers: packet_tracker,
             probe_trackers: probe_tracker,
+            sock_trackers: sock_tracker
         }
     }
 
@@ -175,7 +181,23 @@ impl FlowTracker {
                         self.probe_trackers[i].add_entry(entry, db)?;
                     }
                 }
-            }
+            },
+
+            EventType::Socket => {
+                let time = event.get_timestamp();
+
+                for i in 0..=event.get_max_index() {
+                    if let Some(value) = event.get_field(i) {
+
+                        let entry = DataPoint {
+                            timestamp: time,
+                            value: value,
+                        };
+    
+                        self.sock_trackers[i].add_entry(entry, db)?;
+                    }
+                }
+            },
         }
 
         Ok(())

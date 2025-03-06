@@ -100,13 +100,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Starting file readers!");
 
     // Start all tasks
+    // TODO: move to config file!
     let threads = vec![
-        //start_file_reader::<TcpPacket>("/tmp/xdp.tcp", tx.clone(), stop_token.clone()).await,
-        //start_file_reader::<TcpPacket>("/tmp/tc.tcp", tx.clone(), stop_token.clone()).await,
-        //start_file_reader::<TcpProbe>("/tmp/probe.tcp", tx.clone(), stop_token.clone()).await,
+        start_file_reader::<TcpPacket>("/tmp/xdp.tcp", tx.clone(), stop_token.clone()).await,
+        start_file_reader::<TcpPacket>("/tmp/tc.tcp", tx.clone(), stop_token.clone()).await,
+        start_file_reader::<TcpProbe>("/tmp/probe.tcp", tx.clone(), stop_token.clone()).await,
         start_file_reader::<sock_trace_entry>("/tmp/sock_send.tcp", tx.clone(), stop_token.clone()).await,
         start_file_reader::<sock_trace_entry>("/tmp/sock_recv.tcp", tx.clone(), stop_token.clone()).await
-    ];
+    ];  
 
     // Wait for file threads to finish!
     // TODO add ctrl + c check!
