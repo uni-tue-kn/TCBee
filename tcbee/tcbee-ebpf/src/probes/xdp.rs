@@ -17,7 +17,7 @@ use crate::{
         TCP_PROTOCOL, XDP_BUF_SIZE,
     },
     counters::{try_dropped_counter, try_handled_counter, try_ingress_counter},
-    flow_tracker::try_flow_tracker,
+    flow_tracker::try_flow_tracker, FILTER_PORT,
 };
 
 #[map(name = "TCP_PACKETS_INGRESS")]
@@ -85,6 +85,11 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
 
         unsafe {
             tcp_hdr = tcp_hdr_ptr.read();
+
+            // Filter source and dest port if FILTER_PORT is set!
+            if FILTER_PORT != 0 && tcp_hdr.source.to_be() != FILTER_PORT && tcp_hdr.dest.to_be() != FILTER_PORT {
+                return Ok(XDP_PASS);
+            }
 
             packet_trace = tcp_packet_trace {
                 time: bpf_ktime_get_ns(),
@@ -154,6 +159,11 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
 
         unsafe {
             tcp_hdr = tcp_hdr_ptr.read();
+
+            // Filter source and dest port if FILTER_PORT is set!
+            if FILTER_PORT != 0 && tcp_hdr.source.to_be() != FILTER_PORT && tcp_hdr.dest.to_be() != FILTER_PORT {
+                return Ok(XDP_PASS);
+            }
 
             packet_trace = tcp_packet_trace {
                 time: bpf_ktime_get_ns(),

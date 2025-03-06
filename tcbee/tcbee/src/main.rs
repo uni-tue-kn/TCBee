@@ -22,6 +22,7 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     let mut iface: String = String::new();
     let mut outfile: String = String::new();
     let mut quiet: bool = false;
+    let mut port: u16 = 0;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -36,6 +37,11 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
             &["-f", "--file"],
             Store,
             "File to store recording results in.",
+        );
+        argparser.refer(&mut port).add_option(
+            &["-p", "--port"],
+            Store,
+            "Filter streams for remote or local port.",
         );
         argparser.refer(&mut quiet).add_option(
             &["-q", "--quiet"],
@@ -61,7 +67,7 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!
     let mut runner =
-        eBPFRunner::new(iface, passed_token, !quiet).expect("Failed to create eBPF runner!");
+        eBPFRunner::new(iface, passed_token, !quiet, port).expect("Failed to create eBPF runner!");
     // Setup and run eBPF threads
     let starting_result = runner.run().await;
 

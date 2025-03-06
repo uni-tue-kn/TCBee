@@ -4,11 +4,13 @@ use anyhow::Context;
 use aya::{
     maps::{PerCpuArray, PerCpuHashMap, RingBuf},
     programs::{tc, FEntry, FExit, SchedClassifier, TcAttachType, TracePoint, Xdp, XdpFlags},
-    Btf, Ebpf,
+    Btf, Ebpf, EbpfLoader,
 };
 use log::{debug, info, warn};
 use tcbee_common::bindings::{
-    flow::IpTuple, tcp_bad_csum::tcp_bad_csum_entry, tcp_header::tcp_packet_trace, tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry, tcp_sock::sock_trace_entry, EBPFTracePointType
+    flow::IpTuple, tcp_bad_csum::tcp_bad_csum_entry, tcp_header::tcp_packet_trace,
+    tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry,
+    tcp_sock::sock_trace_entry, EBPFTracePointType,
 };
 use tokio::task::{self, spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -26,6 +28,7 @@ pub struct eBPFRunner {
     threads: Vec<JoinHandle<()>>,
     iface: String,
     do_tui: bool,
+    port: u16,
     ebpf: Option<Ebpf>,
 }
 
@@ -36,6 +39,7 @@ impl eBPFRunner {
         iface: String,
         stop_token: CancellationToken,
         do_tui: bool,
+        port: u16, // If port = 0, do not filter
     ) -> Result<Self, Box<dyn Error>> {
         Ok(eBPFRunner {
             stop_token: stop_token,
@@ -43,6 +47,7 @@ impl eBPFRunner {
             threads: Vec::new(),
             iface: iface,
             do_tui: do_tui,
+            port: port,
             ebpf: None,
         })
     }
@@ -84,8 +89,13 @@ impl eBPFRunner {
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
 
         // Create handler object
-        let mut handler: BufferHandler<sock_trace_entry> =
-            BufferHandler::<sock_trace_entry>::new("TCP_SEND_SOCK_EVENTS", token.clone(), buff,"/tmp/sock_send.tcp".to_string()).unwrap();
+        let mut handler: BufferHandler<sock_trace_entry> = BufferHandler::<sock_trace_entry>::new(
+            "TCP_SEND_SOCK_EVENTS",
+            token.clone(),
+            buff,
+            "/tmp/sock_send.tcp".to_string(),
+        )
+        .unwrap();
 
         // Start thread and store join handle
         let thread: JoinHandle<()> = task::spawn(async move {
@@ -107,8 +117,13 @@ impl eBPFRunner {
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
 
         // Create handler object
-        let mut handler: BufferHandler<sock_trace_entry> =
-            BufferHandler::<sock_trace_entry>::new("TCP_RECV_SOCK_EVENTS", token, buff,"/tmp/sock_recv.tcp".to_string()).unwrap();
+        let mut handler: BufferHandler<sock_trace_entry> = BufferHandler::<sock_trace_entry>::new(
+            "TCP_RECV_SOCK_EVENTS",
+            token,
+            buff,
+            "/tmp/sock_recv.tcp".to_string(),
+        )
+        .unwrap();
 
         // Start thread and store join handle
         let thread: JoinHandle<()> = task::spawn(async move {
@@ -117,7 +132,6 @@ impl eBPFRunner {
 
         // Store join handle to wait for threads to finish on quit
         self.threads.push(thread);
-
 
         Ok(())
     }
@@ -299,10 +313,17 @@ impl eBPFRunner {
         // runtime. This approach is recommended for most real-world use cases. If you would
         // like to specify the eBPF program at runtime rather than at compile-time, you can
         // reach for `Bpf::load_file` instead.
-        let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-            env!("OUT_DIR"),
-            "/tcbee"
-        )))?;
+
+        let mut ebpf = EbpfLoader::new()
+            .set_global("FILTER_PORT", &self.port, true)
+            .load(aya::include_bytes_aligned!(concat!(
+                env!("OUT_DIR"),
+                "/tcbee"
+            )))?;
+        //let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
+        //    env!("OUT_DIR"),
+        //    "/tcbee"
+        //)))?;
 
         if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
             // This can happen if you remove all log statements from your eBPF program.

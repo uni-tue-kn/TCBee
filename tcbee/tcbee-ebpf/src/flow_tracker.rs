@@ -15,7 +15,7 @@ static mut FLOWS: PerCpuHashMap<IpTuple,IpTuple> = PerCpuHashMap::with_max_entri
 
 #[inline(always)] 
 pub fn try_flow_tracker(flow: IpTuple) -> Result<(), c_long> {
-
+    // TODO: add map.increment() to track number of packets per flow
     unsafe {
        FLOWS.insert(&flow, &flow, 0)?;
     }

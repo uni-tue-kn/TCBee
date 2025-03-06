@@ -18,7 +18,7 @@ use tcbee_common::bindings::{
 use crate::{
     config::AF_INET6,
     counters::{try_dropped_counter, try_handled_counter, try_recv_tcp_sock, try_send_tcp_sock},
-    flow_tracker::try_flow_tracker,
+    flow_tracker::try_flow_tracker, FILTER_PORT,
 };
 
 #[map(name = "TCP_SEND_SOCK_EVENTS")]
@@ -38,21 +38,17 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
 
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
-    // TODO: Port filtering!
-    /*
-    let ports = &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair
+    let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
     let dport = (ports & 0xFFFF) as u16;
     let sport = (ports >> 16) as u16;
 
-    if sport != 5201 && dport != 5201 {
-        //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
-        return Ok(0);
-    } else {
-        info!(&ctx, "Handled: {} - {}", sport, dport.to_be());
-    }
-    */
-
     unsafe {
+        // dport needs to be called to_be otherwise value is wrong
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
+            //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
+            return Ok(0);
+        }
+
         let sock_entry = sock_trace_entry {
             time: bpf_ktime_get_ns(),
             addr_v4: read_kernel(&(*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair)?,
@@ -114,7 +110,17 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
     let sk_ptr: *const sock = unsafe { ctx.arg(0) };
 
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
+
+    let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
+    let dport = (ports.to_be() & 0xFFFF) as u16;
+    let sport = (ports >> 16) as u16;
+
     unsafe {
+        // dport needs to be called to_be otherwise value is wrong
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
+            return Ok(0);
+        }
+        
         let sock_entry = sock_trace_entry {
             time: bpf_ktime_get_ns(),
             addr_v4: read_kernel(&(*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair)?,
