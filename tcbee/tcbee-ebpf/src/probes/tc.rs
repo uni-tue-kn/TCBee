@@ -4,24 +4,21 @@ use aya_ebpf::{
 };
 use memoffset::offset_of;
 use tcbee_common::bindings::{
-    eth_header::ethhdr, flow::IpTuple, ip4_header::iphdr, ip6_header::ipv6hdr, tcp_header::{tcp_packet_trace, tcphdr}
+    eth_header::ethhdr,
+    flow::IpTuple,
+    ip4_header::iphdr,
+    ip6_header::ipv6hdr,
+    tcp_header::{tcp_packet_trace, tcphdr},
 };
 
 use crate::{
     config::{
-        ETHERTYPE_IPV4, 
-        ETHERTYPE_IPV6, 
-        ETH_HDR_LEN, 
-        IP6_HDR_LEN, 
-        IP_HDR_LEN, 
-        TCP_PROTOCOL,
+        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TCP_PROTOCOL,
         TC_BUF_SIZE,
     },
-    counters::{
-        try_dropped_counter, 
-        try_egress_counter, 
-        try_handled_counter
-    }, flow_tracker::try_flow_tracker,
+    counters::{try_dropped_counter, try_egress_counter, try_handled_counter},
+    flow_tracker::try_flow_tracker,
+    FILTER_PORT,
 };
 
 #[map(name = "TCP_PACKETS_EGRESS")]
@@ -71,6 +68,13 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
             .map_err(|_| TC_ACT_OK)?;
 
         unsafe {
+            // Filter source and dest port if FILTER_PORT is set!
+            if FILTER_PORT != 0
+                && tcp_hdr.source.to_be() != FILTER_PORT
+                && tcp_hdr.dest.to_be() != FILTER_PORT
+            {
+                return return Ok(TC_ACT_OK);
+            }
             // TODO: better parsing?
             packet_trace = tcp_packet_trace {
                 time: bpf_ktime_get_ns(),
@@ -96,7 +100,7 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
             let mut dst = [0; 16];
             src[12..16].copy_from_slice(&ip4_hdr.saddr.to_le_bytes());
             dst[12..16].copy_from_slice(&ip4_hdr.daddr.to_le_bytes());
-            
+
             let _ = try_flow_tracker(IpTuple {
                 src_ip: src,
                 dst_ip: dst,
@@ -115,6 +119,14 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
             .map_err(|_| TC_ACT_OK)?;
 
         unsafe {
+            // Filter source and dest port if FILTER_PORT is set!
+            if FILTER_PORT != 0
+                && tcp_hdr.source.to_be() != FILTER_PORT
+                && tcp_hdr.dest.to_be() != FILTER_PORT
+            {
+                return return Ok(TC_ACT_OK);
+            }
+            
             // TODO: better parsing?
             packet_trace = tcp_packet_trace {
                 time: bpf_ktime_get_ns(),
@@ -137,21 +149,17 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
             };
 
             // Write to flow tracker
-        let a = try_flow_tracker(IpTuple {
-            src_ip: packet_trace.saddr_v6,
-            dst_ip: packet_trace.daddr_v6,
-            sport: tcp_hdr.source.to_be(),
-            dport: tcp_hdr.dest.to_be(),
-            protocol: 6,
-        });
-        
+            let a = try_flow_tracker(IpTuple {
+                src_ip: packet_trace.saddr_v6,
+                dst_ip: packet_trace.daddr_v6,
+                sport: tcp_hdr.source.to_be(),
+                dport: tcp_hdr.dest.to_be(),
+                protocol: 6,
+            });
         }
     }
 
     unsafe {
-
-        
-
         // Prepare ringbuf entry
         let reserved = TCP_PACKETS_EGRESS.reserve::<tcp_packet_trace>(0);
 

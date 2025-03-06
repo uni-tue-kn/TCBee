@@ -22,11 +22,12 @@ use aya_ebpf::{
     programs::{FEntryContext, FExitContext, TcContext, TracePointContext, XdpContext},
 };
 
-
-
 use probes::{
     tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_sock_sendmsg, try_tcp_recv_socket}, xdp::xdp_hook
 };
+
+#[no_mangle]
+static mut FILTER_PORT: u16 = 0;
 
 #[fentry(function="tcp_sendmsg")]
 pub fn sock_sendmsg(ctx: FEntryContext) -> u32 {
