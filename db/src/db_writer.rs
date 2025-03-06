@@ -44,7 +44,7 @@ impl DBWriter {
         while let Some(event) = self.rx.blocking_recv() {
             match event {
                 DBOperation::Packet(data) => {
-                    if data.div != 0xFFFFFFFF {
+                    if data.div != 0xFFFFFFFFu32.to_be_bytes() {
                         panic!("Misaligned PACKET: {:?}. Something went horribly wrong during recording!",data);
                     }
 
@@ -71,7 +71,7 @@ impl DBWriter {
                     }
                 }
                 DBOperation::Probe(data) => {
-                    if data.div != 0xFFFFFFFF {
+                    if data.div != 0xFFFFFFFFu32.to_be_bytes() {
                         panic!("Misaligned PROBE: {:?}. Something went horribly wrong during recording!",data);
                     }
 
@@ -100,7 +100,7 @@ impl DBWriter {
                     //println!("Probe {:?}",data.ssthresh);
                 }
                 DBOperation::Socket(sock) => {
-                    if sock.div != 0xFFFFFFFF {
+                    if sock.div != 0xFFFFFFFFu32.to_be_bytes() {
                         panic!("Misaligned SOCKET: {:?}. Something went horribly wrong during recording!",sock);
                     }
 

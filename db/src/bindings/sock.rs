@@ -45,7 +45,7 @@ pub struct sock_trace_entry {
     // TCP_SOCK -> tcp_options_received
     pub snd_wscale: u16,
     pub rcv_wscale: u16,
-    pub div: u32
+    pub div: [u8; 4usize],
 }
 
 impl FromBuffer for sock_trace_entry {
@@ -198,7 +198,7 @@ impl EventIndexer for sock_trace_entry {
         }
     }
     fn get_max_index(&self) -> usize {
-        25
+        24
     }
     fn get_timestamp(&self) -> f64 {
         self.time as f64

@@ -25,15 +25,21 @@ pub struct TcpPacket {
     pub flag_syn: bool,
     pub flag_fin: bool,
     pub checksum: u16,
-    pub div: u32,
+    pub div: [u8; 4usize],
 }
 
 impl FromBuffer for TcpPacket {
     fn from_buffer(buf: &Vec<u8>) -> Self {
-        unsafe { *(buf.as_ptr() as *const TcpPacket) }
+        let try_deserialize = bincode::deserialize::<'_, TcpPacket>(buf);
+
+        if try_deserialize.is_err() {
+            TcpPacket::default()
+        } else {
+            try_deserialize.unwrap()
+        }
 
     }
-    const ENTRY_SIZE: usize = 76;
+    const ENTRY_SIZE: usize = 74;
 }
 
 impl EventIndexer for TcpPacket {
@@ -113,6 +119,6 @@ impl EventIndexer for TcpPacket {
         DBOperation::Packet(self)
     }
     fn get_struct_length(&self) -> usize {
-        76
+        74
     }
 }

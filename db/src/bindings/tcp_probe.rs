@@ -26,14 +26,20 @@ pub struct TcpProbe {
     pub srtt: u32,
     pub rcv_wnd: u32,
     pub sock_cookie: u64,
-    pub div: u32,
+    pub div: [u8; 4usize],
 }
 
 impl FromBuffer for TcpProbe {
     fn from_buffer(buf: &Vec<u8>) -> Self {
-        unsafe { *(buf.as_ptr() as *const TcpProbe) }
+        let try_deserialize = bincode::deserialize::<'_, TcpProbe>(buf);
+
+        if try_deserialize.is_err() {
+            TcpProbe::default()
+        } else {
+            try_deserialize.unwrap()
+        }
     }
-    const ENTRY_SIZE: usize = 124;
+    const ENTRY_SIZE: usize = 116;
 }
 
 impl EventIndexer for TcpProbe {
@@ -112,6 +118,6 @@ impl EventIndexer for TcpProbe {
         DBOperation::Probe(self)
     }
     fn get_struct_length(&self) -> usize {
-        124
+        116
     }
 }
