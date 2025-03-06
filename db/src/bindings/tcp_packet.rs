@@ -1,11 +1,12 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
 use crate::{db_writer::DBOperation, flow_tracker::EventIndexer, reader::FromBuffer};
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 pub struct TcpPacket {
     pub time: u64,
     pub saddr: u32,
@@ -32,6 +33,7 @@ impl FromBuffer for TcpPacket {
         unsafe { *(buf.as_ptr() as *const TcpPacket) }
 
     }
+    const ENTRY_SIZE: usize = 76;
 }
 
 impl EventIndexer for TcpPacket {
@@ -109,5 +111,8 @@ impl EventIndexer for TcpPacket {
     }
     fn as_db_op(self) -> DBOperation {
         DBOperation::Packet(self)
+    }
+    fn get_struct_length(&self) -> usize {
+        76
     }
 }

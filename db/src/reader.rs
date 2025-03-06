@@ -3,10 +3,12 @@ use std::os::unix::fs::MetadataExt;
 use std::{error::Error, marker::PhantomData};
 
 use log::{debug, info};
+use serde::Deserialize;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncBufRead, AsyncReadExt, BufReader, ReadBuf};
 use tokio::sync::mpsc::Sender;
 use tokio::task;
+use tokio_util::bytes::buf;
 use tokio_util::sync::CancellationToken;
 
 use crate::{db_writer::DBOperation, flow_tracker::EventIndexer};
@@ -14,6 +16,7 @@ use crate::{db_writer::DBOperation, flow_tracker::EventIndexer};
 use indicatif::{ProgressBar, ProgressStyle};
 
 pub trait FromBuffer {
+    const ENTRY_SIZE: usize;
     fn from_buffer(buf: &Vec<u8>) -> Self;
 }
 
@@ -26,7 +29,7 @@ pub struct FileReader<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T: EventIndexer + Debug + FromBuffer> FileReader<T> {
+impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileReader<T> {
     pub async fn new(
         path: &str,
         tx: Sender<DBOperation>,
@@ -53,7 +56,8 @@ impl<T: EventIndexer + Debug + FromBuffer> FileReader<T> {
         // Get bytes for read struct
         // TODO: I DONT KNOW WHY THIS 4 BYTE MISALIGNMENT HAPPENS, IT JUST DOES
         // FIX THIS!
-        let entry_size = core::mem::size_of::<T>() - 4;
+        let entry_size = T::ENTRY_SIZE;
+        //let entry_size = size_of::<T>();
         //let entry_size = 68;
 
         debug!("Entry size: {} bytes for {}", entry_size, self.path);
@@ -80,9 +84,15 @@ impl<T: EventIndexer + Debug + FromBuffer> FileReader<T> {
                 return;
             }
 
+            let buf = buffer.to_owned();
+
+            debug!("Buffer read {:?}", buffer);
+
             // Bytes were read, try to parse to struct
             //let event: T = unsafe { std::ptr::read(buffer.as_ptr() as *const _) };
             let event = T::from_buffer(&buffer);
+            // TODO: error handling
+            //let event: T = bincode::deserialize::<'b,T>(&buf).unwrap();
 
             let db_op = event.as_db_op();
 

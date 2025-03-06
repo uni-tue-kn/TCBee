@@ -14,6 +14,7 @@ use db_writer::{DBOperation, DBWriter};
 use flow_tracker::{EventIndexer, EventType, FlowTracker, TsTracker};
 use log::{error, info};
 use reader::{FileReader, FromBuffer};
+use serde::Deserialize;
 use tokio::{
     signal::ctrl_c,
     sync::mpsc::{self, Sender},
@@ -42,7 +43,7 @@ fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
     std::array::from_fn(|i| arg[i + 4])
 }
 
-async fn start_file_reader<T: EventIndexer + FromBuffer + Debug + Send + 'static>(
+async fn start_file_reader<'a, T: EventIndexer + FromBuffer + Debug + Send + Clone + Deserialize<'a> + 'static>(
     path: &str,
     tx: Sender<DBOperation>,
     token: CancellationToken,
@@ -103,7 +104,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         //start_file_reader::<TcpPacket>("/tmp/xdp.tcp", tx.clone(), stop_token.clone()).await,
         //start_file_reader::<TcpPacket>("/tmp/tc.tcp", tx.clone(), stop_token.clone()).await,
         //start_file_reader::<TcpProbe>("/tmp/probe.tcp", tx.clone(), stop_token.clone()).await,
-        start_file_reader::<sock_trace_entry>("/tmp/sock.tcp", tx.clone(), stop_token.clone()).await
+        start_file_reader::<sock_trace_entry>("/tmp/sock_send.tcp", tx.clone(), stop_token.clone()).await,
+        start_file_reader::<sock_trace_entry>("/tmp/sock_recv.tcp", tx.clone(), stop_token.clone()).await
     ];
 
     // Wait for file threads to finish!

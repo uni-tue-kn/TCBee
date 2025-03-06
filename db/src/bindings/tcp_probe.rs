@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
 };
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 pub struct TcpProbe {
     pub time: u64,
     pub saddr: [u8; 28usize],
@@ -32,6 +33,7 @@ impl FromBuffer for TcpProbe {
     fn from_buffer(buf: &Vec<u8>) -> Self {
         unsafe { *(buf.as_ptr() as *const TcpProbe) }
     }
+    const ENTRY_SIZE: usize = 124;
 }
 
 impl EventIndexer for TcpProbe {
@@ -108,5 +110,8 @@ impl EventIndexer for TcpProbe {
     }
     fn as_db_op(self) -> DBOperation {
         DBOperation::Probe(self)
+    }
+    fn get_struct_length(&self) -> usize {
+        124
     }
 }

@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use aya::maps::RingBuf;
 use libc::O_NONBLOCK;
 use log::{debug, error, info};
+use serde::Serialize;
 use tokio::{
     fs::OpenOptions,
     io::{AsyncWriteExt, BufWriter},
@@ -15,6 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::config::WRITER_BUFFER_SIZE;
+
 
 // Turn sized struct into u8 buffer for datagram sockets
 unsafe fn as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -36,7 +38,7 @@ pub struct BufferHandler<T> {
 }
 
 // TODO: T should be restricted to structs that are used for tracepoint queues!
-impl<T: std::fmt::Debug + Clone + Copy> BufferHandler<T> {
+impl<T: std::fmt::Debug + Clone + Copy + Serialize> BufferHandler<T> {
     pub fn new<Entry>(
         name: &str,
         token: CancellationToken,
@@ -117,16 +119,17 @@ impl<T: std::fmt::Debug + Clone + Copy> BufferHandler<T> {
                     return;
                 }
 
-                unsafe {
-
-                    
+                unsafe {    
                     let res_val = res.unwrap();
-                    let slice = as_u8_slice(&res_val);
+                    // TODO: error handling!
+                    let buf = bincode::serialize(&res_val).unwrap();
 
-                    debug!("Entry: {:?}",slice);
+                    //let slice = as_u8_slice(&res_val);
+
+                    debug!("Entry: {:?}",buf);
 
                     let written = writer
-                        .write(slice)
+                        .write(&buf)
                         .await
                         .expect("Failed write!");
 
