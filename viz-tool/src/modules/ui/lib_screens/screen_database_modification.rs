@@ -459,4 +459,9 @@ impl Screen for ScreenModifyDatabase {
 
         combined_content.map(Message::ScreenModifyDatabase)
     }
+
+    fn reset(&mut self) {
+        self.clear_flow_data();
+        self.selected_flow = TcpFlowWrapper::default();
+    }
 }

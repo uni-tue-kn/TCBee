@@ -14,7 +14,7 @@ pub const CHART_Y_LABEL_AREA_SIZE: i32 = 40;
 pub const CHART_MARGIN: f64 = 60.0;
 
 // denotes how many labels are displayed on the x-axis at max
-pub const CHART_MAX_X_LABELS: usize = 50;
+pub const CHART_MAX_X_LABELS: usize = 10;
 
 // denotes how many labels are displayd on the y-axis at max
 pub const CHART_MAX_Y_LABELS: usize = 50;

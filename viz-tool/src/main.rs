@@ -38,12 +38,15 @@ use iced_aw::Tabs;
 use ts_storage::{DataValue, TSDBInterface};
 use std::cell::RefCell;
 use std::sync::{Arc, RwLock};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 // ---- //
 // --- //
 
 // fn main() -> iced::Result {
 fn main() -> iced::Result {
+    println!("Hi, this application was written by Evelyn :>\n this message is a secret");
     iced::application("TCPFLOW", StateContainer::update, StateContainer::view)
         .theme(StateContainer::theme)
         .run()
@@ -104,7 +107,8 @@ impl Default for StateContainer {
             screen_multi_flow_plotting: ScreenMultiFlowPlotting::new(settings.clone()),
             screen_modify_database: ScreenModifyDatabase::new(settings.clone()),
             application_settings: settings,
-            theme: Theme::CatppuccinFrappe,
+            // theme: Theme::CatppuccinFrappe,
+            theme: Theme::GruvboxLight,
         }
     }
 }
@@ -112,8 +116,25 @@ impl Default for StateContainer {
 // Implementations for ICED
 impl StateContainer {
     fn update(&mut self, message: Message) {
+        print!("{esc}c", esc = 27 as char);
         match message {
-            Message::TabSelected(new_screen) => self.screen = new_screen,
+            Message::TabSelected(new_screen) => {
+                match self.screen {
+                    ActiveScreen::DatabaseModification => {
+                        self.screen_modify_database.reset();
+                    }
+                    ActiveScreen::SingleGraphPlot => {
+                        self.screen_plotting.reset();
+                    }
+                    ActiveScreen::MultipleGraphPlot => {
+                        self.screen_multi_flow_plotting.reset();
+                    }
+                    _ => {
+
+                    }
+                }
+                self.screen = new_screen
+            }
             Message::TabClosed(_) => {}
             Message::ScreenSettings(message) => self.screen_settings.update(message),
             Message::ScreenHome(message) => self.screen_home.update(message),

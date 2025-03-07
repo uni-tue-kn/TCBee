@@ -273,4 +273,8 @@ impl Screen for ScreenSettings {
 
         window_content.map(Message::ScreenSettings)
     }
+
+    fn reset(&mut self) {
+        
+    }
 }

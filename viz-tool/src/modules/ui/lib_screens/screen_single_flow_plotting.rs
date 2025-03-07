@@ -82,6 +82,7 @@ pub enum MessagePlotting {
     // ZoomRangeChanged(f64),
     GraphGenerationRequested,
     ZoomResetRequested,
+    UnselectAllSeries,
     CheckBoxMultiplePlots(bool),
     CheckBoxDrawLineSeries(bool),
     MouseEvent(iced::mouse::Event, iced::Point),
@@ -186,6 +187,7 @@ impl ScreenSingleFlowPlotting {
                 self.render_chart = false;
 
                 self.tcp_flow.flow_id = Some(reference_id);
+                self.tcp_flow.selected_series = None;
                 let new_zoom = retrieve_default_zoom_for_one_flow(&self.application_settings, &self.tcp_flow);
                 self.zoom_bounds = Some(new_zoom);
             }
@@ -218,6 +220,9 @@ impl ScreenSingleFlowPlotting {
                 } else {
                     self.render_chart = false
                 }
+            }
+            MessagePlotting::UnselectAllSeries => {
+                self.tcp_flow.selected_series = None;
             }
 
             // if called we generate the chart - otherwise not.
@@ -386,7 +391,7 @@ impl ScreenSingleFlowPlotting {
     }
 
     pub fn generate_chart_view(&self) -> Element<'_, MessagePlotting> {
-        let generate_legends: bool = !self.render_chart
+        let generate_legends: bool = self.render_chart
             && self.tcp_flow.flow_id.is_some()
             && self.tcp_flow.selected_series.is_some();
         let graph_top_info: Row<'_, MessagePlotting> = Row::new()
@@ -421,6 +426,7 @@ impl ScreenSingleFlowPlotting {
             MessagePlotting::FlowSelected,
             MessagePlotting::FlowFeatureSelected,
             MessagePlotting::FlowFeatureDeSelected,
+            MessagePlotting::UnselectAllSeries,
         );
 
         let combined_buttons = display_combined_flow_buttons(
@@ -521,6 +527,11 @@ impl Screen for ScreenSingleFlowPlotting {
             .into();
 
         content.map(Message::ScreenSingleFlowPlot)
+    }
+
+    fn reset(&mut self) {
+        self.tcp_flow = TcpFlowWrapper::default();
+        self.processed_plot_data = None;
     }
 }
 

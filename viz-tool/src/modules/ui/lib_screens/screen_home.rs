@@ -216,4 +216,7 @@ impl Screen for ScreenHome {
         // let window_content = generate_one_fourth_layout::<MessageHome>(headline_content, sidebar, explanation_field)
         window_content.map(Message::ScreenHome)
     }
+    fn reset(&mut self) {
+        
+    }
 }

@@ -95,7 +95,7 @@ impl<Message: 'static + Clone + MessageCreator> Chart<Message> for ProcessedPlot
         let is_small_display_range = zoom_range_is_small(&zoom_limits, range_threshold);
 
         println!(
-            "Debug: bounds are:\n low:{:?}\n upper:{:?}\n is below treshold: {:?}",
+            "Debug: timestamp bounds are:\n low:{:?}\n upper:{:?}\n is below treshold: {:?}",
             lower_x, upper_x, is_small_display_range,
         );
 
