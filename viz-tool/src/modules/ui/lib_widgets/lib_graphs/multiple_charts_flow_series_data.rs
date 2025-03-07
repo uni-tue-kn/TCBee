@@ -24,7 +24,7 @@ use iced::widget::{scrollable, Column};
 use iced::Size;
 
 // -- internal imports
-use rust_ts_storage::DataValue;
+use ts_storage::DataValue;
 // -- external imports
 
 use plotters::series::LineSeries;

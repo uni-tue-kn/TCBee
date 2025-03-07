@@ -35,7 +35,7 @@ use iced_table::Table;
 
 use iced::Element;
 use iced_aw::Tabs;
-use rust_ts_storage::{DataValue, TSDBInterface};
+use ts_storage::{DataValue, TSDBInterface};
 use std::cell::RefCell;
 use std::sync::{Arc, RwLock};
 use std::thread::sleep;

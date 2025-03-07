@@ -10,7 +10,7 @@ use crate::modules::ui::lib_widgets::lib_graphs::{
 use iced::{widget::Column, Color, Element};
 use plotters::style::RGBAColor;
 use rand::{distr::Uniform, prelude::Distribution};
-use rust_ts_storage::DataValue;
+use ts_storage::DataValue;
 use std::f64::{MAX, MIN};
 
 /// for the given datapoints, receive the upper and lower bounds for Y and return them as ZoomBound

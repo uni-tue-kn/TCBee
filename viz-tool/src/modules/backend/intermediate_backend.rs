@@ -16,8 +16,8 @@ use crate::modules::{
 use crate::TSDBInterface;
 use iced::widget::canvas::Cache;
 use plotters::style::RGBAColor;
-use rust_ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, DataValue, Flow};
-use rust_ts_storage::{DataPoint, TimeSeries};
+use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, DataValue, Flow};
+use ts_storage::{DataPoint, TimeSeries};
 use std::{cell::RefCell, f64::{MAX, MIN}, path::PathBuf, slice::Iter, sync::RwLock};
 
 // testing to adapt to issue of not refrencing well enough?
