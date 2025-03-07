@@ -34,4 +34,6 @@ pub trait Screen {
         // .max_width(400)
     }
 
+    fn reset(&mut self);
+
 }

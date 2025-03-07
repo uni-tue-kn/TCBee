@@ -95,8 +95,8 @@ pub fn receive_flow_bounds(
 ) -> Option<ZoomBound> {
     let read_settings = app_settings.read().unwrap();
     let backend = &read_settings.intermediate_interface;
-    let bounds = &backend.receive_active_flow_bounds_x(&flow_id);
-    bounds.clone()
+    let maybe_bounds = &backend.receive_active_flow_bounds_x(&flow_id);
+    maybe_bounds.clone()
 }
 
 pub fn retrieve_default_zoom_for_one_flow(

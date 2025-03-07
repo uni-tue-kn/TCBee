@@ -52,6 +52,7 @@ pub enum MessageMultiFlowPlotting {
     GraphGenerationRequested,
     SplitChartRequested(bool),
     DrawLineSeriesRequested(bool),
+    UnselectAllSeries,
     // zooming
     SliderZoomLX(f64),
     SliderZoomRX(f64),
@@ -275,6 +276,10 @@ impl ScreenMultiFlowPlotting {
                     _ => {}
                 }
             }
+            MessageMultiFlowPlotting::UnselectAllSeries => { 
+                    self.first_tcp_flow.selected_series = None;
+                    self.second_tcp_flow.selected_series = None;
+            }
             _ => (),
 
         }
@@ -328,6 +333,7 @@ impl ScreenMultiFlowPlotting {
             MessageMultiFlowPlotting::FlowOneSelected,
             MessageMultiFlowPlotting::FlowOneFeatureSelected,
             MessageMultiFlowPlotting::FlowOneFeatureDeselected,
+            MessageMultiFlowPlotting::UnselectAllSeries,
         )
         .width(Length::FillPortion(FLOW1_SELECTION_PORTION));
         let selector_flow_2 = display_combined_flow_selection(
@@ -337,6 +343,7 @@ impl ScreenMultiFlowPlotting {
             MessageMultiFlowPlotting::FlowTwoSelected,
             MessageMultiFlowPlotting::FlowTwoFeatureSelected,
             MessageMultiFlowPlotting::FlowTwoFeatureDeselected,
+            MessageMultiFlowPlotting::UnselectAllSeries,
         )
         .width(Length::FillPortion(FLOW2_SELECTION_PORTION));
         let content = Row::new()
@@ -388,7 +395,7 @@ impl ScreenMultiFlowPlotting {
     }
 
     fn generate_chart_view(&self) -> Element<'_,MessageMultiFlowPlotting> { 
-        let generate_top_info:bool = !self.render_chart && self.first_tcp_flow.selected_series.is_some() && self.second_tcp_flow.selected_series.is_some();
+        let generate_top_info:bool = self.render_chart && self.first_tcp_flow.selected_series.is_some() && self.second_tcp_flow.selected_series.is_some();
         let maybe_legends = generate_legends_for_charts(generate_top_info, &self.plot_data);
         let mouse_position = display_current_mouse_position(self.current_position);
         let merged_top_info = Row::new()
@@ -474,5 +481,11 @@ impl Screen for ScreenMultiFlowPlotting {
         .push(content).into();
 
         padded_content.map(Message::ScreenMultipleFlowPlot)
+    }
+
+    fn reset(&mut self) {
+        self.first_tcp_flow = TcpFlowWrapper::default();
+        self.second_tcp_flow = TcpFlowWrapper::default();
+        self.plot_data = None;
     }
 }

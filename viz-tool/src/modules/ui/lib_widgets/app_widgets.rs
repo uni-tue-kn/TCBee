@@ -8,9 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::modules::{
     backend::{
-        app_settings::ApplicationSettings, intermediate_backend::IntermediateBackend,
-        plot_data_preprocessing::convert_rgba_to_iced_color,
-        struct_tcp_flow_wrapper::TcpFlowWrapper,
+        app_settings::ApplicationSettings, intermediate_backend::IntermediateBackend, lib_system_io::receive_file_metadata, plot_data_preprocessing::convert_rgba_to_iced_color, struct_tcp_flow_wrapper::TcpFlowWrapper
     },
     ui::{
         lib_styling::app_style_settings::{
@@ -85,7 +83,7 @@ fn generate_selections_for_flows<'a, Message: 'a + Clone>(
                 radio(
                     ref_backend.receive_flow_formatted(&entry),
                     // self.backend_interface.receive_flow_formatted(&entry),
-                    entry.get_id().unwrap().clone(),
+                    entry.get_id().expect("no flow id").clone(),
                     focused_flow.flow_id,
                     // self.backend_interface.receive_active_flow_id(),
                     message_on_click.clone(),
@@ -100,22 +98,28 @@ pub fn display_series_selector<'a, Message: 'a + Clone>(
     ref_backend: &IntermediateBackend,
     message_on_select: impl Fn(i64) -> Message + 'a + Clone,
     message_on_deselect: impl Fn(i64) -> Message + 'a + Clone,
+    message_on_unselect_all: Message,
     focused_flow: &TcpFlowWrapper,
 ) -> Element<'a, Message> {
     let headline = text("Series Selection:").size(TEXT_HEADLINE_1_SIZE);
     let description = text("select one or more attributes to display");
-    let collection_of_series = generate_selections_for_series_data(
+    let maybe_collection_of_series = generate_selections_for_series_data(
         ref_backend,
         message_on_select,
         message_on_deselect,
+        message_on_unselect_all,
         focused_flow,
     );
+    let widget_collection: Element<'_, Message>= match maybe_collection_of_series{
+        Ok(widget) => widget.into(),
+        Err(string) => text(string).into()
+    };
     Column::new()
         .spacing(SPACE_BETWEEN_ELEMENTS)
         .push(headline)
         .push(description)
         .push(Space::with_height(HORIZONTAL_LINE_SECONDARY_HEIGHT))
-        .push(collection_of_series)
+        .push(widget_collection)
         .into()
 }
 
@@ -124,25 +128,32 @@ fn generate_selections_for_series_data<'a, Message: 'a + Clone>(
     ref_backend: &IntermediateBackend,
     message_on_select: impl Fn(i64) -> Message + 'a + Clone,
     message_on_deselect: impl Fn(i64) -> Message + 'a + Clone,
+    message_on_unselect_all: Message,
     screen_flow: &TcpFlowWrapper,
-) -> Column<'a, Message> {
+) -> Result<Column<'a, Message>,String> {
     let mut column: Column<'a, Message> = Column::new();
 
-    if screen_flow.flow_id.is_none() {
-        // no flow found, not displaying anything
-        return column;
-    }
+    column  = column.push(
+        generate_series_unselect_button(message_on_unselect_all)
+    );
 
-    if let Some(database_connection) = &ref_backend.database_interface {
+    let database_connection  = &ref_backend.database_interface.clone().expect("No database connection found");
+
         //  found connection, attempting to read from it
-        let selected_flow = &ref_backend
-            .receive_selected_flow(screen_flow.flow_id)
-            .expect("no active flow found, although its not none");
+        let maybe_selected_flow = &ref_backend
+            .receive_selected_flow(screen_flow.flow_id);
+        let flow = match maybe_selected_flow {
+            Some(flow) => flow,
+            _ => return Err("no active flow found, although its not none".to_string())
+        };
 
-        let avail_time_series = database_connection
-            .list_time_series(selected_flow)
-            .expect("could not retrieve time series for flow"); // FIXME improve error handling!
-        for time_series in avail_time_series {
+        let maybe_avail_time_series = database_connection
+            .list_time_series(flow);
+        let available_time_series = match maybe_avail_time_series{
+            Ok(time_series) => time_series,
+            _ => return Err("could not retrieve time series for flow, non available".to_string())
+        };
+        for time_series in available_time_series {
             // FIXME necessary to unwrap correctly?
             let is_selected: bool =
                 screen_flow.series_id_is_selected(&time_series.id.expect("no id found for flow"));
@@ -172,9 +183,9 @@ fn generate_selections_for_series_data<'a, Message: 'a + Clone>(
             // .on_toggle(MessagePlotting::FlowFeatureSelected);
             column = column.push(new_checkbox);
         }
-    }
-    return column;
+    return Ok(column);
 }
+
 
 pub fn generate_render_button<'a, Message: 'a + Clone>(
     message_on_press: Message,
@@ -182,7 +193,12 @@ pub fn generate_render_button<'a, Message: 'a + Clone>(
     let render_button: Button<'a, Message> = button("press to render").on_press(message_on_press);
     render_button.into()
 }
-
+pub fn generate_series_unselect_button<'a, Message: 'a + Clone>(
+    message_on_press: Message,
+) -> Element<'a, Message> {
+    let render_button: Button<'a, Message> = button("unselet all series").on_press(message_on_press);
+    render_button.into()
+}
 pub fn generate_zoom_reset_button<'a, Message: 'a + Clone>(
     message_on_press: Message,
 ) -> Element<'a, Message> {
@@ -220,16 +236,27 @@ pub fn display_database_metadata<'a, Message: 'a + Clone>(
     app_settings_arc: &Arc<RwLock<ApplicationSettings>>,
 ) -> Element<'a, Message> {
     let read_settings = app_settings_arc.read().unwrap();
+    let maybe_path = &read_settings.intermediate_interface.database_path;
+    let maybe_db_info =match maybe_path {
+        Some(path) => {
+            receive_file_metadata(path)
+        }
+        _ => { 
+            "No information could be obtained about database.".to_string()
+        }
+    };
 
     let headline = text("Information About Database:").size(TEXT_HEADLINE_1_SIZE);
     let description = text("listing information about database");
     let db_name = text(format!("selected database: {:?}", read_settings.datasource));
-    let db_metadata = text("infos of db:\ncreated:2025-01-01\nsize:xxxxMB\navailable flows: XX\n");
+    let db_path = text(format!("path: {:?}", maybe_path));
+    let db_metadata = text(maybe_db_info);
     Column::new()
         .push(headline)
         .push(description)
         .push(Space::with_height(HORIZONTAL_LINE_SECONDARY_HEIGHT))
         .push(db_name)
+        .push(db_path)
         .push(db_metadata)
         .into()
 }
@@ -322,20 +349,23 @@ pub fn display_combined_flow_selection<'a, Message: 'a + Clone>(
     message_on_flow_selection: impl Fn(i64) -> Message + 'a + Clone,
     message_on_series_selection: impl Fn(i64) -> Message + 'a + Clone,
     message_on_series_deselection: impl Fn(i64) -> Message + 'a + Clone,
+    message_on_unselect_all: Message,
 ) -> Column<'a, Message> {
     let headline = text(headline).size(TEXT_HEADLINE_0_SIZE);
-    let series_selector = display_series_selector(
-        &intermediate_backend,
-        message_on_series_selection,
-        message_on_series_deselection,
-        flow_information,
-    );
+
     let flow_selector = display_flow_selector(
         &intermediate_backend,
         flow_information,
         message_on_flow_selection,
     );
 
+    let series_selector = display_series_selector(
+        &intermediate_backend,
+        message_on_series_selection,
+        message_on_series_deselection,
+        message_on_unselect_all,
+        flow_information,
+    );
     let content: Column<'_, Message> = Column::new()
         .spacing(SPACE_BETWEEN_ELEMENTS)
         .push(headline)
@@ -404,7 +434,7 @@ pub fn generate_legends_for_charts<'a, Message: 'a>(
     plot_data_ref: &Option<ProcessedPlotData>,
 ) -> Element<'a, Message> {
     let mut legend_column: Column<'a, Message> = Column::new();
-    if display_legends {
+    if !display_legends {
         return legend_column.into();
     }
     if let Some(plot_data) = &plot_data_ref {

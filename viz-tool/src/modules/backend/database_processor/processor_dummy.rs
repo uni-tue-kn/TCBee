@@ -3,7 +3,7 @@
 // operation of the module system
 
 use iced::widget::canvas::Cache;
-use ts_storage::DataValue;
+use rust_ts_storage::DataValue;
 
 // used to generate random data
 use rand::distr::{Distribution, Uniform};

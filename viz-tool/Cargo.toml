@@ -1,5 +1,5 @@
 [package]
-name = "viz-tool"
+name = "tcp_visualization_application"
 version = "0.1.0"
 authors = ["ScatteredDrifter"]
 edition = "2021"
@@ -11,7 +11,7 @@ iced_table = "0.13.0"
 plotters="0.3"
 iced_aw = { version = "0.11.0", default-features = false, features = ["tab_bar", "tabs"] }
 rand = "0.9.0"
-ts_storage = { path = "../ts-storage"}
+rust_ts_storage = { git = "ssh://git@kn-gitlab.cs.uni-tuebingen.de/internetpraktikum/rust_ts_storage.git"}
 rfd = "0.15.0"
 
 [net]

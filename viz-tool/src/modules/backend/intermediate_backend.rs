@@ -16,9 +16,9 @@ use crate::modules::{
 use crate::TSDBInterface;
 use iced::widget::canvas::Cache;
 use plotters::style::RGBAColor;
-use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, DataValue, Flow};
-use ts_storage::{DataPoint, TimeSeries};
-use std::{cell::RefCell, slice::Iter, sync::RwLock};
+use rust_ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, DataValue, Flow};
+use rust_ts_storage::{DataPoint, TimeSeries};
+use std::{cell::RefCell, f64::{MAX, MIN}, path::PathBuf, slice::Iter, sync::RwLock};
 
 // testing to adapt to issue of not refrencing well enough?
 use std::sync::Arc;
@@ -53,10 +53,7 @@ impl ToString for DataSource {
 pub struct IntermediateBackend {
     pub source_type: DataSource,
     pub database_interface: Option<Arc<Box<dyn TSDBInterface>>>,
-    // for access management
-    // selected_flow: Option<i64>,
-    // FIXME should be Id of attribute instead
-    // pub selected_series_attributes: Option<Vec<i64>>,
+    pub database_path: Option<PathBuf>,
 }
 
 impl IntermediateBackend {
@@ -66,16 +63,17 @@ impl IntermediateBackend {
                 // if it was selected we know that its available!
                 let db_connection = self.database_interface.clone().unwrap();
                 let flow = db_connection.get_flow_by_id(*value).unwrap().unwrap();
-                let bounds = db_connection
-                    .get_flow_bounds(&flow)
-                    .expect("no bounds could be received for flow");
-
-                Some(ZoomBound {
-                    lower: bounds.xmin,
-                    upper: bounds.xmax,
-                })
-
-                // Some(bounds.unwrap())
+                let maybe_bounds = db_connection
+                    .get_flow_bounds(&flow);
+                match maybe_bounds{
+                    Ok(boundaries) => {
+                        Some(ZoomBound {
+                            lower: boundaries.xmin,
+                            upper: boundaries.xmax,
+                        })
+                    }
+                    _ => None 
+                }
             }
             _ => None,
         }
@@ -86,17 +84,17 @@ impl IntermediateBackend {
         collection_of_series: Option<Vec<i64>>,
     ) -> Option<ZoomBound> {
         if let Some(series) = self.receive_active_timeseries(collection_of_series) {
-            let db_conection = self.database_interface.clone().unwrap();
+            let db_connection = self.database_interface.clone().unwrap();
 
-            let mut lowest_y: f64 = DEFAULT_Y_MIN;
-            let mut highest_y: f64 = DEFAULT_Y_MAX;
+            let mut lowest_y: f64 = MAX;
+            let mut highest_y: f64 = MIN;
             for series_id in series {
-                let boundaries = db_conection
+                let boundaries = db_connection
                     .get_time_series_bounds(&series_id)
                     .expect("could not receive boundaries");
-                if let Some(_) = boundaries.ymin {
-                    let lower = boundaries.ymin.unwrap();
-                    let upper = boundaries.ymax.unwrap();
+                if let (Some(y_min),Some(y_max)) = (&boundaries.ymin , &boundaries.ymax) {
+                    let lower = y_min;
+                    let upper = y_max;
                     // guaranteed to be DataValue
                     match series_id.ts_type {
                         DataValue::Float(_) => {
@@ -113,6 +111,15 @@ impl IntermediateBackend {
                     }
                 }
             }
+
+            // println!("Debug: y boundaries are:\n low:{:?}\n high: {:?}",lowest_y,highest_y);
+            if lowest_y == highest_y {
+                // ASSUME: found constant, hence creating new boundaries
+                let old_constant = lowest_y;
+                lowest_y = old_constant - 10.0;
+                highest_y = old_constant + 10.0;
+            }
+            
             return Some(ZoomBound {
                 lower: lowest_y,
                 upper: highest_y,
@@ -256,8 +263,7 @@ impl Clone for IntermediateBackend {
         IntermediateBackend {
             source_type: self.source_type.clone(),
             database_interface: self.database_interface.clone(),
-            // selected_flow: self.selected_flow.clone(),
-            // selected_series_attributes: self.selected_series_attributes.clone(),
+            database_path: self.database_path.clone(),
         }
     }
 }
@@ -267,20 +273,20 @@ impl IntermediateBackend {
         match source {
             DataSource::Sqllite => {
                 let db_interface: Arc<Box<dyn TSDBInterface>> = Arc::new(
-                    database_factory::<SQLiteTSDB>(DBBackend::SQLite(path_db))
+                    database_factory::<SQLiteTSDB>(DBBackend::SQLite(path_db.clone()))
                         .expect("could not parse database"),
                 );
                 println!("initialized database of time {:?}", source);
                 IntermediateBackend {
                     source_type: source.clone(),
                     database_interface: Some(db_interface),
-                    // selected_flow: None,
-                    // selected_series_attributes: None,
+                    database_path: Some(PathBuf::from(path_db))
                 }
             }
             _ => IntermediateBackend {
                 source_type: source.clone(),
                 database_interface: None,
+                database_path: None,
                 // selected_flow: None,
                 // selected_series_attributes: None,
             },

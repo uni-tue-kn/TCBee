@@ -5,7 +5,7 @@ use iced::{
     widget::{text, Column},
     Element,
 };
-use ts_storage::DataValue;
+use rust_ts_storage::DataValue;
 
 use crate::modules::{
     backend::plot_data_preprocessing::extract_non_empty_string,

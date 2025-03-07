@@ -3,43 +3,25 @@
 
 // internal imports
 use crate::{
-    modules::backend::plot_data_preprocessing::{
-        extract_non_empty_string, generate_n_random_colors, prepare_bool, prepare_float,
-        prepare_int, skip_every_nth, skip_outside_of_bound,
-    },
-    modules::ui::{
-        lib_styling::app_style_settings::{
-            CHART_MARGIN, CHART_MAX_X_LABELS, CHART_MAX_Y_LABELS, CHART_X_LABEL_AREA_SIZE,
-            CHART_Y_LABEL_AREA_SIZE, CIRCLE_SIZE, DEFAULT_Y_MAX, DEFAULT_Y_MIN,
-            TEXT_ACCENT_1_COLOR, TEXT_ACCENT_2_COLOR,
-        },
-        lib_widgets::lib_graphs::struct_zoom_bounds::{ZoomBound, ZoomBound2D},
-    },
-    ApplicationSettings, Arc, DataValue, FlowSeriesData, MessagePlotting, RefCell, RwLock,
-    ScreenSingleFlowPlotting,
+    ApplicationSettings, Arc, FlowSeriesData,RefCell, RwLock,
 };
 
 use plotters::{
     coord::types::RangedCoordf64,
-    prelude::{Cartesian2d, Circle, FontTransform, Rectangle},
-    series::{LineSeries, PointSeries},
-    style::{IntoFont, RGBAColor},
+    prelude::Cartesian2d,
 };
-use std::f64::{MAX, MIN};
 
-use plotters_iced::{Chart, ChartBuilder, ChartWidget, DrawingBackend, Renderer};
+use plotters_iced::ChartWidget;
 
 use iced::{
-    advanced::graphics::core::event,
-    mouse::Cursor,
     widget::{
-        canvas::{self, Cache, Frame, Geometry},
-        Column, Container,
+        canvas::Cache,
+        Container,
     },
-    Element, Point, Size,
+    Element,
 };
 
-use super::{single_chart_processed_plot_data::MessageCreator, struct_zoom_bounds::{merge_two_2d_bounds, points_are_close, retrieve_default_zoom_for_one_flow}};
+use super::{single_chart_processed_plot_data::MessageCreator, struct_zoom_bounds::{merge_two_2d_bounds, ZoomBound2D}};
 
 pub struct ProcessedPlotData {
     // denotes name of plot to generate --> i.e. for flow X
