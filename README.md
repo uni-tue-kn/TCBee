@@ -1,7 +1,7 @@
 <div align="center">
  <img src="./imgs/tcbee.png" height=150/>
 
- <h6 style="font-size: 8px; margin-left: 200px; margin-top: -30px;">Bee SVG by <a href="https://www.freepik.com/free-vector/cute-bee-insect-animal_136484149.htm#fromView=keyword&page=1&position=2&uuid=42f2e8ed-fa2c-47d9-9793-a1b088c1266d&query=Bees+Svg+File">Freepic</a> </h6>
+ <h6 style="font-size: 10px; margin-left: 200px; margin-top: -30px;">Bee SVG by <a href="https://www.freepik.com/free-vector/cute-bee-insect-animal_136484149.htm#fromView=keyword&page=1&position=2&uuid=42f2e8ed-fa2c-47d9-9793-a1b088c1266d&query=Bees+Svg+File">Freepic</a> </h6>
 
  <h2>TCBee: A High-Performance and Extensible Tool For TCP Flow Analysis Using eBPF </h2>
 
@@ -37,6 +37,7 @@ The current Todo-List includes
 - Add plugins for the calculation of common TCP congestion metrics
 - Implement InfluxDB interface for faster processing 
 - Test and benchmark bottlenecks (eBPF Ringbuf size, File writer, etc.)
+- Cleanup of eBPF and user space code
 - ...
 
 The current version is tested for linux kernel 6.13.6 and may not work on older or newer kernel versions.
