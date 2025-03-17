@@ -1,11 +1,15 @@
 <div align="center">
  <img src="./imgs/tcbee.png" height=150/>
+
+ <h6 style="font-size: 8px; margin-left: 200px; margin-top: -30px;">Bee SVG by <a href="https://www.freepik.com/free-vector/cute-bee-insect-animal_136484149.htm#fromView=keyword&page=1&position=2&uuid=42f2e8ed-fa2c-47d9-9793-a1b088c1266d&query=Bees+Svg+File">Freepic</a> </h6>
+
  <h2>TCBee: A High-Performance and Extensible Tool For TCP Flow Analysis Using eBPF </h2>
 
  ![image](https://img.shields.io/badge/licence-Apache%202.0-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/v-0.1.0-yellow) [![TCBee build](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml/badge.svg)](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml)
  
 </div>
 
+- [Disclaimer](#disclaimer)
 - [Overview](#overview)
 - [Architecture](#architecture)
   - [1. Record](#1-record)
@@ -19,21 +23,35 @@
     - [2a. Using TCBee-Viz](#2a-using-tcbee-viz)
     - [2b. Using the rust ts-storage library](#2b-using-the-rust-ts-storage-library)
     - [2c. Using custom scripts and programs](#2c-using-custom-scripts-and-programs)
-- [Citing TCBee](#citing-tcbee)
+    - [2d. Accessing the raw data ouput](#2d-accessing-the-raw-data-ouput)
 - [Preview of TCBee](#preview-of-tcbee)
   - [Recording TCP Flows](#recording-tcp-flows)
   - [Visualizing CWND Size](#visualizing-cwnd-size)
   - [Visualizing Multiple Flows](#visualizing-multiple-flows)
 
+## Disclaimer
+This repository contains the first stable version of TCBee and will be improved/refined in the future.
+The current Todo-List includes
+- Documentation for the tools and interfaces
+- Merging tools into a single program
+- Add plugins for the calculation of common TCP congestion metrics
+- Implement InfluxDB interface for faster processing 
+- Test and benchmark bottlenecks (eBPF Ringbuf size, File writer, etc.)
+- ...
+
+The current version is tested for linux kernel 6.13.6 and may not work on older or newer kernel versions.
+
+
 ## Overview
-This repository contains the source code for a TCP flow analysis and visualization tool that can monitor any number of TCP flows with up to 1.4 Mpps in total. It uses the Rust programming languages and monitors both packet headers with XDP and TC, and kernel metrics using eBPF kernel tracepoints.
+This repository contains the source code for a TCP flow analysis and visualization tool that can monitor any number of TCP flows with up to 1.4 Mpps in total. It uses the Rust programming languages and monitors both packet headers with XDP and TC, and kernel metrics using eBPF.
 
 TCBee
 
 * provides a command-line program to record flows and track current data rates
-* monitors both packet headers and kernel metrics for TCP flows
+* monitors both packet headers for incoming and outgoing packets
+* hooks onto the linux kernel functions `tcp_sendmsg` and `tcp_recvmsg` to read kernel metrics
 * stores recorded data in a structured flow database
-* provides a simple plugin interface to calculate metrics from recorded data and store the results
+* provides a simple plugin interface to calculate metrics from recorded data and save the results
 * comes with a visualization tool to analyse and compare TCP flow metrics
 * provides a rust library to access flow data for custom visualization tools
 
@@ -90,9 +108,10 @@ Or, you can run the compiled version after using `cargo build --release` using:
 
 Available flags are:
 - `-q`, `--quiet` run the program without the UI
+- `-p`, `--port` filter streams for remote or local port
 - `f`, `--file` path to store the output (CURRENTLY NOT IMPLEMENTED)
 
-TCBee will store the recorded data under `/tmp/` as `.tcp` files. These files contain the packet headers and kernel tracepoint data as raw bytes.
+TCBee will store the recorded data under `/tmp/` as `.tcp` files. These files contain the packet headers and kernel metrics data as raw bytes.
 If you want to read the raw bytes from your own program, take a look at `tcbee/tcbee-common/bindings` to find the appropriate structs (struct names that are written end with `_entry`).
 
 ### 2. Postprocessing Recorded Data
@@ -105,9 +124,11 @@ Or, you can run the compiled version after using `cargo build --release` using:
 
 `sudo target/release/db_backend`
 
-Currently, this will generate a db.sqlite file. 
+Currently, this will generate a db.sqlite file in the same directory.
 If this file exists, the program will try to write to the same DB and exit as soon as it detects duplicate data.
 In future releases, the DB backend will support both Sqlite and InfluxDB and custom file paths.
+This should also improve performance issues for large traces with a lot of data points.
+
 
 ### 2. Visualizing Data
 
@@ -136,11 +157,9 @@ You can generate custom graphs and visualization using your own tools and script
 To that end, you either need to implement access over SQLite or InfluxDB depending on the storage format.
 For a guide on how to read flow data, see `ts-storage/ACCESS.md`.
 
-## Citing TCBee
-
-If you use TCBee in any of your publications, please cite the following paper:
-
-TODO: ARXIV Link
+#### 2d. Accessing the raw data ouput
+TCBee stores the recorded data in raw byte files under `/tmp/*.tcp`. 
+If you want to read the raw bytes from your own program, take a look at `tcbee/tcbee-common/bindings` to find the appropriate structs (struct names that are written end with `_entry`).
 
 ## Preview of TCBee
 
