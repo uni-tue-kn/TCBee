@@ -229,7 +229,7 @@ impl FlowTracker {
             let res = tracker.flush(&self.flow, &db);
             if res.is_err() {
                 error!(
-                    "Failed flush on {:?} - {}. Continuing...",
+                    "Failed flush packet trackers on {:?} - {}. Continuing...",
                     tracker.ts,
                     res.err().unwrap()
                 )
@@ -240,7 +240,19 @@ impl FlowTracker {
 
             if res.is_err() {
                 error!(
-                    "Failed flush on {:?} - {}. Continuing...",
+                    "Failed flush probe trackers on {:?} - {}. Continuing...",
+                    tracker.ts,
+                    res.err().unwrap()
+                )
+            }
+        }
+
+        for tracker in self.sock_trackers.iter_mut() {
+            let res = tracker.flush(&self.flow, &db);
+
+            if res.is_err() {
+                error!(
+                    "Failed flush sock trackers on {:?} - {}. Continuing...",
                     tracker.ts,
                     res.err().unwrap()
                 )
