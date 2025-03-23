@@ -168,7 +168,7 @@ If you want to read the raw bytes from your own program, take a look at [tcbee-r
 
 <img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.png"/>
 
-<img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.gif"/>
+<img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.webp"/>
 
 ### Visualizing CWND Size
 
