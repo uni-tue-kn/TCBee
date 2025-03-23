@@ -11,18 +11,15 @@ fi
 COMMAND=$1
 shift 
 
-# Execute the appropriate command based on the first argument
+# Call tcbee tool based on passed command
 case "$COMMAND" in
     record)
-        # Replace the echo with your actual record command
         tcbee-record $@
         ;;
     process)
-        # Replace the echo with your actual process command
         tcbee-process $@
         ;;
     visualize)
-        # Replace the echo with your actual visualize command
         tcbee-viz $@
         ;;
     *)
