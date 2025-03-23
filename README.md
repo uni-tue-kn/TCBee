@@ -126,7 +126,7 @@ Available options are:
 - `-q`, `--quiet` to start the program without the terminal UI
 - `-p`, `--port` to filter for flows that have the specified port as source or destination
 
-Data recorded by this tools is written as bytes to `*.tcp` files in `/tmp/`.
+Data recorded by this tool is written as bytes to `*.tcp` files in `/tmp/`.
 
 ### 2. Processing Recorded Data
 
