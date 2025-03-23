@@ -116,7 +116,7 @@ Alternatively, you can also build the tool parts manually using cargo.
 
 ## Working with TCBee
 
-*Note: TCBee is currently split into three programs due to development reasons. It may be aggregated into a single program later on.*
+When working with TCBee, you can call all sub-programs through the `tcbee` script.
 
 ### 1. Recording Data
 
