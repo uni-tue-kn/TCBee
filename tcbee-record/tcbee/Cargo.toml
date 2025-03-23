@@ -41,10 +41,6 @@ cargo_metadata = { workspace = true }
 tcbee-ebpf = { path = "../tcbee-ebpf" }
 
 [[bin]]
-name = "tcbee"
+name = "tcbee-record"
 path = "src/main.rs"
-
-[net]
-net.git-fetch-with-cli= true 
-
 

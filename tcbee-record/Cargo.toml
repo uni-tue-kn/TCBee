@@ -26,3 +26,4 @@ panic = "abort"
 [profile.release.package.tcbee-ebpf]
 debug = 2
 codegen-units = 1
+
