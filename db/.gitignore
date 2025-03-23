@@ -1,3 +1,0 @@
-target/*
-*.sqlite
-Cargo.lock

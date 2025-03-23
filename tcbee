@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Check if at least one argument is provided
+if [ $# -lt 1 ]; then
+    echo "Error: Missing command argument"
+    echo "Usage: $0 [record|process|visualize]"
+    exit 1
+fi
+
+# Get command to call and remove from argument storage
+COMMAND=$1
+shift 
+
+# Call tcbee tool based on passed command
+case "$COMMAND" in
+    record)
+        tcbee-record $@
+        ;;
+    process)
+        tcbee-process $@
+        ;;
+    visualize)
+        tcbee-viz $@
+        ;;
+    *)
+        echo "Error: Invalid command '$COMMAND'"
+        echo "Usage: $0 [record|process|visualize]"
+        exit 1
+        ;;
+esac
+
+exit 0
