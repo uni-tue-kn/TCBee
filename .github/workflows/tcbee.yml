@@ -22,11 +22,11 @@ jobs:
         sudo apt install -y llvm clang libelf-dev libclang-dev pkg-config fontconfig libfontconfig1-dev 
         cargo install bpf-linker
 
-    - name: TCBee Build
-      run: cd tcbee && cargo build --release
+    - name: TCBee-Record Build
+      run: cd tcbee-record && cargo build --release
 
-    - name: DB Build
-      run: cd db && cargo build --release
+    - name: TCBee-Process Build
+      run: cd tcbee-process && cargo build --release
 
-    - name: Visualization Build
-      run: cd viz-tool && cargo build --release      
+    - name: TCBee-Viz Build
+      run: cd tcbee-viz && cargo build --release      
