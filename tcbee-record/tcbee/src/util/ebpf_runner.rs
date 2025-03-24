@@ -28,6 +28,7 @@ pub struct eBPFRunner {
     threads: Vec<JoinHandle<()>>,
     iface: String,
     do_tui: bool,
+    update_period: u128,
     port: u16,
     ebpf: Option<Ebpf>,
 }
@@ -39,6 +40,7 @@ impl eBPFRunner {
         iface: String,
         stop_token: CancellationToken,
         do_tui: bool,
+        update_period: u128,
         port: u16, // If port = 0, do not filter
     ) -> Result<Self, Box<dyn Error>> {
         Ok(eBPFRunner {
@@ -47,6 +49,7 @@ impl eBPFRunner {
             threads: Vec::new(),
             iface: iface,
             do_tui: do_tui,
+            update_period: update_period,
             port: port,
             ebpf: None,
         })
@@ -426,6 +429,7 @@ impl eBPFRunner {
             tcp_sock_send,
             tcp_sock_recv,
             flows_map,
+            self.update_period,
             self.stop_token.clone(),
             self.do_tui,
         )?; // Start thread and store join handle

@@ -52,6 +52,7 @@ pub struct EBPFWatcher {
     tcp_sock_send: RateWatcher<u32>,
     tcp_sock_recv: RateWatcher<u32>,
     flow_tracker: FlowTracker,
+    update_period: u128,
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
 }
@@ -66,6 +67,7 @@ impl EBPFWatcher {
         tcp_sock_send: PerCpuArray<aya::maps::MapData, u32>,
         tcp_sock_recv: PerCpuArray<aya::maps::MapData, u32>,
         flow_tracker: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple>,
+        update_period: u128,
         token: CancellationToken,
         do_tui: bool,
     ) -> Result<EBPFWatcher, Box<dyn Error>> {
@@ -121,6 +123,7 @@ impl EBPFWatcher {
                 tcp_sock_send,
                 tcp_sock_recv,
                 flow_tracker,
+                update_period,
                 token,
                 terminal: Some(terminal),
             })
@@ -133,6 +136,7 @@ impl EBPFWatcher {
                 tcp_sock_send,
                 tcp_sock_recv,
                 flow_tracker,
+                update_period,
                 token,
                 terminal: None,
             })
@@ -522,7 +526,7 @@ impl EBPFWatcher {
             // Wait for key event for 0.5s and check key presses inbetween runs
             let start = Instant::now();
             // Loop until 500ms elapsed
-            while start.elapsed().as_millis() < UI_UPDATE_MS_INTERVAL {
+            while start.elapsed().as_millis() < self.update_period {
                 // Poll for eavent ready
                 // Timout after 10ms
                 // On Error continue to next loop iteration

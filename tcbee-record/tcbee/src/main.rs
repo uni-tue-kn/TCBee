@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     let mut outfile: String = String::new();
     let mut quiet: bool = false;
     let mut port: u16 = 0;
+    let mut update_period: u128 = 100;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -42,6 +43,11 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
             &["-p", "--port"],
             Store,
             "Filter streams for remote or local port.",
+        );
+        argparser.refer(&mut update_period).add_option(
+            &["--tui-update-ms"],
+            Store,
+            "Miliseconds between each TUI update. Default is 100ms, higher values may help with tearing.",
         );
         argparser.refer(&mut quiet).add_option(
             &["-q", "--quiet"],
@@ -67,7 +73,7 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!
     let mut runner =
-        eBPFRunner::new(iface, passed_token, !quiet, port).expect("Failed to create eBPF runner!");
+        eBPFRunner::new(iface, passed_token, !quiet, update_period, port).expect("Failed to create eBPF runner!");
     // Setup and run eBPF threads
     let starting_result = runner.run().await;
 
