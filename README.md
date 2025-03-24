@@ -125,6 +125,7 @@ Available options are:
 
 - `-q`, `--quiet` to start the program without the terminal UI
 - `-p`, `--port` to filter for flows that have the specified port as source or destination
+- `--tui-update-ms` to set an alternative update interval of the UI. May help with tearing, default is 100ms.
 
 Data recorded by this tool is written as bytes to `*.tcp` files in `/tmp/`.
 
