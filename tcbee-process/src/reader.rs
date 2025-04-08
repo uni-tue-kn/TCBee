@@ -26,6 +26,7 @@ pub struct FileReader<T> {
     to_read: u64,
     tx: Sender<DBOperation>,
     token: CancellationToken,
+    progress: ProgressBar,
     _marker: PhantomData<T>,
 }
 
@@ -34,6 +35,7 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
         path: &str,
         tx: Sender<DBOperation>,
         token: CancellationToken,
+        progress: ProgressBar
     ) -> Result<FileReader<T>, Box<dyn Error>> {
         let infile = OpenOptions::new().read(true).open(path).await?;
 
@@ -43,10 +45,11 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
 
         Ok(FileReader {
             path: path.to_string(),
-            reader: reader,
-            to_read: to_read,
-            tx: tx,
-            token: token,
+            reader,
+            to_read,
+            tx,
+            token,
+            progress,
             _marker: PhantomData,
         })
     }
@@ -67,26 +70,18 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
 
         // Progress bar based on total number of entries
         let num_entries = self.to_read / entry_size as u64;
-        let progress = ProgressBar::new(num_entries).with_message(self.path.clone());
-        progress.set_style(
-            ProgressStyle::with_template(
-                "{msg} - [{eta_precise}/{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7}",
-            )
-            .unwrap(),
-        );
+        // Update length of progress bar with expected number of entries
+        self.progress.set_length(num_entries);
 
         // Read until error is returned
         while let Ok(read) = self.reader.read_exact(&mut buffer).await {
             // Check if end of file is reached
             if read < 1 {
                 info!("Reached end of file for {}. Stopping!", self.path);
-                progress.finish();
+                self.progress.finish();
                 return;
             }
 
-            let buf = buffer.to_owned();
-
-            debug!("Buffer read {:?}", buffer);
 
             // Bytes were read, try to parse to struct
             //let event: T = unsafe { std::ptr::read(buffer.as_ptr() as *const _) };
@@ -101,11 +96,11 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
             // If an error is returned, then channel is closed
             if res.is_err() {
                 info!("Stopping file read {} on channel close!", self.path);
-                progress.finish();
+                self.progress.finish();
                 return;
             }
 
-            progress.inc(1);
+            self.progress.inc(1);
 
             // Allow other threads to run
             task::yield_now().await;
@@ -113,7 +108,7 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
 
         // Error was thrown, EOF reached!
         info!("Reached end of file for {}. Stopping!", self.path);
-        progress.finish();
+        self.progress.finish();
         return;
     }
 }

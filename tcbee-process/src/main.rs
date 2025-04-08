@@ -3,15 +3,16 @@ mod flow_tracker;
 mod reader;
 
 mod bindings {
-    pub mod tcp_packet;
-    pub mod tcp_probe;
     pub mod ctypes;
     pub mod sock;
+    pub mod tcp_packet;
+    pub mod tcp_probe;
 }
 
 use bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe};
 use db_writer::{DBOperation, DBWriter};
 use flow_tracker::{EventIndexer, EventType, FlowTracker, TsTracker};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{error, info};
 use reader::{FileReader, FromBuffer};
 use serde::Deserialize;
@@ -43,12 +44,28 @@ fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
     std::array::from_fn(|i| arg[i + 4])
 }
 
-async fn start_file_reader<'a, T: EventIndexer + FromBuffer + Debug + Send + Clone + Deserialize<'a> + 'static>(
-    path: &str,
+async fn start_file_reader<
+    'a,
+    T: EventIndexer + FromBuffer + Debug + Send + Clone + Deserialize<'a> + 'static,
+>(
+    path: &'static str,
     tx: Sender<DBOperation>,
     token: CancellationToken,
+    bars: &MultiProgress,
 ) -> JoinHandle<()> {
-    let reader_res = FileReader::<T>::new(path, tx.clone(), token).await;
+    // Add progress bar to multibar
+    let mut progress = ProgressBar::new(0).with_message(path);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{msg} - [{eta_precise}/{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7}",
+        )
+        .unwrap(),
+    );
+    progress = bars.add(progress);
+
+    // Initialize reader to db
+    // TODO: change to if let
+    let reader_res = FileReader::<T>::new(path, tx.clone(), token, progress).await;
     if reader_res.is_err() {
         panic!(
             "Could not open File at {} ! Error: {}",
@@ -58,6 +75,7 @@ async fn start_file_reader<'a, T: EventIndexer + FromBuffer + Debug + Send + Clo
     }
     let mut reader = reader_res.unwrap();
 
+    // Start reader
     task::spawn(async move {
         reader.run().await;
     })
@@ -65,35 +83,38 @@ async fn start_file_reader<'a, T: EventIndexer + FromBuffer + Debug + Send + Clo
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-
     env_logger::init();
 
-    let file = "db.sqlite".to_string();
+    let progress_bars = MultiProgress::new();
 
-    // TODO: load from tcpprobe-common
-    let xdp_path = "/tmp/xdp.tcp";
-    let tc_path = "/tmp/tc.tcp";
-    let probe_path = "/tmp/probe.tcp";
+    let status = progress_bars.add(ProgressBar::new(5));
+    status.set_style(
+        ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
+            .unwrap()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+    );
 
-    let a = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 146, 10, 44, 83, 186, 4, 0, 0, 1, 0, 0, 127, 1, 0, 0, 127, 16, 29, 237, 216, 42, 87, 50, 48, 152, 166, 137, 19, 0, 2, 147, 129, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255];
-    let b = [122, 32, 14, 217, 42, 87, 50, 48, 152, 166, 137, 19, 0, 2, 244, 253, 0, 0, 0, 0, 0, 0, 0, 0];
     // Channel to send operations to DB Backend
     let (tx, rx) = mpsc::channel::<DBOperation>(100000);
     let stop_token = CancellationToken::new();
 
     info!("Starting db backend!");
+    println!("Starting readers, initial processing may be slow due to setup of streams!");
 
     // Create DB Backend handler
-    let db_res = DBWriter::new("db.sqlite", rx);
+    let db_res = DBWriter::new("db.sqlite", rx,status);
     if db_res.is_err() {
         panic!("Could not open Database! Error: {}", db_res.err().unwrap())
     }
     let mut db = db_res.unwrap();
 
-    let db_thread = task::spawn_blocking(move || {
+    let _db_thread = task::spawn_blocking(move || {
         let res = db.run();
         if res.is_err() {
-            error!("DB Backend stopping on error! Error: {}",res.err().unwrap())
+            error!(
+                "DB Backend stopping on error! Error: {}",
+                res.err().unwrap()
+            )
         }
     });
 
@@ -101,19 +122,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Start all tasks
     // TODO: move to config file!
+    
     let threads = vec![
-        start_file_reader::<TcpPacket>("/tmp/xdp.tcp", tx.clone(), stop_token.clone()).await,
-        start_file_reader::<TcpPacket>("/tmp/tc.tcp", tx.clone(), stop_token.clone()).await,
-        start_file_reader::<TcpProbe>("/tmp/probe.tcp", tx.clone(), stop_token.clone()).await,
-        start_file_reader::<sock_trace_entry>("/tmp/sock_send.tcp", tx.clone(), stop_token.clone()).await,
-        start_file_reader::<sock_trace_entry>("/tmp/sock_recv.tcp", tx.clone(), stop_token.clone()).await
-    ];  
+        start_file_reader::<TcpPacket>(
+            "/tmp/xdp.tcp",
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
+        start_file_reader::<TcpPacket>(
+            "/tmp/tc.tcp",
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
+        start_file_reader::<TcpProbe>(
+            "/tmp/probe.tcp",
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
+        start_file_reader::<sock_trace_entry>(
+            "/tmp/sock_send.tcp",
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
+        start_file_reader::<sock_trace_entry>(
+            "/tmp/sock_recv.tcp",
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
+    ];
 
     // Wait for file threads to finish!
     // TODO add ctrl + c check!
     for t in threads {
-        
-        let res = t.await;
+        let _res = t.await;
     }
     // Ensure that all channel tx are dropped to signal db_backend to stop
     drop(tx);
@@ -122,6 +173,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Signal stop to db backend
     stop_token.cancel();
-    
+
     Ok(())
 }

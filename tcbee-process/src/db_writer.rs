@@ -1,5 +1,6 @@
 use std::{collections::HashMap, error::Error};
 
+use indicatif::ProgressBar;
 use log::error;
 use tokio::sync::mpsc::Receiver;
 use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, IpTuple, TSDBInterface};
@@ -20,20 +21,46 @@ pub struct DBWriter {
     db: Box<dyn TSDBInterface + Send>,
     streams: HashMap<IpTuple, FlowTracker>,
     rx: Receiver<DBOperation>,
+    status: ProgressBar,
+    num_flows: i32,
 }
 
 impl DBWriter {
-    pub fn new(file: &str, rx: Receiver<DBOperation>) -> Result<DBWriter, Box<dyn Error>> {
+    pub fn new(
+        file: &str,
+        rx: Receiver<DBOperation>,
+        status: ProgressBar,
+    ) -> Result<DBWriter, Box<dyn Error>> {
         let db: Box<dyn TSDBInterface + Send> =
             database_factory::<SQLiteTSDB>(DBBackend::SQLite(file.to_string()))?;
 
         let streams: HashMap<IpTuple, FlowTracker> = HashMap::new();
 
+        status.set_message(format!("Tracking {} Flows",0));
+
         Ok(DBWriter {
-            db: db,
-            streams: streams,
-            rx: rx,
+            db,
+            streams,
+            rx,
+            status,
+            num_flows: 0
         })
+    }
+
+    pub fn setup_new_stream(&mut self, tuple: &IpTuple) -> Result<(), Box<dyn Error>>  {
+        // Insert stream if not known
+        if !self.streams.contains_key(tuple) {
+            let new_tracker = FlowTracker::new(&self.db, tuple);
+
+            // TODO: remove unwrap, error handling!
+            self.streams.insert(tuple.clone(), new_tracker);
+
+            // Update progress message!
+            self.num_flows += 1;
+            self.status.set_message(format!("Tracking {} Flows",self.num_flows));
+        }
+
+        Ok(())
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
@@ -42,6 +69,7 @@ impl DBWriter {
         let time_base: f64 = 0.0;
 
         while let Some(event) = self.rx.blocking_recv() {
+            self.status.inc(1);
             match event {
                 DBOperation::Packet(data) => {
                     if data.div != 0xFFFFFFFFu32.to_be_bytes() {
@@ -50,13 +78,7 @@ impl DBWriter {
 
                     let tuple = data.get_ip_tuple();
 
-                    // Insert stream if not known
-                    if !self.streams.contains_key(&tuple) {
-                        let new_tracker = FlowTracker::new(&self.db, &tuple);
-
-                        // TODO: remove unwrap, error handling!
-                        self.streams.insert(tuple.clone(), new_tracker);
-                    }
+                    self.setup_new_stream(&tuple)?;
 
                     let tracker = self.streams.get_mut(&tuple).unwrap();
 
@@ -76,14 +98,7 @@ impl DBWriter {
                     }
 
                     let tuple = data.get_ip_tuple();
-
-                    // Insert stream if not known
-                    if !self.streams.contains_key(&tuple) {
-                        let new_tracker = FlowTracker::new(&self.db, &tuple);
-
-                        // TODO: remove unwrap, error handling!
-                        self.streams.insert(tuple.clone(), new_tracker);
-                    }
+                    self.setup_new_stream(&tuple)?;
 
                     let tracker = self.streams.get_mut(&tuple).unwrap();
 
@@ -105,14 +120,7 @@ impl DBWriter {
                     }
 
                     let tuple = sock.get_ip_tuple();
-
-                    // Insert stream if not known
-                    if !self.streams.contains_key(&tuple) {
-                        let new_tracker = FlowTracker::new(&self.db, &tuple);
-
-                        // TODO: remove unwrap, error handling!
-                        self.streams.insert(tuple.clone(), new_tracker);
-                    }
+                    self.setup_new_stream(&tuple)?;
 
                     let tracker = self.streams.get_mut(&tuple).unwrap();
 
