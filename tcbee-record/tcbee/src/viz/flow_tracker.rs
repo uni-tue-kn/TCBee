@@ -105,8 +105,8 @@ impl FlowTracker {
                     // Checks if the first 12 bytes of the array are zero
                     // If so, the address is v4, otherwise its v6
                     let mut is_ipv6 = true;
-                    for j in 0..13 {
-                        is_ipv6 = is_ipv6 & (tuple.src_ip[j] == 0);
+                    for j in 0..12 {
+                        is_ipv6 &= tuple.src_ip[j] == 0;
                     }
 
                     let src: IpAddr;
