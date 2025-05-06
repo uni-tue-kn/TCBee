@@ -24,6 +24,9 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     let mut quiet: bool = false;
     let mut port: u16 = 0;
     let mut update_period: u128 = 100;
+    let mut trace_headers: bool = false;
+    let mut trace_tracepoints: bool = false;
+    let mut trace_kernel: bool = false;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -54,6 +57,21 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
             StoreTrue,
             "Disable terminal UI. Will still display some information.",
         );
+        argparser.refer(&mut trace_headers).add_option(
+            &["-h", "--headers"],
+            StoreTrue,
+            "Record headers of TCP packets using Tthe XDP and TC hook. Very resource intensive!",
+        );
+        argparser.refer(&mut trace_tracepoints).add_option(
+            &["-t", "--tracepoints"],
+            StoreTrue,
+            "Record TCP metrics of tcp_probe kernel tracepoint. Covers main TCP metrics but not all!",
+        );
+        argparser.refer(&mut trace_kernel).add_option(
+            &["-k", "--kernel"],
+            StoreTrue,
+            "Record TCP metrics from kernel calls to tcp_sendmsg and tcp_recvmsg! Covers all TCP metrics.",
+        );
 
         // Will try to parse arguments or exit program on error!
         argparser.parse_args_or_exit();
@@ -73,7 +91,7 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!
     let mut runner =
-        eBPFRunner::new(iface, passed_token, !quiet, update_period, port).expect("Failed to create eBPF runner!");
+        eBPFRunner::new(iface, passed_token, !quiet, update_period, port,trace_headers,trace_kernel,trace_tracepoints).expect("Failed to create eBPF runner!");
     // Setup and run eBPF threads
     let starting_result = runner.run().await;
 
