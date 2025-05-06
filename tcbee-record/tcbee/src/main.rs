@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use argparse::{ArgumentParser, Store, StoreTrue};
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> anyhow::Result<(), Box<dyn Error>> {
+async fn main()  {
     // Parse command line arguments
     let mut iface: String = String::new();
     let mut outfile: String = String::new();
@@ -77,6 +77,11 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
         argparser.parse_args_or_exit();
     }
 
+    if !trace_headers && !trace_tracepoints && !trace_kernel {
+        println!("No metrics to trace selected, stopping! Please select at least one of --headers, --tracepoints, --kernel!");
+        return
+    }
+
     // Greet user if running without TUI
     if quiet {
         println!("Running TCBee without terminal UI, Ctrl+c to stop recording!");
@@ -99,7 +104,6 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
         error!("Failed to start eBPF runner {}", err);
         // Ensure that possible started threads are stopped
         runner.stop().await;
-        Err(err)
     } else {
         // Runner was created and correctly initialized
         // If quiet mode: wait for ctrl+c to cancel
@@ -117,6 +121,5 @@ async fn main() -> anyhow::Result<(), Box<dyn Error>> {
         runner.stop().await;
 
         println!("Stopped gracefully!");
-        Ok(())
     }
 }
