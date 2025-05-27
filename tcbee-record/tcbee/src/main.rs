@@ -1,23 +1,24 @@
 // Crate components
 mod config;
 mod handlers;
-mod util;
+mod eBPF;
 mod viz;
-use util::ebpf_runner::eBPFRunner;
+use anyhow::anyhow;
+use eBPF::ebpf_runner::EbpfRunner;
+use eBPF::ebpf_runner_config::EbpfRunnerConfig;
 
 // Error handling
-use log::error;
+use log::{error, info};
 use std::error::Error;
 
 // Async Libraries
-use tokio::signal::ctrl_c;
+use tokio::{runtime::Builder, signal::ctrl_c};
 use tokio_util::sync::CancellationToken;
 
 // Commandline arguments
 use argparse::{ArgumentParser, Store, StoreTrue};
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main()  {
+fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let mut iface: String = String::new();
     let mut outfile: String = String::new();
@@ -27,6 +28,7 @@ async fn main()  {
     let mut trace_headers: bool = false;
     let mut trace_tracepoints: bool = false;
     let mut trace_kernel: bool = false;
+    let mut cpus: u16 = 1;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -51,6 +53,11 @@ async fn main()  {
             &["--tui-update-ms"],
             Store,
             "Miliseconds between each TUI update. Default is 100ms, higher values may help with tearing.",
+        );
+        argparser.refer(&mut cpus).add_option(
+            &["-c", "--cpus"],
+            Store,
+            "Number of CPUs to run TCBee on. Will run at 100% load due to polling from eBPF maps.",
         );
         argparser.refer(&mut quiet).add_option(
             &["-q", "--quiet"],
@@ -78,8 +85,7 @@ async fn main()  {
     }
 
     if !trace_headers && !trace_tracepoints && !trace_kernel {
-        println!("No metrics to trace selected, stopping! Please select at least one of --headers, --tracepoints, --kernel!");
-        return
+        return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
 
     // Greet user if running without TUI
@@ -90,36 +96,52 @@ async fn main()  {
 
     // Cancellation token to signal stopping to child threads
     let token = CancellationToken::new();
-    // For each thread token is cloned an passed
-    let passed_token = token.clone();
+
+    let config = EbpfRunnerConfig::new()
+        .filter_port(port)
+        .tui(!quiet)
+        .update_period(update_period)
+        .headers(trace_headers)
+        .tracepoints(trace_tracepoints)
+        .kernel(trace_kernel)
+        .interface(iface);
 
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!
-    let mut runner =
-        eBPFRunner::new(iface, passed_token, !quiet, update_period, port,trace_headers,trace_kernel,trace_tracepoints).expect("Failed to create eBPF runner!");
-    // Setup and run eBPF threads
-    let starting_result = runner.run().await;
+    let mut runner = EbpfRunner::new(token.clone(), config);
 
-    if let Err(err) = starting_result {
-        error!("Failed to start eBPF runner {}", err);
-        // Ensure that possible started threads are stopped
-        runner.stop().await;
-    } else {
-        // Runner was created and correctly initialized
-        // If quiet mode: wait for ctrl+c to cancel
-        // If TUI is used: TUI will cancel the token so wait for that
-        if quiet {
-            let _ = ctrl_c().await;
-            token.cancel();
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(cpus as usize)
+        .thread_name("TCBee")
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let starting_result = runner.run().await;
+
+        if let Err(err) = starting_result {
+            // On start failure, wait until everythin has stopped
+            let err = anyhow!("Failed to start eBPF runner {}", err);
+            runner.stop().await;
+            Err(err)
         } else {
-            token.cancelled().await;
+            // Runner was created and correctly initialized
+            // If quiet mode: wait for ctrl+c to cancel
+            // If TUI is used: TUI will cancel the token so wait for that
+            if quiet {
+                let _ = ctrl_c().await;
+                token.cancel();
+            } else {
+                token.cancelled().await;
+            }
+
+            info!("Stopping eBPF runner and threads!");
+
+            // Stop runner and wait for all child threads to finish
+            runner.stop().await;
+
+            info!("Stopped gracefully!");
+            Ok(())
         }
-
-        println!("Stopping eBPF runner and threads!");
-
-        // Stop runner and wait for all child threads to finish
-        runner.stop().await;
-
-        println!("Stopped gracefully!");
-    }
+    })
 }
