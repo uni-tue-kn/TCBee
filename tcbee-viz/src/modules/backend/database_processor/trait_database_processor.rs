@@ -3,7 +3,7 @@
 //  - create new datapoints based on given flow-series-data
 //  - modify the database with new elements / delete entries from database
 
-use crate::{DataValue, FlowSeriesData, ProcessedPlotData};
+use crate::{modules::backend::database_processor::plugin_upper_window::UpperWindow, DataValue, FlowSeriesData, ProcessedPlotData};
 // ----- //
 use std::slice::Iter;
 
@@ -50,21 +50,24 @@ pub trait PreProcessor {
 pub enum ProcessorImplementation {
     // None,
     DummyProcessor,
+    UpperWindow
 }
 impl ToString for ProcessorImplementation {
     fn to_string(&self) -> String {
         match self {
             ProcessorImplementation::DummyProcessor => "Dummy Processor".to_string(),
+            ProcessorImplementation::UpperWindow => "Upper TCP Window Number".to_string(),
             _ => "None selected".to_string(),
         }
     }
 }
 impl ProcessorImplementation {
-    pub const ALL: &'static [Self] = &[Self::DummyProcessor];
+    pub const ALL: &'static [Self] = &[Self::DummyProcessor, Self::UpperWindow];
 
     pub fn create_processor(&self) -> Box<dyn PreProcessor> {
         match self {
             Self::DummyProcessor => Box::new(DummyProcessor::default()),
+            Self::UpperWindow => Box::new(UpperWindow::default())
         }
     }
 }
