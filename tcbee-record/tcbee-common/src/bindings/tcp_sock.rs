@@ -65562,6 +65562,20 @@ pub struct rfkill {
     pub name: __IncompleteArrayField<::aya_ebpf::cty::c_char>,
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
+pub struct cwnd_trace_entry {
+    // Stream info
+    pub time: u64,
+    pub addr_v4: u64,
+    pub src_v6: [u8; 16usize],
+    pub dst_v6: [u8; 16usize],
+    pub ports: u32,
+    pub family: u16,
+    // Data
+    pub snd_cwnd: u32,
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]

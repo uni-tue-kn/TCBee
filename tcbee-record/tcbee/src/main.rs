@@ -21,13 +21,14 @@ use argparse::{ArgumentParser, Store, StoreTrue};
 fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let mut iface: String = String::new();
-    let mut outfile: String = String::new();
+    let mut dir: String = "/tmp/".to_string();
     let mut quiet: bool = false;
     let mut port: u16 = 0;
     let mut update_period: u128 = 100;
     let mut trace_headers: bool = false;
     let mut trace_tracepoints: bool = false;
     let mut trace_kernel: bool = false;
+    let mut trace_cwnd: bool = false;
     let mut cpus: u16 = 1;
 
     {
@@ -39,10 +40,10 @@ fn main() -> anyhow::Result<()> {
             .refer(&mut iface)
             .add_argument("interface", Store, "Interface to record packets on!")
             .required();
-        argparser.refer(&mut outfile).add_option(
-            &["-f", "--file"],
+        argparser.refer(&mut dir).add_option(
+            &["-d", "--dir"],
             Store,
-            "File to store recording results in.",
+            "Directory to store recording results in. Defaults to /tmp/",
         );
         argparser.refer(&mut port).add_option(
             &["-p", "--port"],
@@ -79,12 +80,17 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Record TCP metrics from kernel calls to tcp_sendmsg and tcp_recvmsg! Covers all TCP metrics.",
         );
+        argparser.refer(&mut trace_cwnd).add_option(
+            &["-w", "--cwnd"],
+            StoreTrue,
+            "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
+        );
 
         // Will try to parse arguments or exit program on error!
         argparser.parse_args_or_exit();
     }
 
-    if !trace_headers && !trace_tracepoints && !trace_kernel {
+    if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
 
@@ -104,7 +110,9 @@ fn main() -> anyhow::Result<()> {
         .headers(trace_headers)
         .tracepoints(trace_tracepoints)
         .kernel(trace_kernel)
-        .interface(iface);
+        .interface(iface)
+        .cwnd(trace_cwnd)
+        .dir(dir);
 
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!
@@ -127,7 +135,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             // Runner was created and correctly initialized
             // If quiet mode: wait for ctrl+c to cancel
-            // If TUI is used: TUI will cancel the token so wait for that
+            // If TUI is used: TUI will cancel the token so wait for that 
             if quiet {
                 let _ = ctrl_c().await;
                 token.cancel();
@@ -137,7 +145,7 @@ fn main() -> anyhow::Result<()> {
 
             info!("Stopping eBPF runner and threads!");
 
-            // Stop runner and wait for all child threads to finish
+            // wait for all child threads to finish
             runner.stop().await;
 
             info!("Stopped gracefully!");

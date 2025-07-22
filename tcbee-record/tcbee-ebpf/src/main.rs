@@ -22,8 +22,9 @@ use aya_ebpf::{
     programs::{FEntryContext, FExitContext, TcContext, TracePointContext, XdpContext},
 };
 
+use counters::try_ingress_counter;
 use probes::{
-    tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_sock_sendmsg, try_tcp_recv_socket}, xdp::xdp_hook
+    tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_sock_sendmsg, try_tcp_recv_socket,try_sock_recvmsg_cwnd_only,try_sock_sendmsg_cwnd_only}, xdp::xdp_hook
 };
 
 #[no_mangle]
@@ -45,6 +46,22 @@ pub fn sock_recvmsg(ctx: FEntryContext) -> u32 {
     }
 }
 
+// Performance variant of above functions that only capture cwnd
+#[fentry(function="tcp_sendmsg")]
+pub fn cwnd_sock_sendmsg(ctx: FEntryContext) -> u32 {
+    match try_sock_sendmsg_cwnd_only(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret
+    }
+}
+#[fentry(function="tcp_recvmsg")]
+pub fn cwnd_sock_recvmsg(ctx: FEntryContext) -> u32 {
+    match try_sock_recvmsg_cwnd_only(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret
+    }
+}
+
 
 #[xdp]
 pub fn xdp_packet_tracer(ctx: XdpContext) -> u32 {
@@ -53,9 +70,10 @@ pub fn xdp_packet_tracer(ctx: XdpContext) -> u32 {
         Err(_) => xdp_action::XDP_ABORTED,
     }
 }
+
 #[classifier]
 pub fn tc_packet_tracer(ctx: TcContext) -> i32 {
-    match { tc_hook(ctx) } {
+    match tc_hook(ctx) {
         Ok(ret) => ret,
         Err(_) => TC_ACT_PIPE,
     }

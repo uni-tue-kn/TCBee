@@ -7,13 +7,17 @@ pub struct EbpfRunnerConfig {
     pub headers: bool,
     pub tracepoints: bool,
     pub kernel: bool,
+    pub cwnd: bool,
+    pub dir: String
 }
 
 pub struct EbpfWatcherConfig {
     pub packets: bool,
     pub stats: bool,
     pub calls: bool,
-    pub flows: bool
+    pub flows: bool,
+    pub cwnd: bool,
+    pub dir: String
 }
 
 impl EbpfRunnerConfig {
@@ -56,7 +60,17 @@ impl EbpfRunnerConfig {
         self
     }
 
+    pub fn cwnd(mut self, set: bool) -> EbpfRunnerConfig {
+        self.cwnd = set;
+        self
+    }
+
+    pub fn dir(mut self, set: String) -> EbpfRunnerConfig {
+        self.dir = set;
+        self
+    }
+
     pub fn watcher_config(&self) -> EbpfWatcherConfig {
-        EbpfWatcherConfig { packets: self.headers, stats: true, calls: self.kernel, flows: true }
+        EbpfWatcherConfig { packets: self.headers, stats: true, calls: self.kernel, flows: true, cwnd:self.cwnd, dir: self.dir.clone() }
     }
 }

@@ -20,6 +20,7 @@ use crate::{
         headers::{TCTracer, XDPTracer},
         kernel::KernelTracer,
         tracepoints::TracepointTracer,
+        cwnd::CwndTracer,
     },
     handlers::{tracepoints::HandlerConstraints, BufferHandler, BufferHandlerImpl},
     viz::ebpf_watcher::EBPFWatcher,
@@ -33,6 +34,11 @@ pub struct EbpfRunner {
     threads: Vec<JoinHandle<()>>,
     config: EbpfRunnerConfig,
     ebpf: Option<Ebpf>,
+}
+
+pub fn prepend_string(mut src: String, prefix: &str) -> String {
+    src.insert_str(0, prefix);
+    src
 }
 
 impl EbpfRunner {
@@ -89,20 +95,22 @@ impl EbpfRunner {
 
         info!("Starting eBPF probes!");
 
+        // TODO: I feel that the file names should be moved to some config file
+
         // Tracing for packet headers via TC and XDP
         if self.config.headers {
             self.threads.push(TCTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
                 self.stop_token.child_token(),
-                "/tmp/tc.tcp".to_string(),
+                prepend_string("tc.tcp".to_string(),&self.config.dir),
             )?);
 
             self.threads.push(XDPTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
                 self.stop_token.child_token(),
-                "/tmp/xdp.tcp".to_string(),
+                prepend_string("xdp.tcp".to_string(),&self.config.dir),
             )?);
         }
 
@@ -111,6 +119,17 @@ impl EbpfRunner {
             self.threads.extend(KernelTracer::spawn(
                 &mut ebpf,
                 self.stop_token.child_token(),
+                prepend_string("send_sock.tcp".to_string(),&self.config.dir),
+                prepend_string("recv_sock.tcp".to_string(),&self.config.dir),
+            )?);
+        }
+        // Performance variant of above hook
+        if self.config.cwnd {
+            self.threads.extend(CwndTracer::spawn(
+                &mut ebpf,
+                self.stop_token.child_token(),
+                prepend_string("send_cwnd.tcp".to_string(),&self.config.dir),
+                prepend_string("recv_cwnd.tcp".to_string(),&self.config.dir),
             )?);
         }
 
@@ -120,21 +139,21 @@ impl EbpfRunner {
                 .push(TracepointTracer::spawn::<tcp_probe_entry>(
                     &mut ebpf,
                     self.stop_token.child_token(),
-                    "/tmp/probe.tcp".to_string(),
+                    prepend_string("probe.tcp".to_string(),&self.config.dir),
                 )?);
 
             self.threads
                 .push(TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
                     &mut ebpf,
                     self.stop_token.child_token(),
-                    "/tmp/retrans_synack.tcp".to_string(),
+                    prepend_string("retransmit_synack.tcp".to_string(),&self.config.dir),
                 )?);
 
             self.threads
                 .push(TracepointTracer::spawn::<tcp_bad_csum_entry>(
                     &mut ebpf,
                     self.stop_token.child_token(),
-                    "/tmp/bad_csum.tcp".to_string(),
+                    prepend_string("bad_csum.tcp".to_string(),&self.config.dir),
                 )?);
         }
 
