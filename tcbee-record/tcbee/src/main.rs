@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     let mut trace_kernel: bool = false;
     let mut trace_cwnd: bool = false;
     let mut cpus: u16 = 1;
-    let mut metrics: bool = true;
+    let mut metrics: bool = false;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
             "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
         );
         argparser.refer(&mut trace_headers).add_option(
-            &["-m", "--metrics"],
+            &["-h", "--headers"],
             StoreTrue,
             "Output a file containing general metrics, such as events handled and events lost. Stored under --dir path as 'metrics.json'",
         );
@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
             "Record TCP metrics from kernel calls to tcp_sendmsg and tcp_recvmsg! Covers all TCP metrics.",
         );
         argparser.refer(&mut metrics).add_option(
-            &["-w", "--cwnd"],
+            &["-m", "--metrics"],
             StoreTrue,
             "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
         );
