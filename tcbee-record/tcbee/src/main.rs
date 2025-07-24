@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
     let mut trace_kernel: bool = false;
     let mut trace_cwnd: bool = false;
     let mut cpus: u16 = 1;
+    let mut metrics: bool = true;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -65,10 +66,15 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Disable terminal UI. Will still display some information.",
         );
-        argparser.refer(&mut trace_headers).add_option(
-            &["-h", "--headers"],
+        argparser.refer(&mut trace_cwnd).add_option(
+            &["-w", "--cwnd"],
             StoreTrue,
-            "Record headers of TCP packets using Tthe XDP and TC hook. Very resource intensive!",
+            "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
+        );
+        argparser.refer(&mut trace_headers).add_option(
+            &["-m", "--metrics"],
+            StoreTrue,
+            "Output a file containing general metrics, such as events handled and events lost. Stored under --dir path as 'metrics.json'",
         );
         argparser.refer(&mut trace_tracepoints).add_option(
             &["-t", "--tracepoints"],
@@ -80,11 +86,12 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Record TCP metrics from kernel calls to tcp_sendmsg and tcp_recvmsg! Covers all TCP metrics.",
         );
-        argparser.refer(&mut trace_cwnd).add_option(
+        argparser.refer(&mut metrics).add_option(
             &["-w", "--cwnd"],
             StoreTrue,
             "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
         );
+        
 
         // Will try to parse arguments or exit program on error!
         argparser.parse_args_or_exit();
@@ -112,6 +119,7 @@ fn main() -> anyhow::Result<()> {
         .kernel(trace_kernel)
         .interface(iface)
         .cwnd(trace_cwnd)
+        .metrics(metrics)
         .dir(dir);
 
     // Main thread that strats all probes/tracepoints

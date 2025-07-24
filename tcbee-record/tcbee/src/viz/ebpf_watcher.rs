@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fs::File,
-    io::{self, Read, Write},
+    io::{self, BufWriter, Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num,
     ops::{AddAssign, Sub},
@@ -14,10 +14,11 @@ use std::{
 
 use anyhow::{anyhow, Context};
 use glob;
+use serde::Serialize;
 
 use crate::{
     config::UI_UPDATE_MS_INTERVAL,
-    eBPF::ebpf_runner_config::EbpfWatcherConfig,
+    eBPF::{ebpf_runner::prepend_string, ebpf_runner_config::EbpfWatcherConfig},
     viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
 };
 
@@ -63,7 +64,16 @@ pub struct EBPFWatcher {
     config: EbpfWatcherConfig,
 }
 
-//TODO: Monitor packet rate vs TCP packet rate?
+#[derive(Serialize)]
+pub struct Metrics {
+    handled: u32,
+    dropped: u32,
+    ingress: u32,
+    egress: u32,
+    ingress_calls: u32,
+    egress_calls: u32 
+}
+    //TODO: Monitor packet rate vs TCP packet rate?
 impl EBPFWatcher {
     pub fn new(
         ebpf: &mut Ebpf,
@@ -432,6 +442,31 @@ impl EBPFWatcher {
                     }
                 }
             }
+        }
+
+        // Store metrics if needed
+        if self.config.metrics {
+
+            let metrics = Metrics {
+                handled: self.events_handled.get_counter_sum(),
+                dropped: self.events_drops.get_counter_sum(),
+                ingress: self.ingress_counter.get_counter_sum(),
+                egress: self.egress_counter.get_counter_sum(),
+                ingress_calls: self.tcp_sock_recv.get_counter_sum(),
+                egress_calls: self.tcp_sock_send.get_counter_sum(),
+            };
+            
+
+
+            let Ok(outfile) = File::create(prepend_string("metrics.json".to_string(), &self.config.dir)) else {
+                error!("Could not open outfile: {}/metrics.json",self.config.dir);
+                return;
+            };
+
+            let mut writer = BufWriter::new(outfile);
+
+            let _ = serde_json::to_writer(&mut writer, &metrics);
+            let _ = writer.flush();
         }
 
         // Restore terminal view
