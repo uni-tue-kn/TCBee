@@ -108,7 +108,7 @@ impl Default for StateContainer {
             screen_modify_database: ScreenModifyDatabase::new(settings.clone()),
             application_settings: settings,
             // theme: Theme::CatppuccinFrappe,
-            theme: Theme::GruvboxLight,
+            theme: Theme::Light,
         }
     }
 }

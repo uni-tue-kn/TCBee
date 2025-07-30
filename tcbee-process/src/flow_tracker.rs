@@ -7,10 +7,10 @@ use std::{
 use ts_storage::{DataPoint, DataValue, Flow, IpTuple, TSDBInterface, TimeSeries};
 
 use crate::{
-    bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe},
+    bindings::{sock::sock_trace_entry, cwnd::cwnd_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe},
     db_writer::DBOperation,
 };
-const BUFFER_SIZE: usize = 10000;
+const BUFFER_SIZE: usize = 1000;
 
 pub const AF_INET: u16 = 2;
 
@@ -112,7 +112,8 @@ impl TsTracker {
 pub enum EventType {
     Packet,
     TcpProbe,
-    Socket
+    Socket,
+    Cwnd
 }
 
 #[derive(Debug)]
@@ -121,6 +122,7 @@ pub struct FlowTracker {
     packet_trackers: Vec<TsTracker>,
     probe_trackers: Vec<TsTracker>,
     sock_trackers: Vec<TsTracker>,
+    cwnd_trackers: Vec<TsTracker>
 }
 
 impl FlowTracker {
@@ -129,16 +131,19 @@ impl FlowTracker {
         let packet = TcpPacket::default();
         let probe = TcpProbe::default();
         let sock = sock_trace_entry::default();
+        let cwnd = cwnd_trace_entry::default();
 
         let packet_tracker = FlowTracker::create_time_series::<TcpPacket>(db, &flow, &packet);
         let probe_tracker = FlowTracker::create_time_series::<TcpProbe>(db, &flow, &probe);
         let sock_tracker = FlowTracker::create_time_series::<sock_trace_entry>(db, &flow, &sock);
+        let cwnd_tracker = FlowTracker::create_time_series::<cwnd_trace_entry>(db, &flow, &cwnd);
 
         FlowTracker {
             flow: flow,
             packet_trackers: packet_tracker,
             probe_trackers: probe_tracker,
-            sock_trackers: sock_tracker
+            sock_trackers: sock_tracker,
+            cwnd_trackers: cwnd_tracker
         }
     }
 
@@ -198,6 +203,22 @@ impl FlowTracker {
                     }
                 }
             },
+
+            EventType::Cwnd => {
+                let time = event.get_timestamp();
+
+                for i in 0..=event.get_max_index() {
+                    if let Some(value) = event.get_field(i) {
+
+                        let entry = DataPoint {
+                            timestamp: time,
+                            value: value,
+                        };
+    
+                        self.cwnd_trackers[i].add_entry(entry, db)?;
+                    }
+                }
+            },
         }
 
         Ok(())
@@ -253,6 +274,18 @@ impl FlowTracker {
             if res.is_err() {
                 error!(
                     "Failed flush sock trackers on {:?} - {}. Continuing...",
+                    tracker.ts,
+                    res.err().unwrap()
+                )
+            }
+        }
+
+        for tracker in self.cwnd_trackers.iter_mut() {
+            let res = tracker.flush(&self.flow, &db);
+
+            if res.is_err() {
+                error!(
+                    "Failed flush cwnd trackers on {:?} - {}. Continuing...",
                     tracker.ts,
                     res.err().unwrap()
                 )
