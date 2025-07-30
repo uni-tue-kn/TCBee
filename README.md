@@ -33,6 +33,8 @@
 
 ## Disclaimer
 
+**THIS TOOL IS UNDER ACTIVE DEVELOPMENT, BREAKING CHANGES MAY HAPPEN**
+
 This repository contains the first stable version of TCBee and will be improved/refined in the future.
 The current Todo-List includes
 
@@ -59,6 +61,8 @@ TCBee
 * provides a simple plugin interface to calculate metrics from recorded data and save the results
 * comes with a visualization tool to analyse and compare TCP flow metrics
 * provides a rust library to access flow data for custom visualization tools
+
+Special thanks to Evilyn (https://github.com/ScatteredDrifter) and Lars for their support during development.
 
 
 ## Architecture
