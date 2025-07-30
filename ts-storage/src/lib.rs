@@ -7,6 +7,7 @@ use std::cmp::Eq;
 use std::hash::Hash;
 
 pub mod sqlite;
+pub mod duckdb;
 mod error;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
@@ -67,21 +68,26 @@ pub enum DataValue {
 }
 
 impl DataValue {
-    pub fn type_from_int(val: i64) -> Result<Self, TSDBError> {
+    const INT: i16 = 0;
+    const FLOAT: i16 = 1;
+    const BOOLEAN: i16 = 2;
+    const STRING:i16 = 3;
+
+    pub fn type_from_int(val: i16) -> Result<Self, TSDBError> {
         match val {
-            0 => Ok(DataValue::Int(0)),
-            1 => Ok(DataValue::Float(0.0)),
-            2 => Ok(DataValue::Boolean(false)),
-            3 => Ok(DataValue::String("".to_string())),
-            _ => Err(TSDBError::UnknownDataType { val: val }), // TODO: better error handling?
+            DataValue::INT => Ok(DataValue::Int(0)),
+            DataValue::FLOAT => Ok(DataValue::Float(0.0)),
+            DataValue::BOOLEAN => Ok(DataValue::Boolean(false)),
+            DataValue::STRING => Ok(DataValue::String("".to_string())),
+            _ => Err(TSDBError::UnknownDataType { val: val.into() }), // TODO: better error handling?
         }
     }
-    pub fn type_to_int(&self) -> i64 {
+    pub fn type_to_int(&self) -> i16 {
         match self {
-            DataValue::Int(_) => 0,
-            DataValue::Float(_) => 1,
-            DataValue::Boolean(_) => 2,
-            DataValue::String(_) => 3,
+            DataValue::Int(_) => DataValue::INT,
+            DataValue::Float(_) => DataValue::FLOAT,
+            DataValue::Boolean(_) => DataValue::BOOLEAN,
+            DataValue::String(_) => DataValue::STRING,
         }
     }
 
