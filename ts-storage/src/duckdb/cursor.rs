@@ -1,44 +1,35 @@
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::str;
 use std::{error::Error, marker::PhantomData};
 
+use duckdb::arrow::array::Datum;
+use duckdb::types::ValueRef;
 use duckdb::{types::Value, Connection, Row, Rows, Statement, ToSql};
 
 use crate::{DataPoint, DataValue, Flow, FlowAttribute, IpTuple, TimeSeries};
 
 fn parse_value(row: &Row) -> Option<DataValue> {
-    // Parse UNION to corresponding type
-    let Ok(value_type) = row.get::<&str, i16>("value_type") else {
+    let Ok(value) = row.get_ref(0) else {
         return None;
     };
 
-    match value_type {
-        DataValue::INT => {
-            let Ok(value) = row.get::<&str, i64>("value") else {
+    //. TODO: Check integer sizes in DB creation!
+    match value {
+        ValueRef::Int(val) => { Some(DataValue::Int(val.into())) },
+        ValueRef::Double(val)=> { Some(DataValue::Float(val)) },
+        ValueRef::Text(val)=> {
+            let Ok(val) = str::from_utf8(val) else {
                 return None;
             };
-            Some(DataValue::Int(value))
-        }
-        DataValue::STRING => {
-            let Ok(value) = row.get::<&str, String>("value") else {
-                return None;
-            };
-            Some(DataValue::String(value))
-        }
-        DataValue::FLOAT => {
-            let Ok(value) = row.get::<&str, f64>("value") else {
-                return None;
-            };
-            Some(DataValue::Float(value))
-        }
-        DataValue::BOOLEAN => {
-            let Ok(value) = row.get::<&str, bool>("value") else {
-                return None;
-            };
-            Some(DataValue::Boolean(value))
-        }
-        val => panic!("Invalid column type: {}", val), // THis should never be reached
+
+             Some(DataValue::String(val.to_string()))
+            },
+        ValueRef::Boolean(val)=> { Some(DataValue::Boolean(val)) },
+        _ => panic!("Invalid column type: {:?}", value)
+
     }
+    
 }
 
 pub trait DuckDBCursorStruct: Sized {
@@ -127,11 +118,7 @@ impl DuckDBCursorStruct for FlowAttribute {
         // Parse UNION "value"
         let value = parse_value(row);
 
-        if let Some(value) = value {
-            Some(FlowAttribute { name, value })
-        } else {
-            None
-        }
+        value.map(|value| FlowAttribute { name, value })
     }
 }
 
@@ -178,8 +165,7 @@ pub struct DuckDBCursor<'a, T>
 where
     T: DuckDBCursorStruct,
 {
-    _conn: Connection,
-    rows: Option<Rows>,
+    rows: Rows<'a>,
     _phantom: PhantomData<T>,
 }
 
@@ -187,15 +173,11 @@ impl<'a, T> DuckDBCursor<'a, T>
 where
     T: DuckDBCursorStruct,
 {
-    pub fn new(mut conn: Connection, query: &str) -> Result<Self, duckdb::Error> {
-        let mut stmt = conn.prepare(query)?;
-        let rows = Some(stmt.query([])?);
-
-        Ok(Self {
-            _conn: conn,
+    pub fn new(rows: Rows<'a>) -> Self {
+        Self {
             rows,
             _phantom: PhantomData,
-        })
+        }
     }
 }
 

@@ -1,5 +1,5 @@
 use duckdb::arrow::row;
-use duckdb::{params, Connection, ToSql};
+use duckdb::{params, Appender, Connection, ToSql};
 
 use crate::duckdb::cursor::{DuckDBCursor, DuckDBCursorStruct};
 use crate::duckdb::DuckDBTSDB;
@@ -24,6 +24,15 @@ fn get_entry<T: DuckDBCursorStruct>(
     Ok(cursor.next())
 }
 
+fn val_to_union(value: &DataValue) -> String {
+    match value.type_to_int() {
+        DataValue::INT => format!("{{'inum': {}}}", value.as_string()),
+        DataValue::FLOAT => format!("{{'fnum': {}}}", value.as_string()),
+        DataValue::STRING => format!("{{'str': {}}}", value.as_string()),
+        DataValue::BOOLEAN => format!("{{'bool': {}}}", value.as_string()),
+        _ => panic!("Unknown value type!"),
+    }
+}
 
 impl DuckDBTSDB {
     // Creates SQLite connection to file under given path
@@ -46,54 +55,56 @@ impl DuckDBTSDB {
 
     fn setup(&self) -> Result<(), Box<dyn Error>> {
         // TODO: Check if some settigns are needed
+        
+        self.conn.execute("CREATE SEQUENCE flow_id_seq;", [])?;
+        self.conn.execute("CREATE SEQUENCE flow_attribute_id_seq;", [])?;
+        self.conn.execute("CREATE SEQUENCE time_series_id_seq;", [])?;
 
         let flows_query = "CREATE TABLE IF NOT EXISTS flows (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY DEFAULT nextval('flow_id_seq'),
             src TEXT NOT NULL,
             dst TEXT NOT NULL,
             sport INTEGER NOT NULL,
             dport INTEGER NOT NULL,
             l4proto INTEGER NOT NULL,
             UNIQUE (src, dst, sport, dport, l4proto)
-        )";
+        );";
         self.conn.execute(flows_query, params![])?;
 
         let flow_attributes_query = "CREATE TABLE IF NOT EXISTS flow_attributes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY DEFAULT nextval('flow_attribute_id_seq'),
             flow_id INTEGER,
             name TEXT NOT NULL,
             value UNION(inum INTEGER, str VARCHAR, fnum DOUBLE, bool BOOLEAN),
             type INTEGER,
             UNIQUE (flow_id, name),
             FOREIGN KEY (flow_id) REFERENCES flows(id)
-        )";
+        );";
         self.conn.execute(flow_attributes_query, params![])?;
 
         // Time series table stores name of time series for a flow id and provides time series ID
         // The type defines what data type is sotred in the time series
         // The rust implementation will use this type to parse all values for this time series
-        let time_series_query = "
-            CREATE TABLE IF NOT EXISTS time_series (
-                time_series_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                flow_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                type INTEGER NOT NULL,
-                UNIQUE (flow_id,name),
-                FOREIGN KEY (flow_id) REFERENCES flows(id)
-            );";
+        let time_series_query = "CREATE TABLE IF NOT EXISTS time_series (
+            time_series_id INTEGER PRIMARY KEY DEFAULT nextval('time_series_id_seq'),
+            flow_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            type INTEGER NOT NULL,
+            UNIQUE (flow_id, name),
+            FOREIGN KEY (flow_id) REFERENCES flows(id)
+        );";
         self.conn.execute(time_series_query, params![])?;
 
         // This table stores the actual time series data and can be accessed more quickly via the time_series_id
         // When a time_series entry is deleted, the entries in this table are cascaded as well!
-        let time_series_data_query = "
-            CREATE TABLE IF NOT EXISTS time_series_data (
-                time_series_id INTEGER NOT NULL,
-                timestamp FLOAT NOT NULL,
-                value UNION(inum INTEGER, str VARCHAR, fnum DOUBLE, bool BOOLEAN),
-                type INTEGER,
-                PRIMARY KEY (time_series_id, timestamp),
-                FOREIGN KEY (time_series_id) REFERENCES time_series(time_series_id) ON DELETE CASCADE 
-            );";
+        let time_series_data_query = "CREATE TABLE IF NOT EXISTS time_series_data (
+            time_series_id INTEGER NOT NULL,
+            timestamp DOUBLE NOT NULL,
+            value UNION(inum INTEGER, str VARCHAR, fnum DOUBLE, bool BOOLEAN),
+            type INTEGER,
+            PRIMARY KEY (time_series_id, timestamp),
+            FOREIGN KEY (time_series_id) REFERENCES time_series(time_series_id)
+        );";
 
         self.conn.execute(time_series_data_query, params![])?;
 
@@ -149,7 +160,7 @@ impl TSDBInterface for DuckDBTSDB {
 
         let params = params![id];
 
-        get_entry(params, "SELECT * FROM flows WHERE id = :?;", &self.conn)
+        get_entry(params, "SELECT * FROM flows WHERE id = ?;", &self.conn)
     }
 
     fn get_flow_attribute_by_id(&self, id: i64) -> Result<Option<FlowAttribute>, Box<dyn Error>> {
@@ -221,7 +232,7 @@ impl TSDBInterface for DuckDBTSDB {
         // Map usize return to bool value
         match query.execute(params) {
             Ok(_) => Ok(true),
-            Err(e) => Err(Box::new(e))
+            Err(e) => Err(Box::new(e)),
         }
     }
 
@@ -232,8 +243,8 @@ impl TSDBInterface for DuckDBTSDB {
 
         // This is really stupid but I cant figure out a fix currently....
         // May need to redo the interface definition....
-        // TODO: THIS NEEDS TO BE CHANGED        
-        let rows = stmt.query_map(params![], |row| Ok(Flow::from_row(row)) )?;
+        // TODO: THIS NEEDS TO BE CHANGED
+        let rows = stmt.query_map(params![], |row| Ok(Flow::from_row(row)))?;
 
         let mut vec: Vec<Flow> = Vec::new();
         for r in rows {
@@ -252,14 +263,17 @@ impl TSDBInterface for DuckDBTSDB {
         self.check_setup()?;
         let id = self.check_flow(flow)?;
 
-        match get_entry::<FlowAttribute>(params![id], "SELECT * FROM flow_attributes WHERE flow_id = ? AND name = :?;", &self.conn)? {
+        match get_entry::<FlowAttribute>(
+            params![id,name],
+            "SELECT * FROM flow_attributes WHERE flow_id = ? AND name = ?;",
+            &self.conn,
+        )? {
             Some(entry) => Ok(entry),
             None => Err(Box::new(TSDBError::NoAttriuteError {
                 name: name.to_owned(),
                 id,
-            }))
+            })),
         }
-
     }
 
     fn list_flow_attributes(
@@ -269,12 +283,14 @@ impl TSDBInterface for DuckDBTSDB {
         // Ensure that database is ready to list flows
         self.check_setup()?;
         let id = self.check_flow(flow)?;
-        let mut stmt = self.conn.prepare("SELECT * FROM flow_attributes WHERE flow_id = :?")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM flow_attributes WHERE flow_id = ?")?;
 
         // This is really stupid but I cant figure out a fix currently....
         // May need to redo the interface definition....
-        // TODO: THIS NEEDS TO BE CHANGED        
-        let rows = stmt.query_map(params![id], |row| Ok(FlowAttribute::from_row(row)) )?;
+        // TODO: THIS NEEDS TO BE CHANGED
+        let rows = stmt.query_map(params![id], |row| Ok(FlowAttribute::from_row(row)))?;
 
         let mut vec: Vec<FlowAttribute> = Vec::new();
         for r in rows {
@@ -297,43 +313,24 @@ impl TSDBInterface for DuckDBTSDB {
         self.check_setup()?;
 
         let attr_value = &attribute.value;
-
-        // TODO: make this prettier!
-        let val_type = attr_value.type_to_int();
-
         // Prepare query string
         let query_str = format!(
-            "INSERT INTO flow_attributes (flow_id, name, value, type) VALUES (?, ?, ?. ?);"
+            "INSERT INTO flow_attributes (flow_id, name, value, type) VALUES (?, ?, ?, ?);"
         );
 
-        let mut query = self.conn.prepare(query_str)?;
+        let mut query = self.conn.prepare(&query_str)?;
 
-        // Convert Enum to sqlite Value type
-        let value: Value = match attr_value {
-            DataValue::Boolean(val) => {
-                if *val {
-                    1.into()
-                } else {
-                    0.into()
-                }
-            } // For boolean set 1 or 0
-            DataValue::Int(val) => (*val).into(),
-            DataValue::Float(val) => (*val).into(),
-            DataValue::String(val) => (*val.clone()).into(),
-        };
+        let params = params![
+            flow.get_id(),
+            attribute.name,
+            val_to_union(attr_value),
+            attr_value.type_to_int()
+        ];
 
-        // Bind parameters to query
-        query.bind::<&[(_, Value)]>(
-            &[
-                (":id", flow.get_id().into()),
-                (":name", attribute.name.clone().into()),
-                (":value", value),
-            ][..],
-        )?;
-
-        // Execute query
-        let result = query.next()?;
-        Ok(result == State::Done)
+        match query.execute(params) {
+            Ok(_) => Ok(true),
+            Err(e) => Err(Box::new(e)),
+        }
     }
 
     // ENSURES THAT ONLY ONE OF THE value_X is set by deleting the entry first!
@@ -355,18 +352,17 @@ impl TSDBInterface for DuckDBTSDB {
 
     fn delete_flow_attribute(&self, flow: &Flow, name: &str) -> Result<bool, Box<dyn Error>> {
         self.check_setup()?;
-        let id = self.check_flow(flow)?;
 
         // Prepare query string
-        let query_str = "DELETE FROM flow_attributes WHERE flow_id = :id AND name = :name;";
+        let query_str = "DELETE FROM flow_attributes WHERE flow_id = ? AND name = ?;";
         let mut query = self.conn.prepare(query_str)?;
 
-        // Bind parameters to query
-        query.bind::<&[(_, Value)]>(&[(":id", id.into()), (":name", name.into())][..])?;
+        let params = params![flow.get_id(), name,];
 
-        // Execute query
-        let result = query.next()?;
-        Ok(result == State::Done)
+        match query.execute(params) {
+            Ok(_) => Ok(true),
+            Err(e) => Err(Box::new(e)),
+        }
     }
 
     // Time Series interaction
@@ -381,56 +377,37 @@ impl TSDBInterface for DuckDBTSDB {
         let id = self.check_flow(flow)?;
 
         // First step: Create time series entry
-        let query_string =
-            "INSERT INTO time_series (flow_id, name, type) VALUES (:flow_id, :name, :type);";
+        let query_string = "INSERT INTO time_series (flow_id, name, type) VALUES (?, ?, ?);";
+
         let mut query = self.conn.prepare(query_string)?;
-        let params: &[(_, Value)] = &[
-            (":flow_id", id.into()),
-            (":name", name.to_string().into()),
-            (":type", ts_type.type_to_int().into()),
-        ][..];
 
-        query.bind::<&[(_, Value)]>(params)?;
-        // Execute query
-        let _ = query.next()?;
+        let params = params![id, name.to_string(), ts_type.type_to_int()];
 
-        // Second step: Query entry again
-        let mut get_query = self.conn.prepare(
-            "SELECT * FROM time_series WHERE flow_id = :flow_id AND name = :name AND type = :type;",
-        )?;
-        get_query.bind::<&[(_, Value)]>(params)?;
+        query.execute(params)?;
 
-        let mut cursor = Box::new(SQLiteCursor::<TimeSeries>::new(get_query));
-        let entry = cursor.next();
-
-        // Check if flow id could be read
-        if entry.is_none() {
-            return Err(Box::new(TSDBError::ReadTSIDError));
+        match get_entry::<TimeSeries>(
+            params,
+            "SELECT * FROM time_series WHERE flow_id = ? AND name = ? AND type = ?;",
+            &self.conn,
+        )? {
+            Some(entry) => Ok(entry),
+            None => Err(Box::new(TSDBError::ReadTSIDError)),
         }
-
-        // TODO: Add better handling if did not create a new ts
-        Ok(entry.unwrap())
     }
 
     fn delete_time_series(&self, flow: &Flow, series: &TimeSeries) -> Result<bool, Box<dyn Error>> {
         self.check_setup()?;
         let id = self.check_flow(flow)?;
 
-        let query_string = "DELETE FROM time_series WHERE flow_id = :flow_id AND name = :name;";
+        let query_string = "DELETE FROM time_series WHERE flow_id = ? AND name = ?;";
         let mut query = self.conn.prepare(query_string)?;
 
-        query.bind::<&[(_, Value)]>(
-            &[
-                (":flow_id", id.into()),
-                (":name", series.name.to_string().into()),
-            ][..],
-        )?;
+        let params = params![id, series.name,];
 
-        // Execute query
-        let result = query.next()?;
-
-        // TODO: Add better handling if did not create a new flow
-        Ok(result == State::Done)
+        match query.execute(params) {
+            Ok(_) => Ok(true),
+            Err(e) => Err(Box::new(e)),
+        }
     }
 
     fn list_time_series(
@@ -442,14 +419,21 @@ impl TSDBInterface for DuckDBTSDB {
 
         let mut query = self
             .conn
-            .prepare("SELECT * FROM time_series WHERE flow_id = :flow_id")?;
+            .prepare("SELECT * FROM time_series WHERE flow_id = ?;")?;
 
-        query.bind::<&[(_, Value)]>(&[(":flow_id", id.into())][..])?;
+        let rows = query.query_map(params![id], |row| Ok(TimeSeries::from_row(row)))?;
 
-        // Create smart cursor to iterate with
-        let cursor = Box::new(SQLiteCursor::<TimeSeries>::new(query));
+        let mut vec: Vec<TimeSeries> = Vec::new();
+        for r in rows {
+            if let Ok(row) = r {
+                if let Some(row) = row {
+                    vec.push(row);
+                }
+            }
+        }
+        let iter: Box<dyn Iterator<Item = TimeSeries>> = Box::new(vec.into_iter());
 
-        Ok(cursor)
+        Ok(iter)
     }
     // Interaction with data points of time series with given name
 
@@ -460,15 +444,23 @@ impl TSDBInterface for DuckDBTSDB {
         self.check_setup()?;
         let id = self.check_ts(series)?;
 
-        let mut query = self
-            .conn
-            .prepare("SELECT * FROM time_series_data WHERE time_series_id = :time_series_id ORDER by timestamp ASC")?;
+        let mut query = self.conn.prepare(
+            "SELECT * FROM time_series_data WHERE time_series_id = ? ORDER by timestamp ASC",
+        )?;
 
-        query.bind::<&[(_, Value)]>(&[(":time_series_id", id.into())][..])?;
+        let rows = query.query_map(params![id], |row| Ok(DataPoint::from_row(row)))?;
 
-        let cursor = Box::new(SQLiteCursor::<DataPoint>::new(query));
+        let mut vec: Vec<DataPoint> = Vec::new();
+        for r in rows {
+            if let Ok(row) = r {
+                if let Some(row) = row {
+                    vec.push(row);
+                }
+            }
+        }
+        let iter: Box<dyn Iterator<Item = DataPoint>> = Box::new(vec.into_iter());
 
-        Ok(cursor)
+        Ok(iter)
     }
 
     fn insert_data_point(
@@ -489,24 +481,17 @@ impl TSDBInterface for DuckDBTSDB {
         }
 
         // Get type of value from data type
-        let col = point.value.column_name()?;
-        let full_query = format!("INSERT INTO time_series_data (time_series_id, timestamp, {col}) VALUES (:time_series_id, :timestamp, :{col});");
+        let union_string = val_to_union(&point.value);
 
-        let mut query = self.conn.prepare(full_query)?;
+        let query_str = format!("INSERT INTO time_series_data (time_series_id, timestamp, value, type) VALUES (?, ?, ?, ?);");
+        let mut query = self.conn.prepare(&query_str)?;
 
-        query.bind::<&[(_, Value)]>(
-            &[
-                (":time_series_id", id.into()),
-                (":timestamp", point.timestamp.into()),
-                (format!(":{col}").as_str(), point.value.clone().into()),
-            ][..],
-        )?;
+        let params = params![id, point.timestamp, union_string, ts_type.type_to_int()];
 
-        // Execute query
-        let result = query.next()?;
-
-        // TODO: Add better handling if did not create a new flow
-        Ok(result == State::Done)
+        match query.execute(params) {
+            Ok(_) => Ok(true),
+            Err(e) => Err(Box::new(e)),
+        }
     }
     fn insert_multiple_points(
         &self,
@@ -514,38 +499,19 @@ impl TSDBInterface for DuckDBTSDB {
         points: &Vec<DataPoint>,
     ) -> Result<bool, Box<dyn Error>> {
         self.check_setup()?;
+        let id = self.check_ts(series)?;
 
-        let col = series.ts_type.column_name()?;
-
-        let mut query_params =
-            format!("INSERT INTO time_series_data (time_series_id, timestamp, {col}) VALUES");
-
-        let mut it = points.iter().peekable();
-
-        while let Some(entry) = it.next() {
-            query_params.push_str(" ( ");
-            query_params.push_str(&series.id.unwrap().to_string());
-            query_params.push_str(" , ");
-            query_params.push_str(&entry.timestamp.to_string());
-            query_params.push_str(" , ");
-            query_params.push_str(&entry.value.as_string());
-            query_params.push_str(" ) ");
-
-            // Add comma if there is a next entry
-            if it.peek().is_some() {
-                query_params.push_str(",");
-            }
+        let mut appender = self.conn.appender("time_series_data")?;
+        for p in points {
+            appender.append_row(params![
+                id,
+                p.timestamp,
+                val_to_union(&p.value),
+                p.value.type_to_int()
+            ])?;
         }
+        appender.flush()?;
 
-        query_params.push_str(";");
-
-        // Execute query
-        let insert_res = self.conn.execute(query_params);
-        if let Err(error) = insert_res {
-            // TODO: custom error
-            return Err(Box::new(error));
-        }
-        // Insert succeeded
         Ok(true)
     }
 
@@ -555,24 +521,17 @@ impl TSDBInterface for DuckDBTSDB {
         let id = self.check_ts(series)?;
 
         // XMIN
-        let mut xmin_query = self
-            .conn
-            .prepare("SELECT * FROM time_series_data WHERE time_series_id = :time_series_id ORDER by timestamp ASC LIMIT 1")?;
-        xmin_query.bind::<&[(_, Value)]>(&[(":time_series_id", id.into())][..])?;
-        let mut xmin_cursor = Box::new(SQLiteCursor::<DataPoint>::new(xmin_query));
-        let xmin = xmin_cursor.next().unwrap().timestamp;
-
+        let Some(xmin_point) = get_entry::<DataPoint>(params![id], "SELECT * FROM time_series_data WHERE time_series_id = ? ORDER by timestamp ASC LIMIT 1", &self.conn)? else {
+            return Err(Box::new(TSDBError::TimeSeriesNoValue))
+        };
         // XMAX
-        let mut  xmax_query = self
-            .conn
-            .prepare("SELECT * FROM time_series_data WHERE time_series_id = :time_series_id ORDER by timestamp DESC LIMIT 1")?;
-        xmax_query.bind::<&[(_, Value)]>(&[(":time_series_id", id.into())][..])?;
-        let mut xmax_cursor = Box::new(SQLiteCursor::<DataPoint>::new(xmax_query));
-        let xmax = xmax_cursor.next().unwrap().timestamp;
+        let Some(xmax_point) = get_entry::<DataPoint>(params![id], "SELECT * FROM time_series_data WHERE time_series_id = ? ORDER by timestamp DESC LIMIT 1", &self.conn)? else {
+            return Err(Box::new(TSDBError::TimeSeriesNoValue))
+        };
 
         let mut bounds = TSBounds {
-            xmin,
-            xmax,
+            xmin: xmin_point.timestamp,
+            xmax: xmax_point.timestamp,
             ymin: None,
             ymax: None,
         };
@@ -587,28 +546,26 @@ impl TSDBInterface for DuckDBTSDB {
         // Get query string for sorting
         let q1: &str;
         let q2: &str;
+
         if let DataValue::Int(_) = series.ts_type {
-            q1 = "SELECT * FROM time_series_data WHERE time_series_id = :time_series_id ORDER by value_integer DESC LIMIT 1";
-            q2 = "SELECT * FROM time_series_data WHERE time_series_id = :time_series_id ORDER by value_integer ASC LIMIT 1";
+            q1 = "SELECT * FROM time_series_data WHERE time_series_id = ? ORDER by value DESC LIMIT 1";
+            q2 = "SELECT * FROM time_series_data WHERE time_series_id = ? ORDER by value ASC LIMIT 1";
         } else {
-            q1 = "SELECT * FROM time_series_data WHERE time_series_id = :time_series_id ORDER by value_float DESC LIMIT 1";
-            q2 = "SELECT * FROM time_series_data WHERE time_series_id = :time_series_id ORDER by value_float ASC LIMIT 1";
+            q1 = "SELECT * FROM time_series_data WHERE time_series_id = ? ORDER by value DESC LIMIT 1";
+            q2 = "SELECT * FROM time_series_data WHERE time_series_id = ? ORDER by value ASC LIMIT 1";
         }
 
         // YMIN
-        let mut ymin_query = self.conn.prepare(q2)?;
-        ymin_query.bind::<&[(_, Value)]>(&[(":time_series_id", id.into())][..])?;
-        let mut ymin_cursor = Box::new(SQLiteCursor::<DataPoint>::new(ymin_query));
-        let ymin = ymin_cursor.next().unwrap().value;
+        let Some(ymin_point) = get_entry::<DataPoint>(params![id], q1, &self.conn)? else {
+            return Err(Box::new(TSDBError::TimeSeriesNoValue));
+        };
+        // YMAX
+        let Some(ymax_point) = get_entry::<DataPoint>(params![id], q2, &self.conn)? else {
+            return Err(Box::new(TSDBError::TimeSeriesNoValue));
+        };
 
-        // YMIN
-        let mut ymax_query = self.conn.prepare(q1)?;
-        ymax_query.bind::<&[(_, Value)]>(&[(":time_series_id", id.into())][..])?;
-        let mut ymax_cursor = Box::new(SQLiteCursor::<DataPoint>::new(ymax_query));
-        let ymax = ymax_cursor.next().unwrap().value;
-
-        bounds.ymin = Some(ymin);
-        bounds.ymax = Some(ymax);
+        bounds.ymin = Some(ymin_point.value);
+        bounds.ymax = Some(ymax_point.value);
 
         Ok(bounds)
     }
@@ -619,14 +576,15 @@ impl TSDBInterface for DuckDBTSDB {
 
         let mut  query = self
             .conn
-            .prepare("SELECT COUNT(*) FROM time_series_data WHERE time_series_id = :time_series_id ORDER by timestamp DESC LIMIT 1")?;
+            .prepare("SELECT COUNT(*) FROM time_series_data WHERE time_series_id = ?;")?;
 
-        query.bind::<&[(_, Value)]>(&[(":time_series_id", id.into())][..])?;
-        query.next()?;
+        let mut row = query.query(params![id])?;
 
-        let val = query.read::<i64, _>(0)?;
-
-        Ok(val)
+        if let Some(value) = row.next()? {
+            Ok(value.get(0)?)
+        } else {
+            Ok(0)
+        }
     }
     fn get_flow_bounds(&self, flow: &Flow) -> Result<TSBounds, Box<dyn Error>> {
         // Goal: find smalles and largest x over all time series in flow

@@ -1,3 +1,4 @@
+use crate::duckdb::DuckDBTSDB;
 use crate::error::TSDBError;
 use crate::sqlite::SQLiteTSDB;
 use std::error::Error;
@@ -292,6 +293,7 @@ pub trait TSDBInterface {
 
 pub enum DBBackend {
     SQLite(String),
+    DuckDB(String)
 }
 
 pub fn database_factory<T: TSDBInterface>(
@@ -299,6 +301,7 @@ pub fn database_factory<T: TSDBInterface>(
 ) -> Result<Box<dyn TSDBInterface + Send>, Box<dyn Error>> {
     match backend {
         DBBackend::SQLite(path) => Ok(Box::new(SQLiteTSDB::new(path)?)),
+        DBBackend::DuckDB(path) => Ok(Box::new(DuckDBTSDB::new(path)?)),
         _ => Err(Box::new(TSDBError::DBTypeNotImplementedError)), // Default case for future implementations
     }
 }

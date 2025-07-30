@@ -93,7 +93,7 @@ impl SQLiteCursorStruct for TimeSeries {
 
         // Get type of TS values
         // TODO: this parsing from enum to int has to be possible in a simpler way....
-        let ts_type = DataValue::type_from_int(ts_type_raw.unwrap());
+        let ts_type = DataValue::type_from_int(ts_type_raw.unwrap() as i16);
         if ts_type.is_err() {return None;}
 
         Some(

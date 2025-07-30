@@ -10,7 +10,7 @@ mod bindings {
     pub mod cwnd;
 }
 
-use argparse::{ArgumentParser, Store};
+use argparse::{ArgumentParser, Store, StoreOption, StoreTrue};
 use bindings::{sock::sock_trace_entry, cwnd::cwnd_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe};
 use db_writer::{DBOperation, DBWriter};
 use flow_tracker::{EventIndexer, EventType, FlowTracker, TsTracker};
@@ -24,6 +24,7 @@ use tokio::{
     task::{self, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
+use ts_storage::DBBackend;
 
 use core::num;
 use std::{
@@ -95,15 +96,58 @@ async fn start_file_reader<
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
 
-    let mut dir: String = "/tmp/".to_string();
+    let mut source: String = "/tmp/".to_string();
+    let mut output: String = "".to_string();
+    let mut sqlite: bool = false;
+    let mut duckdb: bool = false;
+
     {
         let mut argparser = ArgumentParser::new();
-        argparser.refer(&mut dir).add_option(
-            &["-d", "--dir"],
+        argparser.refer(&mut source).add_option(
+            &["-s", "--source"],
             Store,
-            "Directory to read recording results from. Defaults to /tmp/",
+            "Directory to search for TCBee recording *.tcp files!",
         );
+        argparser.refer(&mut output).add_option(
+            &["-o", "--output"],
+            Store,
+            "Path for outoput database file",
+        );
+        argparser.refer(&mut sqlite).add_option(
+            &["-q", "--sqlite"],
+            StoreTrue,
+            "Store result to SQLITE",
+        );
+        argparser.refer(&mut duckdb).add_option(
+            &["-t", "--duckdb"],
+            StoreTrue,
+            "Store result to DuckDB, better performance",
+        );
+
         argparser.parse_args_or_exit();
+    }
+
+    if !sqlite && !duckdb {
+        print!("Please select either --sqlite or --duckdb");
+        return Ok(());
+    }
+    if sqlite && duckdb {
+        print!("Please select either --sqlite or --duckdb");
+        return Ok(());
+    }
+
+    if output.is_empty() {
+        if sqlite {
+            output = "/tmp/db.sqlite".to_string();
+        }
+        if duckdb {
+            output = "/tmp/db.duck".to_string();
+        }
+    }
+
+    let mut backend = DBBackend::SQLite(output.clone());
+    if duckdb {
+        backend = DBBackend::DuckDB(output);
     }
 
     let progress_bars = MultiProgress::new();
@@ -123,7 +167,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting readers, initial processing may be slow due to setup of streams!");
 
     // Create DB Backend handler
-    let db_res = DBWriter::new("db.sqlite", rx,status);
+    let db_res = DBWriter::new(backend, rx,status);
     if db_res.is_err() {
         panic!("Could not open Database! Error: {}", db_res.err().unwrap())
     }
@@ -146,49 +190,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     let threads = vec![
         start_file_reader::<TcpPacket>(
-            prepend_string("xdp.tcp".to_string(),&dir),
+            prepend_string("xdp.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<TcpPacket>(
-            prepend_string("tc.tcp".to_string(),&dir),
+            prepend_string("tc.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<TcpProbe>(
-            prepend_string("probe.tcp".to_string(),&dir),
+            prepend_string("probe.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<sock_trace_entry>(
-            prepend_string("sock_send.tcp".to_string(),&dir),
+            prepend_string("sock_send.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<sock_trace_entry>(
-            prepend_string("sock_recv.tcp".to_string(),&dir),
+            prepend_string("sock_recv.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<cwnd_trace_entry>(
-            prepend_string("recv_cwnd.tcp".to_string(),&dir),
+            prepend_string("recv_cwnd.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<cwnd_trace_entry>(
-            prepend_string("send_cwnd.tcp".to_string(),&dir),
+            prepend_string("send_cwnd.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
