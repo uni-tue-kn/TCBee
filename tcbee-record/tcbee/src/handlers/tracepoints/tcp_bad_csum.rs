@@ -8,7 +8,6 @@ use crate::handlers::{BufferHandler, BufferHandlerImpl};
 
 impl BufferHandlerImpl<tcp_bad_csum_entry> for BufferHandler<tcp_bad_csum_entry> {
     fn handle_event(&self, event: tcp_bad_csum_entry) -> Option<tcp_bad_csum_entry>{
-        println!("DEBUG: {event:?}");
         Some(event)
     }
 }
