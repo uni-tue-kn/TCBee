@@ -1,8 +1,8 @@
-use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::{error::Error, marker::PhantomData};
 
-use duckdb::{types::Value, Row, Rows, Statement};
+use duckdb::{types::Value, Connection, Row, Rows, Statement, ToSql};
 
 use crate::{DataPoint, DataValue, Flow, FlowAttribute, IpTuple, TimeSeries};
 
@@ -128,10 +128,7 @@ impl DuckDBCursorStruct for FlowAttribute {
         let value = parse_value(row);
 
         if let Some(value) = value {
-            Some(FlowAttribute {
-                name, 
-                value,
-            })
+            Some(FlowAttribute { name, value })
         } else {
             None
         }
@@ -148,7 +145,7 @@ impl DuckDBCursorStruct for IpTuple {
         let Ok(dst) = row.get::<&str, String>("dst") else {
             return None;
         };
-        
+
         let Ok(sport) = row.get::<&str, i64>("sport") else {
             return None;
         };
@@ -176,28 +173,29 @@ impl DuckDBCursorStruct for IpTuple {
             l4proto,
         })
     }
-
 }
-
-
-pub struct DuckDBCursor<'row, T>
+pub struct DuckDBCursor<'a, T>
 where
     T: DuckDBCursorStruct,
 {
-    rows: Rows<'row>,
+    _conn: Connection,
+    rows: Option<Rows>,
     _phantom: PhantomData<T>,
 }
 
-impl<'row, T> DuckDBCursor<'row, T>
+impl<'a, T> DuckDBCursor<'a, T>
 where
     T: DuckDBCursorStruct,
 {
-    // Constructor for struct A
-    pub fn new(rows: Rows<'row>) -> Self {
-        Self {
+    pub fn new(mut conn: Connection, query: &str) -> Result<Self, duckdb::Error> {
+        let mut stmt = conn.prepare(query)?;
+        let rows = Some(stmt.query([])?);
+
+        Ok(Self {
+            _conn: conn,
             rows,
             _phantom: PhantomData,
-        }
+        })
     }
 }
 
