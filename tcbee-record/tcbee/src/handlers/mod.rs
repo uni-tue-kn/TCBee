@@ -1,6 +1,7 @@
 pub mod tracepoints;
 pub mod xdp_handler;
 pub mod socks;
+pub mod cwnd;
 
 use std::marker::PhantomData;
 
@@ -134,7 +135,7 @@ impl<T: std::fmt::Debug + Clone + Copy + Serialize> BufferHandler<T> {
                         .expect("Failed write!");
 
                     // Marker for alignment of packet in read step
-                    // TODO: maybe remove for performanve reasons!
+                    // TODO: maybe remove for performance reasons!
                     let _ = writer.write(&[255,255,255,255]).await;
                 }
             } else {

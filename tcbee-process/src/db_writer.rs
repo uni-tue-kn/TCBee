@@ -6,7 +6,7 @@ use tokio::sync::mpsc::Receiver;
 use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, IpTuple, TSDBInterface};
 
 use crate::{
-    bindings::{sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe},
+    bindings::{sock::sock_trace_entry, cwnd::cwnd_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe},
     flow_tracker::{EventIndexer, EventType, FlowTracker},
 };
 
@@ -15,6 +15,7 @@ pub enum DBOperation {
     Packet(TcpPacket),
     Probe(TcpProbe),
     Socket(sock_trace_entry),
+    Cwnd(cwnd_trace_entry)
 }
 
 pub struct DBWriter {
@@ -91,7 +92,7 @@ impl DBWriter {
                             res.err().unwrap()
                         );
                     }
-                }
+                },
                 DBOperation::Probe(data) => {
                     if data.div != 0xFFFFFFFFu32.to_be_bytes() {
                         panic!("Misaligned PROBE: {:?}. Something went horribly wrong during recording!",data);
@@ -113,7 +114,7 @@ impl DBWriter {
                     }
 
                     //println!("Probe {:?}",data.ssthresh);
-                }
+                },
                 DBOperation::Socket(sock) => {
                     if sock.div != 0xFFFFFFFFu32.to_be_bytes() {
                         panic!("Misaligned SOCKET: {:?}. Something went horribly wrong during recording!",sock);
@@ -133,7 +134,28 @@ impl DBWriter {
                             res.err().unwrap()
                         );
                     }
-                } //let a = sock.get_ip_tuple();
+                },
+                DBOperation::Cwnd(cwnd) => {
+                    if cwnd.div != 0xFFFFFFFFu32.to_be_bytes() {
+                        panic!("Misaligned CWND: {:?}. Something went horribly wrong during recording!",cwnd);
+                    }
+
+                    let tuple = cwnd.get_ip_tuple();
+                    self.setup_new_stream(&tuple)?;
+
+                    let tracker = self.streams.get_mut(&tuple).unwrap();
+
+                    let res = tracker.add_event(&self.db, EventType::Cwnd, &cwnd);
+
+                    if res.is_err() {
+                        error!(
+                            "Failed to trace socket: {:?}. Error: {}",
+                            cwnd,
+                            res.err().unwrap()
+                        );
+                    }
+                },
+                 //let a = sock.get_ip_tuple();
                   //println!("Socket: {:?}",sock.get_ip_tuple());
             }
         }

@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fs::File,
-    io::{self, Read, Write},
+    io::{self, BufWriter, Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     num,
     ops::{AddAssign, Sub},
@@ -12,17 +12,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::{anyhow, Context};
 use glob;
+use serde::Serialize;
 
 use crate::{
     config::UI_UPDATE_MS_INTERVAL,
+    eBPF::{ebpf_runner::prepend_string, ebpf_runner_config::EbpfWatcherConfig},
     viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
 };
 
 use aya::{
     maps::{PerCpuArray, PerCpuHashMap},
     util::nr_cpus,
-    Pod,
+    Ebpf, Pod,
 };
 use log::{error, info, warn};
 use ratatui::{
@@ -37,12 +40,15 @@ use ratatui::{
         Row, ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
         Widget,
     },
-    DefaultTerminal,
+    DefaultTerminal, Terminal,
 };
 use tcbee_common::bindings::flow::IpTuple;
 use tokio_util::sync::CancellationToken;
 
-use super::file_tracker::{self, FileTracker};
+use super::{
+    components::{graph::Graph, status::Status},
+    file_tracker::{self, FileTracker},
+};
 
 pub struct EBPFWatcher {
     events_drops: RateWatcher<u32>,
@@ -55,95 +61,118 @@ pub struct EBPFWatcher {
     update_period: u128,
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
+    config: EbpfWatcherConfig,
 }
 
-//TODO: Monitor packet rate vs TCP packet rate?
+#[derive(Serialize)]
+pub struct Metrics {
+    handled: u32,
+    dropped: u32,
+    ingress: u32,
+    egress: u32,
+    ingress_calls: u32,
+    egress_calls: u32 
+}
+    //TODO: Monitor packet rate vs TCP packet rate?
 impl EBPFWatcher {
     pub fn new(
-        events_drops: PerCpuArray<aya::maps::MapData, u32>,
-        events_handled: PerCpuArray<aya::maps::MapData, u32>,
-        ingress_counter: PerCpuArray<aya::maps::MapData, u32>,
-        egress_counter: PerCpuArray<aya::maps::MapData, u32>,
-        tcp_sock_send: PerCpuArray<aya::maps::MapData, u32>,
-        tcp_sock_recv: PerCpuArray<aya::maps::MapData, u32>,
-        flow_tracker: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple>,
+        ebpf: &mut Ebpf,
         update_period: u128,
         token: CancellationToken,
+        config: EbpfWatcherConfig,
         do_tui: bool,
-    ) -> Result<EBPFWatcher, Box<dyn Error>> {
+    ) -> anyhow::Result<EBPFWatcher> {
         // Track rate of passed maps
+        // TODO: can this be cleaned up?
         let events_drops = RateWatcher::<u32>::new(
-            events_drops,
+            PerCpuArray::try_from(
+                ebpf.take_map("EVENTS_DROPPED")
+                    .ok_or_else(|| anyhow!("Could not find EVENTS_DROPPED map!"))?,
+            )?,
             "Events/s".to_string(),
             0,
             "Event Drops".to_string(),
         );
         let events_handled = RateWatcher::<u32>::new(
-            events_handled,
+            PerCpuArray::try_from(
+                ebpf.take_map("EVENTS_HANDLED")
+                    .ok_or_else(|| anyhow!("Could not find EVENTS_HANDLED map!"))?,
+            )?,
             "Events/s".to_string(),
             0,
             "Event Handled".to_string(),
         );
         let ingress_counter = RateWatcher::<u32>::new(
-            ingress_counter,
+            PerCpuArray::try_from(
+                ebpf.take_map("INGRESS_EVENTS")
+                    .ok_or_else(|| anyhow!("Could not find INGRESS_EVENTS map!"))?,
+            )?,
             "pps".to_string(),
             0,
             "Ingress Packets".to_string(),
         );
         let egress_counter = RateWatcher::<u32>::new(
-            egress_counter,
+            PerCpuArray::try_from(
+                ebpf.take_map("EGRESS_EVENTS")
+                    .ok_or_else(|| anyhow!("Could not find EGRESS_EVENTS map!"))?,
+            )?,
             "pps".to_string(),
             0,
             "Egress Packets".to_string(),
         );
         let tcp_sock_send = RateWatcher::<u32>::new(
-            tcp_sock_send,
+            PerCpuArray::try_from(
+                ebpf.take_map("SEND_TCP_SOCK")
+                    .ok_or_else(|| anyhow!("Could not find SEND_TCP_SOCK map!"))?,
+            )?,
             "Calls/s".to_string(),
             0,
             "TCP Sendmsg".to_string(),
         );
         let tcp_sock_recv = RateWatcher::<u32>::new(
-            tcp_sock_recv,
+            PerCpuArray::try_from(
+                ebpf.take_map("RECV_TCP_SOCK")
+                    .ok_or_else(|| anyhow!("Could not find RECV_TCP_SOCK map!"))?,
+            )?,
             "Calls/s".to_string(),
             0,
             "TCP Recvmsg".to_string(),
         );
 
-        let flow_tracker = FlowTracker::new(flow_tracker);
+        let flow_tracker = FlowTracker::new(PerCpuHashMap::try_from(
+            ebpf.take_map("FLOWS")
+                .ok_or_else(|| anyhow!("Could not find FLOWS map!"))?,
+        )?);
 
-        if do_tui {
-            color_eyre::install()?;
-            let terminal: DefaultTerminal = ratatui::init();
+        let terminal: Option<DefaultTerminal> = match do_tui {
+            true => Some(ratatui::init()),
+            false => None,
+        };
 
-            Ok(EBPFWatcher {
-                events_drops,
-                events_handled,
-                ingress_counter,
-                egress_counter,
-                tcp_sock_send,
-                tcp_sock_recv,
-                flow_tracker,
-                update_period,
-                token,
-                terminal: Some(terminal),
-            })
+        Ok(EBPFWatcher {
+            events_drops,
+            events_handled,
+            ingress_counter,
+            egress_counter,
+            tcp_sock_send,
+            tcp_sock_recv,
+            flow_tracker,
+            update_period,
+            token,
+            terminal,
+            config,
+        })
+    }
+
+    pub fn run(&mut self) {
+        if self.terminal.is_some() {
+            self.run_tui();
         } else {
-            Ok(EBPFWatcher {
-                events_drops,
-                events_handled,
-                ingress_counter,
-                egress_counter,
-                tcp_sock_send,
-                tcp_sock_recv,
-                flow_tracker,
-                update_period,
-                token,
-                terminal: None,
-            })
+            self.run_no_tui();
         }
     }
 
-    pub fn run_no_tui(&mut self) {
+    fn run_no_tui(&mut self) {
         // To calculate rate over multiple iterations
         let application_start = Instant::now();
 
@@ -175,22 +204,35 @@ impl EBPFWatcher {
     }
 
     // TODO: move elements to separate files!
-    pub fn run(&mut self) -> () {
+    fn run_tui(&mut self) {
         // Rate tracking for graph bounds
         let mut max_rate: f64 = 0.0;
         let mut tcp_sock_max_rate: f64 = 0.0;
 
         let mut last_size: u64 = 0;
 
+        // Track time for averages
         let application_start = Instant::now();
         let mut last_loop: Duration = Duration::default();
 
         // For plotting
         // TODO: Add max number of entries handling!
-        let mut ingress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
-        let mut egress_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
-        let mut tcp_send_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
-        let mut tcp_recv_rates: Vec<(f64, f64)> = vec![(0.0, 0.0)];
+        let mut packet_rates = Graph::new(
+            "Ingress".to_string(),
+            "Egress".to_string(),
+            Color::Green,
+            Color::Cyan,
+            "Packet Rates".to_string(),
+        );
+        let mut function_calls = Graph::new(
+            "tcp_recvmsg".to_string(),
+            "tcp_sendmsg".to_string(),
+            Color::Red,
+            Color::Blue,
+            "Function Calls".to_string(),
+        );
+
+        let mut status = Status::new();
 
         let mut scrollbar_state = ScrollbarState::new(0);
         let mut scroll_index: usize = 0;
@@ -226,25 +268,23 @@ impl EBPFWatcher {
                 "Byte/s",
             );
 
-            // Get ingress and egress packets per second
-            let ingress_rate = self.ingress_counter.get_rate(loop_elapsed);
-            let egress_rate = self.egress_counter.get_rate(loop_elapsed);
-            // Add rates fto graph lines
-            ingress_rates.push((start_elapsed.as_secs_f64(), ingress_rate as f64));
-            egress_rates.push((start_elapsed.as_secs_f64(), egress_rate as f64));
-            // Get maximum packet rate to set y-limit of graph
-            max_rate = max_rate.max(ingress_rate);
-            max_rate = max_rate.max(egress_rate);
-
-            // Get ingress and egress tcp segments per second
-            let tcp_send_rate = self.tcp_sock_send.get_rate(loop_elapsed);
-            let tcp_recv_rate = self.tcp_sock_recv.get_rate(loop_elapsed);
-            // Add rates fto graph lines
-            tcp_send_rates.push((start_elapsed.as_secs_f64(), tcp_send_rate as f64));
-            tcp_recv_rates.push((start_elapsed.as_secs_f64(), tcp_recv_rate as f64));
-            // Get maximum packet rate to set y-limit of graph
-            tcp_sock_max_rate = tcp_sock_max_rate.max(tcp_send_rate);
-            tcp_sock_max_rate = tcp_sock_max_rate.max(tcp_recv_rate);
+            // Track changes in rates
+            packet_rates.add_ingress((
+                start_elapsed.as_secs_f64(),
+                self.ingress_counter.get_rate(loop_elapsed),
+            ));
+            packet_rates.add_egress((
+                start_elapsed.as_secs_f64(),
+                self.egress_counter.get_rate(loop_elapsed),
+            ));
+            function_calls.add_ingress((
+                start_elapsed.as_secs_f64(),
+                self.tcp_sock_recv.get_rate(loop_elapsed),
+            ));
+            function_calls.add_egress((
+                start_elapsed.as_secs_f64(),
+                self.tcp_sock_send.get_rate(loop_elapsed),
+            ));
 
             // Time elapsed
             let time_string = format!(
@@ -260,184 +300,10 @@ impl EBPFWatcher {
                 " Events/s",
             );
 
-            // Check if packets were lost
-            let mut dropped_style: Style = Style::default();
-            if self.events_drops.get_counter_sum() > 0 {
-                dropped_style = dropped_style.bg(Color::LightRed);
-            }
-
-            // Blocks for UI
-            let status_blocks = vec![
-                Paragraph::new(time_string).block(
-                    Block::bordered()
-                        .borders(Borders::BOTTOM)
-                        .title("Time Elapsed"),
-                ),
-                Paragraph::new(self.events_handled.get_counter_sum_string()).block(
-                    Block::bordered()
-                        .borders(Borders::BOTTOM)
-                        .title("Events Handled"),
-                ),
-                Paragraph::new(self.events_drops.get_counter_sum_string())
-                    .block(
-                        Block::bordered()
-                            .borders(Borders::BOTTOM)
-                            .title("Events Dropped"),
-                    )
-                    .style(dropped_style),
-                Paragraph::new(event_rate).block(
-                    Block::bordered()
-                        .borders(Borders::BOTTOM)
-                        .title("Event Rate"),
-                ),
-                Paragraph::new(RateWatcher::<u64>::format_sum(files_size, "Byte")).block(
-                    Block::bordered()
-                        .borders(Borders::BOTTOM)
-                        .title("Disk File Size"),
-                ),
-                Paragraph::new(file_rate).block(
-                    Block::bordered()
-                        .borders(Borders::BOTTOM)
-                        .title("Write Speed"),
-                ),
-            ];
-
             // Tooltips
             let keybindings =
                 Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (G)iga");
             let keybindings_block = Block::bordered().borders(Borders::ALL).title("Keybindings");
-
-            // Rate chart labels
-            let y_labels = vec![
-                Span::styled(
-                    format!("{}", 0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}", RateWatcher::<u32>::format_rate(max_rate / 2.0, "pps")),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}", RateWatcher::<u32>::format_rate(max_rate, "pps")),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ];
-
-            let x_labels = vec![
-                Span::styled(
-                    format!("{}", 0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}s", start_elapsed.as_secs() as f64 / 2.0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}s", start_elapsed.as_secs()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ];
-
-            // Rate chart
-            let chart = Chart::new(vec![
-                Dataset::default()
-                    .name("Ingress")
-                    .marker(symbols::Marker::Braille)
-                    .style(Style::default().fg(Color::Cyan))
-                    .graph_type(GraphType::Line)
-                    .data(&ingress_rates),
-                Dataset::default()
-                    .name("Egress")
-                    .marker(symbols::Marker::Braille)
-                    .style(Style::default().fg(Color::LightGreen))
-                    .graph_type(GraphType::Line)
-                    .data(&egress_rates),
-            ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Packet Rate Graph"),
-            )
-            .x_axis(
-                Axis::default()
-                    .style(Style::default().fg(Color::White))
-                    .bounds([0.0, start_elapsed.as_secs_f64()])
-                    .labels(x_labels),
-            )
-            .y_axis(
-                Axis::default()
-                    .style(Style::default().fg(Color::White))
-                    .bounds([0.0, max_rate])
-                    .labels(y_labels),
-            )
-            .legend_position(Some(LegendPosition::TopLeft))
-            .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)));
-
-            // Rate chart labels
-            let y_labels = vec![
-                Span::styled(
-                    format!("{}", 0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}", RateWatcher::<u32>::format_rate(tcp_sock_max_rate / 2.0, "Calls/s")),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}", RateWatcher::<u32>::format_rate(tcp_sock_max_rate, "Calls/s")),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ];
-
-            let x_labels = vec![
-                Span::styled(
-                    format!("{}", 0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}s", start_elapsed.as_secs() as f64 / 2.0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}s", start_elapsed.as_secs()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ];
-
-            // TCP sock chart
-            let tcp_sock_chart = Chart::new(vec![
-                Dataset::default()
-                    .name("tcp_sendmsg")
-                    .marker(symbols::Marker::Braille)
-                    .style(Style::default().fg(Color::Red))
-                    .graph_type(GraphType::Line)
-                    .data(&tcp_send_rates),
-                Dataset::default()
-                    .name("tcp_recvmsg")
-                    .marker(symbols::Marker::Braille)
-                    .style(Style::default().fg(Color::LightBlue))
-                    .graph_type(GraphType::Line)
-                    .data(&tcp_recv_rates),
-            ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("TCP Kernel Function Calls"),
-            )
-            .x_axis(
-                Axis::default()
-                    .style(Style::default().fg(Color::White))
-                    .bounds([0.0, start_elapsed.as_secs_f64()])
-                    .labels(x_labels),
-            )
-            .y_axis(
-                Axis::default()
-                    .style(Style::default().fg(Color::White))
-                    .bounds([0.0, tcp_sock_max_rate])
-                    .labels(y_labels),
-            )
-            .legend_position(Some(LegendPosition::TopLeft))
-            .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)));
 
             // Render function
             // TODO: move to own function
@@ -455,20 +321,29 @@ impl EBPFWatcher {
                     .split(areas[0]);
 
                 // Top Sidebar layout
-                let mut constraints = vec![Constraint::Max(3); status_blocks.len()];
+                let mut constraints = vec![Constraint::Max(3); status.num_blocks()];
                 constraints.push(Constraint::Min(0));
 
                 // Top graph layout
-                let mut graphs = Layout::default()
+                let graphs = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
                     .split(top_areas[1]);
 
-                // Split into two graphs
-                let mut sub_graphs = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .split(graphs[0]);
+                // Split into two graphs, only if two graphs are needed
+                if self.config.calls && self.config.packets {
+                    let sub_graphs = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .split(graphs[0]);
+
+                    frame.render_widget(packet_rates.get_chart("pps"), sub_graphs[0]);
+                    frame.render_widget(function_calls.get_chart("Calls/s"), sub_graphs[1]);
+                } else if self.config.packets {
+                    frame.render_widget(packet_rates.get_chart("pps"), graphs[0]);
+                } else {
+                    frame.render_widget(function_calls.get_chart("Calls/s"), graphs[0]);
+                }
 
                 let sidebar = Layout::default()
                     .direction(Direction::Vertical)
@@ -476,10 +351,21 @@ impl EBPFWatcher {
                     .split(top_areas[0]);
 
                 // Render each status bar block
-                let mut i = 0;
-                for block in status_blocks {
+
+                for (i, block) in status
+                    .get_blocks(
+                        time_string,
+                        self.events_handled.get_counter_sum_string(),
+                        self.events_drops.get_counter_sum_string(),
+                        self.events_drops.get_counter_sum() > 0,
+                        event_rate,
+                        files_size,
+                        file_rate,
+                    )
+                    .into_iter()
+                    .enumerate()
+                {
                     frame.render_widget(block, sidebar[i]);
-                    i = i + 1;
                 }
 
                 // Scrollbar
@@ -491,8 +377,6 @@ impl EBPFWatcher {
                 scrollbar_state =
                     scrollbar_state.viewport_content_length(graphs[1].height as usize);
 
-                frame.render_widget(chart, sub_graphs[0]);
-                frame.render_widget(tcp_sock_chart, sub_graphs[1]);
                 frame.render_stateful_widget(flows, graphs[1], &mut flows_state);
 
                 // Render scrollbar when more entries than height
@@ -554,12 +438,35 @@ impl EBPFWatcher {
                     if key.code == KeyCode::Up {
                         // Limit index to be 0 at min
                         // Cant be with .min() due to overflow at 0 - 1
-                        if scroll_index > 0 {
-                            scroll_index = scroll_index - 1;
-                        }
+                        scroll_index = scroll_index.saturating_sub(1);
                     }
                 }
             }
+        }
+
+        // Store metrics if needed
+        if self.config.metrics {
+
+            let metrics = Metrics {
+                handled: self.events_handled.get_counter_sum(),
+                dropped: self.events_drops.get_counter_sum(),
+                ingress: self.ingress_counter.get_counter_sum(),
+                egress: self.egress_counter.get_counter_sum(),
+                ingress_calls: self.tcp_sock_recv.get_counter_sum(),
+                egress_calls: self.tcp_sock_send.get_counter_sum(),
+            };
+            
+
+
+            let Ok(outfile) = File::create(prepend_string("metrics.json".to_string(), &self.config.dir)) else {
+                error!("Could not open outfile: {}/metrics.json",self.config.dir);
+                return;
+            };
+
+            let mut writer = BufWriter::new(outfile);
+
+            let _ = serde_json::to_writer(&mut writer, &metrics);
+            let _ = writer.flush();
         }
 
         // Restore terminal view

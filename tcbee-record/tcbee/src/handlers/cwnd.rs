@@ -1,4 +1,4 @@
-use tcbee_common::bindings::tcp_bad_csum::tcp_bad_csum_entry;
+use tcbee_common::bindings::tcp_sock::cwnd_trace_entry;
 
 use crate::handlers::{BufferHandler, BufferHandlerImpl};
 
@@ -6,8 +6,10 @@ use crate::handlers::{BufferHandler, BufferHandlerImpl};
 // IpAddr determines IPv4 and IPv6 based on array length, so these functions shorten them as needed
 // TODO: could be moved to a single function as the first byte contains the AF_INET type ?
 
-impl BufferHandlerImpl<tcp_bad_csum_entry> for BufferHandler<tcp_bad_csum_entry> {
-    fn handle_event(&self, event: tcp_bad_csum_entry) -> Option<tcp_bad_csum_entry>{
+impl BufferHandlerImpl<cwnd_trace_entry> for BufferHandler<cwnd_trace_entry> {
+    fn handle_event(&self, event: cwnd_trace_entry) -> Option<cwnd_trace_entry> {
+        // TODO: FILTER!
+
         Some(event)
     }
 }
