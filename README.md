@@ -62,7 +62,7 @@ TCBee
 * comes with a visualization tool to analyse and compare TCP flow metrics
 * provides a rust library to access flow data for custom visualization tools
 
-Special thanks to Evilyn (https://github.com/ScatteredDrifter) and Lars for their support during development.
+Special thanks to Evelyn (https://github.com/ScatteredDrifter) and Lars for their support during development.
 
 
 ## Architecture
