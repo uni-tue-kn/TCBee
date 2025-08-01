@@ -211,14 +211,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await,
         start_file_reader::<sock_trace_entry>(
-            prepend_string("sock_send.tcp".to_string(),&source),
+            prepend_string("send_sock.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<sock_trace_entry>(
-            prepend_string("sock_recv.tcp".to_string(),&source),
+            prepend_string("recv_sock.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
