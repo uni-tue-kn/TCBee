@@ -28,7 +28,7 @@ impl KernelTracer {
 
         // Incoming TCP
         let recvmsg: &mut FEntry = ebpf.program_mut("sock_recvmsg").unwrap().try_into()?;
-        recvmsg.load("tcp_v4_do_rcv", &btf)?;
+        recvmsg.load("tcp_rcv_established", &btf)?;
         recvmsg.attach()?;
 
         // Start SOCK_SEND handling
