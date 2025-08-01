@@ -247,9 +247,10 @@ impl IntermediateBackend {
     // DEBUG
     pub fn receive_flow_formatted(&self, flow: &Flow) -> String {
         format!(
-            "ID:{:?} Port: (src: {:?}) IP(src: {:?} : dst: {:?}) ",
+            "ID:{:?} Port: {:?}-{:?} IP: {:?}-{:?}",
             flow.get_id().unwrap(),
             flow.tuple.sport,
+            flow.tuple.dport,
             flow.tuple.src,
             flow.tuple.dst
         )

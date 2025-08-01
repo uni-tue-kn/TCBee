@@ -149,7 +149,7 @@ impl ScreenHome {
                 // FIXME maybe async this operation?
 
                 let file_selection = FileDialog::new()
-                    .add_filter("text", &["sqlite","duck"])
+                    .add_filter("*.sqlite or *.duck", &["sqlite","duck"])
                     .set_directory("~/")
                     .pick_file();
                 // FIXME improve error handling
