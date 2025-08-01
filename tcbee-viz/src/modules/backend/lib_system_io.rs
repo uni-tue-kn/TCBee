@@ -10,6 +10,7 @@ pub fn receive_source_from_path(path: &PathBuf) -> Option<DataSource> {
     match extension {
         "sqlite" => Some(DataSource::Sqllite),
         "influx" => Some(DataSource::Influx),
+        "duck" => Some(DataSource::DuckDB),
         _ => None,
     }
 }

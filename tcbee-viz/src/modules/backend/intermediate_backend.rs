@@ -16,7 +16,7 @@ use crate::modules::{
 use crate::TSDBInterface;
 use iced::widget::canvas::Cache;
 use plotters::style::RGBAColor;
-use ts_storage::{database_factory, sqlite::SQLiteTSDB, DBBackend, DataValue, Flow};
+use ts_storage::{database_factory, duckdb::DuckDBTSDB, sqlite::SQLiteTSDB, DBBackend, DataValue, Flow};
 use ts_storage::{DataPoint, TimeSeries};
 use std::{cell::RefCell, f64::{MAX, MIN}, path::PathBuf, slice::Iter, sync::RwLock};
 
@@ -29,6 +29,7 @@ use super::{app_settings::ApplicationSettings, struct_tcp_flow_wrapper::TcpFlowW
 pub enum DataSource {
     Influx,
     Sqllite,
+    DuckDB,
     None,
 }
 
@@ -45,6 +46,7 @@ impl ToString for DataSource {
         match self {
             DataSource::Influx => String::from("Influx"),
             DataSource::Sqllite => String::from("Sqllite"),
+            DataSource::DuckDB => String::from("DuckDB"),
             DataSource::None => String::from("Nothing selected"),
         }
     }
@@ -276,7 +278,19 @@ impl IntermediateBackend {
                     database_factory::<SQLiteTSDB>(DBBackend::SQLite(path_db.clone()))
                         .expect("could not parse database"),
                 );
-                println!("initialized database of time {:?}", source);
+                println!("initialized SQLITE database of time {:?}", source);
+                IntermediateBackend {
+                    source_type: source.clone(),
+                    database_interface: Some(db_interface),
+                    database_path: Some(PathBuf::from(path_db))
+                }
+            },
+            DataSource::DuckDB => {
+                let db_interface: Arc<Box<dyn TSDBInterface>> = Arc::new(
+                    database_factory::<DuckDBTSDB>(DBBackend::DuckDB(path_db.clone()))
+                        .expect("could not parse database"),
+                );
+                println!("initialized DUCKDB database of time {:?}", source);
                 IntermediateBackend {
                     source_type: source.clone(),
                     database_interface: Some(db_interface),
