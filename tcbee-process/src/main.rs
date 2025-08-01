@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Store result to SQLITE",
         );
         argparser.refer(&mut duckdb).add_option(
-            &["-t", "--duckdb"],
+            &["-d", "--duckdb"],
             StoreTrue,
             "Store result to DuckDB, better performance",
         );

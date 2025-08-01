@@ -49,8 +49,14 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let dport = (ports & 0xFFFF) as u16;
-    let sport = (ports >> 16) as u16;
+    // The order of ports in the socket is fixed for both sending and receiving
+    // So take the opposite order from sendmsg here
+    let sport = (ports & 0xFFFF) as u16;
+    let dport = (ports >> 16) as u16;
+
+    // Swap source and destination for trace entry
+    let addr_v4 = unsafe { (*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair.rotate_right(32) };
+    let ports = ports.rotate_right(16);
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong
@@ -61,10 +67,10 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
 
         let cwnd_entry = cwnd_trace_entry {
             time: bpf_ktime_get_ns(),
-            addr_v4: (*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair,
+            addr_v4,
             src_v6: (*sk_ptr).__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8,
             dst_v6: (*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8,
-            ports: *ports,
+            ports,
             family: (*sk_ptr).__sk_common.skc_family,
             snd_cwnd: read_kernel(&(*tcp_sck_ptr).snd_cwnd)?,
         };
@@ -213,21 +219,25 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let dport = (ports.to_be() & 0xFFFF) as u16;
-    let sport = (ports >> 16) as u16;
+    let sport = (ports & 0xFFFF) as u16;
+    let dport = (ports >> 16) as u16;
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong
         if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
             return Ok(0);
         }
+
+        // Shift address to right, swaps source and destination
+        let addr_v4 = read_kernel(&(*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair)?.rotate_right(32);
+        let ports = ports.rotate_right(16);
         
         let sock_entry = sock_trace_entry {
             time: bpf_ktime_get_ns(),
-            addr_v4: read_kernel(&(*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair)?,
-            src_v6: read_kernel(&(*sk_ptr).__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8)?,
-            dst_v6: read_kernel(&(*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8)?,
-            ports: read_kernel(&(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair)?,
+            addr_v4,
+            src_v6: read_kernel(&(*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8)?,
+            dst_v6: read_kernel(&(*sk_ptr).__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8)?,
+            ports,
             family: read_kernel(&(*sk_ptr).__sk_common.skc_family)?,
             // SOCK Stats
             pacing_rate: read_kernel(&(*sk_ptr).sk_pacing_rate)?,
