@@ -23,12 +23,12 @@ impl KernelTracer {
 
         // Outgoing TCP
         let sendmsg: &mut FEntry = ebpf.program_mut("sock_sendmsg").unwrap().try_into()?;
-        sendmsg.load("tcp_sendmsg", &btf)?;
+        sendmsg.load("__tcp_transmit_skb", &btf)?;
         sendmsg.attach()?;
 
         // Incoming TCP
         let recvmsg: &mut FEntry = ebpf.program_mut("sock_recvmsg").unwrap().try_into()?;
-        recvmsg.load("tcp_recvmsg", &btf)?;
+        recvmsg.load("tcp_rcv_established", &btf)?;
         recvmsg.attach()?;
 
         // Start SOCK_SEND handling

@@ -51,8 +51,8 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
     // The order of ports in the socket is fixed for both sending and receiving
     // So take the opposite order from sendmsg here
-    let sport = (ports & 0xFFFF) as u16;
-    let dport = (ports >> 16) as u16;
+let sport = ((ports & 0xFFFF) as u16).to_be();
+    let dport = ((ports >> 16) as u16).to_be();
 
     // Swap source and destination for trace entry
     let addr_v4 = unsafe { (*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair.rotate_right(32) };
@@ -60,7 +60,7 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
             //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
             return Ok(0);
         }
@@ -101,12 +101,12 @@ pub fn try_sock_sendmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let dport = (ports & 0xFFFF) as u16;
-    let sport = (ports >> 16) as u16;
+    let dport = ((ports & 0xFFFF) as u16).to_be();
+    let sport = ((ports >> 16) as u16).to_be();
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
             //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
             return Ok(0);
         }
@@ -146,12 +146,12 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let dport = (ports & 0xFFFF) as u16;
-    let sport = (ports >> 16) as u16;
+    let dport = ((ports & 0xFFFF) as u16).to_be();
+    let sport = ((ports >> 16) as u16).to_be();
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
             //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
             return Ok(0);
         }
@@ -219,12 +219,12 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let sport = (ports & 0xFFFF) as u16;
-    let dport = (ports >> 16) as u16;
+    let sport = ((ports & 0xFFFF) as u16).to_be();
+    let dport = ((ports >> 16) as u16).to_be();
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport.to_be() != FILTER_PORT {
+        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
             return Ok(0);
         }
 
