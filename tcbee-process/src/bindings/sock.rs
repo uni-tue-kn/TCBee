@@ -186,7 +186,7 @@ impl EventIndexer for sock_trace_entry {
 
         // TODO: check byte order if ports are correct
         // Dport could be be bytes
-        let sport = u16::from_le_bytes(srcbytes);
+        let sport = u16::from_be_bytes(srcbytes);
         let dport = u16::from_le_bytes(dstbytes);
 
         IpTuple {
