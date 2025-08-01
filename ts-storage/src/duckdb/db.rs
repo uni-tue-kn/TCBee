@@ -56,9 +56,10 @@ impl DuckDBTSDB {
     fn setup(&self) -> Result<(), Box<dyn Error>> {
         // TODO: Check if some settigns are needed
         
-        self.conn.execute("CREATE SEQUENCE flow_id_seq;", [])?;
-        self.conn.execute("CREATE SEQUENCE flow_attribute_id_seq;", [])?;
-        self.conn.execute("CREATE SEQUENCE time_series_id_seq;", [])?;
+        // Causes error if not 
+        self.conn.execute("CREATE SEQUENCE IF NOT EXISTS flow_id_seq;", []);
+        self.conn.execute("CREATE SEQUENCE IF NOT EXISTS flow_attribute_id_seq;", []);
+        self.conn.execute("CREATE SEQUENCE IF NOT EXISTS time_series_id_seq;", []);
 
         let flows_query = "CREATE TABLE IF NOT EXISTS flows (
             id INTEGER PRIMARY KEY DEFAULT nextval('flow_id_seq'),
