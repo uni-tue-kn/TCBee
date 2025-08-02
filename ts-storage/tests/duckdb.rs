@@ -41,6 +41,7 @@ fn all_func() {
     let mut list = db.list_flows().expect("Failed to get flows!");
     let _ = list.next().unwrap();
 
+    
     let mut attr = FlowAttribute {
         name: "TEST".to_string(),
         value: DataValue::String("TEST".to_string()),
@@ -90,16 +91,20 @@ fn all_func() {
 
     // Delete added flow
     let _ = db.delete_flow(&flow2).expect("Failed to delete flow!");
-
+    
     // -- Create, list and delete time series for flow
     let flow3 = db.create_flow(&testuple).expect("Failed to write flow!");
     let mut list = db.list_flows().expect("Failed to get flows!");
     let selected_flow = list.next().unwrap();
     println!("Selected Flow: {selected_flow:?}");
-
+    
     let ts1 = db
         .create_time_series(&flow3, "TestTS", DataValue::Int(0))
         .expect("Failed to create TS");
+
+    let ts2 = db
+        .create_time_series(&flow3, "TestTS2", DataValue::Float(0.0))
+        .expect("Failed to create TS2");
 
     let ts_list = db.list_time_series(&flow3).expect("Failed to list TS");
 
@@ -171,6 +176,20 @@ fn all_func() {
     let _ = db
         .insert_multiple_points(&ts1, &right_entries).expect("Transaction rollback failed!");
 
+    let ts2_entries = vec![
+        DataPoint {
+            timestamp: 99.0,
+            value: DataValue::Float(0.0),
+        },
+        DataPoint {
+            timestamp: 100.0,
+            value: DataValue::Float(1.0),
+        }
+    ];
+    let _ = db
+        .insert_multiple_points(&ts2, &ts2_entries).expect("Float TS Insert failed!");
+
+
     // List boundaries
     let bounds = db.get_time_series_bounds(&ts1).expect("Failed to get bounds!");
     println!("Bounds: {bounds:?}");
@@ -182,6 +201,7 @@ fn all_func() {
     let flow_bounds = db.get_flow_bounds(&flow3).expect("Failed to get flow bounds");
     println!("Flow bounds: {flow_bounds:?}");
 
+
     // List a single time series
     let points = db.get_data_points(&ts1).expect("Failed to get data points");
 
@@ -189,8 +209,10 @@ fn all_func() {
         println!("Point: {p:?}")
     }
 
-    //let _ = db
-    //    .delete_time_series(&selected_flow, &ts1)
-    //    .expect("Could not delete TS!");
-    //let _ = db.delete_flow(&flow3).expect("Failed to delete flow!");
+    /* 
+    let _ = db
+        .delete_time_series(&selected_flow, &ts1)
+        .expect("Could not delete TS!");
+    let _ = db.delete_flow(&flow3).expect("Failed to delete flow!");
+    */
 }

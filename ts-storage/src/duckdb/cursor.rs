@@ -1,35 +1,80 @@
 use std::net::IpAddr;
+use std::os::linux::raw;
 use std::str::FromStr;
 use std::str;
 use std::{error::Error, marker::PhantomData};
 
-use duckdb::arrow::array::Datum;
+use duckdb::arrow::array::{Datum, UnionArray};
 use duckdb::types::ValueRef;
 use duckdb::{types::Value, Connection, Row, Rows, Statement, ToSql};
 
 use crate::{DataPoint, DataValue, Flow, FlowAttribute, IpTuple, TimeSeries};
 
 fn parse_value(row: &Row) -> Option<DataValue> {
-    let Ok(value) = row.get_ref(0) else {
+    // Value is of type "Union(Text("{'inum': 10}"))"
+    // Thats the way the duckdb library does Unions I guess...
+    let Ok(value) = row.get::<&str,Value>("value") else {
+        return None;
+    };
+    // Get iner Union
+    let Value::Union(val) = value else {
+        return None;
+    };
+    // Read text from boxed Balue
+    let Value::Text(val_text) = *val else {
+        return None;
+    };
+    // Get value type
+    let Ok(val_type) = row.get::<&str,i16>("type") else {
         return None;
     };
 
-    //. TODO: Check integer sizes in DB creation!
-    match value {
-        ValueRef::Int(val) => { Some(DataValue::Int(val.into())) },
-        ValueRef::Double(val)=> { Some(DataValue::Float(val)) },
-        ValueRef::Text(val)=> {
-            let Ok(val) = str::from_utf8(val) else {
-                return None;
-            };
+    // Parse text based on value typoe
 
-             Some(DataValue::String(val.to_string()))
-            },
-        ValueRef::Boolean(val)=> { Some(DataValue::Boolean(val)) },
-        _ => panic!("Invalid column type: {:?}", value)
+    // TODO, the names for struct fields should be constants
+    match val_type {
+        DataValue::INT => {
+            // "{'inum': 10}"
+            // -> 9 chars (including whitespace) until value starts
+            // -> split at } in remaining str and select first part
+            // Result is: ' 10' -> Remove space with tr
+            let raw_val = val_text[9..].split("}").next()?;
 
-    }
-    
+            Some(DataValue::Int(i64::from_str(raw_val).ok()?))
+        },
+        DataValue::FLOAT => {
+            // "{'fnum': 10.0}"
+            // -> 9 chars (including whitespace) until value starts
+            // -> split at } in remaining str and select first part
+            // Result is: '10.0'
+            let raw_val = val_text[9..].split("}").next()?;
+
+            Some(DataValue::Float(f64::from_str(raw_val).ok()?))
+        },
+        DataValue::BOOLEAN => {
+            // "{'bool': 1}"
+            // -> 9 chars (including whitespace) until value starts
+            // -> split at } in remaining str and select first part
+            // Result is: '1'
+            let raw_val = val_text[9..].split("}").next()?;
+            // bool::from_Str does not work as source is 1 for true and 0 for false
+            // So just compare the int val to 1
+            Some(DataValue::Boolean(i16::from_str(raw_val).ok()? == 1))
+        },
+        DataValue::STRING => {
+            // TODO: this will cause problems if string contains }!
+
+            // "{'str': aaa}"
+            // -> 8 chars (including whitespace) until value starts
+            // -> split at } in remaining str and select first part
+            // Result is: 'aaa'
+            let raw_val = val_text[9..].split("}").next()?;
+
+            Some(DataValue::String(raw_val.to_string()))
+        },
+        // TODO This should return a library Error
+        _ => panic!("Unknown type value!")
+    }    
 }
 
 pub trait DuckDBCursorStruct: Sized {
@@ -43,11 +88,7 @@ impl DuckDBCursorStruct for Flow {
             return None;
         };
 
-        if let Some(tuple) = IpTuple::from_row(row) {
-            Some(Flow::new_with_id(id, tuple))
-        } else {
-            None // No IpTuple to be parsed
-        }
+        IpTuple::from_row(row).map(|tuple| Flow::new_with_id(id, tuple))
     }
 }
 
@@ -60,11 +101,7 @@ impl DuckDBCursorStruct for DataPoint {
         // Parse UNION value
         let point_value = parse_value(row);
 
-        if let Some(value) = point_value {
-            Some(DataPoint { timestamp, value })
-        } else {
-            None
-        }
+        point_value.map(|value| DataPoint { timestamp, value })
     }
 }
 
@@ -181,7 +218,7 @@ where
     }
 }
 
-impl<'stmt, T> Iterator for DuckDBCursor<'stmt, T>
+impl<T> Iterator for DuckDBCursor<'_, T>
 where
     T: DuckDBCursorStruct,
 {
