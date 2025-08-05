@@ -46,8 +46,17 @@ use std::time::{Duration, Instant};
 
 // fn main() -> iced::Result {
 fn main() -> iced::Result {
-    println!("Hi, this application was written by Evelyn :>\n this message is a secret");
-    iced::application("TCPFLOW", StateContainer::update, StateContainer::view)
+
+    let ascii_name = r#"
+ _______________                  
+/_  __/ ___/ __ \__ _____ ___ ___ 
+ / / / /__/ /_/ / // / -_) -_) _ \
+/_/  \___/\___\_\_,_/\__/\__/_//_/
+                                  
+"#;
+    println!("Hi, this application was written by Eve\nThis message is a secret");
+    println!("{}",ascii_name);
+    iced::application("TCPFlow", StateContainer::update, StateContainer::view)
         .theme(StateContainer::theme)
         .run()
 }

@@ -42,6 +42,7 @@ pub struct ProcessedPlotData {
     pub first_pressed_position: Option<(f64, f64)>,
     pub second_pressed_position: Option<(f64, f64)>,
     pub app_settings: Arc<RwLock<ApplicationSettings>>,
+    pub generate_y_bounds: bool,
 }
 
 impl ProcessedPlotData {
@@ -70,6 +71,7 @@ impl ProcessedPlotData {
             first_pressed_position: None,
             second_pressed_position: None,
             app_settings: self.app_settings.clone(),
+            generate_y_bounds: false,
         }
     }
 
@@ -94,7 +96,12 @@ impl ProcessedPlotData {
             first_pressed_position: None,
             second_pressed_position: None,
             app_settings: self.app_settings.clone(),
+            generate_y_bounds: false,
         }
+    }
+
+    pub fn set_state_for_y_bound_generation(&mut self, new_state: bool) {
+        self.generate_y_bounds = new_state;
     }
 
     pub fn update_zoom_bounds(&mut self, new_zoom: ZoomBound2D) {

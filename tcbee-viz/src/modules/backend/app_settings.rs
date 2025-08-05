@@ -2,6 +2,7 @@
 
 // -- internal imports
 use crate::modules::backend::intermediate_backend::IntermediateBackend;
+use crate::modules::backend::plot_data_preprocessing::ColorScheme;
 use crate::DataSource;
 
 // -- external imports
@@ -17,6 +18,7 @@ pub struct ApplicationSettings {
     pub datavalue_skip_counter: u32,
     pub reduce_point_density_on_zoom: bool,
     pub amount_to_skip_on_zoom: usize,
+    pub graph_pointseries_color_scheme: ColorScheme,
 
     // ---- Backend | DataSource-Settings
     pub datasource: Option<DataSource>,
@@ -36,6 +38,7 @@ impl ApplicationSettings {
             datavalue_skip_counter: 1,
             reduce_point_density_on_zoom: false,
             amount_to_skip_on_zoom: 400,
+            graph_pointseries_color_scheme:ColorScheme::RandomHSL,
 
             //  ---- Backend | DataSource-Settings
             datasource: None,

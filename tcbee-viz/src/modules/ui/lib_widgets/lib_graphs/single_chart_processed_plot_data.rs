@@ -3,7 +3,7 @@ use crate::{
     modules::{
         backend::plot_data_preprocessing::{
             filter_false_boolean_from_data, prepare_bool, prepare_float, prepare_int,
-            skip_every_nth, skip_outside_of_bound,
+            retrieve_y_bounds_from_plot_data, skip_every_nth, skip_outside_of_bound,
         },
         ui::{
             lib_styling::app_style_settings::{
@@ -11,7 +11,7 @@ use crate::{
                 CHART_MAX_Y_LABELS, CHART_X_LABEL_AREA_SIZE, CHART_Y_LABEL_AREA_SIZE, CIRCLE_SIZE,
                 TEXT_ACCENT_1_COLOR, TEXT_ACCENT_2_COLOR,
             },
-            lib_widgets::lib_graphs::struct_zoom_bounds::zoom_range_is_small,
+            lib_widgets::lib_graphs::struct_zoom_bounds::{zoom_range_is_small, ZoomBound2D},
         },
     },
     DataValue, ProcessedPlotData,
@@ -85,7 +85,16 @@ impl<Message: 'static + Clone + MessageCreator> Chart<Message> for ProcessedPlot
         let range_threshold = read_settings.graph_pointseries_threshold;
         let skip_amount = read_settings.datavalue_skip_counter;
 
-        let zoom_limits = self.zoom_bounds.clone();
+        let zoom_limits = if self.generate_y_bounds {
+            let new_zoom_bounds = ZoomBound2D {
+                x: self.zoom_bounds.x.clone(),
+                y: retrieve_y_bounds_from_plot_data(self, self.zoom_bounds.clone()),
+            };
+            // self.update_zoom_bounds(new_zoom_bounds.clone());
+            new_zoom_bounds
+        } else {
+            self.zoom_bounds.clone()
+        };
 
         let lower_x = zoom_limits.x.lower;
         let upper_x = zoom_limits.x.upper;

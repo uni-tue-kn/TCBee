@@ -49,6 +49,11 @@ pub fn display_current_mouse_position<'a, Message: 'a>(
     new_content
 }
 
+//FIXME implement proper color scheme selector
+// pub fn display_color_scheme_selector<'a, Message: 'a + Clone>(
+    // message_on_selection: imp
+// )
+
 pub fn display_flow_selector<'a, Message: 'a + Clone>(
     ref_backend: &IntermediateBackend,
     focused_flow: &TcpFlowWrapper,
