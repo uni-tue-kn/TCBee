@@ -1,4 +1,4 @@
-// bundled logic for TCQueen
+// bundling logic for TCPFlow
 // authored by Evelyn Esther Stange -> https://scattered-lenity.de
 
 // internal imports
