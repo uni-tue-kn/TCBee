@@ -1,5 +1,5 @@
-// bundling logic for TCP-visual-analysis tool
-// authored by Evelyn Stange -> https://scattered-lenity.space
+// bundled logic for TCQueen
+// authored by Evelyn Esther Stange -> https://scattered-lenity.de
 
 // internal imports
 mod modules {
@@ -48,15 +48,15 @@ use std::time::{Duration, Instant};
 fn main() -> iced::Result {
 
     let ascii_name = r#"
- _______________                  
-/_  __/ ___/ __ \__ _____ ___ ___ 
- / / / /__/ /_/ / // / -_) -_) _ \
-/_/  \___/\___\_\_,_/\__/\__/_//_/
+ ______________  ______   ____ _      __
+/_  __/ ___/ _ \/ __/ /  / __ \ | /| / /
+ / / / /__/ ___/ _// /__/ /_/ / |/ |/ / 
+/_/  \___/_/  /_/ /____/\____/|__/|__/  
                                   
 "#;
     println!("Hi, this application was written by Eve\nThis message is a secret");
     println!("{}",ascii_name);
-    iced::application("TCPFlow", StateContainer::update, StateContainer::view)
+    iced::application("TCQueen", StateContainer::update, StateContainer::view)
         .theme(StateContainer::theme)
         .run()
 }
@@ -116,8 +116,8 @@ impl Default for StateContainer {
             screen_multi_flow_plotting: ScreenMultiFlowPlotting::new(settings.clone()),
             screen_modify_database: ScreenModifyDatabase::new(settings.clone()),
             application_settings: settings,
-            // theme: Theme::CatppuccinFrappe,
-            theme: Theme::GruvboxLight,
+            // theme: Theme::CatppuccinFrappe, // dark mode 
+            theme: Theme::Light,
         }
     }
 }
@@ -138,9 +138,7 @@ impl StateContainer {
                     ActiveScreen::MultipleGraphPlot => {
                         self.screen_multi_flow_plotting.reset();
                     }
-                    _ => {
-
-                    }
+                    _ => {}
                 }
                 self.screen = new_screen
             }
