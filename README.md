@@ -33,15 +33,17 @@
 
 ## Disclaimer
 
+**THIS TOOL IS UNDER ACTIVE DEVELOPMENT, BREAKING CHANGES MAY HAPPEN**
+
 This repository contains the first stable version of TCBee and will be improved/refined in the future.
 The current Todo-List includes
 
 - Documentation for the tools and interfaces
-- Merging tools into a single program
 - Add plugins for the calculation of common TCP congestion metrics
 - Implement InfluxDB interface for faster processing 
 - Test and benchmark bottlenecks (eBPF Ringbuf size, File writer, etc.)
 - Cleanup of eBPF and user space code
+- Change UI based on selected traces
 - ...
 
 The current version is tested for linux kernel 6.13.6 and may not work on older or newer kernel versions.
@@ -59,6 +61,8 @@ TCBee
 * provides a simple plugin interface to calculate metrics from recorded data and save the results
 * comes with a visualization tool to analyse and compare TCP flow metrics
 * provides a rust library to access flow data for custom visualization tools
+
+Special thanks to Evelyn (https://github.com/ScatteredDrifter) and Lars for their support during development.
 
 
 ## Architecture
@@ -121,7 +125,13 @@ When working with TCBee, you can call all sub-programs through the `tcbee` scrip
 ### 1. Recording Data
 
 Use `tcbee record [interface]` to start recording data on the specified interface.
-Available options are:
+You should set at least one (or more) of the following flags to determine which metrics are recorded:
+
+- `-h`, `--headers` to record the TCP headers.
+- `-t`, `--tracepoints` to record TCP kernel tracepoints, these contain most but not all recordable TCP kernel metrics.
+- `-k`, `--kernel` to record metrics from the kernel functions `tcp_sendmsg` and `tcp_recvmsg`. These contain all available TCP kernel metrics.
+
+Available optional flags are:
 
 - `-q`, `--quiet` to start the program without the terminal UI
 - `-p`, `--port` to filter for flows that have the specified port as source or destination
