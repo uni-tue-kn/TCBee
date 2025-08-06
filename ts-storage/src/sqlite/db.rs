@@ -425,7 +425,7 @@ impl TSDBInterface for SQLiteTSDB {
         let params: &[(_, Value)] = &[
             (":flow_id", id.into()),
             (":name", name.to_string().into()),
-            (":type", ts_type.type_to_int().into()),
+            (":type", (ts_type.type_to_int() as i64).into()),
         ][..];
         
         query.bind::<&[(_, Value)]>(params)?;

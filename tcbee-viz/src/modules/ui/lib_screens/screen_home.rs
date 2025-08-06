@@ -71,7 +71,7 @@ impl ScreenHome {
         let headline = text("Selecting Database").size(TEXT_HEADLINE_0_SIZE);
         let description = text(
             "
-This program aims to replace tcptrace+xplot for analyzing PCAP-Files containing TCP-Flows.\n
+This program aims to visualize recorded metrics TCP-Flows for an explorative analysis.\n
 Its able to visualize single and multiple flows with their corresponding timeseries information.\n
 Modification of the database is supplied via an extendable feature-system.\n
             ",
@@ -149,7 +149,7 @@ impl ScreenHome {
                 // FIXME maybe async this operation?
 
                 let file_selection = FileDialog::new()
-                    .add_filter("text", &["sqlite"])
+                    .add_filter("*.sqlite or *.duck", &["sqlite","duck"])
                     .set_directory("~/")
                     .pick_file();
                 // FIXME improve error handling

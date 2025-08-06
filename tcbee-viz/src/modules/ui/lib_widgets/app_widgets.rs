@@ -6,15 +6,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use crate::modules::{
+use crate::{modules::{
     backend::{
         app_settings::ApplicationSettings, intermediate_backend::IntermediateBackend, lib_system_io::receive_file_metadata, plot_data_preprocessing::convert_rgba_to_iced_color, struct_tcp_flow_wrapper::TcpFlowWrapper
     },
     ui::{
         lib_styling::app_style_settings::{
-            HORIZONTAL_LINE_SECONDARY_HEIGHT, PADDING_AROUND_CONTENT, SLIDER_STEP_SIZE,
-            SPACE_BETWEEN_ELEMENTS, SPLIT_CHART_MAX_HEIGHT, SPLIT_CHART_MIN_HEIGHT,
-            TEXT_HEADLINE_0_SIZE, TEXT_HEADLINE_1_SIZE, TEXT_HEADLINE_2_SIZE,
+            HORIZONTAL_LINE_PRIMARY_HEIGHT, HORIZONTAL_LINE_SECONDARY_HEIGHT, PADDING_AROUND_CONTENT, SLIDER_STEP_SIZE, SPACE_BETWEEN_ELEMENTS, SPLIT_CHART_MAX_HEIGHT, SPLIT_CHART_MIN_HEIGHT, TEXT_HEADLINE_0_SIZE, TEXT_HEADLINE_1_SIZE, TEXT_HEADLINE_2_SIZE
         },
         lib_widgets::lib_graphs::{
             struct_processed_plot_data::ProcessedPlotData,
@@ -22,15 +20,15 @@ use crate::modules::{
             struct_zoom_bounds::ZoomBound2D,
         },
     },
-};
+}, Message};
 use iced::{
-    widget::{
+    theme::palette::Background, widget::{
         button, checkbox, radio, scrollable, slider, text, Button, Checkbox, Column, Row, Rule,
-        Space,
-    },
-    Alignment, Element, Length,
+        Space, Text,
+    }, Alignment, Element, Length
 };
 
+/// OTHER FUNCTIONS
 pub fn display_current_mouse_position<'a, Message: 'a>(
     maybe_position: Option<(f64, f64)>,
 ) -> Column<'a, Message> {
@@ -82,18 +80,38 @@ fn generate_selections_for_flows<'a, Message: 'a + Clone>(
     let interface = &ref_backend.database_interface;
 
     if let Some(db_connection) = interface {
+
+        let header_1: Row<'_, _> = Row::<Message>::new()
+            .push(Text::new("ID").width(Length::FillPortion(1))) // Space for radio button
+            .push(Text::new("Source").width(Length::FillPortion(3)))
+            .push(Text::new("Destination").width(Length::FillPortion(3)));
+
+
+        new_col = new_col.push(header_1);
+
         let all_flows = db_connection.list_flows().expect("could not find flows");
         for entry in all_flows {
-            new_col = new_col.push(
-                radio(
-                    ref_backend.receive_flow_formatted(&entry),
-                    // self.backend_interface.receive_flow_formatted(&entry),
-                    entry.get_id().expect("no flow id").clone(),
+
+            let tuple = &entry.tuple;
+            let first_flow_row = Row::<Message>::new()
+                .push(Text::new(entry.get_id().unwrap()).width(Length::FillPortion(1)))
+                .push(Text::new(tuple.src.to_string()).width(Length::FillPortion(3)))
+                .push(Text::new(tuple.dst.to_string()).width(Length::FillPortion(3)));
+            let second_flow_row = Row::<Message>::new()
+                .push(
+                    radio(
+                    "",
+                    entry.get_id().expect("no flow id"),
                     focused_flow.flow_id,
-                    // self.backend_interface.receive_active_flow_id(),
                     message_on_click.clone(),
-                ), //   text(format!("flow: {:?}",entry))
-            );
+                    ) 
+                    .width(Length::FillPortion(1))
+                )
+                .push(Text::new(tuple.sport.to_string()).width(Length::FillPortion(3)))
+                .push(Text::new(tuple.dport.to_string()).width(Length::FillPortion(3)));
+                
+
+            new_col = new_col.push(Rule::horizontal(HORIZONTAL_LINE_SECONDARY_HEIGHT)).push(first_flow_row).push(second_flow_row);
         }
     }
     new_col

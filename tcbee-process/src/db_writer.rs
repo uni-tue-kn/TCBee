@@ -28,12 +28,12 @@ pub struct DBWriter {
 
 impl DBWriter {
     pub fn new(
-        file: &str,
+        backend: DBBackend,
         rx: Receiver<DBOperation>,
         status: ProgressBar,
     ) -> Result<DBWriter, Box<dyn Error>> {
         let db: Box<dyn TSDBInterface + Send> =
-            database_factory::<SQLiteTSDB>(DBBackend::SQLite(file.to_string()))?;
+            database_factory::<SQLiteTSDB>(backend)?;
 
         let streams: HashMap<IpTuple, FlowTracker> = HashMap::new();
 

@@ -40,10 +40,9 @@ The current Todo-List includes
 
 - Documentation for the tools and interfaces
 - Add plugins for the calculation of common TCP congestion metrics
-- Implement InfluxDB interface for faster processing 
+- Add full IPv6 support for kernel hooks
 - Test and benchmark bottlenecks (eBPF Ringbuf size, File writer, etc.)
 - Cleanup of eBPF and user space code
-- Change UI based on selected traces
 - ...
 
 The current version is tested for linux kernel 6.13.6 and may not work on older or newer kernel versions.
@@ -56,7 +55,7 @@ TCBee
 
 * provides a command-line program to record flows and track current data rates
 * monitors both packet headers for incoming and outgoing packets
-* hooks onto the linux kernel functions `tcp_sendmsg` and `tcp_recvmsg` to read kernel metrics
+* hooks onto the linux kernel tcp sending and receiving functions to read kernel metrics **per packet**
 * stores recorded data in a structured flow database
 * provides a simple plugin interface to calculate metrics from recorded data and save the results
 * comes with a visualization tool to analyse and compare TCP flow metrics

@@ -17,7 +17,7 @@ pub enum TSDBError {
     },
     #[error("Unknown data type enum: {val}")]
     UnknownDataType {
-        val: i64
+        val: i16
     },
     #[error("Unknown time series ID: {ts_id}")]
     TimeSeriesNotFoundError {
@@ -42,4 +42,6 @@ pub enum TSDBError {
     ReadTSIDError,
     #[error("The supplied time series has no valid ID field!")]
     TimeSeriesNotSetup,
+    #[error("The queried TimeSeries does not have any values!")]
+    TimeSeriesNoValue,
 }
