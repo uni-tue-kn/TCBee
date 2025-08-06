@@ -1,5 +1,6 @@
 pub(crate) mod cursor;
 pub(crate) mod db;
+pub(crate) mod queries;
 
 use duckdb::Connection;
 
