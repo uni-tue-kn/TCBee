@@ -2,7 +2,7 @@
 // manages and defines access to database / which source to use etc.
 
 use crate::modules::{
-    backend::plot_data_preprocessing::generate_n_random_colors,
+    backend::plot_data_preprocessing::retrieve_n_colors,
     ui::{
         lib_styling::app_style_settings::{DEFAULT_Y_MAX, DEFAULT_Y_MIN},
         lib_widgets::lib_graphs::{
@@ -409,7 +409,10 @@ impl IntermediateBackend {
         };
         // --- COLOR Generation
         let colors_to_generate = available_time_series.len();
-        let mut colors_for_series = generate_n_random_colors(colors_to_generate);
+        let settings_read = app_reference.read().unwrap();
+        let colorscheme = settings_read.graph_pointseries_color_scheme.clone();
+        
+        let mut colors_for_series = retrieve_n_colors(colorscheme,colors_to_generate);
 
         let collection_of_flow_series = self.collect_flowseries_from_timeseries(
             &db_interface,
@@ -432,6 +435,7 @@ impl IntermediateBackend {
             second_pressed_position: None,
             current_position: None,
             app_settings: app_reference.clone(),
+            generate_y_bounds: false,
         };
         Some(resulting_collection)
     }
