@@ -4,7 +4,7 @@
 use crate::modules::{
     backend::plot_data_preprocessing::{
         filter_false_boolean_from_data, prepare_bool, prepare_float, prepare_int,
-        retrieve_y_bounds_from_selected_range, skip_every_nth, skip_outside_of_bound,
+        retrieve_y_bounds_from_collection_of_points, skip_every_nth, skip_outside_of_bound,
     },
     ui::{
         lib_styling::app_style_settings::{
@@ -158,8 +158,7 @@ impl<Message: 'static + Clone> Chart<Message> for FlowSeriesData {
                 // FIXMe refactor to its own helper function!
                 // FIXME improve writing!
                 let converted_as_float = prepare_int(&only_in_bounds);
-                let chart_y_bounds =
-                    retrieve_y_bounds_from_selected_range(&only_in_bounds, &zoom_limits.y);
+                let chart_y_bounds = retrieve_y_bounds_from_collection_of_points(&only_in_bounds,&zoom_limits.y);
                 println!(
                     "previous bounds, read from zoom: lower {:?}, upper:{:?}",
                     zoom_limits.x.lower, zoom_limits.x.upper
@@ -195,8 +194,7 @@ impl<Message: 'static + Clone> Chart<Message> for FlowSeriesData {
 
             DataValue::Float(_) => {
                 let convert_as_float = prepare_float(&only_in_bounds);
-                let chart_y_bounds =
-                    retrieve_y_bounds_from_selected_range(&only_in_bounds, &zoom_limits.y);
+                let chart_y_bounds = retrieve_y_bounds_from_collection_of_points(&only_in_bounds,&zoom_limits.y);
 
                 let mut chart_float = base_chart
                     .build_cartesian_2d(

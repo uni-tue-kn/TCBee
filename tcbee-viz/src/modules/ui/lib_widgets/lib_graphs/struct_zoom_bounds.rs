@@ -138,9 +138,9 @@ pub fn retrieve_default_zoom_for_two_flows(
     app_settings: &Arc<RwLock<ApplicationSettings>>,
     first_flow: &TcpFlowWrapper,
     second_flow: &TcpFlowWrapper,
-) -> ZoomBound2D { 
+) -> ZoomBound2D {
     let range_1 = retrieve_default_zoom_for_one_flow(app_settings, first_flow);
-    let range_2 =  retrieve_default_zoom_for_one_flow(app_settings,second_flow);
+    let range_2 = retrieve_default_zoom_for_one_flow(app_settings, second_flow);
     merge_two_2d_bounds(&range_1, &range_2)
 }
 
@@ -197,4 +197,4 @@ pub fn generate_zoom_bounds_from_coordinates_in_data(ref_data: &ProcessedPlotDat
         } else {
             ref_data.zoom_bounds.clone()
         }
-    }
+}
