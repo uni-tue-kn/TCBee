@@ -19,7 +19,7 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y llvm clang libelf-dev libclang-dev pkg-config fontconfig libfontconfig1-dev duckdb
+        sudo apt install -y llvm clang libelf-dev libclang-dev pkg-config fontconfig libfontconfig1-dev
         cargo install bpf-linker
 
     - name: TCBee-Record Build
