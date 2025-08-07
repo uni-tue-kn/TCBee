@@ -5,7 +5,7 @@
 
  <h2>TCBee: A High-Performance and Extensible Tool For TCP Flow Analysis Using eBPF </h2>
 
- ![image](https://img.shields.io/badge/licence-Apache%202.0-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/v-0.1.0-yellow) [![TCBee build](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml/badge.svg)](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml)
+ ![image](https://img.shields.io/badge/licence-Apache%202.0-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/v-0.2.0-yellow) [![TCBee build](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml/badge.svg)](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml)
  
 </div>
 
@@ -29,18 +29,18 @@
 - [Preview of TCBee](#preview-of-tcbee)
   - [Recording TCP Flows](#recording-tcp-flows)
   - [Visualizing CWND Size](#visualizing-cwnd-size)
+  - [Calculating a new metric](#calculating-a-new-metric)
   - [Visualizing Multiple Flows](#visualizing-multiple-flows)
 
 ## Disclaimer
-
-**THIS TOOL IS UNDER ACTIVE DEVELOPMENT, BREAKING CHANGES MAY HAPPEN**
 
 This repository contains the first stable version of TCBee and will be improved/refined in the future.
 The current Todo-List includes
 
 - Documentation for the tools and interfaces
+- Merging tools into a single program
 - Add plugins for the calculation of common TCP congestion metrics
-- Add full IPv6 support for kernel hooks
+- Implement InfluxDB interface for faster processing 
 - Test and benchmark bottlenecks (eBPF Ringbuf size, File writer, etc.)
 - Cleanup of eBPF and user space code
 - ...
@@ -55,14 +55,13 @@ TCBee
 
 * provides a command-line program to record flows and track current data rates
 * monitors both packet headers for incoming and outgoing packets
-* hooks onto the linux kernel tcp sending and receiving functions to read kernel metrics **per packet**
-* stores recorded data in a structured flow database
+* hooks onto the linux kernel functions to read tcp kernel metrics **per packet**
+* stores recorded data in a structured SQL flow database (SQLite or DuckDB)
 * provides a simple plugin interface to calculate metrics from recorded data and save the results
 * comes with a visualization tool to analyse and compare TCP flow metrics
 * provides a rust library to access flow data for custom visualization tools
 
 Special thanks to Evelyn (https://github.com/ScatteredDrifter) and Lars for their support during development.
-
 
 ## Architecture
 
@@ -129,25 +128,35 @@ You should set at least one (or more) of the following flags to determine which 
 - `-h`, `--headers` to record the TCP headers.
 - `-t`, `--tracepoints` to record TCP kernel tracepoints, these contain most but not all recordable TCP kernel metrics.
 - `-k`, `--kernel` to record metrics from the kernel functions `tcp_sendmsg` and `tcp_recvmsg`. These contain all available TCP kernel metrics.
+- `-w`, `--cwnd` to record the snd_cwnd metric using kernel function tracing. This should provide the highest performance but only records a single metric.
 
 Available optional flags are:
 
 - `-q`, `--quiet` to start the program without the terminal UI
 - `-p`, `--port` to filter for flows that have the specified port as source or destination
 - `--tui-update-ms` to set an alternative update interval of the UI. May help with tearing, default is 100ms.
+- `-c`, `--cpus` to set the number of CPUs used for processing. Defaults to 1, which should be enough in most cases.
+- `-d`, `--dir` to set the output directory of recordings. Should be a tempfs, defaults to `/tmp/`
 
-Data recorded by this tool is written as bytes to `*.tcp` files in `/tmp/`.
+Data recorded by this tool is written as bytes to `*.tcp` files in the provided directory.
 
 ### 2. Processing Recorded Data
 
 Use `tcbee process` to read the recorded data and generate the flow database.
-Currently, the flow database will always be created in the same directory as `db.sqlite`.
-In the future, it will support an InfluxDB backend to speedup processing of large traces.
+You can select either SQLite or DuckDB as the output datbase:
+
+- `-q`, `--sqlite` for SQLite
+- `-d`, `--duckdb` for DuckDB, recommended for larger traces and better analysis
+
+Additionally, you can set the source directory and output file using:
+- `-s`, `--source` defaults to `/tmp/`
+- `-o`, `--output` defaults to `db.sqlite` or `db.duck` in the current directory
+
 
 ### 3. Visualizing Processed Data
 
 Use `tcbee viz` to start the visualization tool.
-Once the tool opens, you can load an `*.sqlite` file to visualize.
+Once the tool opens, you can load an `*.sqlite` or `*.duck` file to visualize.
 You can navigate between plotting, multi-flow plotting, processing and settings via the navigation bar.
 The visualization tool is still in development and you may need to resize the window if fields or buttons are missing.
 
@@ -164,7 +173,8 @@ For example code and usage, see [ts-storage/README.md](ts-storage/README.md)
 ### Using Custom Scripts and Programs
 
 You can generate custom graphs and visualization using your own tools and scripts by accessing the flow database directly.
-To that end, you either need to implement access over SQLite or InfluxDB depending on the storage format.
+To that end, you either need to implement access over SQLite or DuckDB depending on the storage format.
+You could also use SQL queries to access/manipulate the data in the DB directly.
 For a guide on how to read flow data, see [ts-storage/ACCESS.md](ts-storage/ACCESS.md).
 
 ### Accessing the raw data ouput
@@ -182,7 +192,15 @@ If you want to read the raw bytes from your own program, take a look at [tcbee-r
 
 ### Visualizing CWND Size
 
-<img alt="TCBee-Viz" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize.png"/>
+<img alt="TCBee-Viz for CWND and SSTHRESH" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize.png"/>
+
+<img alt="TCBee-Viz for sliding window and SEQ NUM" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_2.png"/>
+
+<img alt="TCBee-Viz for split graphs, CWND, SRTT and WND Size"  style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_3.png"/>
+
+### Calculating a new metric
+
+<img alt="TCBee-Viz calculating a new metric using SND_WND and SND_UNA"  style="border-radius: 10px; border: 1px solid #000;" src="imgs/plugins.png"/>
 
 ### Visualizing Multiple Flows
 
