@@ -46,7 +46,7 @@ impl EventIndexer for cwnd_trace_entry {
 
         if self.family == AF_INET {
             // TODO: check offsets
-            let mut bytes = self.addr_v4.to_be_bytes();
+            let bytes = self.addr_v4.to_be_bytes();
 
             let mut srcbytes = array_ref![bytes,0,4].clone();
             let mut dstbytes = array_ref![bytes,4,4].clone();
