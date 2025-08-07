@@ -22,13 +22,20 @@ use crate::{modules::{
     },
 }, Message};
 use iced::{
-    theme::palette::Background, widget::{
+    font, theme::palette::Background, widget::{
         button, checkbox, radio, scrollable, slider, text, Button, Checkbox, Column, Row, Rule,
         Space, Text,
-    }, Alignment, Element, Length
+    }, Alignment, Element, Font, Length
 };
 
 /// OTHER FUNCTIONS
+pub fn section<'a, Message: 'a>(col: Column<'a, Message>, title: &'a str, description: &'a str) -> Column<'a, Message> {
+    col
+        .spacing(5)
+        .push(Text::new(title).size(24).font(Font { weight: font::Weight::Bold, ..Font::default() }))
+        .push(Text::new(description).size(16))
+}
+
 pub fn display_current_mouse_position<'a, Message: 'a>(
     maybe_position: Option<(f64, f64)>,
 ) -> Column<'a, Message> {
