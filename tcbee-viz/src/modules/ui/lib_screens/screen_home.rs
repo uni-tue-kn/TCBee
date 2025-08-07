@@ -87,12 +87,12 @@ Modification of the database is supplied via an extendable feature-system.\n
             .spacing(SPACE_BETWEEN_ELEMENTS)
             .width(Length::FillPortion(HOME_LEFT_COL_PORTION))
             .push(headline)
-            .push(description)
             .push(Rule::horizontal(HORIZONTAL_LINE_PRIMARY_HEIGHT))
             .push(self.display_selection_button())
             .push(Rule::horizontal(HORIZONTAL_LINE_PRIMARY_HEIGHT))
             .push(text(maybe_selected_db))
             .push(Rule::horizontal(HORIZONTAL_LINE_PRIMARY_HEIGHT))
+            .push(description)
             .into();
 
         if is_debug_display {
