@@ -1,53 +1,37 @@
 use std::{
-    collections::HashMap,
-    error::Error,
     fs::File,
-    io::{self, BufWriter, Read, Write},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    num,
-    ops::{AddAssign, Sub},
-    os::linux::fs::MetadataExt,
-    path::Path,
+    io::{self, BufWriter, Write},
     thread::sleep,
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Context};
-use glob;
+use anyhow::anyhow;
 use serde::Serialize;
 
 use crate::{
-    config::UI_UPDATE_MS_INTERVAL,
     eBPF::{ebpf_runner::prepend_string, ebpf_runner_config::EbpfWatcherConfig},
     viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
 };
 
 use aya::{
     maps::{PerCpuArray, PerCpuHashMap},
-    util::nr_cpus,
-    Ebpf, Pod,
+    Ebpf,
 };
-use log::{error, info, warn};
+use log::error;
 use ratatui::{
-    buffer::Buffer,
-    crossterm::event::{self, KeyCode, KeyEventKind},
-    layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style, Stylize},
-    symbols,
-    text::Span,
+    crossterm::event::{self, KeyCode},
+    layout::{Constraint, Direction, Layout, Margin},
+    style::Color,
     widgets::{
-        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, LegendPosition, List, Paragraph,
-        Row, ScrollDirection, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState,
-        Widget,
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState,
     },
-    DefaultTerminal, Terminal,
+    DefaultTerminal,
 };
-use tcbee_common::bindings::flow::IpTuple;
 use tokio_util::sync::CancellationToken;
 
 use super::{
     components::{graph::Graph, status::Status},
-    file_tracker::{self, FileTracker},
+    file_tracker::{FileTracker},
 };
 
 pub struct EBPFWatcher {
@@ -206,8 +190,8 @@ impl EBPFWatcher {
     // TODO: move elements to separate files!
     fn run_tui(&mut self) {
         // Rate tracking for graph bounds
-        let mut max_rate: f64 = 0.0;
-        let mut tcp_sock_max_rate: f64 = 0.0;
+        let max_rate: f64 = 0.0;
+        let tcp_sock_max_rate: f64 = 0.0;
 
         let mut last_size: u64 = 0;
 
@@ -232,7 +216,7 @@ impl EBPFWatcher {
             "Function Calls".to_string(),
         );
 
-        let mut status = Status::new();
+        let status = Status::new();
 
         let mut scrollbar_state = ScrollbarState::new(0);
         let mut scroll_index: usize = 0;

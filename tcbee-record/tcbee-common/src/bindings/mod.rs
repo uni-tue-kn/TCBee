@@ -13,7 +13,6 @@ use aya::Pod;
 use tcp_bad_csum::tcp_bad_csum_entry;
 use tcp_probe::tcp_probe_entry;
 use tcp_retransmit_synack::tcp_retransmit_synack_entry;
-use tcp_header::tcp_packet_trace;
 use tcp_sock::sock_trace_entry;
 
 #[repr(C)]

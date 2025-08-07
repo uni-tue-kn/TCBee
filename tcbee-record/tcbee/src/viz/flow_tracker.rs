@@ -7,12 +7,11 @@ use aya::maps::PerCpuHashMap;
 
 use log::warn;
 use ratatui::{
-    layout::{Constraint, Rect},
+    layout::Constraint,
     style::{Color, Style, Stylize},
     widgets::{
-        Block, Borders, Cell, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, Widget,
+        Cell, Row, ScrollbarState, Table,
     },
-    Frame,
 };
 use tcbee_common::bindings::flow::IpTuple;
 
@@ -99,7 +98,7 @@ impl FlowTracker {
         let mut i: u16 = 1;
 
         for entry in self.map.iter() {
-            if let Ok((t, v)) = entry {
+            if let Ok((_t, v)) = entry {
                 for tuple in v.iter() {
                     // TODO: prettier
                     // Checks if the first 12 bytes of the array are zero
@@ -123,8 +122,8 @@ impl FlowTracker {
                     }
 
                     let flow = Flow {
-                        src: src,
-                        dst: dst,
+                        src,
+                        dst,
                         sport: tuple.sport,
                         dport: tuple.dport,
                     };
@@ -134,7 +133,7 @@ impl FlowTracker {
             } else {
                 warn!("Could not read flows for CPU id {} in eBPF watcher!", i);
             }
-            i = i + 1;
+            i += 1;
         }
     }
 }

@@ -1,16 +1,12 @@
 use std::error::Error;
 
-use anyhow::Context;
 use aya::{
-    maps::{PerCpuArray, PerCpuHashMap, RingBuf},
-    programs::{tc, FEntry, FExit, SchedClassifier, TcAttachType, TracePoint, Xdp, XdpFlags},
-    Btf, Ebpf, EbpfLoader,
+    Ebpf, EbpfLoader,
 };
 use log::{debug, info, warn};
 use tcbee_common::bindings::{
-    flow::IpTuple, tcp_bad_csum::tcp_bad_csum_entry, tcp_header::tcp_packet_trace,
+    tcp_bad_csum::tcp_bad_csum_entry,
     tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry,
-    tcp_sock::sock_trace_entry, EBPFTracePointType,
 };
 use tokio::task::{self, spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -22,11 +18,10 @@ use crate::{
         tracepoints::TracepointTracer,
         cwnd::CwndTracer,
     },
-    handlers::{tracepoints::HandlerConstraints, BufferHandler, BufferHandlerImpl},
     viz::ebpf_watcher::EBPFWatcher,
 };
 
-use super::{ebpf_runner_config::EbpfRunnerConfig, errors::EBPFRunnerError};
+use super::ebpf_runner_config::EbpfRunnerConfig;
 
 // TODO: how to handle multiple tracepoints at the same time?
 pub struct EbpfRunner {
