@@ -10,9 +10,12 @@ use crate::modules::ui::lib_widgets::lib_graphs::{
 use iced::{widget::Column, Color, Element};
 use plotters::style::{self, Color as _};
 // use plotters::style::{Color, HSLColor, RGBAColor};
-use rand::{distr::Uniform, prelude::Distribution};
+use rand::{distr::Uniform, prelude::Distribution, rng, Rng};
+use std::{
+    f64::{MAX, MIN},
+    usize,
+};
 use ts_storage::DataValue;
-use std::{f64::{MAX, MIN}, usize};
 
 pub fn retrieve_y_bounds_from_plot_data(
     plot_data: &ProcessedPlotData,
@@ -36,7 +39,8 @@ pub fn retrieve_y_bounds_from_plot_data(
         if amount_of_points == 0 {
             continue;
         }
-        let zoom_bounds = retrieve_y_bounds_from_collection_of_points(&only_in_bounds,&zoom_bounds.y);
+        let zoom_bounds =
+            retrieve_y_bounds_from_collection_of_points(&only_in_bounds, &zoom_bounds.y);
         maximum_zoom_bounds = merge_two_bounds(&maximum_zoom_bounds, &zoom_bounds);
     }
     if maximum_zoom_bounds.lower == MAX && maximum_zoom_bounds.upper == MIN {
@@ -282,7 +286,7 @@ pub fn filter_and_prepare_string_from_series(
 }
 
 #[derive(Clone)]
-pub enum ColorScheme{
+pub enum ColorScheme {
     Random,
     RandomHSL,
     LightTheme,
@@ -290,29 +294,35 @@ pub enum ColorScheme{
 }
 
 /// returns n random colors of a selection of colors
-pub fn retrieve_n_colors(selection:ColorScheme,n: usize) -> Vec<style::RGBAColor> {
-    match selection{
-        ColorScheme::Random => {
-            generate_n_random_colors(n)
-        }
-        ColorScheme::RandomHSL => {
-            generate_random_colors_hsl(0.7, 0.5, n)
-        }
+pub fn retrieve_n_colors(selection: ColorScheme, n: usize) -> Vec<style::RGBAColor> {
+    match selection {
+        ColorScheme::Random => generate_n_random_colors(n),
+        ColorScheme::RandomHSL => generate_random_colors_hsl(0.7, 0.5, n),
         ColorScheme::LightTheme => {
-            let mut colors= generate_10_colors_scheme1();
+            let mut colors = generate_10_colors_scheme1();
+            
+            // Prevent same color order for different flows!
+            let max_index = colors.len();
+            colors.rotate_right(rand::rng().random_range(0..max_index));
+            
             if n >= colors.len() {
-                let mut more_colors = generate_n_random_colors(n-colors.len());
+                let mut more_colors = generate_n_random_colors(n - colors.len());
                 colors.append(&mut more_colors)
             }
-            return colors
+            colors
         }
         ColorScheme::DarkTheme => {
             let mut colors = generate_12_colors_scheme2();
+
+            // Prevent same color order for different flows!
+            let max_index = colors.len();
+            colors.rotate_right(rand::rng().random_range(0..max_index));
+
             if n >= colors.len() {
-                let mut more_colors = generate_n_random_colors(n-colors.len());
+                let mut more_colors = generate_n_random_colors(n - colors.len());
                 colors.append(&mut more_colors);
             }
-            return colors
+            colors
         }
     }
 }
@@ -320,7 +330,7 @@ pub fn convert_rgba_to_iced_color(color: &style::RGBAColor) -> Color {
     Color::from_rgb8(color.0, color.1, color.2)
 }
 
-fn generate_n_random_colors(n:usize) -> Vec<style::RGBAColor> {
+fn generate_n_random_colors(n: usize) -> Vec<style::RGBAColor> {
     let mut colors: Vec<style::RGBAColor> = Vec::new();
     let mut rng_thread = rand::rng();
 
@@ -334,48 +344,53 @@ fn generate_n_random_colors(n:usize) -> Vec<style::RGBAColor> {
     colors
 }
 
-fn generate_random_colors_hsl(saturation:f64, lightness:f64, n:usize) -> Vec<style::RGBAColor> {
+fn generate_random_colors_hsl(saturation: f64, lightness: f64, n: usize) -> Vec<style::RGBAColor> {
     let mut colors: Vec<style::RGBAColor> = Vec::new();
-    // let huedelta = 360/n;
+
+    // Offset generation for subsequent calls
+    // Otherwise two flows will get same color in multi flow plot!
+    let offset: f64 = rng().random();
+
     for index in 0..n {
         // let hue:f64 = huedelta * (index as f64);
-        let hue:f64 = (index as f64) / (n as f64);
-        let as_hsl = style::HSLColor(hue,saturation,lightness);
+        let mut hue: f64 = (index as f64) / (n as f64);
+        hue = (hue + offset) % 1.0; // Ensure that 0 < hue < 1
+        let as_hsl = style::HSLColor(hue, saturation, lightness);
         let as_rgba_color = as_hsl.to_rgba();
         colors.push(as_rgba_color);
-    };
+    }
     colors
 }
 
 fn generate_10_colors_scheme1() -> Vec<style::RGBAColor> {
     // of 10 colors
     vec![
-    style::RGBAColor(215,25,28,1.0),
-    style::RGBAColor(253,174,97,1.0),
-    style::RGBAColor(255,255,191,1.0),
-    style::RGBAColor(171,217,233,1.0),
-    style::RGBAColor(44,123,182,1.0),
-    style::RGBAColor(23, 34, 109,1.0),
-    style::RGBAColor(96, 119, 209,1.0),
-    style::RGBAColor(191, 197, 255,1.0),
-    style::RGBAColor(210, 233, 206,1.0),
-    style::RGBAColor(170, 182, 111,1.0)
+        style::RGBAColor(215, 25, 28, 1.0),
+        style::RGBAColor(253, 174, 97, 1.0),
+        style::RGBAColor(255, 255, 191, 1.0),
+        style::RGBAColor(171, 217, 233, 1.0),
+        style::RGBAColor(44, 123, 182, 1.0),
+        style::RGBAColor(23, 34, 109, 1.0),
+        style::RGBAColor(96, 119, 209, 1.0),
+        style::RGBAColor(191, 197, 255, 1.0),
+        style::RGBAColor(210, 233, 206, 1.0),
+        style::RGBAColor(170, 182, 111, 1.0),
     ]
 }
 
 fn generate_12_colors_scheme2() -> Vec<style::RGBAColor> {
     vec![
-    style::RGBAColor(166,206,227,1.0),
-    style::RGBAColor(31,120,180,1.0),
-    style::RGBAColor(178,223,138,1.0),
-    style::RGBAColor(51,160,44,1.0),
-    style::RGBAColor(251,154,153,1.0),
-    style::RGBAColor(227,26,28,1.0),
-    style::RGBAColor(253,191,111,1.0),
-    style::RGBAColor(255,127,0,1.0),
-    style::RGBAColor(202,178,214,1.0),
-    style::RGBAColor(106,61,154,1.0),
-    style::RGBAColor(153, 50, 204,1.0),
-    style::RGBAColor(177,89,40,1.0),
+        style::RGBAColor(166, 206, 227, 1.0),
+        style::RGBAColor(31, 120, 180, 1.0),
+        style::RGBAColor(178, 223, 138, 1.0),
+        style::RGBAColor(51, 160, 44, 1.0),
+        style::RGBAColor(251, 154, 153, 1.0),
+        style::RGBAColor(227, 26, 28, 1.0),
+        style::RGBAColor(253, 191, 111, 1.0),
+        style::RGBAColor(255, 127, 0, 1.0),
+        style::RGBAColor(202, 178, 214, 1.0),
+        style::RGBAColor(106, 61, 154, 1.0),
+        style::RGBAColor(153, 50, 204, 1.0),
+        style::RGBAColor(177, 89, 40, 1.0),
     ]
 }
