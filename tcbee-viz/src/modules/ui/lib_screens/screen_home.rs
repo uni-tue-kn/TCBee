@@ -13,7 +13,7 @@ use crate::{
                 SPACE_BETWEEN_ELEMENTS, SPACE_BETWEEN_PLOT_ROWS, TEXT_HEADLINE_0_SIZE,
                 TEXT_HEADLINE_1_SIZE, TEXT_HEADLINE_2_SIZE,
             },
-            lib_widgets::app_widgets::generate_padded_layout,
+            lib_widgets::app_widgets::{generate_padded_layout, section},
         },
     },
     ApplicationSettings, DataSource, Message, Screen,
@@ -21,9 +21,7 @@ use crate::{
 
 // -- external imports
 use iced::{
-    alignment,
-    widget::{button, column, row, scrollable, text, Button, Column, Row, Rule, Space},
-    Alignment, Color, Element, Length,
+    advanced::Text, alignment, widget::{button, column, row, scrollable, text, Button, Column, Row, Rule, Space}, Alignment, Color, Element, Length
 };
 use iced_aw::TabLabel;
 use rfd::FileDialog;
@@ -89,12 +87,12 @@ Modification of the database is supplied via an extendable feature-system.\n
             .spacing(SPACE_BETWEEN_ELEMENTS)
             .width(Length::FillPortion(HOME_LEFT_COL_PORTION))
             .push(headline)
-            .push(description)
             .push(Rule::horizontal(HORIZONTAL_LINE_PRIMARY_HEIGHT))
             .push(self.display_selection_button())
             .push(Rule::horizontal(HORIZONTAL_LINE_PRIMARY_HEIGHT))
             .push(text(maybe_selected_db))
             .push(Rule::horizontal(HORIZONTAL_LINE_PRIMARY_HEIGHT))
+            .push(description)
             .into();
 
         if is_debug_display {
@@ -108,13 +106,15 @@ Modification of the database is supplied via an extendable feature-system.\n
         let read_settings = self.application_settings.read().unwrap();
         let is_display_debug = read_settings.display_debug;
         let headline = text("Usage Of Tool").size(TEXT_HEADLINE_0_SIZE);
-        let explanation_content = Column::new()
-            .spacing(SPACE_BETWEEN_ELEMENTS)
-            .push("First_Paragraph\n\n\n\n")
-            .push("Second_Paragraph\n\n\n\n")
-            .push("Third_Paragraph\n\n\n\n")
-            .push("Fourth_Paragraph\n\n\n\n")
-            .push("Fifth_Paragraph\n\n\n\n");
+        let mut explanation_content = Column::new()
+            .spacing(SPACE_BETWEEN_ELEMENTS);
+
+        explanation_content = section(explanation_content, "Home", "The starting screen where you can select the database file containing recorded TCP flow data. If the button to open a file is not visible, increase the window size.");
+        explanation_content = section(explanation_content, "Plot Single Flow", "Allows you to visualize various metrics for an individual TCP flow over time. Flows are identified by their IP 5-tuple (source/destination IP and port, protocol) and sorted by start time. Multiple metrics can be plotted simultaneously, either overlaid on a single graph or split into separate graphs. Tools for zooming and adjusting plot layout are available.");
+        explanation_content = section(explanation_content, "Process", "Provides functionality to calculate derived TCP metrics that are not directly recorded. This is done through plugins (e.g., modules that compute window size). Calculated results can be previewed and stored in the loaded database for later analysis.");
+        explanation_content = section(explanation_content, "Multi Flow", "Enables side-by-side comparison of metrics from two TCP flows. Useful for analyzing interactions between concurrent flows, such as bandwidth sharing. The interface and plotting tools are similar to the Plot Single Flow tab but support dual selection.");
+        explanation_content = section(explanation_content, "Settings", "Contains configurable options for the application. Some settings may not be fully implemented or relevant for all use cases, but users can explore them to customize their experience.");
+
         let content: Element<'_, MessageHome> = Column::new()
             .width(Length::FillPortion(HOME_RIGHT_COL_PORTION))
             .push(headline)

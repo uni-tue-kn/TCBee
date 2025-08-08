@@ -10,25 +10,23 @@ mod bindings {
     pub mod cwnd;
 }
 
-use argparse::{ArgumentParser, Store, StoreOption, StoreTrue};
+use argparse::{ArgumentParser, Store, StoreTrue};
 use bindings::{sock::sock_trace_entry, cwnd::cwnd_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe};
 use db_writer::{DBOperation, DBWriter};
-use flow_tracker::{EventIndexer, EventType, FlowTracker, TsTracker};
+use flow_tracker::EventIndexer;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{error, info};
 use reader::{FileReader, FromBuffer};
 use serde::Deserialize;
 use tokio::{
-    signal::ctrl_c,
     sync::mpsc::{self, Sender},
     task::{self, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
 use ts_storage::DBBackend;
 
-use core::num;
 use std::{
-    collections::HashMap, error::Error, fmt::Debug, io::Read, net::{IpAddr, Ipv4Addr}, path::Path, slice::Windows
+    error::Error, fmt::Debug, path::Path
 };
 
 // Kernel sometimes uses a 28 Byte IP Address struct

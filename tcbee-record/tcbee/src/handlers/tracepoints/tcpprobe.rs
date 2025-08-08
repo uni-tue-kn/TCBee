@@ -1,8 +1,7 @@
-use std::{convert::Infallible, net::IpAddr};
 
 use tcbee_common::bindings::tcp_probe::tcp_probe_entry;
 
-use crate::{config::AF_INET, handlers::{BufferHandler, BufferHandlerImpl}};
+use crate::handlers::{BufferHandler, BufferHandlerImpl};
 
 // The first four bytes of an address contains IP version and ports, so remove them
 // IpAddr determines IPv4 and IPv6 based on array length, so these functions shorten them as needed

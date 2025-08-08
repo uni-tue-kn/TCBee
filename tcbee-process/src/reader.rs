@@ -5,15 +5,14 @@ use std::{error::Error, marker::PhantomData};
 use log::{debug, info};
 use serde::Deserialize;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncBufRead, AsyncReadExt, BufReader, ReadBuf};
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::sync::mpsc::Sender;
 use tokio::task;
-use tokio_util::bytes::buf;
 use tokio_util::sync::CancellationToken;
 
 use crate::{db_writer::DBOperation, flow_tracker::EventIndexer};
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::ProgressBar;
 
 pub trait FromBuffer {
     const ENTRY_SIZE: usize;

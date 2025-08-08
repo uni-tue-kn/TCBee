@@ -8,8 +8,7 @@ use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::EbpfRunnerConfig;
 
 // Error handling
-use log::{error, info};
-use std::error::Error;
+use log::info;
 
 // Async Libraries
 use tokio::{runtime::Builder, signal::ctrl_c};

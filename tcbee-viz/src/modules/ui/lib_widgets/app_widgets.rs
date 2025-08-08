@@ -6,29 +6,54 @@
 
 use std::sync::{Arc, RwLock};
 
-use crate::{modules::{
-    backend::{
-        app_settings::ApplicationSettings, intermediate_backend::IntermediateBackend, lib_system_io::receive_file_metadata, plot_data_preprocessing::convert_rgba_to_iced_color, struct_tcp_flow_wrapper::TcpFlowWrapper
-    },
-    ui::{
-        lib_styling::app_style_settings::{
-            HORIZONTAL_LINE_PRIMARY_HEIGHT, HORIZONTAL_LINE_SECONDARY_HEIGHT, PADDING_AROUND_CONTENT, SLIDER_STEP_SIZE, SPACE_BETWEEN_ELEMENTS, SPLIT_CHART_MAX_HEIGHT, SPLIT_CHART_MIN_HEIGHT, TEXT_HEADLINE_0_SIZE, TEXT_HEADLINE_1_SIZE, TEXT_HEADLINE_2_SIZE
+use crate::{
+    modules::{
+        backend::{
+            app_settings::ApplicationSettings, intermediate_backend::IntermediateBackend,
+            lib_system_io::receive_file_metadata,
+            plot_data_preprocessing::convert_rgba_to_iced_color,
+            struct_tcp_flow_wrapper::TcpFlowWrapper,
         },
-        lib_widgets::lib_graphs::{
-            struct_processed_plot_data::ProcessedPlotData,
-            struct_string_series_wrapper::{view_wrapper, StringSeriesWrapper},
-            struct_zoom_bounds::ZoomBound2D,
+        ui::{
+            lib_styling::app_style_settings::{
+                HORIZONTAL_LINE_PRIMARY_HEIGHT, HORIZONTAL_LINE_SECONDARY_HEIGHT,
+                PADDING_AROUND_CONTENT, SLIDER_STEP_SIZE, SPACE_BETWEEN_ELEMENTS,
+                SPLIT_CHART_MAX_HEIGHT, SPLIT_CHART_MIN_HEIGHT, TEXT_HEADLINE_0_SIZE,
+                TEXT_HEADLINE_1_SIZE, TEXT_HEADLINE_2_SIZE,
+            },
+            lib_widgets::lib_graphs::{
+                struct_processed_plot_data::ProcessedPlotData,
+                struct_string_series_wrapper::{view_wrapper, StringSeriesWrapper},
+                struct_zoom_bounds::ZoomBound2D,
+            },
         },
     },
-}, Message};
+    Message,
+};
 use iced::{
-    theme::palette::Background, widget::{
+    font,
+    theme::palette::Background,
+    widget::{
         button, checkbox, radio, scrollable, slider, text, Button, Checkbox, Column, Row, Rule,
         Space, Text,
-    }, Alignment, Element, Length
+    },
+    Alignment, Element, Font, Length,
 };
 
 /// OTHER FUNCTIONS
+pub fn section<'a, Message: 'a>(
+    col: Column<'a, Message>,
+    title: &'a str,
+    description: &'a str,
+) -> Column<'a, Message> {
+    col.spacing(5)
+        .push(Text::new(title).size(24).font(Font {
+            weight: font::Weight::Bold,
+            ..Font::default()
+        }))
+        .push(Text::new(description).size(16))
+}
+
 pub fn display_current_mouse_position<'a, Message: 'a>(
     maybe_position: Option<(f64, f64)>,
 ) -> Column<'a, Message> {
@@ -49,7 +74,7 @@ pub fn display_current_mouse_position<'a, Message: 'a>(
 
 //FIXME implement proper color scheme selector
 // pub fn display_color_scheme_selector<'a, Message: 'a + Clone>(
-    // message_on_selection: imp
+// message_on_selection: imp
 // )
 
 pub fn display_flow_selector<'a, Message: 'a + Clone>(
@@ -80,18 +105,15 @@ fn generate_selections_for_flows<'a, Message: 'a + Clone>(
     let interface = &ref_backend.database_interface;
 
     if let Some(db_connection) = interface {
-
         let header_1: Row<'_, _> = Row::<Message>::new()
             .push(Text::new("ID").width(Length::FillPortion(1))) // Space for radio button
             .push(Text::new("Source").width(Length::FillPortion(3)))
             .push(Text::new("Destination").width(Length::FillPortion(3)));
 
-
         new_col = new_col.push(header_1);
 
         let all_flows = db_connection.list_flows().expect("could not find flows");
         for entry in all_flows {
-
             let tuple = &entry.tuple;
             let first_flow_row = Row::<Message>::new()
                 .push(Text::new(entry.get_id().unwrap()).width(Length::FillPortion(1)))
@@ -100,18 +122,20 @@ fn generate_selections_for_flows<'a, Message: 'a + Clone>(
             let second_flow_row = Row::<Message>::new()
                 .push(
                     radio(
-                    "",
-                    entry.get_id().expect("no flow id"),
-                    focused_flow.flow_id,
-                    message_on_click.clone(),
-                    ) 
-                    .width(Length::FillPortion(1))
+                        "",
+                        entry.get_id().expect("no flow id"),
+                        focused_flow.flow_id,
+                        message_on_click.clone(),
+                    )
+                    .width(Length::FillPortion(1)),
                 )
                 .push(Text::new(tuple.sport.to_string()).width(Length::FillPortion(3)))
                 .push(Text::new(tuple.dport.to_string()).width(Length::FillPortion(3)));
-                
 
-            new_col = new_col.push(Rule::horizontal(HORIZONTAL_LINE_SECONDARY_HEIGHT)).push(first_flow_row).push(second_flow_row);
+            new_col = new_col
+                .push(Rule::horizontal(HORIZONTAL_LINE_SECONDARY_HEIGHT))
+                .push(first_flow_row)
+                .push(second_flow_row);
         }
     }
     new_col
@@ -133,9 +157,9 @@ pub fn display_series_selector<'a, Message: 'a + Clone>(
         message_on_unselect_all,
         focused_flow,
     );
-    let widget_collection: Element<'_, Message>= match maybe_collection_of_series{
+    let widget_collection: Element<'_, Message> = match maybe_collection_of_series {
         Ok(widget) => widget.into(),
-        Err(string) => text(string).into()
+        Err(string) => text(string).into(),
     };
     Column::new()
         .spacing(SPACE_BETWEEN_ELEMENTS)
@@ -153,62 +177,78 @@ fn generate_selections_for_series_data<'a, Message: 'a + Clone>(
     message_on_deselect: impl Fn(i64) -> Message + 'a + Clone,
     message_on_unselect_all: Message,
     screen_flow: &TcpFlowWrapper,
-) -> Result<Column<'a, Message>,String> {
+) -> Result<Column<'a, Message>, String> {
     let mut column: Column<'a, Message> = Column::new();
 
-    column  = column.push(
-        generate_series_unselect_button(message_on_unselect_all)
-    );
+    column = column.push(generate_series_unselect_button(message_on_unselect_all));
 
-    let database_connection  = &ref_backend.database_interface.clone().expect("No database connection found");
+    let database_connection = &ref_backend
+        .database_interface
+        .clone()
+        .expect("No database connection found");
 
-        //  found connection, attempting to read from it
-        let maybe_selected_flow = &ref_backend
-            .receive_selected_flow(screen_flow.flow_id);
-        let flow = match maybe_selected_flow {
-            Some(flow) => flow,
-            _ => return Err("no active flow found, although its not none".to_string())
-        };
+    // Get list of time series avialable for flow from backend!
+    let maybe_selected_flow = &ref_backend.receive_selected_flow(screen_flow.flow_id);
+    let flow = match maybe_selected_flow {
+        Some(flow) => flow,
+        _ => return Err("no active flow found, although its not none".to_string()),
+    };
+    let maybe_avail_time_series = database_connection.list_time_series(flow);
+    let available_time_series = match maybe_avail_time_series {
+        Ok(time_series) => time_series,
+        _ => return Err("could not retrieve time series for flow, non available".to_string()),
+    };
 
-        let maybe_avail_time_series = database_connection
-            .list_time_series(flow);
-        let available_time_series = match maybe_avail_time_series{
-            Ok(time_series) => time_series,
-            _ => return Err("could not retrieve time series for flow, non available".to_string())
-        };
-        for time_series in available_time_series {
-            // FIXME necessary to unwrap correctly?
-            let is_selected: bool =
-                screen_flow.series_id_is_selected(&time_series.id.expect("no id found for flow"));
+    // Overall header for time series table
+    let header: Row<'_, _> = Row::<Message>::new()
+        .push(Text::new("").width(Length::FillPortion(1))) // Space for radio button
+        .push(Text::new("Name").width(Length::FillPortion(3)))
+        .push(Text::new("Type").width(Length::FillPortion(3)))
+        .push(Text::new("# Values").width(Length::FillPortion(3)));
+    column = column.push(header);
 
-            // reasonable to copy closure here?
-            let copy_of_message_select = message_on_select.clone();
-            let copy_of_message_deselect = message_on_deselect.clone();
-            //  creating checkbox for each flow
-            let new_checkbox: Checkbox<'a, Message> = checkbox(
-                format!(
-                    "{:?} of type: {:?}",
-                    &time_series.name,
-                    time_series.ts_type.type_as_string()
-                ),
-                is_selected,
-            )
-            .on_toggle(move |state| {
-                if !state {
-                    // we know it was selected
-                    println!("de selecting value: {:?}", time_series.name);
-                    copy_of_message_deselect(time_series.id.unwrap())
-                } else {
-                    println!("selecting value: {:?}", time_series.name);
-                    copy_of_message_select(time_series.id.unwrap())
-                }
-            });
-            // .on_toggle(MessagePlotting::FlowFeatureSelected);
-            column = column.push(new_checkbox);
-        }
+    for time_series in available_time_series {
+        // FIXME necessary to unwrap correctly?
+        let is_selected: bool =
+            screen_flow.series_id_is_selected(&time_series.id.expect("no id found for flow"));
+        // reasonable to copy closure here?
+        let copy_of_message_select = message_on_select.clone();
+        let copy_of_message_deselect = message_on_deselect.clone();
+
+        // Create entry for each time series
+        let num_entries = database_connection
+            .get_data_points_count(&time_series)
+            .unwrap_or(-1);
+        let ts_name = time_series.name.clone();
+        let ts_type = time_series.ts_type.type_as_string();
+
+        //  Checkbox that triggers drawing process
+        let new_checkbox: Checkbox<'a, Message> = checkbox(
+            "",
+            is_selected,
+        )
+        .on_toggle(move |state| {
+            if !state {
+                // we know it was selected
+                println!("de selecting value: {:?}", &time_series.name);
+                copy_of_message_deselect(time_series.id.unwrap())
+            } else {
+                println!("selecting value: {:?}", &time_series.name);
+                copy_of_message_select(time_series.id.unwrap())
+            }
+        });
+
+        // Construct row
+        let ts_row: Row<'_, _> = Row::<Message>::new()
+            .push(new_checkbox.width(Length::FillPortion(1)))
+            .push(Text::new(ts_name).width(Length::FillPortion(3)))
+            .push(Text::new(ts_type).width(Length::FillPortion(3)))
+            .push(Text::new(num_entries).width(Length::FillPortion(3)));
+
+        column = column.push(Rule::horizontal(HORIZONTAL_LINE_SECONDARY_HEIGHT)).push(ts_row);
+    }
     return Ok(column);
 }
-
 
 pub fn generate_render_button<'a, Message: 'a + Clone>(
     message_on_press: Message,
@@ -219,7 +259,8 @@ pub fn generate_render_button<'a, Message: 'a + Clone>(
 pub fn generate_series_unselect_button<'a, Message: 'a + Clone>(
     message_on_press: Message,
 ) -> Element<'a, Message> {
-    let render_button: Button<'a, Message> = button("unselet all series").on_press(message_on_press);
+    let render_button: Button<'a, Message> =
+        button("unselet all series").on_press(message_on_press);
     render_button.into()
 }
 pub fn generate_zoom_reset_button<'a, Message: 'a + Clone>(
@@ -260,13 +301,9 @@ pub fn display_database_metadata<'a, Message: 'a + Clone>(
 ) -> Element<'a, Message> {
     let read_settings = app_settings_arc.read().unwrap();
     let maybe_path = &read_settings.intermediate_interface.database_path;
-    let maybe_db_info =match maybe_path {
-        Some(path) => {
-            receive_file_metadata(path)
-        }
-        _ => { 
-            "No information could be obtained about database.".to_string()
-        }
+    let maybe_db_info = match maybe_path {
+        Some(path) => receive_file_metadata(path),
+        _ => "No information could be obtained about database.".to_string(),
     };
 
     let headline = text("Information About Database:").size(TEXT_HEADLINE_1_SIZE);
@@ -476,7 +513,7 @@ pub fn generate_legends_for_charts<'a, Message: 'a>(
     }
 }
 
-pub fn generate_padded_layout<'a, Message: 'a>(padding_value:u16) -> Column<'a, Message> {
+pub fn generate_padded_layout<'a, Message: 'a>(padding_value: u16) -> Column<'a, Message> {
     let window_content: Column<'a, Message> = Column::new()
         .padding(padding_value)
         .spacing(SPACE_BETWEEN_ELEMENTS);

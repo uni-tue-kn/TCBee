@@ -547,7 +547,6 @@ impl tcphdr {
     }
 }
 
-use super::{__u64, __u8};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
