@@ -41,6 +41,8 @@ pub struct EBPFWatcher {
     egress_counter: RateWatcher<u32>,
     tcp_sock_send: RateWatcher<u32>,
     tcp_sock_recv: RateWatcher<u32>,
+    tcp_bytes_recv: RateWatcher<u32>,
+    tcp_bytes_sent: RateWatcher<u32>,
     flow_tracker: FlowTracker,
     update_period: u128,
     token: CancellationToken,
@@ -55,7 +57,9 @@ pub struct Metrics {
     ingress: u32,
     egress: u32,
     ingress_calls: u32,
-    egress_calls: u32 
+    egress_calls: u32,
+    tcp_bytes_sent: u32,
+    tcp_bytes_received: u32
 }
     //TODO: Monitor packet rate vs TCP packet rate?
 impl EBPFWatcher {
@@ -67,7 +71,7 @@ impl EBPFWatcher {
         do_tui: bool,
     ) -> anyhow::Result<EBPFWatcher> {
         // Track rate of passed maps
-        // TODO: can this be cleaned up?
+        // TODO: This really should be moved to some sort of loop and dict approach
         let events_drops = RateWatcher::<u32>::new(
             PerCpuArray::try_from(
                 ebpf.take_map("EVENTS_DROPPED")
@@ -118,9 +122,27 @@ impl EBPFWatcher {
                 ebpf.take_map("RECV_TCP_SOCK")
                     .ok_or_else(|| anyhow!("Could not find RECV_TCP_SOCK map!"))?,
             )?,
-            "Calls/s".to_string(),
+            "Bytes/s".to_string(),
             0,
             "TCP Recvmsg".to_string(),
+        );
+        let tcp_bytes_recv = RateWatcher::<u32>::new(
+            PerCpuArray::try_from(
+                ebpf.take_map("RECEIVED_TCP_BYTES")
+                    .ok_or_else(|| anyhow!("Could not find RECEIVED_TCP_BYTES map!"))?,
+            )?,
+            "Calls/s".to_string(),
+            0,
+            "TCP Bytes Received".to_string(),
+        );
+        let tcp_bytes_sent = RateWatcher::<u32>::new(
+            PerCpuArray::try_from(
+                ebpf.take_map("SENT_TCP_BYTES")
+                    .ok_or_else(|| anyhow!("Could not find SENT_TCP_BYTES map!"))?,
+            )?,
+            "Calls/s".to_string(),
+            0,
+            "TCP Bytes Sent".to_string(),
         );
 
         let flow_tracker = FlowTracker::new(PerCpuHashMap::try_from(
@@ -140,6 +162,8 @@ impl EBPFWatcher {
             egress_counter,
             tcp_sock_send,
             tcp_sock_recv,
+            tcp_bytes_sent,
+            tcp_bytes_recv,
             flow_tracker,
             update_period,
             token,
@@ -345,6 +369,8 @@ impl EBPFWatcher {
                         event_rate,
                         files_size,
                         file_rate,
+                        self.tcp_bytes_recv.get_counter_sum_string(),
+                        self.tcp_bytes_sent.get_counter_sum_string()
                     )
                     .into_iter()
                     .enumerate()
@@ -438,10 +464,10 @@ impl EBPFWatcher {
                 egress: self.egress_counter.get_counter_sum(),
                 ingress_calls: self.tcp_sock_recv.get_counter_sum(),
                 egress_calls: self.tcp_sock_send.get_counter_sum(),
+                tcp_bytes_sent: self.tcp_bytes_sent.get_counter_sum(),
+                tcp_bytes_received: self.tcp_bytes_recv.get_counter_sum()
             };
             
-
-
             let Ok(outfile) = File::create(prepend_string("metrics.json".to_string(), &self.config.dir)) else {
                 error!("Could not open outfile: {}/metrics.json",self.config.dir);
                 return;

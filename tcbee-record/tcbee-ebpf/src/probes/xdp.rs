@@ -17,7 +17,8 @@ use crate::{
         TCP_PROTOCOL, XDP_BUF_SIZE,
     },
     counters::{try_dropped_counter, try_handled_counter, try_ingress_counter},
-    flow_tracker::try_flow_tracker, FILTER_PORT,
+    flow_tracker::try_flow_tracker,
+    FILTER_PORT,
 };
 
 #[map(name = "TCP_PACKETS_INGRESS")]
@@ -87,32 +88,14 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             tcp_hdr = tcp_hdr_ptr.read();
 
             // Filter source and dest port if FILTER_PORT is set!
-            if FILTER_PORT != 0 && tcp_hdr.source.to_be() != FILTER_PORT && tcp_hdr.dest.to_be() != FILTER_PORT {
+            if FILTER_PORT != 0
+                && tcp_hdr.source.to_be() != FILTER_PORT
+                && tcp_hdr.dest.to_be() != FILTER_PORT
+            {
                 return Ok(XDP_PASS);
             }
 
-            packet_trace = tcp_packet_trace {
-                time: bpf_ktime_get_ns(),
-                saddr: ip4_hdr.saddr.to_be(),
-                daddr: ip4_hdr.daddr.to_be(),
-                saddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                daddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                seq: tcp_hdr.seq.to_be(),
-                ack: tcp_hdr.ack_seq.to_be(),
-                window: tcp_hdr.window.to_be(),
-                flag_urg: tcp_hdr.urg().to_be() == 1,
-                flag_ack: tcp_hdr.ack().to_be() == 1,
-                flag_psh: tcp_hdr.psh().to_be() == 1,
-                flag_rst: tcp_hdr.rst().to_be() == 1,
-                flag_fin: tcp_hdr.fin().to_be() == 1,
-                flag_syn: tcp_hdr.syn().to_be() == 1,
-                checksum: tcp_hdr.check.to_be(),
-            };
-
             // Write to flow tracker
-            
             let mut src = [0; 16];
             let mut dst = [0; 16];
             src[12..16].copy_from_slice(&ip4_hdr.saddr.to_le_bytes());
@@ -125,7 +108,41 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
-            
+
+            // Prepare ringbuf entry
+            let reserved = TCP_PACKETS_INGRESS.reserve::<tcp_packet_trace>(0);
+
+            // Track ingress packet count
+            let _ = try_ingress_counter();
+
+            // Check if space left for entry
+            if let Some(mut entry) = reserved {
+                // Enough space, write and track handled events
+                entry.write(tcp_packet_trace {
+                    time: bpf_ktime_get_ns(),
+                    saddr: ip4_hdr.saddr.to_be(),
+                    daddr: ip4_hdr.daddr.to_be(),
+                    saddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    daddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    sport: tcp_hdr.source.to_be(),
+                    dport: tcp_hdr.dest.to_be(),
+                    seq: tcp_hdr.seq.to_be(),
+                    ack: tcp_hdr.ack_seq.to_be(),
+                    window: tcp_hdr.window.to_be(),
+                    flag_urg: tcp_hdr.urg().to_be() == 1,
+                    flag_ack: tcp_hdr.ack().to_be() == 1,
+                    flag_psh: tcp_hdr.psh().to_be() == 1,
+                    flag_rst: tcp_hdr.rst().to_be() == 1,
+                    flag_fin: tcp_hdr.fin().to_be() == 1,
+                    flag_syn: tcp_hdr.syn().to_be() == 1,
+                    checksum: tcp_hdr.check.to_be(),
+                });
+                entry.submit(0);
+                let _ = try_handled_counter();
+            } else {
+                // Not enough space, drop event
+                let _ = try_dropped_counter();
+            }
         }
 
         // Check if next protocol is tcp
@@ -161,29 +178,12 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             tcp_hdr = tcp_hdr_ptr.read();
 
             // Filter source and dest port if FILTER_PORT is set!
-            if FILTER_PORT != 0 && tcp_hdr.source.to_be() != FILTER_PORT && tcp_hdr.dest.to_be() != FILTER_PORT {
+            if FILTER_PORT != 0
+                && tcp_hdr.source.to_be() != FILTER_PORT
+                && tcp_hdr.dest.to_be() != FILTER_PORT
+            {
                 return Ok(XDP_PASS);
             }
-
-            packet_trace = tcp_packet_trace {
-                time: bpf_ktime_get_ns(),
-                saddr: 0,
-                daddr: 0,
-                saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
-                daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                seq: tcp_hdr.seq.to_be(),
-                ack: tcp_hdr.ack_seq.to_be(),
-                window: tcp_hdr.window.to_be(),
-                flag_urg: tcp_hdr.urg().to_be() == 1,
-                flag_ack: tcp_hdr.ack().to_be() == 1,
-                flag_psh: tcp_hdr.psh().to_be() == 1,
-                flag_rst: tcp_hdr.rst().to_be() == 1,
-                flag_fin: tcp_hdr.fin().to_be() == 1,
-                flag_syn: tcp_hdr.syn().to_be() == 1,
-                checksum: tcp_hdr.check.to_be(),
-            };
 
             // Write to flow tracker
             let _ = try_flow_tracker(IpTuple {
@@ -193,31 +193,47 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
+
+            // Prepare ringbuf entry
+            let reserved = TCP_PACKETS_INGRESS.reserve::<tcp_packet_trace>(0);
+
+            // Track ingress packet count
+            let _ = try_ingress_counter();
+
+            // Check if space left for entry
+            if let Some(mut entry) = reserved {
+                // Enough space, write and track handled events
+                entry.write(tcp_packet_trace {
+                    time: bpf_ktime_get_ns(),
+                    saddr: 0,
+                    daddr: 0,
+                    saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
+                    daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
+                    sport: tcp_hdr.source.to_be(),
+                    dport: tcp_hdr.dest.to_be(),
+                    seq: tcp_hdr.seq.to_be(),
+                    ack: tcp_hdr.ack_seq.to_be(),
+                    window: tcp_hdr.window.to_be(),
+                    flag_urg: tcp_hdr.urg().to_be() == 1,
+                    flag_ack: tcp_hdr.ack().to_be() == 1,
+                    flag_psh: tcp_hdr.psh().to_be() == 1,
+                    flag_rst: tcp_hdr.rst().to_be() == 1,
+                    flag_fin: tcp_hdr.fin().to_be() == 1,
+                    flag_syn: tcp_hdr.syn().to_be() == 1,
+                    checksum: tcp_hdr.check.to_be(),
+                });
+                entry.submit(0);
+                let _ = try_handled_counter();
+            } else {
+                // Not enough space, drop event
+                let _ = try_dropped_counter();
+            }
         }
     } else {
         // Should never be reached!
         return Ok(XDP_PASS);
     }
 
-    unsafe {
-        // Prepare ringbuf entry
-        let reserved = TCP_PACKETS_INGRESS.reserve::<tcp_packet_trace>(0);
-
-        // Track ingress packet count
-        let _ = try_ingress_counter();
-
-        // Check if space left for entry
-        if let Some(mut entry) = reserved {
-            // Enough space, write and track handled events
-            entry.write(packet_trace);
-            entry.submit(0);
-            let _ = try_handled_counter();
-        } else {
-            // Not enough space, drop event
-            let _ = try_dropped_counter();
-        }
-    }
-
     // Always let packet pass to kernel
-    return Ok(XDP_PASS);
+    Ok(XDP_PASS)
 }

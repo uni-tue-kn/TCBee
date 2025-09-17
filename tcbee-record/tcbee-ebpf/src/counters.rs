@@ -14,6 +14,32 @@ static mut EGRESS_EVENTS: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_C
 static mut SEND_TCP_SOCK: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
 #[map(name = "RECV_TCP_SOCK")]
 static mut RECV_TCP_SOCK: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
+#[map(name = "SENT_TCP_BYTES")]
+static mut SENT_TCP_BYTES: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
+#[map(name = "RECEIVED_TCP_BYTES")]
+static mut RECEIVED_TCP_BYTES: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
+
+#[inline(always)] 
+pub fn try_sent_tcp_bytes(add: u32) -> Result<(), ()> {
+    unsafe {
+        let counter = SENT_TCP_BYTES
+            .get_ptr_mut(0)
+            .ok_or(())? ;
+            *counter += add;
+        }
+    Ok(())
+}
+
+#[inline(always)] 
+pub fn try_received_tcp_bytes(add: u32) -> Result<(), ()> {
+    unsafe {
+        let counter = RECEIVED_TCP_BYTES
+            .get_ptr_mut(0)
+            .ok_or(())? ;
+            *counter += add;
+        }
+    Ok(())
+}
 
 #[inline(always)] 
 pub fn try_send_tcp_sock() -> Result<(), ()> {
