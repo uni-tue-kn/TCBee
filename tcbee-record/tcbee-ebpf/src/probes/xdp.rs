@@ -101,6 +101,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             src[12..16].copy_from_slice(&ip4_hdr.saddr.to_le_bytes());
             dst[12..16].copy_from_slice(&ip4_hdr.daddr.to_le_bytes());
 
+            /* 
             let _ = try_flow_tracker(IpTuple {
                 src_ip: src,
                 dst_ip: dst,
@@ -108,6 +109,8 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
+
+            */
 
             // Prepare ringbuf entry
             let reserved = TCP_PACKETS_INGRESS.reserve::<tcp_packet_trace>(0);
@@ -186,6 +189,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             }
 
             // Write to flow tracker
+            /* 
             let _ = try_flow_tracker(IpTuple {
                 src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
                 dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
@@ -193,6 +197,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
+            */
 
             // Prepare ringbuf entry
             let reserved = TCP_PACKETS_INGRESS.reserve::<tcp_packet_trace>(0);

@@ -73,34 +73,52 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                 && tcp_hdr.source.to_be() != FILTER_PORT
                 && tcp_hdr.dest.to_be() != FILTER_PORT
             {
-                return return Ok(TC_ACT_OK);
+                return Ok(TC_ACT_OK);
             }
-            // TODO: better parsing?
-            packet_trace = tcp_packet_trace {
-                time: bpf_ktime_get_ns(),
-                saddr: ip4_hdr.saddr.to_be(),
-                daddr: ip4_hdr.daddr.to_be(),
-                saddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                daddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                seq: tcp_hdr.seq.to_be(),
-                ack: tcp_hdr.ack_seq.to_be(),
-                window: tcp_hdr.window.to_be(),
-                flag_urg: tcp_hdr.urg().to_be() == 1,
-                flag_ack: tcp_hdr.ack().to_be() == 1,
-                flag_psh: tcp_hdr.psh().to_be() == 1,
-                flag_rst: tcp_hdr.rst().to_be() == 1,
-                flag_fin: tcp_hdr.fin().to_be() == 1,
-                flag_syn: tcp_hdr.syn().to_be() == 1,
-                checksum: tcp_hdr.check.to_be(),
-            };
 
             let mut src = [0; 16];
             let mut dst = [0; 16];
             src[12..16].copy_from_slice(&ip4_hdr.saddr.to_le_bytes());
             dst[12..16].copy_from_slice(&ip4_hdr.daddr.to_le_bytes());
 
+            unsafe {
+                // Prepare ringbuf entry
+                let reserved = TCP_PACKETS_EGRESS.reserve::<tcp_packet_trace>(0);
+
+                // Track egress packet count
+                let _ = try_egress_counter();
+
+                // Check if space left for entry
+                if let Some(mut entry) = reserved {
+                    // Enough space, write and track handled events
+                    entry.write(tcp_packet_trace {
+                        time: bpf_ktime_get_ns(),
+                        saddr: ip4_hdr.saddr.to_be(),
+                        daddr: ip4_hdr.daddr.to_be(),
+                        saddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        daddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                        sport: tcp_hdr.source.to_be(),
+                        dport: tcp_hdr.dest.to_be(),
+                        seq: tcp_hdr.seq.to_be(),
+                        ack: tcp_hdr.ack_seq.to_be(),
+                        window: tcp_hdr.window.to_be(),
+                        flag_urg: tcp_hdr.urg().to_be() == 1,
+                        flag_ack: tcp_hdr.ack().to_be() == 1,
+                        flag_psh: tcp_hdr.psh().to_be() == 1,
+                        flag_rst: tcp_hdr.rst().to_be() == 1,
+                        flag_fin: tcp_hdr.fin().to_be() == 1,
+                        flag_syn: tcp_hdr.syn().to_be() == 1,
+                        checksum: tcp_hdr.check.to_be(),
+                    });
+                    entry.submit(0);
+                    let _ = try_handled_counter();
+                } else {
+                    // Not enough space, drop event
+                    let _ = try_dropped_counter();
+                }
+            }
+
+            /*
             let _ = try_flow_tracker(IpTuple {
                 src_ip: src,
                 dst_ip: dst,
@@ -108,6 +126,7 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
+            */
         }
     } else {
         // Get IPv6 header
@@ -126,29 +145,46 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
             {
                 return return Ok(TC_ACT_OK);
             }
-            
-            // TODO: better parsing?
-            packet_trace = tcp_packet_trace {
-                time: bpf_ktime_get_ns(),
-                saddr: 0,
-                daddr: 0,
-                saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
-                daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                seq: tcp_hdr.seq.to_be(),
-                ack: tcp_hdr.ack_seq.to_be(),
-                window: tcp_hdr.window.to_be(),
-                flag_urg: tcp_hdr.urg().to_be() == 1,
-                flag_ack: tcp_hdr.ack().to_be() == 1,
-                flag_psh: tcp_hdr.psh().to_be() == 1,
-                flag_rst: tcp_hdr.rst().to_be() == 1,
-                flag_fin: tcp_hdr.fin().to_be() == 1,
-                flag_syn: tcp_hdr.syn().to_be() == 1,
-                checksum: tcp_hdr.check.to_be(),
-            };
+
+            unsafe {
+                // Prepare ringbuf entry
+                let reserved = TCP_PACKETS_EGRESS.reserve::<tcp_packet_trace>(0);
+
+                // Track egress packet count
+                let _ = try_egress_counter();
+
+                // Check if space left for entry
+                if let Some(mut entry) = reserved {
+                    // Enough space, write and track handled events
+                    entry.write(tcp_packet_trace {
+                        time: bpf_ktime_get_ns(),
+                        saddr: 0,
+                        daddr: 0,
+                        saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
+                        daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
+                        sport: tcp_hdr.source.to_be(),
+                        dport: tcp_hdr.dest.to_be(),
+                        seq: tcp_hdr.seq.to_be(),
+                        ack: tcp_hdr.ack_seq.to_be(),
+                        window: tcp_hdr.window.to_be(),
+                        flag_urg: tcp_hdr.urg().to_be() == 1,
+                        flag_ack: tcp_hdr.ack().to_be() == 1,
+                        flag_psh: tcp_hdr.psh().to_be() == 1,
+                        flag_rst: tcp_hdr.rst().to_be() == 1,
+                        flag_fin: tcp_hdr.fin().to_be() == 1,
+                        flag_syn: tcp_hdr.syn().to_be() == 1,
+                        checksum: tcp_hdr.check.to_be(),
+                    });
+                    entry.submit(0);
+                    let _ = try_handled_counter();
+                } else {
+                    // Not enough space, drop event
+                    let _ = try_dropped_counter();
+                }
+            }
 
             // Write to flow tracker
+            /*
             let a = try_flow_tracker(IpTuple {
                 src_ip: packet_trace.saddr_v6,
                 dst_ip: packet_trace.daddr_v6,
@@ -156,25 +192,7 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
-        }
-    }
-
-    unsafe {
-        // Prepare ringbuf entry
-        let reserved = TCP_PACKETS_EGRESS.reserve::<tcp_packet_trace>(0);
-
-        // Track egress packet count
-        let _ = try_egress_counter();
-
-        // Check if space left for entry
-        if let Some(mut entry) = reserved {
-            // Enough space, write and track handled events
-            entry.write(packet_trace);
-            entry.submit(0);
-            let _ = try_handled_counter();
-        } else {
-            // Not enough space, drop event
-            let _ = try_dropped_counter();
+            */
         }
     }
 
