@@ -11,10 +11,9 @@ use tcbee_common::bindings::{
 
 use crate::{
     config::{
-        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TCP_PROTOCOL,
-        TC4_BUF_SIZE, TC6_BUF_SIZE
+        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TC4_BUF_SIZE, TC6_BUF_SIZE, TCP_PROTOCOL
     },
-    counters::{try_dropped_counter, try_egress_counter, try_handled_counter},
+    counters::{try_dropped_counter, try_egress_counter, try_handled_counter, try_ingress_counter},
     FILTER_PORT,
 };
 
@@ -265,7 +264,7 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                 let reserved = TCP4_PACKETS_INGRESS.reserve::<tcp4_packet_trace>(0);
 
                 // Track egress packet count
-                let _ = try_egress_counter();
+                let _ = try_ingress_counter();
 
                 // Check if space left for entry
                 if let Some(mut entry) = reserved {
@@ -329,7 +328,7 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                 let reserved = TCP6_PACKETS_INGRESS.reserve::<tcp6_packet_trace>(0);
 
                 // Track egress packet count
-                let _ = try_egress_counter();
+                let _ = try_ingress_counter();
 
                 // Check if space left for entry
                 if let Some(mut entry) = reserved {
