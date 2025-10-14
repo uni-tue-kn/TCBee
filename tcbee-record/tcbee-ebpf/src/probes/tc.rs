@@ -5,7 +5,6 @@ use aya_ebpf::{
 use memoffset::offset_of;
 use tcbee_common::bindings::{
     eth_header::ethhdr,
-    flow::IpTuple,
     ip4_header::iphdr,
     ip6_header::ipv6hdr,
     tcp_header::{tcp_packet_trace, tcphdr},
@@ -17,7 +16,6 @@ use crate::{
         TC_BUF_SIZE,
     },
     counters::{try_dropped_counter, try_egress_counter, try_handled_counter},
-    flow_tracker::try_flow_tracker,
     FILTER_PORT,
 };
 
@@ -57,15 +55,14 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
     }
 
     // If this code is reached, packet is IPv4 or IPv6 TCP so process and pass to map
-    let packet_trace: tcp_packet_trace;
     if ethertype == ETHERTYPE_IPV4 {
         // Get IPv4 header
         let ip4_hdr = ctx.load::<iphdr>(ETH_HDR_LEN).map_err(|_| TC_ACT_OK)?;
+        let ip_hdr_len = ((ip4_hdr.ihl() as usize) << 2).max(IP_HDR_LEN);
+        let tcp_offset = ETH_HDR_LEN + ip_hdr_len;
 
         // Get TCP header
-        let tcp_hdr = ctx
-            .load::<tcphdr>(ETH_HDR_LEN + IP_HDR_LEN)
-            .map_err(|_| TC_ACT_OK)?;
+        let tcp_hdr = ctx.load::<tcphdr>(tcp_offset).map_err(|_| TC_ACT_OK)?;
 
         unsafe {
             // Filter source and dest port if FILTER_PORT is set!
@@ -76,10 +73,14 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                 return Ok(TC_ACT_OK);
             }
 
-            let mut src = [0; 16];
-            let mut dst = [0; 16];
-            src[12..16].copy_from_slice(&ip4_hdr.saddr.to_le_bytes());
-            dst[12..16].copy_from_slice(&ip4_hdr.daddr.to_le_bytes());
+            let saddr = u32::from_be(ip4_hdr.saddr);
+            let daddr = u32::from_be(ip4_hdr.daddr);
+            let sport = u16::from_be(tcp_hdr.source);
+            let dport = u16::from_be(tcp_hdr.dest);
+            let seq = u32::from_be(tcp_hdr.seq);
+            let ack = u32::from_be(tcp_hdr.ack_seq);
+            let window = u16::from_be(tcp_hdr.window);
+            let checksum = u16::from_be(tcp_hdr.check);
 
             unsafe {
                 // Prepare ringbuf entry
@@ -93,22 +94,22 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr: ip4_hdr.saddr.to_be(),
-                        daddr: ip4_hdr.daddr.to_be(),
+                        saddr,
+                        daddr,
                         saddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                         daddr_v6: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                        sport: tcp_hdr.source.to_be(),
-                        dport: tcp_hdr.dest.to_be(),
-                        seq: tcp_hdr.seq.to_be(),
-                        ack: tcp_hdr.ack_seq.to_be(),
-                        window: tcp_hdr.window.to_be(),
-                        flag_urg: tcp_hdr.urg().to_be() == 1,
-                        flag_ack: tcp_hdr.ack().to_be() == 1,
-                        flag_psh: tcp_hdr.psh().to_be() == 1,
-                        flag_rst: tcp_hdr.rst().to_be() == 1,
-                        flag_fin: tcp_hdr.fin().to_be() == 1,
-                        flag_syn: tcp_hdr.syn().to_be() == 1,
-                        checksum: tcp_hdr.check.to_be(),
+                        sport,
+                        dport,
+                        seq,
+                        ack,
+                        window,
+                        flag_urg: tcp_hdr.urg() != 0,
+                        flag_ack: tcp_hdr.ack() != 0,
+                        flag_psh: tcp_hdr.psh() != 0,
+                        flag_rst: tcp_hdr.rst() != 0,
+                        flag_fin: tcp_hdr.fin() != 0,
+                        flag_syn: tcp_hdr.syn() != 0,
+                        checksum,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -143,8 +144,15 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                 && tcp_hdr.source.to_be() != FILTER_PORT
                 && tcp_hdr.dest.to_be() != FILTER_PORT
             {
-                return return Ok(TC_ACT_OK);
+                return Ok(TC_ACT_OK);
             }
+
+            let sport = u16::from_be(tcp_hdr.source);
+            let dport = u16::from_be(tcp_hdr.dest);
+            let seq = u32::from_be(tcp_hdr.seq);
+            let ack = u32::from_be(tcp_hdr.ack_seq);
+            let window = u16::from_be(tcp_hdr.window);
+            let checksum = u16::from_be(tcp_hdr.check);
 
             unsafe {
                 // Prepare ringbuf entry
@@ -162,18 +170,18 @@ pub fn tc_hook(ctx: TcContext) -> Result<i32, i32> {
                         daddr: 0,
                         saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
                         daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
-                        sport: tcp_hdr.source.to_be(),
-                        dport: tcp_hdr.dest.to_be(),
-                        seq: tcp_hdr.seq.to_be(),
-                        ack: tcp_hdr.ack_seq.to_be(),
-                        window: tcp_hdr.window.to_be(),
-                        flag_urg: tcp_hdr.urg().to_be() == 1,
-                        flag_ack: tcp_hdr.ack().to_be() == 1,
-                        flag_psh: tcp_hdr.psh().to_be() == 1,
-                        flag_rst: tcp_hdr.rst().to_be() == 1,
-                        flag_fin: tcp_hdr.fin().to_be() == 1,
-                        flag_syn: tcp_hdr.syn().to_be() == 1,
-                        checksum: tcp_hdr.check.to_be(),
+                        sport,
+                        dport,
+                        seq,
+                        ack,
+                        window,
+                        flag_urg: tcp_hdr.urg() != 0,
+                        flag_ack: tcp_hdr.ack() != 0,
+                        flag_psh: tcp_hdr.psh() != 0,
+                        flag_rst: tcp_hdr.rst() != 0,
+                        flag_fin: tcp_hdr.fin() != 0,
+                        flag_syn: tcp_hdr.syn() != 0,
+                        checksum,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
