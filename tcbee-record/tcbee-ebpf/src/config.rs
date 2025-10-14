@@ -9,12 +9,12 @@ use tcbee_common::bindings::{
 };
 
 // Ringbuffer Sizes
-pub const TCPPROBE_BUF_SIZE: u32 = (size_of::<tcp_probe_entry>() * 100000) as u32;
-pub const XDP_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 100000) as u32;
-pub const TC4_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 100000) as u32;
-pub const TC6_BUF_SIZE: u32 = (size_of::<tcp6_packet_trace>() * 100000) as u32;
-pub const TCP_BAD_CSUM_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 100000) as u32;
-pub const TCP_RETRANSMIT_SYNACK_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 100000) as u32;
+pub const TCPPROBE_BUF_SIZE: u32 = (size_of::<tcp_probe_entry>() * 10000) as u32;
+pub const XDP_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 10000) as u32;
+pub const TC4_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 10000) as u32;
+pub const TC6_BUF_SIZE: u32 = (size_of::<tcp6_packet_trace>() * 10000) as u32;
+pub const TCP_BAD_CSUM_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 10000) as u32;
+pub const TCP_RETRANSMIT_SYNACK_BUF_SIZE: u32 = (size_of::<tcp4_packet_trace>() * 10000) as u32;
 
 // For hashmap
 pub const MAX_FLOWS: u32 = 100;
