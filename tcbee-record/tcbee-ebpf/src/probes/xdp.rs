@@ -18,8 +18,8 @@ use crate::{
     FILTER_PORT,
 };
 
-#[map(name = "TCP_PACKETS_INGRESS")]
-static mut TCP_PACKETS_INGRESS: RingBuf = RingBuf::with_byte_size(XDP_BUF_SIZE as u32, 0);
+#[map(name = "TCP_PACKETS_INGRESS_XDP")]
+static mut TCP_PACKETS_INGRESS_XDP: RingBuf = RingBuf::with_byte_size(XDP_BUF_SIZE as u32, 0);
 
 #[inline(always)]
 pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
@@ -102,7 +102,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             */
 
             // Prepare ringbuf entry
-            let reserved = TCP_PACKETS_INGRESS.reserve::<tcp_packet_trace>(0);
+            let reserved = TCP_PACKETS_INGRESS_XDP.reserve::<tcp_packet_trace>(0);
 
             // Track ingress packet count
             let _ = try_ingress_counter();
@@ -197,7 +197,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
             */
 
             // Prepare ringbuf entry
-            let reserved = TCP_PACKETS_INGRESS.reserve::<tcp_packet_trace>(0);
+            let reserved = TCP_PACKETS_INGRESS_XDP.reserve::<tcp_packet_trace>(0);
 
             // Track ingress packet count
             let _ = try_ingress_counter();
