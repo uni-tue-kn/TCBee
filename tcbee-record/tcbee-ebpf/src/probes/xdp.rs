@@ -6,7 +6,7 @@ use tcbee_common::bindings::{
     eth_header::ethhdr,
     ip4_header::iphdr,
     ip6_header::ipv6hdr,
-    tcp_header::{tcp_packet_trace, tcphdr},
+    tcp_header::{tcp4_packet_trace, tcphdr},
 };
 
 use crate::{
@@ -49,6 +49,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
         }
     }
 
+    /* 
     // Handle both IP versions separately
     if ethertype == ETHERTYPE_IPV4 {
         // Check if data long enough to read ip header header
@@ -118,7 +119,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                 let ack = u32::from_be(tcp_hdr.ack_seq);
                 let window = u16::from_be(tcp_hdr.window);
                 let checksum = u16::from_be(tcp_hdr.check);
-                entry.write(tcp_packet_trace {
+                entry.write(tcp4_packet_trace {
                     time: bpf_ktime_get_ns(),
                     saddr,
                     daddr,
@@ -241,6 +242,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
         // Should never be reached!
         return Ok(XDP_PASS);
     }
+    */
 
     // Always let packet pass to kernel
     Ok(XDP_PASS)

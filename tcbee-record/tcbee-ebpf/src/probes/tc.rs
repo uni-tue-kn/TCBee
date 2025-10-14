@@ -1,6 +1,5 @@
 use aya_ebpf::{
-    bindings::TC_ACT_OK, helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf,
-    programs::TcContext,
+    bindings::TC_ACT_OK, helpers::r#gen::bpf_ktime_get_ns, macros::map, maps::RingBuf, programs::TcContext
 };
 use memoffset::offset_of;
 use tcbee_common::bindings::{
@@ -13,23 +12,23 @@ use tcbee_common::bindings::{
 use crate::{
     config::{
         ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TCP_PROTOCOL,
-        TC_BUF_SIZE,
+        TC4_BUF_SIZE, TC6_BUF_SIZE
     },
     counters::{try_dropped_counter, try_egress_counter, try_handled_counter},
     FILTER_PORT,
 };
 
 #[map(name = "TCP4_PACKETS_EGRESS")]
-static mut TCP4_PACKETS_EGRESS: RingBuf = RingBuf::with_byte_size(TC_BUF_SIZE, 0);
+static mut TCP4_PACKETS_EGRESS: RingBuf = RingBuf::with_byte_size(TC4_BUF_SIZE, 0);
 
 #[map(name = "TCP4_PACKETS_INGRESS")]
-static mut TCP4_PACKETS_INGRESS: RingBuf = RingBuf::with_byte_size(TC_BUF_SIZE, 0);
+static mut TCP4_PACKETS_INGRESS: RingBuf = RingBuf::with_byte_size(TC4_BUF_SIZE, 0);
 
 #[map(name = "TCP6_PACKETS_EGRESS")]
-static mut TCP6_PACKETS_EGRESS: RingBuf = RingBuf::with_byte_size(TC_BUF_SIZE, 0);
+static mut TCP6_PACKETS_EGRESS: RingBuf = RingBuf::with_byte_size(TC6_BUF_SIZE, 0);
 
 #[map(name = "TCP6_PACKETS_INGRESS")]
-static mut TCP6_PACKETS_INGRESS: RingBuf = RingBuf::with_byte_size(TC_BUF_SIZE, 0);
+static mut TCP6_PACKETS_INGRESS: RingBuf = RingBuf::with_byte_size(TC6_BUF_SIZE, 0);
 
 #[inline(always)]
 pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {

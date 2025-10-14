@@ -7,6 +7,7 @@ pub mod tcp_header;
 pub mod tcp_probe;
 pub mod tcp_retransmit_synack;
 pub mod tcp_sock;
+pub mod common;
 
 #[cfg(feature = "user")]
 use aya::Pod;
