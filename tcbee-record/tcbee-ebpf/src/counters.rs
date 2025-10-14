@@ -19,92 +19,74 @@ static mut SENT_TCP_BYTES: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_
 #[map(name = "RECEIVED_TCP_BYTES")]
 static mut RECEIVED_TCP_BYTES: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
 
-#[inline(always)] 
+#[inline(always)]
 pub fn try_sent_tcp_bytes(add: u32) -> Result<(), ()> {
     unsafe {
-        let counter = SENT_TCP_BYTES
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += add;
-        }
+        let counter = SENT_TCP_BYTES.get_ptr_mut(0).ok_or(())?;
+        *counter += add;
+    }
     Ok(())
 }
 
-#[inline(always)] 
+#[inline(always)]
 pub fn try_received_tcp_bytes(add: u32) -> Result<(), ()> {
     unsafe {
-        let counter = RECEIVED_TCP_BYTES
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += add;
-        }
+        let counter = RECEIVED_TCP_BYTES.get_ptr_mut(0).ok_or(())?;
+        *counter += add;
+    }
     Ok(())
 }
 
-#[inline(always)] 
+#[inline(always)]
 pub fn try_send_tcp_sock() -> Result<(), ()> {
     unsafe {
-        let counter = SEND_TCP_SOCK
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += 1;
-        }
+        let counter = SEND_TCP_SOCK.get_ptr_mut(0).ok_or(())?;
+        *counter += 1;
+    }
     Ok(())
 }
 
-#[inline(always)] 
+#[inline(always)]
 pub fn try_recv_tcp_sock() -> Result<(), ()> {
     unsafe {
-        let counter = RECV_TCP_SOCK
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += 1;
-        }
+        let counter = RECV_TCP_SOCK.get_ptr_mut(0).ok_or(())?;
+        *counter += 1;
+    }
     Ok(())
 }
 
-
-
-#[inline(always)] 
+#[inline(always)]
 pub fn try_dropped_counter() -> Result<(), ()> {
     unsafe {
-        let counter = EVENTS_DROPPED
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += 1;
-        }
+        let counter = EVENTS_DROPPED.get_ptr_mut(0).ok_or(())?;
+        *counter += 1;
+    }
     Ok(())
 }
 
-#[inline(always)] 
+#[inline(always)]
 pub fn try_handled_counter() -> Result<(), ()> {
     unsafe {
-        let counter = EVENTS_HANDLED
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += 1;
-        }
+        let counter = EVENTS_HANDLED.get_ptr_mut(0).ok_or(())?;
+        *counter += 1;
+    }
     Ok(())
 }
 
-#[inline(always)] 
+#[inline(always)]
 pub fn try_ingress_counter() -> Result<(), ()> {
     unsafe {
-        let counter = INGRESS_EVENTS
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += 1;
-        }
+        let counter = INGRESS_EVENTS.get_ptr_mut(0).ok_or(())?;
+        *counter += 1;
+    }
     Ok(())
 }
 
-#[inline(always)] 
+#[inline(always)]
 pub fn try_egress_counter() -> Result<(), ()> {
     unsafe {
-        let counter = EGRESS_EVENTS
-            .get_ptr_mut(0)
-            .ok_or(())? ;
-            *counter += 1;
-        }
+        let counter = EGRESS_EVENTS.get_ptr_mut(0).ok_or(())?;
+        *counter += 1;
+    }
     Ok(())
 }

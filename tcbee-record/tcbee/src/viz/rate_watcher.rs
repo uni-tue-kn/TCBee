@@ -1,8 +1,10 @@
-use std::{ops::{AddAssign, Sub}, time::Duration};
+use std::{
+    ops::{AddAssign, Sub},
+    time::Duration,
+};
 
 use aya::{maps::PerCpuArray, util::nr_cpus, Pod};
 use log::error;
-
 
 // TODO: make more generic to handle float maps as well?
 pub struct RateWatcher<T: Pod + AddAssign + Sub> {
@@ -109,5 +111,3 @@ impl<T: Pod + AddAssign + Default + Sub> RateWatcher<T> {
         }
     }
 }
-
-

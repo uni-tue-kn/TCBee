@@ -9,7 +9,7 @@ pub struct EbpfRunnerConfig {
     pub kernel: bool,
     pub cwnd: bool,
     pub metrics: bool,
-    pub dir: String
+    pub dir: String,
 }
 
 pub struct EbpfWatcherConfig {
@@ -19,7 +19,7 @@ pub struct EbpfWatcherConfig {
     pub flows: bool,
     pub cwnd: bool,
     pub metrics: bool,
-    pub dir: String
+    pub dir: String,
 }
 
 impl EbpfRunnerConfig {
@@ -78,6 +78,14 @@ impl EbpfRunnerConfig {
     }
 
     pub fn watcher_config(&self) -> EbpfWatcherConfig {
-        EbpfWatcherConfig { packets: self.headers, stats: true, calls: self.kernel, flows: true, cwnd:self.cwnd, metrics: self.metrics, dir: self.dir.clone()}
+        EbpfWatcherConfig {
+            packets: self.headers,
+            stats: true,
+            calls: self.kernel,
+            flows: true,
+            cwnd: self.cwnd,
+            metrics: self.metrics,
+            dir: self.dir.clone(),
+        }
     }
 }

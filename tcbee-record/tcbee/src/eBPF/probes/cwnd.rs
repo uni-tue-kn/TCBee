@@ -1,4 +1,4 @@
-use std::{error::Error};
+use std::error::Error;
 
 use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
@@ -6,18 +6,19 @@ use tcbee_common::bindings::tcp_sock::cwnd_trace_entry;
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::{eBPF::errors::EBPFRunnerError, handlers::{writer::Writer, BufferHandler}};
+use crate::{
+    eBPF::errors::EBPFRunnerError,
+    handlers::{writer::Writer, BufferHandler},
+};
 
-
-pub struct CwndTracer {
-}
+pub struct CwndTracer {}
 
 impl CwndTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
         send_file_path: String,
         recv_file_path: String,
-        writer: &mut Writer
+        writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
@@ -45,12 +46,12 @@ impl CwndTracer {
 
         // Start SOCK_RECV handling
         // Get queue from
-        let map =
-            ebpf.take_map("TCP_RECEIVE_CWND_EVENTS")
-                .ok_or(EBPFRunnerError::QueueNotFoundError {
-                    name: "TCP_RECEIVE_CWND_EVENTS".to_string(),
-                    trace: "CWND Tracer tcp_recvmsg".to_string(),
-                })?;
+        let map = ebpf.take_map("TCP_RECEIVE_CWND_EVENTS").ok_or(
+            EBPFRunnerError::QueueNotFoundError {
+                name: "TCP_RECEIVE_CWND_EVENTS".to_string(),
+                trace: "CWND Tracer tcp_recvmsg".to_string(),
+            },
+        )?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<cwnd_trace_entry>(buff, recv_file_path)?;

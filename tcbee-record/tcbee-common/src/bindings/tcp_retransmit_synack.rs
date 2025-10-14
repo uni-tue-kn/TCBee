@@ -1,8 +1,7 @@
 #[cfg(feature = "user")]
 use serde::{Deserialize, Serialize};
 
-
-use super::{__IncompleteArrayField, __u16, __u64, __u8, trace_entry };
+use super::{__IncompleteArrayField, __u16, __u64, __u8, trace_entry};
 
 #[repr(C)]
 #[derive(Debug)]

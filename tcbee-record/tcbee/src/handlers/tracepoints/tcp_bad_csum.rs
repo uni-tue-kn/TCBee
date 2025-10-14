@@ -7,7 +7,7 @@ use crate::handlers::{BufferHandler, BufferHandlerImpl};
 // TODO: could be moved to a single function as the first byte contains the AF_INET type ?
 
 impl BufferHandlerImpl<tcp_bad_csum_entry> for BufferHandler<tcp_bad_csum_entry> {
-    fn handle_event(&self, event: tcp_bad_csum_entry) -> Option<tcp_bad_csum_entry>{
+    fn handle_event(&self, event: tcp_bad_csum_entry) -> Option<tcp_bad_csum_entry> {
         Some(event)
     }
 }

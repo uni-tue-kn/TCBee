@@ -1,4 +1,4 @@
-use std::{error::Error};
+use std::error::Error;
 
 use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
@@ -6,18 +6,19 @@ use tcbee_common::bindings::tcp_sock::sock_trace_entry;
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::{eBPF::errors::EBPFRunnerError, handlers::{writer::Writer, BufferHandler}};
+use crate::{
+    eBPF::errors::EBPFRunnerError,
+    handlers::{writer::Writer, BufferHandler},
+};
 
-
-pub struct KernelTracer {
-}
+pub struct KernelTracer {}
 
 impl KernelTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
         send_file_path: String,
         recv_file_path: String,
-        writer: &mut Writer
+        writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 

@@ -1,7 +1,5 @@
 use aya_ebpf::{
-    helpers::gen::bpf_ktime_get_ns, 
-    helpers::bpf_tcp_sock,
-    macros::map, maps::RingBuf, 
+    helpers::bpf_tcp_sock, helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf,
     programs::TracePointContext,
 };
 
@@ -9,10 +7,10 @@ use aya_ebpf::{
 use crate::config::TCPPROBE_BUF_SIZE;
 
 // Kernel tracepoint data structs
-use tcbee_common::bindings::tcp_probe::{tcp_probe_entry,trace_event_raw_tcp_probe};
+use tcbee_common::bindings::tcp_probe::{tcp_probe_entry, trace_event_raw_tcp_probe};
 
 // Counters for performance metrics
-use crate::counters::{try_handled_counter,try_dropped_counter};
+use crate::counters::{try_dropped_counter, try_handled_counter};
 
 // Ring buffer for trasnmitting data to user space
 #[map(name = "TCP_PROBE_QUEUE")]

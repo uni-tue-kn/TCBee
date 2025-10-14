@@ -1,8 +1,8 @@
-pub mod tracepoints;
-pub mod xdp_handler;
-pub mod socks;
 pub mod cwnd;
+pub mod socks;
+pub mod tracepoints;
 pub mod writer;
+pub mod xdp_handler;
 
 use std::marker::PhantomData;
 
@@ -18,9 +18,6 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::config::WRITER_BUFFER_SIZE;
-
-
-
 
 // Turn sized struct into u8 buffer for datagram sockets
 unsafe fn as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -123,23 +120,20 @@ impl<T: std::fmt::Debug + Clone + Copy + Serialize> BufferHandler<T> {
                     return;
                 }
 
-                unsafe {    
+                unsafe {
                     let res_val = res.unwrap();
                     // TODO: error handling!
                     let buf = bincode::serialize(&res_val).unwrap();
 
                     //let slice = as_u8_slice(&res_val);
 
-                    debug!("Entry: {:?}",buf);
+                    debug!("Entry: {:?}", buf);
 
-                    let written = writer
-                        .write(&buf)
-                        .await
-                        .expect("Failed write!");
+                    let written = writer.write(&buf).await.expect("Failed write!");
 
                     // Marker for alignment of packet in read step
                     // TODO: maybe remove for performance reasons!
-                    let _ = writer.write(&[255,255,255,255]).await;
+                    let _ = writer.write(&[255, 255, 255, 255]).await;
                 }
             } else {
                 // Queue was empty, yield to let other tasks work

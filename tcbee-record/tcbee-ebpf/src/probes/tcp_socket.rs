@@ -17,7 +17,10 @@ use tcbee_common::bindings::{
 
 use crate::{
     config::AF_INET6,
-    counters::{try_dropped_counter, try_handled_counter, try_received_tcp_bytes, try_recv_tcp_sock, try_send_tcp_sock, try_sent_tcp_bytes},
+    counters::{
+        try_dropped_counter, try_handled_counter, try_received_tcp_bytes, try_recv_tcp_sock,
+        try_send_tcp_sock, try_sent_tcp_bytes,
+    },
     flow_tracker::try_flow_tracker,
     FILTER_PORT,
 };
@@ -157,7 +160,6 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
     let _ = try_sent_tcp_bytes(length);
 
     // Track flow IP and Port
-    
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong

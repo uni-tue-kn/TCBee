@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     components::{graph::Graph, status::Status},
-    file_tracker::{FileTracker},
+    file_tracker::FileTracker,
 };
 
 pub struct EBPFWatcher {
@@ -59,9 +59,9 @@ pub struct Metrics {
     ingress_calls: u32,
     egress_calls: u32,
     tcp_bytes_sent: u32,
-    tcp_bytes_received: u32
+    tcp_bytes_received: u32,
 }
-    //TODO: Monitor packet rate vs TCP packet rate?
+//TODO: Monitor packet rate vs TCP packet rate?
 impl EBPFWatcher {
     pub fn new(
         ebpf: &mut Ebpf,
@@ -370,7 +370,7 @@ impl EBPFWatcher {
                         files_size,
                         file_rate,
                         self.tcp_bytes_recv.get_counter_sum_string(),
-                        self.tcp_bytes_sent.get_counter_sum_string()
+                        self.tcp_bytes_sent.get_counter_sum_string(),
                     )
                     .into_iter()
                     .enumerate()
@@ -456,7 +456,6 @@ impl EBPFWatcher {
 
         // Store metrics if needed
         if self.config.metrics {
-
             let metrics = Metrics {
                 handled: self.events_handled.get_counter_sum(),
                 dropped: self.events_drops.get_counter_sum(),
@@ -465,11 +464,13 @@ impl EBPFWatcher {
                 ingress_calls: self.tcp_sock_recv.get_counter_sum(),
                 egress_calls: self.tcp_sock_send.get_counter_sum(),
                 tcp_bytes_sent: self.tcp_bytes_sent.get_counter_sum(),
-                tcp_bytes_received: self.tcp_bytes_recv.get_counter_sum()
+                tcp_bytes_received: self.tcp_bytes_recv.get_counter_sum(),
             };
-            
-            let Ok(outfile) = File::create(prepend_string("metrics.json".to_string(), &self.config.dir)) else {
-                error!("Could not open outfile: {}/metrics.json",self.config.dir);
+
+            let Ok(outfile) =
+                File::create(prepend_string("metrics.json".to_string(), &self.config.dir))
+            else {
+                error!("Could not open outfile: {}/metrics.json", self.config.dir);
                 return;
             };
 

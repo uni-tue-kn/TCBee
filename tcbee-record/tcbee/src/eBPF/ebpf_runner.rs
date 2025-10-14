@@ -1,20 +1,23 @@
 use std::error::Error;
 
-use aya::{
-    Ebpf, EbpfLoader,
-};
+use aya::{Ebpf, EbpfLoader};
 use log::{debug, info, warn};
 use tcbee_common::bindings::{
-    tcp_bad_csum::tcp_bad_csum_entry,
-    tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry,
+    tcp_bad_csum::tcp_bad_csum_entry, tcp_probe::tcp_probe_entry,
+    tcp_retransmit_synack::tcp_retransmit_synack_entry,
 };
 use tokio::task::{self, spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     eBPF::probes::{
-        cwnd::CwndTracer, headers::{TCTracer, XDPTracer}, kernel::KernelTracer, tracepoints::TracepointTracer
-    }, handlers::writer::Writer, viz::ebpf_watcher::EBPFWatcher
+        cwnd::CwndTracer,
+        headers::{TCTracer, XDPTracer},
+        kernel::KernelTracer,
+        tracepoints::TracepointTracer,
+    },
+    handlers::writer::Writer,
+    viz::ebpf_watcher::EBPFWatcher,
 };
 
 use super::ebpf_runner_config::EbpfRunnerConfig;
@@ -25,7 +28,7 @@ pub struct EbpfRunner {
     threads: Vec<JoinHandle<()>>,
     config: EbpfRunnerConfig,
     ebpf: Option<Ebpf>,
-    writer: Option<Writer>
+    writer: Option<Writer>,
 }
 
 pub fn prepend_string(mut src: String, prefix: &str) -> String {
@@ -42,7 +45,7 @@ impl EbpfRunner {
             threads: Vec::new(),
             config,
             ebpf: None,
-            writer: None
+            writer: None,
         }
     }
 
@@ -54,11 +57,10 @@ impl EbpfRunner {
             println!("FLUSHING WRITER!");
             let flush_res = writer.shutdown();
             if let Err(res) = flush_res {
-                println!("Failed during flush: {}",res);
+                println!("Failed during flush: {}", res);
             } else {
                 println!("Flushed successfully!");
             }
-            
         }
     }
 
@@ -104,15 +106,15 @@ impl EbpfRunner {
             TCTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
-                prepend_string("tc.tcp".to_string(),&self.config.dir),
-                &mut writer
+                prepend_string("tc.tcp".to_string(), &self.config.dir),
+                &mut writer,
             )?;
 
             XDPTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
-                prepend_string("xdp.tcp".to_string(),&self.config.dir),
-                &mut writer
+                prepend_string("xdp.tcp".to_string(), &self.config.dir),
+                &mut writer,
             )?;
         }
 
@@ -120,40 +122,40 @@ impl EbpfRunner {
         if self.config.kernel {
             KernelTracer::spawn(
                 &mut ebpf,
-                prepend_string("send_sock.tcp".to_string(),&self.config.dir),
-                prepend_string("recv_sock.tcp".to_string(),&self.config.dir),
-                &mut writer
+                prepend_string("send_sock.tcp".to_string(), &self.config.dir),
+                prepend_string("recv_sock.tcp".to_string(), &self.config.dir),
+                &mut writer,
             )?;
         }
         // Performance variant of above hook
         if self.config.cwnd {
             CwndTracer::spawn(
                 &mut ebpf,
-                prepend_string("send_cwnd.tcp".to_string(),&self.config.dir),
-                prepend_string("recv_cwnd.tcp".to_string(),&self.config.dir),
-                &mut writer
+                prepend_string("send_cwnd.tcp".to_string(), &self.config.dir),
+                prepend_string("recv_cwnd.tcp".to_string(), &self.config.dir),
+                &mut writer,
             )?;
         }
 
         // Tracing kernel tracepoints
         if self.config.tracepoints {
             TracepointTracer::spawn::<tcp_probe_entry>(
-                    &mut ebpf,
-                    prepend_string("probe.tcp".to_string(),&self.config.dir),
-                    &mut writer
-                )?;
+                &mut ebpf,
+                prepend_string("probe.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
 
             TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
-                    &mut ebpf,
-                    prepend_string("retransmit_synack.tcp".to_string(),&self.config.dir),
-                    &mut writer
-                )?;
+                &mut ebpf,
+                prepend_string("retransmit_synack.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
 
             TracepointTracer::spawn::<tcp_bad_csum_entry>(
-                    &mut ebpf,
-                    prepend_string("bad_csum.tcp".to_string(),&self.config.dir),
-                    &mut writer
-                )?;
+                &mut ebpf,
+                prepend_string("bad_csum.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
         }
 
         // Start watcher thread

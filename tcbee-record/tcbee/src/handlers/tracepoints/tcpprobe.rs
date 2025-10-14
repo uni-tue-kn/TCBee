@@ -1,4 +1,3 @@
-
 use tcbee_common::bindings::tcp_probe::tcp_probe_entry;
 
 use crate::handlers::{BufferHandler, BufferHandlerImpl};
@@ -14,7 +13,7 @@ fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
 }
 
 impl BufferHandlerImpl<tcp_probe_entry> for BufferHandler<tcp_probe_entry> {
-    fn handle_event(&self, event: tcp_probe_entry) -> Option<tcp_probe_entry>{
+    fn handle_event(&self, event: tcp_probe_entry) -> Option<tcp_probe_entry> {
         Some(event)
     }
 }

@@ -287,11 +287,9 @@ where
             let value = unsafe { *(entry.as_ptr() as *const T) };
             drop(entry);
 
-            bincode::serialize_into(&mut *sink, &value)
-                .map_err(JobError::Serialize)?;
+            bincode::serialize_into(&mut *sink, &value).map_err(JobError::Serialize)?;
 
-            sink.write_all(&RECORD_DELIMITER)
-                .map_err(JobError::Io)?;
+            sink.write_all(&RECORD_DELIMITER).map_err(JobError::Io)?;
 
             reads += 1;
         }
@@ -376,7 +374,11 @@ fn worker_loop(rx: Receiver<WriterCommand>) {
     // Flush remaining jobs before shutting down.
     for mut job in jobs {
         if let Err(err) = job.flush() {
-            error!("Failed to flush job {} during shutdown: {}", job.name(), err);
+            error!(
+                "Failed to flush job {} during shutdown: {}",
+                job.name(),
+                err
+            );
         }
     }
 }

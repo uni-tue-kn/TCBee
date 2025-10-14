@@ -5,7 +5,7 @@ use aya::{
     programs::{tc, SchedClassifier, TcAttachType, Xdp, XdpFlags},
     Ebpf,
 };
-use tcbee_common::bindings::tcp_header::tcp_packet_trace;
+use tcbee_common::bindings::tcp_header::{tcp4_packet_trace,tcp6_packet_trace};
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -46,14 +46,24 @@ impl TCTracer {
         // Start handling function
         // Get queue from
         let map =
-            ebpf.take_map("TCP_PACKETS_INGRESS")
+            ebpf.take_map("TCP4_PACKETS_INGRESS")
                 .ok_or(EBPFRunnerError::QueueNotFoundError {
-                    name: "TCP_PACKETS_INGRESS".to_string(),
+                    name: "TCP4_PACKETS_INGRESS".to_string(),
                     trace: "TC Packet Tracer".to_string(),
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<tcp_packet_trace>(buff, "/tmp/tc_ingress.tcp")?;
+        writer.register::<tcp4_packet_trace>(buff, "/tmp/tc4_ingress.tcp")?;
+
+        let map =
+            ebpf.take_map("TCP6_PACKETS_INGRESS")
+                .ok_or(EBPFRunnerError::QueueNotFoundError {
+                    name: "TCP6_PACKETS_INGRESS".to_string(),
+                    trace: "TC Packet Tracer".to_string(),
+                })?;
+
+        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+        writer.register::<tcp6_packet_trace>(buff, "/tmp/tc6_ingress.tcp")?;
 
         let name = "tc_egress_packet_tracer";
 
@@ -78,15 +88,24 @@ impl TCTracer {
         // Start handling function
         // Get queue from
         let map =
-            ebpf.take_map("TCP_PACKETS_EGRESS")
+            ebpf.take_map("TCP4_PACKETS_EGRESS")
                 .ok_or(EBPFRunnerError::QueueNotFoundError {
-                    name: "TCP_PACKETS_EGRESS".to_string(),
+                    name: "TCP4_PACKETS_EGRESS".to_string(),
                     trace: "TC Packet Tracer".to_string(),
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<tcp_packet_trace>(buff, "/tmp/tc_egress.tcp")?;
+        writer.register::<tcp4_packet_trace>(buff, "/tmp/tc4_egress.tcp")?;
 
+        let map =
+            ebpf.take_map("TCP6_PACKETS_EGRESS")
+                .ok_or(EBPFRunnerError::QueueNotFoundError {
+                    name: "TCP6_PACKETS_EGRESS".to_string(),
+                    trace: "TC Packet Tracer".to_string(),
+                })?;
+
+        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+        writer.register::<tcp6_packet_trace>(buff, "/tmp/tc6_egress.tcp")?;
 
 
 
