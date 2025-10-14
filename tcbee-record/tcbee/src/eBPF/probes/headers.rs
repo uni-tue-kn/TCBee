@@ -5,7 +5,7 @@ use tcbee_common::bindings::tcp_header::tcp_packet_trace;
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::{eBPF::errors::EBPFRunnerError, handlers::BufferHandler};
+use crate::{eBPF::errors::EBPFRunnerError, handlers::{writer::Writer, BufferHandler}};
 
 pub struct TCTracer {
 }
@@ -14,9 +14,9 @@ impl TCTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
         interface: String,
-        token: CancellationToken,
         file_path: String,
-    ) -> Result<JoinHandle<()>, Box<dyn Error>> {
+        writer: &mut Writer
+    ) -> Result<(), Box<dyn Error>> {
         let name = "tc_packet_tracer";
 
         // Needs to be called before a TC can be attached to a program!
@@ -47,17 +47,9 @@ impl TCTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+        writer.register::<tcp_packet_trace>(buff, file_path)?;
 
-        // Create handler object
-        // TODO: handling of None!
-        let mut handler: BufferHandler<tcp_packet_trace> =
-            BufferHandler::<tcp_packet_trace>::new(name, token, buff, file_path).unwrap();
-
-        // Start thread and store join handle
-        Ok(task::spawn(async move {
-            handler.run().await;
-        }))
-
+        Ok(())
     }
 }
 
@@ -68,9 +60,9 @@ impl XDPTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
         interface: String,
-        token: CancellationToken,
         file_path: String,
-    ) -> Result<JoinHandle<()>, Box<dyn Error>> {
+        writer: &mut Writer
+    ) -> Result<(), Box<dyn Error>> {
         // Get tracepoint name
         let name = "xdp_packet_tracer";
 
@@ -96,14 +88,8 @@ impl XDPTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+        writer.register::<tcp_packet_trace>(buff, file_path)?;
 
-        // Handler takes ownership of all variables, no storage in struct needed
-        let mut handler: BufferHandler<tcp_packet_trace> =
-            BufferHandler::<tcp_packet_trace>::new(name, token, buff, file_path).unwrap();
-
-        // Start thread and store join handle
-        Ok(task::spawn(async move {
-            handler.run().await;
-        }))
+        Ok(())
     }
 }

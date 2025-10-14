@@ -2,6 +2,7 @@ pub mod tracepoints;
 pub mod xdp_handler;
 pub mod socks;
 pub mod cwnd;
+pub mod writer;
 
 use std::marker::PhantomData;
 
@@ -17,6 +18,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::config::WRITER_BUFFER_SIZE;
+
+
 
 
 // Turn sized struct into u8 buffer for datagram sockets
