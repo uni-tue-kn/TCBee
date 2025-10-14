@@ -50,9 +50,15 @@ impl EbpfRunner {
         // Signal child threads to stop
         self.stop_token.cancel();
 
-        // Wait for threads to finish
-        for t in self.threads {
-            let _ = t.await;
+        if let Some(writer) = self.writer {
+            println!("FLUSHING WRITER!");
+            let flush_res = writer.shutdown();
+            if let Err(res) = flush_res {
+                println!("Failed during flush: {}",res);
+            } else {
+                println!("Flushed successfully!");
+            }
+            
         }
     }
 
