@@ -41,7 +41,7 @@ impl TCTracer {
 
         // Load and attach tracepoint to kernel
         tracer.load()?;
-        tracer.attach(&interface, TcAttachType::Egress)?;
+        tracer.attach(&interface, TcAttachType::Ingress)?;
 
         // Start handling function
         // Get queue from
