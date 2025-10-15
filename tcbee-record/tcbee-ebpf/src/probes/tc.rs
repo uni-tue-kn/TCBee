@@ -32,9 +32,6 @@ static mut TCP6_PACKETS_INGRESS: RingBuf = RingBuf::with_byte_size(TC6_BUF_SIZE,
 #[inline(always)]
 pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
 
-    // DEBUG!
-    return Ok(TC_ACT_OK);
-
     // Get memory offset to ethertype field of ethhdr
     let ethertype_offset = offset_of!(ethhdr, h_proto);
 
@@ -92,6 +89,9 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
             let ack = u32::from_be(tcp_hdr.ack_seq);
             let window = u16::from_be(tcp_hdr.window);
             let checksum = u16::from_be(tcp_hdr.check);
+
+            // DEBUG
+            return Ok(TC_ACT_OK);
 
             unsafe {
                 // Prepare ringbuf entry
@@ -157,6 +157,9 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
             let window = u16::from_be(tcp_hdr.window);
             let checksum = u16::from_be(tcp_hdr.check);
 
+            // DEBUG
+            return Ok(TC_ACT_OK);
+
             unsafe {
                 // Prepare ringbuf entry
                 let reserved = TCP6_PACKETS_EGRESS.reserve::<tcp6_packet_trace>(0);
@@ -208,7 +211,7 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
 pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
 
     return Ok(TC_ACT_OK);
-    
+
     // Get memory offset to ethertype field of ethhdr
     let ethertype_offset = offset_of!(ethhdr, h_proto);
 
