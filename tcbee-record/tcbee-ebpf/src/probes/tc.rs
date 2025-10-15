@@ -90,8 +90,6 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
             let window = u16::from_be(tcp_hdr.window);
             let checksum = u16::from_be(tcp_hdr.check);
 
-            // DEBUG
-            return Ok(TC_ACT_OK);
 
             unsafe {
                 // Prepare ringbuf entry
@@ -105,14 +103,15 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp4_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr,
-                        daddr,
-                        sport,
-                        dport,
-                        seq,
-                        ack,
-                        window,
-                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        saddr: 0,
+                        daddr: 0,
+                        sport: 0,
+                        dport: 0,
+                        seq: 0,
+                        ack: 0,
+                        window: 0,
+                        flags: 0
+                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -157,9 +156,6 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
             let window = u16::from_be(tcp_hdr.window);
             let checksum = u16::from_be(tcp_hdr.check);
 
-            // DEBUG
-            return Ok(TC_ACT_OK);
-
             unsafe {
                 // Prepare ringbuf entry
                 let reserved = TCP6_PACKETS_EGRESS.reserve::<tcp6_packet_trace>(0);
@@ -172,14 +168,17 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp6_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
-                        daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
-                        sport,
-                        dport,
-                        seq,
-                        ack,
-                        window,
-                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        saddr_v6: [0u8; 16],
+                        daddr_v6: [0u8; 16],
+                        //saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
+                        //daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
+                        sport: 0,
+                        dport: 0,
+                        seq: 0,
+                        ack: 0,
+                        window: 0,
+                        flags: 0
+                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -281,14 +280,15 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp4_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr,
-                        daddr,
-                        sport,
-                        dport,
-                        seq,
-                        ack,
-                        window,
-                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        saddr: 0,
+                        daddr: 0,
+                        sport: 0,
+                        dport: 0,
+                        seq: 0,
+                        ack: 0,
+                        window: 0,
+                        flags: 0
+                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -345,14 +345,17 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp6_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
-                        daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
-                        sport,
-                        dport,
-                        seq,
-                        ack,
-                        window,
-                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        saddr_v6: [0u8; 16],
+                        daddr_v6: [0u8; 16],
+                        //saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
+                        //daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
+                        sport: 0,
+                        dport: 0,
+                        seq: 0,
+                        ack: 0,
+                        window: 0,
+                        flags: 0
+                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
