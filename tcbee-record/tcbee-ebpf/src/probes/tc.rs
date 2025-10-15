@@ -120,6 +120,8 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                     let _ = try_dropped_counter();
                 }
             }
+            // 24987847
+            // 16481893
 
             /*
             let _ = try_flow_tracker(IpTuple {
@@ -208,8 +210,6 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
 
 #[inline(always)]
 pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
-
-    return Ok(TC_ACT_OK);
 
     // Get memory offset to ethertype field of ethhdr
     let ethertype_offset = offset_of!(ethhdr, h_proto);
