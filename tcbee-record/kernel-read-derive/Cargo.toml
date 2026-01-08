@@ -1,0 +1,11 @@
+[package]
+name = "kernel-read-derive"
+version = "0.1.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.105"
+quote = "1.0.43"
+syn = { version = "2", features = ["full","extra-traits"] }
