@@ -1,16 +1,14 @@
 use core::mem;
 
 use tcbee_common::bindings::{
-    eth_header::ethhdr,
-    ip4_header::iphdr,
-    ip6_header::ipv6hdr,
-    tcp_header::{tcp_packet_trace, tcphdr},
-    tcp_probe::tcp_probe_entry,
+    bbr::bbr_trace_entry, cubic::cubic_trace_entry, eth_header::ethhdr, ip4_header::iphdr, ip6_header::ipv6hdr, tcp_header::{tcp_packet_trace, tcphdr}, tcp_probe::tcp_probe_entry
 };
 
 // Ringbuffer Sizes
 pub const TCPPROBE_BUF_SIZE: u32 = (size_of::<tcp_probe_entry>() * 100000) as u32;
 pub const XDP_BUF_SIZE: u32 = (size_of::<tcp_packet_trace>() * 100000) as u32;
+pub const BBR_BUF_SIZE: u32 = (size_of::<bbr_trace_entry>() * 100000) as u32;
+pub const CUBIC_BUF_SIZE: u32 = (size_of::<cubic_trace_entry>() * 100000) as u32;
 pub const TC_BUF_SIZE: u32 = (size_of::<tcp_packet_trace>() * 100000) as u32;
 pub const TCP_BAD_CSUM_BUF_SIZE: u32 = (size_of::<tcp_packet_trace>() * 100000) as u32;
 pub const TCP_RETRANSMIT_SYNACK_BUF_SIZE: u32 = (size_of::<tcp_packet_trace>() * 100000) as u32;

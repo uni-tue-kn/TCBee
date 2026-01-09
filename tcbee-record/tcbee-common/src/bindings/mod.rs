@@ -8,6 +8,7 @@ pub mod ip6_header;
 pub mod flow;
 pub mod tcp_sock;
 pub mod bbr;
+pub mod cubic;
 
 #[cfg(feature = "user")]
 use aya::Pod;

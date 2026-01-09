@@ -9,9 +9,13 @@ mod probes {
     pub mod tcp_retransmit_synack;
     pub mod xdp;
     pub mod tcp_socket;
+    pub mod bbr;
+    pub mod cubic;
 }
+
 // Configuration variables
 mod config;
+
 // Performance counters for UI
 pub mod counters;
 pub mod flow_tracker;
@@ -22,13 +26,52 @@ use aya_ebpf::{
     programs::{FEntryContext, FExitContext, TcContext, TracePointContext, XdpContext},
 };
 
-use counters::try_ingress_counter;
 use probes::{
-    tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_sock_sendmsg, try_tcp_recv_socket,try_sock_recvmsg_cwnd_only,try_sock_sendmsg_cwnd_only}, xdp::xdp_hook
+    tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, bbr::bbr_handle, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_sock_sendmsg, try_tcp_recv_socket,try_sock_recvmsg_cwnd_only,try_sock_sendmsg_cwnd_only}, xdp::xdp_hook
 };
+
+
+
 
 #[no_mangle]
 static mut FILTER_PORT: u16 = 0;
+
+/// net/ipv4/tcp_bbr.c
+// Called on update
+#[fentry(function="bbr_main")]
+pub fn bbr_cong_control(ctx: FEntryContext) -> u32 {
+    match bbr_handle(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret
+    }
+}
+// Called on congestion
+#[fentry(function="bbr_cwnd_event")]
+pub fn bbr_cwnd_event(ctx: FEntryContext) -> u32 {
+    match bbr_handle(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret
+    }
+}
+
+/// net/ipv4/tcp_cubic.c
+// Called on update
+#[fentry(function="cubictcp_cong_avoid")]
+pub fn cubic_cong_control(ctx: FEntryContext) -> u32 {
+    match bbr_handle(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret
+    }
+}
+// Called on congestion ? TODO: I think this is the wrong hook
+#[fentry(function="cubictcp_cwnd_event")]
+pub fn cubic_cwnd_event(ctx: FEntryContext) -> u32 {
+    match bbr_handle(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret
+    }
+}
+
 
 /// tcp_write_xmit from net/ipv4/tcp_output.c
 #[fentry(function="__tcp_transmit_skb")]
