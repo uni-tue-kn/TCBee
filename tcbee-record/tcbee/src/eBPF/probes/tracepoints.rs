@@ -1,29 +1,26 @@
 use std::error::Error;
 
 use aya::{maps::RingBuf, programs::TracePoint, Ebpf};
-use tokio::task::{self, JoinHandle};
-use tokio_util::sync::CancellationToken;
+use serde::Serialize;
+use tcbee_common::prog_bindings::TracePointProbe;
 
 use crate::{
     eBPF::errors::EBPFRunnerError,
-    handlers::{tracepoints::HandlerConstraints, writer::Writer, BufferHandler, BufferHandlerImpl},
+    writer::Writer,
 };
 
 pub struct TracepointTracer {}
 
 impl TracepointTracer {
-    // The BufferHandlerImpl trait is used to implement the unique handling function for T.
-    pub fn spawn<T: HandlerConstraints<T>>(
+    // T is passed to determine struct and names for registration
+    pub fn spawn<T: TracePointProbe + Serialize + Copy + Send + 'static>(
         ebpf: &mut Ebpf,
         file_path: String,
         writer: &mut Writer,
-    ) -> Result<(), Box<dyn Error>>
-    where
-        // BufferHandlerImpl has to be implemented for BufferHandler for the passed T
-        BufferHandler<T>: BufferHandlerImpl<T>,
-    {
-        // Get tracepoint name
+    ) -> Result<(), Box<dyn Error>> {
+
         let name = T::NAME;
+        let category = T::CATEGORY;
 
         // Get trace point object from eBPF library
         let trace_point: &mut TracePoint = ebpf
@@ -35,13 +32,13 @@ impl TracepointTracer {
 
         // Load and attach tracepoint to kernel
         trace_point.load()?;
-        trace_point.attach(T::CATEGORY, name)?;
+        trace_point.attach(category, name)?;
 
         // Get queue from
         let map = ebpf
-            .take_map(T::QUEUE_NAME)
+            .take_map(T::QUEUE)
             .ok_or(EBPFRunnerError::QueueNotFoundError {
-                name: T::QUEUE_NAME.to_string(),
+                name: T::QUEUE.to_string(),
                 trace: T::NAME.to_string(),
             })?;
 

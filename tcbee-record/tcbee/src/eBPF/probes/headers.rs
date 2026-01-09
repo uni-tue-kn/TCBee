@@ -6,12 +6,10 @@ use aya::{
     Ebpf,
 };
 use tcbee_common::bindings::tcp_header::{tcp4_packet_trace,tcp6_packet_trace};
-use tokio::task::{self, JoinHandle};
-use tokio_util::sync::CancellationToken;
 
 use crate::{
     eBPF::errors::EBPFRunnerError,
-    handlers::{writer::Writer, BufferHandler},
+    writer::Writer,
 };
 
 pub struct TCTracer {}

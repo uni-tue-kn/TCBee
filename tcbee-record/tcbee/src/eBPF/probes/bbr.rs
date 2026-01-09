@@ -3,7 +3,7 @@ use tcbee_common::bindings::bbr::bbr_trace_entry;
 use std::error::Error;
 use anyhow::Context;
 
-use crate::{eBPF::errors::EBPFRunnerError, handlers::writer::Writer};
+use crate::{eBPF::errors::EBPFRunnerError, writer::Writer};
 
 pub struct BBRTracer {}
 

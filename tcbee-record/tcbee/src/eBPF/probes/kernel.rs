@@ -3,12 +3,10 @@ use std::error::Error;
 use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
 use tcbee_common::bindings::tcp_sock::sock_trace_entry;
-use tokio::task::{self, JoinHandle};
-use tokio_util::sync::CancellationToken;
 
 use crate::{
     eBPF::errors::EBPFRunnerError,
-    handlers::{writer::Writer, BufferHandler},
+    writer::Writer,
 };
 
 pub struct KernelTracer {}

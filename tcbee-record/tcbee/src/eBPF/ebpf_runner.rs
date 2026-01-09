@@ -6,14 +6,14 @@ use tcbee_common::bindings::{
     tcp_bad_csum::tcp_bad_csum_entry, tcp_probe::tcp_probe_entry,
     tcp_retransmit_synack::tcp_retransmit_synack_entry,
 };
-use tokio::task::{self, spawn_blocking, JoinHandle};
+use tokio::task::{spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     eBPF::probes::{
         bbr::BBRTracer, cubic::CubicTracer, cwnd::CwndTracer, headers::{TCTracer, XDPTracer}, kernel::KernelTracer, tracepoints::TracepointTracer
     },
-    handlers::writer::Writer,
+    writer::Writer,
     viz::ebpf_watcher::EBPFWatcher,
 };
 

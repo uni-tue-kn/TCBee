@@ -1,7 +1,7 @@
 // Crate components
 mod config;
 mod eBPF;
-mod handlers;
+mod writer;
 mod viz;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
