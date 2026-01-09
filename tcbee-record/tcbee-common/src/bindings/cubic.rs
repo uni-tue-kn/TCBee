@@ -7,6 +7,9 @@ use crate::kread::read_kernel;
 #[cfg(feature = "ebpf")]
 use aya_ebpf::helpers::gen::bpf_ktime_get_ns;
 
+#[cfg(feature = "user")]
+use serde::{Deserialize, Serialize};
+
 use crate::bindings::tcp_sock::sock;
 
 pub type u32_ = ::aya_ebpf::cty::c_uint;
@@ -35,6 +38,9 @@ pub struct cubic {
     pub curr_rtt: u32_,
 }
 
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "ebpf", derive(KernelRead))]
 #[cfg_attr(feature = "ebpf", kernel_read(ctx(sk: *const sock, cubic: *const cubic), default_src = "cubic"))]
 pub struct cubic_trace_entry {
