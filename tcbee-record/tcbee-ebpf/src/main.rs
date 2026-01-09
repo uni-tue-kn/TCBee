@@ -21,9 +21,9 @@ pub mod counters;
 pub mod flow_tracker;
 
 use aya_ebpf::{
-    bindings::{xdp_action, TC_ACT_PIPE},
-    macros::{classifier, fentry, fexit, tracepoint, xdp},
-    programs::{FEntryContext, FExitContext, TcContext, TracePointContext, XdpContext},
+    bindings::{TC_ACT_PIPE, xdp_action},
+    macros::{classifier, fentry, fexit, kprobe, kretprobe, tracepoint, xdp},
+    programs::{FEntryContext, FExitContext, ProbeContext, TcContext, TracePointContext, XdpContext},
 };
 
 use probes::{
@@ -38,6 +38,8 @@ use probes::{
     xdp::xdp_hook,
 };
 
+use crate::probes::{bbr::bbr_handle, cubic::cubic_handle};
+
 
 
 
@@ -46,16 +48,16 @@ static mut FILTER_PORT: u16 = 0;
 
 /// net/ipv4/tcp_bbr.c
 // Called on update
-#[fentry(function="bbr_main")]
-pub fn bbr_cong_control(ctx: FEntryContext) -> u32 {
+#[kprobe]
+pub fn bbr_cong_control(ctx: ProbeContext) -> u32 {
     match bbr_handle(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret
     }
 }
 // Called on congestion
-#[fentry(function="bbr_cwnd_event")]
-pub fn bbr_cwnd_event(ctx: FEntryContext) -> u32 {
+#[kprobe]
+pub fn bbr_cwnd_event(ctx: ProbeContext) -> u32 {
     match bbr_handle(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret
@@ -66,7 +68,7 @@ pub fn bbr_cwnd_event(ctx: FEntryContext) -> u32 {
 // Called on update
 #[fentry(function="cubictcp_cong_avoid")]
 pub fn cubic_cong_control(ctx: FEntryContext) -> u32 {
-    match bbr_handle(ctx) {
+    match cubic_handle(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret
     }
@@ -74,7 +76,7 @@ pub fn cubic_cong_control(ctx: FEntryContext) -> u32 {
 // Called on congestion ? TODO: I think this is the wrong hook
 #[fentry(function="cubictcp_cwnd_event")]
 pub fn cubic_cwnd_event(ctx: FEntryContext) -> u32 {
-    match bbr_handle(ctx) {
+    match cubic_handle(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret
     }

@@ -11,10 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     eBPF::probes::{
-        cwnd::CwndTracer,
-        headers::{TCTracer, XDPTracer},
-        kernel::KernelTracer,
-        tracepoints::TracepointTracer,
+        bbr::BBRTracer, cubic::CubicTracer, cwnd::CwndTracer, headers::{TCTracer, XDPTracer}, kernel::KernelTracer, tracepoints::TracepointTracer
     },
     handlers::writer::Writer,
     viz::ebpf_watcher::EBPFWatcher,
@@ -156,6 +153,11 @@ impl EbpfRunner {
                 prepend_string("bad_csum.tcp".to_string(), &self.config.dir),
                 &mut writer,
             )?;
+        }
+
+        if self.config.algorithms {
+            CubicTracer::spawn(&mut ebpf, "cubic.tcp".to_string(), &mut writer)?;
+            BBRTracer::spawn(&mut ebpf, "bbr.tcp".to_string(), &mut writer)?;
         }
 
         // Start watcher thread

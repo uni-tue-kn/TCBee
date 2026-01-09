@@ -9,6 +9,7 @@ pub struct EbpfRunnerConfig {
     pub kernel: bool,
     pub cwnd: bool,
     pub metrics: bool,
+    pub algorithms: bool,
     pub dir: String,
 }
 
@@ -74,6 +75,11 @@ impl EbpfRunnerConfig {
 
     pub fn metrics(mut self, set: bool) -> EbpfRunnerConfig {
         self.metrics = set;
+        self
+    }
+
+    pub fn algorithms(mut self, set: bool) -> EbpfRunnerConfig {
+        self.algorithms = set;
         self
     }
 

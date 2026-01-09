@@ -24,9 +24,9 @@ fn main() -> anyhow::Result<()> {
     let mut quiet: bool = false;
     let mut port: u16 = 0;
     let mut update_period: u128 = 100;
-    let mut trace_headers: bool = false;
     let mut trace_tracepoints: bool = false;
     let mut trace_kernel: bool = false;
+    let mut trace_algorithms: bool = false;
     let mut trace_cwnd: bool = false;
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
@@ -38,8 +38,7 @@ fn main() -> anyhow::Result<()> {
         );
         argparser
             .refer(&mut iface)
-            .add_argument("interface", Store, "Interface to record packets on!")
-            .required();
+            .add_option(&["-h", "--headers"], Store, "Record TCP headers of incoming and outgoing packets on the specified interface.");
         argparser.refer(&mut dir).add_option(
             &["-d", "--dir"],
             Store,
@@ -58,7 +57,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut cpus).add_option(
             &["-c", "--cpus"],
             Store,
-            "Number of CPUs to run TCBee on. Will run at 100% load due to polling from eBPF maps.",
+            "Number of CPUs to run TCBee on. One CPU should always be enough as the probes seem to be the bottleneck, will run at 100% load due to polling from eBPF maps.",
         );
         argparser.refer(&mut quiet).add_option(
             &["-q", "--quiet"],
@@ -70,11 +69,7 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
         );
-        argparser.refer(&mut trace_headers).add_option(
-            &["-h", "--headers"],
-            StoreTrue,
-            "Output a file containing general metrics, such as events handled and events lost. Stored under --dir path as 'metrics.json'",
-        );
+        // --headers now takes the interface name as its argument
         argparser.refer(&mut trace_tracepoints).add_option(
             &["-t", "--tracepoints"],
             StoreTrue,
@@ -88,14 +83,21 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut metrics).add_option(
             &["-m", "--metrics"],
             StoreTrue,
-            "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
+            "Output a file containing general metrics, such as events handled and events lost. Stored under --dir path as 'metrics.json'",
+        );
+        argparser.refer(&mut trace_algorithms).add_option(
+            &["-a", "--algorithms"],
+            StoreTrue,
+            "Record behaviour of congestion algorithms: Cubic and BBR.",
         );
 
         // Will try to parse arguments or exit program on error!
         argparser.parse_args_or_exit();
     }
 
-    if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd {
+    let trace_headers = !iface.is_empty();
+
+    if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd && !trace_algorithms {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
 
@@ -118,6 +120,7 @@ fn main() -> anyhow::Result<()> {
         .interface(iface)
         .cwnd(trace_cwnd)
         .metrics(metrics)
+        .algorithms(trace_algorithms)
         .dir(dir);
 
     // Main thread that strats all probes/tracepoints
@@ -151,7 +154,7 @@ fn main() -> anyhow::Result<()> {
 
             info!("Stopping eBPF runner and threads!");
 
-            // wait for all child threads to finish
+            // waits for all child threads to finish
             runner.stop().await;
 
             info!("Stopped gracefully!");
