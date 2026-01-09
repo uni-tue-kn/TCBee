@@ -1,5 +1,7 @@
+use core::ptr::addr_of;
+
 use aya_ebpf::{helpers::{bpf_probe_read_kernel, r#gen::bpf_ktime_get_ns}, macros::map, maps::RingBuf, programs::FEntryContext};
-use tcbee_common::bindings::{cubic::{cubic, cubic_trace_entry}, tcp_sock::sock};
+use tcbee_common::bindings::{cubic::{cubic, cubic_trace_entry}, tcp_sock::{inet_connection_sock, sock}};
 
 use crate::{FILTER_PORT, config::CUBIC_BUF_SIZE, counters::{try_dropped_counter, try_handled_counter}};
 
@@ -17,8 +19,14 @@ fn read_kernel<T>(src: *const T) -> Result<T, u32> {
 #[inline(always)]
 pub fn cubic_handle(ctx: FEntryContext) -> Result<u32, u32> {
     let sk_ptr: *const sock = unsafe { ctx.arg(0) };
-    let cubic_ptr = sk_ptr as *const cubic;
 
+    
+    let inet_csk_ptr: *const inet_connection_sock = sk_ptr as *const inet_connection_sock;
+    let cubic_ptr = unsafe {
+        let ca_priv_ptr = addr_of!((*inet_csk_ptr).icsk_ca_priv);
+        ca_priv_ptr as *const cubic
+    };
+    
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
 
     let sport = ((ports & 0xFFFF) as u16).to_be();
