@@ -10,14 +10,13 @@ use tcbee_common::bindings::flow::IpTuple;
 use crate::config::MAX_FLOWS;
 
 #[map(name = "FLOWS")]
-static mut FLOWS: PerCpuHashMap<IpTuple,IpTuple> = PerCpuHashMap::with_max_entries(MAX_FLOWS, 0);
+static mut FLOWS: PerCpuHashMap<IpTuple, IpTuple> = PerCpuHashMap::with_max_entries(MAX_FLOWS, 0);
 
-
-#[inline(always)] 
+#[inline(always)]
 pub fn try_flow_tracker(flow: IpTuple) -> Result<(), c_long> {
     // TODO: add map.increment() to track number of packets per flow
     unsafe {
-       FLOWS.insert(&flow, &flow, 0)?;
+        FLOWS.insert(&flow, &flow, 0)?;
     }
 
     Ok(())

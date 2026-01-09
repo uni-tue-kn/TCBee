@@ -3,7 +3,7 @@ use std::{fs::File, os::linux::fs::MetadataExt};
 use log::error;
 
 pub struct FileTracker {
-    files: Vec<File>
+    files: Vec<File>,
 }
 
 impl FileTracker {
@@ -26,15 +26,15 @@ impl FileTracker {
         FileTracker { files: files }
     }
     pub fn get_file_size(&self) -> u64 {
-         // Get sum of file sizes
-         let mut sum: u64 = 0;
-         for f in self.files.iter() {
-             if let Ok(meta) = f.metadata() {
-                 sum = sum + meta.st_size();
-             } else {
-                 error!("Could not get metadata of file {:?}",f);
-             }
-         }
-         sum
+        // Get sum of file sizes
+        let mut sum: u64 = 0;
+        for f in self.files.iter() {
+            if let Ok(meta) = f.metadata() {
+                sum = sum + meta.st_size();
+            } else {
+                error!("Could not get metadata of file {:?}", f);
+            }
+        }
+        sum
     }
 }

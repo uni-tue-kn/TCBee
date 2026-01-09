@@ -1,20 +1,21 @@
 use aya_ebpf::{
-    helpers::gen::bpf_ktime_get_ns, 
-    macros::map, maps::RingBuf, 
-    programs::TracePointContext,
+    helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf, programs::TracePointContext,
 };
 
 // Central buffer size config
 use crate::config::TCP_RETRANSMIT_SYNACK_BUF_SIZE;
 
 // Kernel tracepoint data structs
-use tcbee_common::bindings::tcp_retransmit_synack::{tcp_retransmit_synack_entry,trace_event_raw_tcp_retransmit_synack};
+use tcbee_common::bindings::tcp_retransmit_synack::{
+    tcp_retransmit_synack_entry, trace_event_raw_tcp_retransmit_synack,
+};
 
 // Counters for performance metrics
-use crate::counters::{try_handled_counter,try_dropped_counter};
+use crate::counters::{try_dropped_counter, try_handled_counter};
 
 #[map(name = "TCP_RETRANSMIT_SYNACK_QUEUE")]
-static mut TCP_RETRANSMIT_SYNACK_QUEUE: RingBuf = RingBuf::with_byte_size(TCP_RETRANSMIT_SYNACK_BUF_SIZE, 0);
+static mut TCP_RETRANSMIT_SYNACK_QUEUE: RingBuf =
+    RingBuf::with_byte_size(TCP_RETRANSMIT_SYNACK_BUF_SIZE, 0);
 
 #[inline(always)]
 pub fn try_tcp_retransmit_synack(ctx: TracePointContext) -> Result<u32, u32> {
@@ -33,7 +34,7 @@ pub fn try_tcp_retransmit_synack(ctx: TracePointContext) -> Result<u32, u32> {
             dport: event.dport,
             family: event.family,
             saddr_v6: event.saddr_v6,
-            daddr_v6: event.daddr_v6
+            daddr_v6: event.daddr_v6,
         };
 
         // Prepare ringbuf entry
@@ -45,11 +46,10 @@ pub fn try_tcp_retransmit_synack(ctx: TracePointContext) -> Result<u32, u32> {
             entry.write(queue_entry);
             entry.submit(0);
             let _ = try_handled_counter();
-        }else {
+        } else {
             // Not enough space, drop event
             let _ = try_dropped_counter();
         }
-
     }
     Ok(0)
 }

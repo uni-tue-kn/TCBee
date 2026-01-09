@@ -2,7 +2,6 @@
 #[cfg(feature = "user")]
 use serde::{Deserialize, Serialize};
 
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct __BindgenBitfieldUnit<Storage> {
@@ -547,14 +546,26 @@ impl tcphdr {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
+pub struct tcp4_packet_trace {
+    pub time: u64,
+    pub saddr: u32,
+    pub daddr: u32,
+    pub sport: u16,
+    pub dport: u16,
+    pub seq: u32,
+    pub ack: u32,
+    pub window: u16,
+    pub flags: u8
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
-pub struct tcp_packet_trace {
+pub struct tcp6_packet_trace {
     pub time: u64,
-    pub saddr: u32,
-    pub daddr: u32,
     pub saddr_v6: [u8; 16usize],
     pub daddr_v6: [u8; 16usize],
     pub sport: u16,
@@ -562,11 +573,5 @@ pub struct tcp_packet_trace {
     pub seq: u32,
     pub ack: u32,
     pub window: u16,
-    pub flag_urg: bool,
-    pub flag_ack: bool,
-    pub flag_psh: bool,
-    pub flag_rst: bool,
-    pub flag_syn: bool,
-    pub flag_fin: bool,
-    pub checksum: u16
+    pub flags: u8
 }

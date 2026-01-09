@@ -24,7 +24,7 @@ impl Graph {
         out_label: String,
         in_color: Color,
         out_color: Color,
-        name: String
+        name: String,
     ) -> Graph {
         let ingress_vals: Vec<(f64, f64)> = Vec::new();
         let egress_vals: Vec<(f64, f64)> = Vec::new();
@@ -44,40 +44,37 @@ impl Graph {
 
     pub fn get_chart(&self, y_suffix: &str) -> Chart {
         let x_labels = vec![
-                Span::styled(
-                    format!("{}", 0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{:.2}s", self.xmax / 2.0),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{:.2}s",self.xmax),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ];
-        
+            Span::styled(
+                format!("{}", 0),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:.2}s", self.xmax / 2.0),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:.2}s", self.xmax),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ];
+
         let y_labels = vec![
-                Span::styled(
-                    format!("{}", 0),
-                    Style::default().add_modifier(Modifier::BOLD),
+            Span::styled(
+                format!("{}", 0),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{}",
+                    RateWatcher::<u32>::format_rate(self.ymax / 2.0, y_suffix)
                 ),
-                Span::styled(
-                    format!(
-                        "{}",
-                        RateWatcher::<u32>::format_rate(self.ymax / 2.0, y_suffix)
-                    ),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(
-                        "{}",
-                        RateWatcher::<u32>::format_rate(self.ymax, y_suffix)
-                    ),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ];
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}", RateWatcher::<u32>::format_rate(self.ymax, y_suffix)),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ];
 
         Chart::new(vec![
             Dataset::default()

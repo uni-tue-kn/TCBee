@@ -1,7 +1,7 @@
 // Crate components
 mod config;
-mod handlers;
 mod eBPF;
+mod handlers;
 mod viz;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
@@ -90,7 +90,6 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
         );
-        
 
         // Will try to parse arguments or exit program on error!
         argparser.parse_args_or_exit();
@@ -142,7 +141,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             // Runner was created and correctly initialized
             // If quiet mode: wait for ctrl+c to cancel
-            // If TUI is used: TUI will cancel the token so wait for that 
+            // If TUI is used: TUI will cancel the token so wait for that
             if quiet {
                 let _ = ctrl_c().await;
                 token.cancel();

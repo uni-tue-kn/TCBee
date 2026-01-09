@@ -9,9 +9,7 @@ use log::warn;
 use ratatui::{
     layout::Constraint,
     style::{Color, Style, Stylize},
-    widgets::{
-        Cell, Row, ScrollbarState, Table,
-    },
+    widgets::{Cell, Row, ScrollbarState, Table},
 };
 use tcbee_common::bindings::flow::IpTuple;
 
@@ -44,10 +42,7 @@ impl FlowTracker {
         std::array::from_fn(|i| arg[i + 12])
     }
 
-    pub fn update_scrollbar_state(
-        &self,
-        state: ScrollbarState
-    ) -> ScrollbarState {
+    pub fn update_scrollbar_state(&self, state: ScrollbarState) -> ScrollbarState {
         state.content_length(self.num_flows)
     }
 

@@ -19474,7 +19474,6 @@ pub mod irqreturn {
     pub const IRQ_WAKE_THREAD: Type = 2;
 }
 
-
 pub use self::irqreturn::Type as irqreturn_t;
 pub type irq_handler_t = ::core::option::Option<
     unsafe extern "C" fn(

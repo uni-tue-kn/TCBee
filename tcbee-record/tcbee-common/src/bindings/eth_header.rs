@@ -11,4 +11,3 @@ pub struct ethhdr {
     pub h_source: [::aya_ebpf::cty::c_uchar; 6usize],
     pub h_proto: __be16,
 }
-

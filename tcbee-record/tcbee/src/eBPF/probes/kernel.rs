@@ -1,4 +1,4 @@
-use std::{error::Error};
+use std::error::Error;
 
 use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
@@ -6,19 +6,20 @@ use tcbee_common::bindings::tcp_sock::sock_trace_entry;
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::{eBPF::errors::EBPFRunnerError, handlers::BufferHandler};
+use crate::{
+    eBPF::errors::EBPFRunnerError,
+    handlers::{writer::Writer, BufferHandler},
+};
 
-
-pub struct KernelTracer {
-}
+pub struct KernelTracer {}
 
 impl KernelTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
-        token: CancellationToken,
         send_file_path: String,
         recv_file_path: String,
-    ) -> Result<Vec<JoinHandle<()>>, Box<dyn Error>> {
+        writer: &mut Writer,
+    ) -> Result<(), Box<dyn Error>> {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
         // Outgoing TCP
@@ -42,20 +43,8 @@ impl KernelTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
 
-        // Create handler object
-        let mut handler: BufferHandler<sock_trace_entry> = BufferHandler::<sock_trace_entry>::new(
-            "TCP_SEND_SOCK_EVENTS",
-            token.clone(),
-            buff,
-            send_file_path
-        )
-        .unwrap();
-
-        // Start thread and store join handle
-        let send_thread: JoinHandle<()> = task::spawn(async move {
-            handler.run().await;
-        });
-
+        // Register with writer object
+        writer.register::<sock_trace_entry>(buff, send_file_path)?;
 
         // Start SOCK_RECV handling
         // Get queue from
@@ -67,22 +56,8 @@ impl KernelTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+        writer.register::<sock_trace_entry>(buff, recv_file_path)?;
 
-        // Create handler object
-        let mut handler: BufferHandler<sock_trace_entry> = BufferHandler::<sock_trace_entry>::new(
-            "TCP_RECV_SOCK_EVENTS",
-            token,
-            buff,
-            recv_file_path
-        )
-        .unwrap();
-
-        // Start thread and store join handle
-        let recv_thread: JoinHandle<()> = task::spawn(async move {
-            handler.run().await;
-        });
-
-
-        Ok(vec![send_thread,recv_thread])
+        Ok(())
     }
 }

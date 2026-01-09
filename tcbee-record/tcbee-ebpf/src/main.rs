@@ -7,10 +7,10 @@ mod probes {
     pub mod tcp_bad_csum;
     pub mod tcp_probe;
     pub mod tcp_retransmit_synack;
-    pub mod xdp;
     pub mod tcp_socket;
     pub mod bbr;
     pub mod cubic;
+    pub mod xdp;
 }
 
 // Configuration variables
@@ -27,7 +27,15 @@ use aya_ebpf::{
 };
 
 use probes::{
-    tc::tc_hook, tcp_bad_csum::try_tcp_bad_csum, bbr::bbr_handle, tcp_probe::try_tcp_probe, tcp_retransmit_synack::try_tcp_retransmit_synack, tcp_socket::{try_sock_sendmsg, try_tcp_recv_socket,try_sock_recvmsg_cwnd_only,try_sock_sendmsg_cwnd_only}, xdp::xdp_hook
+    tc::{tc_ingress_hook,tc_egress_hook},
+    tcp_bad_csum::try_tcp_bad_csum,
+    tcp_probe::try_tcp_probe,
+    tcp_retransmit_synack::try_tcp_retransmit_synack,
+    tcp_socket::{
+        try_sock_recvmsg_cwnd_only, try_sock_sendmsg, try_sock_sendmsg_cwnd_only,
+        try_tcp_recv_socket,
+    },
+    xdp::xdp_hook,
 };
 
 
@@ -74,40 +82,39 @@ pub fn cubic_cwnd_event(ctx: FEntryContext) -> u32 {
 
 
 /// tcp_write_xmit from net/ipv4/tcp_output.c
-#[fentry(function="__tcp_transmit_skb")]
+#[fentry(function = "__tcp_transmit_skb")]
 pub fn sock_sendmsg(ctx: FEntryContext) -> u32 {
     match try_sock_sendmsg(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
 
 /// tcp_rcv_established from net/ipv4/tcp_input.c
 /// Only triggers after established state!
-#[fentry(function="tcp_rcv_established")]
+#[fentry(function = "tcp_rcv_established")]
 pub fn sock_recvmsg(ctx: FEntryContext) -> u32 {
     match try_tcp_recv_socket(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
 
 // Performance variant of above functions that only capture cwnd
-#[fentry(function="__tcp_transmit_skb")]
+#[fentry(function = "__tcp_transmit_skb")]
 pub fn cwnd_sock_sendmsg(ctx: FEntryContext) -> u32 {
     match try_sock_sendmsg_cwnd_only(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
-#[fentry(function="tcp_rcv_established")]
+#[fentry(function = "tcp_rcv_established")]
 pub fn cwnd_sock_recvmsg(ctx: FEntryContext) -> u32 {
     match try_sock_recvmsg_cwnd_only(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
-
 
 #[xdp]
 pub fn xdp_packet_tracer(ctx: XdpContext) -> u32 {
@@ -118,8 +125,16 @@ pub fn xdp_packet_tracer(ctx: XdpContext) -> u32 {
 }
 
 #[classifier]
-pub fn tc_packet_tracer(ctx: TcContext) -> i32 {
-    match tc_hook(ctx) {
+pub fn tc_ingress_packet_tracer(ctx: TcContext) -> i32 {
+    match tc_ingress_hook(ctx) {
+        Ok(ret) => ret,
+        Err(_) => TC_ACT_PIPE,
+    }
+}
+
+#[classifier]
+pub fn tc_egress_packet_tracer(ctx: TcContext) -> i32 {
+    match tc_egress_hook(ctx) {
         Ok(ret) => ret,
         Err(_) => TC_ACT_PIPE,
     }

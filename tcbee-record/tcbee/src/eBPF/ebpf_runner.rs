@@ -1,23 +1,22 @@
 use std::error::Error;
 
-use aya::{
-    Ebpf, EbpfLoader,
-};
+use aya::{Ebpf, EbpfLoader};
 use log::{debug, info, warn};
 use tcbee_common::bindings::{
-    tcp_bad_csum::tcp_bad_csum_entry,
-    tcp_probe::tcp_probe_entry, tcp_retransmit_synack::tcp_retransmit_synack_entry,
+    tcp_bad_csum::tcp_bad_csum_entry, tcp_probe::tcp_probe_entry,
+    tcp_retransmit_synack::tcp_retransmit_synack_entry,
 };
 use tokio::task::{self, spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     eBPF::probes::{
+        cwnd::CwndTracer,
         headers::{TCTracer, XDPTracer},
         kernel::KernelTracer,
         tracepoints::TracepointTracer,
-        cwnd::CwndTracer,
     },
+    handlers::writer::Writer,
     viz::ebpf_watcher::EBPFWatcher,
 };
 
@@ -29,6 +28,7 @@ pub struct EbpfRunner {
     threads: Vec<JoinHandle<()>>,
     config: EbpfRunnerConfig,
     ebpf: Option<Ebpf>,
+    writer: Option<Writer>,
 }
 
 pub fn prepend_string(mut src: String, prefix: &str) -> String {
@@ -45,6 +45,7 @@ impl EbpfRunner {
             threads: Vec::new(),
             config,
             ebpf: None,
+            writer: None,
         }
     }
 
@@ -52,9 +53,14 @@ impl EbpfRunner {
         // Signal child threads to stop
         self.stop_token.cancel();
 
-        // Wait for threads to finish
-        for t in self.threads {
-            let _ = t.await;
+        if let Some(writer) = self.writer {
+            println!("FLUSHING WRITER!");
+            let flush_res = writer.shutdown();
+            if let Err(res) = flush_res {
+                println!("Failed during flush: {}", res);
+            } else {
+                println!("Flushed successfully!");
+            }
         }
     }
 
@@ -92,64 +98,64 @@ impl EbpfRunner {
 
         // TODO: I feel that the file names should be moved to some config file
 
+        // This is the backend writer thread that reads and writes data to files
+        let mut writer = Writer::new();
+
         // Tracing for packet headers via TC and XDP
         if self.config.headers {
-            self.threads.push(TCTracer::spawn(
+            TCTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
-                self.stop_token.child_token(),
-                prepend_string("tc.tcp".to_string(),&self.config.dir),
-            )?);
+                prepend_string("tc.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
 
-            self.threads.push(XDPTracer::spawn(
+            XDPTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
-                self.stop_token.child_token(),
-                prepend_string("xdp.tcp".to_string(),&self.config.dir),
-            )?);
+                prepend_string("xdp.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
         }
 
         // Tracing kernel metrics via FEntry probe
         if self.config.kernel {
-            self.threads.extend(KernelTracer::spawn(
+            KernelTracer::spawn(
                 &mut ebpf,
-                self.stop_token.child_token(),
-                prepend_string("send_sock.tcp".to_string(),&self.config.dir),
-                prepend_string("recv_sock.tcp".to_string(),&self.config.dir),
-            )?);
+                prepend_string("send_sock.tcp".to_string(), &self.config.dir),
+                prepend_string("recv_sock.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
         }
         // Performance variant of above hook
         if self.config.cwnd {
-            self.threads.extend(CwndTracer::spawn(
+            CwndTracer::spawn(
                 &mut ebpf,
-                self.stop_token.child_token(),
-                prepend_string("send_cwnd.tcp".to_string(),&self.config.dir),
-                prepend_string("recv_cwnd.tcp".to_string(),&self.config.dir),
-            )?);
+                prepend_string("send_cwnd.tcp".to_string(), &self.config.dir),
+                prepend_string("recv_cwnd.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
         }
 
         // Tracing kernel tracepoints
         if self.config.tracepoints {
-            self.threads
-                .push(TracepointTracer::spawn::<tcp_probe_entry>(
-                    &mut ebpf,
-                    self.stop_token.child_token(),
-                    prepend_string("probe.tcp".to_string(),&self.config.dir),
-                )?);
+            TracepointTracer::spawn::<tcp_probe_entry>(
+                &mut ebpf,
+                prepend_string("probe.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
 
-            self.threads
-                .push(TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
-                    &mut ebpf,
-                    self.stop_token.child_token(),
-                    prepend_string("retransmit_synack.tcp".to_string(),&self.config.dir),
-                )?);
+            TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
+                &mut ebpf,
+                prepend_string("retransmit_synack.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
 
-            self.threads
-                .push(TracepointTracer::spawn::<tcp_bad_csum_entry>(
-                    &mut ebpf,
-                    self.stop_token.child_token(),
-                    prepend_string("bad_csum.tcp".to_string(),&self.config.dir),
-                )?);
+            TracepointTracer::spawn::<tcp_bad_csum_entry>(
+                &mut ebpf,
+                prepend_string("bad_csum.tcp".to_string(), &self.config.dir),
+                &mut writer,
+            )?;
         }
 
         // Start watcher thread
@@ -168,11 +174,10 @@ impl EbpfRunner {
 
         info!("Finished starting TUI!");
 
-        // Store ebpf to ensure that it is not dropped after this function finishes!
+        // Store to ensure that it is not dropped after this function finishes!
         self.ebpf = Some(ebpf);
+        self.writer = Some(writer);
 
-        // Yield to let created tasks work
-        task::yield_now().await;
         Ok(())
     }
 }

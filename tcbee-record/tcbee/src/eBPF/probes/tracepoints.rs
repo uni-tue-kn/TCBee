@@ -4,19 +4,20 @@ use aya::{maps::RingBuf, programs::TracePoint, Ebpf};
 use tokio::task::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::{eBPF::errors::EBPFRunnerError, handlers::{tracepoints::HandlerConstraints, BufferHandler, BufferHandlerImpl}};
+use crate::{
+    eBPF::errors::EBPFRunnerError,
+    handlers::{tracepoints::HandlerConstraints, writer::Writer, BufferHandler, BufferHandlerImpl},
+};
 
-pub struct TracepointTracer {
-
-}
+pub struct TracepointTracer {}
 
 impl TracepointTracer {
     // The BufferHandlerImpl trait is used to implement the unique handling function for T.
     pub fn spawn<T: HandlerConstraints<T>>(
         ebpf: &mut Ebpf,
-        token: CancellationToken,
         file_path: String,
-    ) -> Result<JoinHandle<()>, Box<dyn Error>>
+        writer: &mut Writer,
+    ) -> Result<(), Box<dyn Error>>
     where
         // BufferHandlerImpl has to be implemented for BufferHandler for the passed T
         BufferHandler<T>: BufferHandlerImpl<T>,
@@ -45,13 +46,8 @@ impl TracepointTracer {
             })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
+        writer.register::<T>(buff, file_path)?;
 
-        // Create handler object
-        let mut handler = BufferHandler::<T>::new(name, token, buff, file_path).unwrap();
-
-        // Start thread and store join handle
-        Ok(task::spawn(async move {
-            handler.run().await;
-        }))
+        Ok(())
     }
 }
