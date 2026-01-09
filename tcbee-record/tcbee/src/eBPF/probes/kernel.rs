@@ -2,22 +2,17 @@ use std::error::Error;
 
 use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
-use tcbee_common::bindings::tcp_sock::sock_trace_entry;
+use tcbee_common::{bindings::tcp_sock::sock_trace_entry, prog_bindings::TraceInoutProbe};
 
 use crate::{
-    eBPF::errors::EBPFRunnerError,
+    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
 };
 
 pub struct KernelTracer {}
 
 impl KernelTracer {
-    pub fn spawn(
-        ebpf: &mut Ebpf,
-        send_file_path: String,
-        recv_file_path: String,
-        writer: &mut Writer,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
         // Outgoing TCP
@@ -42,7 +37,10 @@ impl KernelTracer {
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
 
         // Register with writer object
-        writer.register::<sock_trace_entry>(buff, send_file_path)?;
+        writer.register::<sock_trace_entry>(
+            buff,
+            prepend_string(sock_trace_entry::OUT_FILE.to_string(), &dir),
+        )?;
 
         // Start SOCK_RECV handling
         // Get queue from
@@ -54,7 +52,10 @@ impl KernelTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<sock_trace_entry>(buff, recv_file_path)?;
+        writer.register::<sock_trace_entry>(
+            buff,
+            prepend_string(sock_trace_entry::IN_FILE.to_string(), &dir),
+        )?;
 
         Ok(())
     }

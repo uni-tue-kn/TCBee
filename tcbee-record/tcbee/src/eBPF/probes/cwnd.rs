@@ -2,10 +2,10 @@ use std::error::Error;
 
 use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
-use tcbee_common::bindings::tcp_sock::cwnd_trace_entry;
+use tcbee_common::{bindings::tcp_sock::cwnd_trace_entry, prog_bindings::TraceInoutProbe};
 
 use crate::{
-    eBPF::errors::EBPFRunnerError,
+    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
 };
 
@@ -14,8 +14,7 @@ pub struct CwndTracer {}
 impl CwndTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
-        send_file_path: String,
-        recv_file_path: String,
+        dir: String,
         writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
@@ -40,7 +39,7 @@ impl CwndTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<cwnd_trace_entry>(buff, send_file_path)?;
+        writer.register::<cwnd_trace_entry>(buff, prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), &dir),)?;
 
         // Start SOCK_RECV handling
         // Get queue from
@@ -52,7 +51,7 @@ impl CwndTracer {
         )?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<cwnd_trace_entry>(buff, recv_file_path)?;
+        writer.register::<cwnd_trace_entry>(buff, prepend_string(cwnd_trace_entry::IN_FILE.to_string(), &dir),)?;
 
         Ok(())
     }

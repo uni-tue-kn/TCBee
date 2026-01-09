@@ -1,16 +1,16 @@
 use aya::{Btf, Ebpf, maps::RingBuf, programs::{FEntry, KProbe}};
-use tcbee_common::bindings::bbr::bbr_trace_entry;
+use tcbee_common::{bindings::bbr::bbr_trace_entry, prog_bindings::TraceProbe};
 use std::error::Error;
 use anyhow::Context;
 
-use crate::{eBPF::errors::EBPFRunnerError, writer::Writer};
+use crate::{eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError}, writer::Writer};
 
 pub struct BBRTracer {}
 
 impl BBRTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
-        file_path: String,
+        dir: String,
         writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
         let name = "bbr_tracer";
@@ -36,7 +36,7 @@ impl BBRTracer {
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
 
         // We use a centrealized writing scheme
-        writer.register::<bbr_trace_entry>(buff, file_path)?;
+        writer.register::<bbr_trace_entry>(buff, prepend_string(bbr_trace_entry::FILE.to_string(), &dir))?;
 
         Ok(())
     }

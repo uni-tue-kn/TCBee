@@ -9,14 +9,7 @@ use crate::{FILTER_PORT, config::BBR_BUF_SIZE, counters::{try_dropped_counter, t
 #[map(name = "BBR_EVENTS")]
 static mut BBR_EVENTS: RingBuf = RingBuf::with_byte_size(BBR_BUF_SIZE as u32, 0);
 
-// TODO: move to helpers
-#[inline(always)]
-fn read_kernel<T>(src: *const T) -> Result<T, u32> {
-    unsafe { bpf_probe_read_kernel(src).map_err(|_| 1u32) }
-}
 
-
-// TODO: it should be possible to generate this entire function from a macro.....
 #[inline(always)]
 pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
     let sk_ptr: *const sock = ctx.arg(0).ok_or(0u32)?;

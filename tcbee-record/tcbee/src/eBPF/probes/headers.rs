@@ -18,7 +18,7 @@ impl TCTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
         interface: String,
-        file_path: String,
+        dir: String,
         writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
         let name = "tc_ingress_packet_tracer";

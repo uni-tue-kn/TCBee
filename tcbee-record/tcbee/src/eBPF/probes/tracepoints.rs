@@ -5,7 +5,7 @@ use serde::Serialize;
 use tcbee_common::prog_bindings::TracePointProbe;
 
 use crate::{
-    eBPF::errors::EBPFRunnerError,
+    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
 };
 
@@ -15,7 +15,7 @@ impl TracepointTracer {
     // T is passed to determine struct and names for registration
     pub fn spawn<T: TracePointProbe + Serialize + Copy + Send + 'static>(
         ebpf: &mut Ebpf,
-        file_path: String,
+        dir: String,
         writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
 
@@ -43,7 +43,7 @@ impl TracepointTracer {
             })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<T>(buff, file_path)?;
+        writer.register::<T>(buff, prepend_string(T::FILE.to_string(), &dir))?;
 
         Ok(())
     }

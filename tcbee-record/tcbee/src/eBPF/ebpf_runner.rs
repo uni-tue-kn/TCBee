@@ -62,10 +62,6 @@ impl EbpfRunner {
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        // ###########################
-        // SETUP
-        // ###########################
-
         env_logger::init();
 
         // Bump the memlock rlimit. This is needed for older kernels that don't use the
@@ -93,7 +89,7 @@ impl EbpfRunner {
 
         info!("Starting eBPF probes!");
 
-        // TODO: I feel that the file names should be moved to some config file
+        // TODO: I feel that the dir should be passed to the writer, and the Tracers should just add the filename
 
         // This is the backend writer thread that reads and writes data to files
         let mut writer = Writer::new();
@@ -103,14 +99,15 @@ impl EbpfRunner {
             TCTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
-                prepend_string("tc.tcp".to_string(), &self.config.dir),
+                self.config.dir.clone(),
                 &mut writer,
             )?;
 
+            // FIXME: currently not doing anything
             XDPTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
-                prepend_string("xdp.tcp".to_string(), &self.config.dir),
+                self.config.dir.clone(),
                 &mut writer,
             )?;
         }
@@ -119,8 +116,7 @@ impl EbpfRunner {
         if self.config.kernel {
             KernelTracer::spawn(
                 &mut ebpf,
-                prepend_string("send_sock.tcp".to_string(), &self.config.dir),
-                prepend_string("recv_sock.tcp".to_string(), &self.config.dir),
+                self.config.dir.clone(),
                 &mut writer,
             )?;
         }
@@ -128,8 +124,7 @@ impl EbpfRunner {
         if self.config.cwnd {
             CwndTracer::spawn(
                 &mut ebpf,
-                prepend_string("send_cwnd.tcp".to_string(), &self.config.dir),
-                prepend_string("recv_cwnd.tcp".to_string(), &self.config.dir),
+                self.config.dir.clone(),
                 &mut writer,
             )?;
         }
@@ -138,26 +133,26 @@ impl EbpfRunner {
         if self.config.tracepoints {
             TracepointTracer::spawn::<tcp_probe_entry>(
                 &mut ebpf,
-                prepend_string("probe.tcp".to_string(), &self.config.dir),
+                self.config.dir.clone(),
                 &mut writer,
             )?;
 
             TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
                 &mut ebpf,
-                prepend_string("retransmit_synack.tcp".to_string(), &self.config.dir),
+                self.config.dir.clone(),
                 &mut writer,
             )?;
 
             TracepointTracer::spawn::<tcp_bad_csum_entry>(
                 &mut ebpf,
-                prepend_string("bad_csum.tcp".to_string(), &self.config.dir),
+                self.config.dir.clone(),
                 &mut writer,
             )?;
         }
 
         if self.config.algorithms {
-            CubicTracer::spawn(&mut ebpf, "cubic.tcp".to_string(), &mut writer)?;
-            BBRTracer::spawn(&mut ebpf, "bbr.tcp".to_string(), &mut writer)?;
+            CubicTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
+            BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
         }
 
         // Start watcher thread
