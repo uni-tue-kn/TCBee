@@ -10,9 +10,12 @@ use tokio::sync::mpsc::Sender;
 use tokio::task;
 use tokio_util::sync::CancellationToken;
 
+use crate::db_writer::as_db_operation;
 use crate::{db_writer::DBOperation, flow_tracker::EventIndexer};
 
 use indicatif::ProgressBar;
+
+
 
 pub trait FromBuffer {
     const ENTRY_SIZE: usize;
@@ -55,21 +58,14 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
 
     // TODO: track file percentage!
     pub async fn run(&mut self) {
-        // Get bytes for read struct
-        // TODO: I DONT KNOW WHY THIS 4 BYTE MISALIGNMENT HAPPENS, IT JUST DOES
-        // FIX THIS!
         let entry_size = T::ENTRY_SIZE;
-        //let entry_size = size_of::<T>();
-        //let entry_size = 68;
 
         debug!("Entry size: {} bytes for {}", entry_size, self.path);
 
-        // Buffer for file reads
         let mut buffer = vec![0 as u8; entry_size];
 
         // Progress bar based on total number of entries
         let num_entries = self.to_read / entry_size as u64;
-        // Update length of progress bar with expected number of entries
         self.progress.set_length(num_entries);
 
         // Read until error is returned
@@ -81,23 +77,27 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
                 return;
             }
 
-
-            // Bytes were read, try to parse to struct
-            //let event: T = unsafe { std::ptr::read(buffer.as_ptr() as *const _) };
             let event = T::from_buffer(&buffer);
-            // TODO: error handling
-            //let event: T = bincode::deserialize::<'b,T>(&buf).unwrap();
 
-            let db_op = event.as_db_op();
-
-            let res = self.tx.send(db_op).await;
-
-            // If an error is returned, then channel is closed
-            if res.is_err() {
-                info!("Stopping file read {} on channel close!", self.path);
-                self.progress.finish();
-                return;
+            // Sometimes structs are misaligned, this causes all subsequent reads to fail
+            // Have not yet found what could cause this...
+            if !event.check_divider() {
+                panic!("Misaligned PACKET: {:?}. Something went horribly wrong during recording!",event);
             }
+
+            let db_ops = as_db_operation(event);
+
+            for op in db_ops {
+                let res = self.tx.send(op).await;
+
+                // If an error is returned, then channel is closed
+                if res.is_err() {
+                    info!("Stopping file read {} on channel close!", self.path);
+                    self.progress.finish();
+                    return;
+                }
+            }
+            
 
             self.progress.inc(1);
 

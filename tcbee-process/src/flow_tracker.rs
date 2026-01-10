@@ -1,291 +1,116 @@
 use log::{error, info};
-use std::error::Error;
+use std::{collections::HashMap, error::Error, iter::Map};
 use ts_storage::{DataPoint, DataValue, Flow, IpTuple, TSDBInterface, TimeSeries};
 
 use crate::{
-    bindings::{sock::sock_trace_entry, cwnd::cwnd_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe},
+    bindings::{
+        cwnd::cwnd_trace_entry, sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe,
+    },
     db_writer::DBOperation,
 };
-const BUFFER_SIZE: usize = 1000;
+const BUFFER_SIZE: usize = 10000;
 
 pub const AF_INET: u16 = 2;
 
 pub trait EventIndexer {
     // TODO: is there a way to do this cleaner?
     // First filed is always timestamp, second is address
-    fn get_field(&self, index: usize) -> Option<DataValue>;
+    fn get_field(&self, index: usize) -> DataValue;
     fn get_default_field(&self, index: usize) -> DataValue;
     fn get_field_name(&self, index: usize) -> &str;
     fn get_ip_tuple(&self) -> IpTuple;
     fn get_max_index(&self) -> usize;
     fn get_timestamp(&self) -> f64;
-    fn as_db_op(self) -> DBOperation;
     fn get_struct_length(&self) -> usize;
+    fn check_divider(&self) -> bool;
 }
+
 #[derive(Debug)]
-pub struct TsTracker {
-    ts: TimeSeries,
-    events: Vec<DataPoint>,
-    handled: usize,
-    name: String,
+pub struct TimeSeriesWriter {
+    series: TimeSeries,
+    buffer: Vec<DataPoint>,
 }
 
-impl TsTracker {
-    pub fn new(
-        db: &Box<dyn TSDBInterface + Send>,
-        name: &str,
-        flow: &Flow,
-        ts_type: DataValue,
-    ) -> TsTracker {
-        let ts = db.create_time_series(&flow, name, ts_type).expect(&format!(
-            "Failed to create {} TS for flow: {:?}",
-            name, flow
-        ));
-
-        TsTracker {
-            ts: ts,
-            events: Vec::with_capacity(BUFFER_SIZE),
-            handled: 0,
-            name: name.to_string(),
+impl TimeSeriesWriter {
+    pub fn new(series: TimeSeries, capacity: usize) -> TimeSeriesWriter {
+        TimeSeriesWriter {
+            buffer: Vec::with_capacity(capacity),
+            series,
         }
     }
 
-    pub fn add_entry(
-        &mut self,
-        entry: DataPoint,
-        db: &Box<dyn TSDBInterface + Send>,
-    ) -> Result<(), Box<dyn Error>> {
-        // Track number of entries handled
-        self.handled = self.handled + 1;
-
-        // If space is left then push entry, else write to db, clear and then write entry
-        if self.events.len() <= BUFFER_SIZE {
-            self.events.push(entry);
-        } else {
-            // TODO: if one of these inserts fail, it reverts the entire write!
-            // Implement better error handling!
-            let result = db.insert_multiple_points(&self.ts, &self.events)?;
-            self.events.clear();
-            self.events.push(entry);
-        }
-        Ok(())
+    pub fn add_point(&mut self, point: DataPoint) {
+        self.buffer.push(point);
     }
 
-    pub fn flush(
-        &mut self,
-        flow: &Flow,
-        db: &Box<dyn TSDBInterface + Send>,
-    ) -> Result<(), Box<dyn Error>> {
-        // Check if own buffer is currently empty
-        if self.events.len() < 1 {
-            // Special case, buffer was never filled
-            // Delete time series as it does not contain any values
-            if self.handled < 1 {
-                // no events handled, delete time series
-                info!(
-                    "Deleting TS {} for flow {:?} due to no entries!",
-                    self.name, flow.tuple
-                );
-                let res = db.delete_time_series(flow, &self.ts);
-
-                if res.is_err() {
-                    error!("Error on TS delete: {}",res.err().unwrap());
-                } else {
-                    info!("Done! {}",res.unwrap());
-                }
-            }
-            return Ok(());
-        }
-        // Flush remaining events int oDB
-        // TODO: error handling better
-        let result = db.insert_multiple_points(&self.ts, &self.events)?;
-        self.events.clear();
-        Ok(())
+    pub fn len(&self) -> usize {
+        self.buffer.len()
     }
-}
 
-#[derive(Clone)]
-pub enum EventType {
-    Packet,
-    TcpProbe,
-    Socket,
-    Cwnd
+    // TODO: better error handling....
+    pub fn flush(&mut self, db: &Box<dyn TSDBInterface + Send>) {
+        let _result = db
+            .insert_multiple_points(&self.series, &self.buffer)
+            .unwrap_or_else(|e| panic!("Failed flush for {:?}: {}", self.series, e));
+        self.buffer.clear();
+    }
 }
 
 #[derive(Debug)]
 pub struct FlowTracker {
     flow: Flow,
-    packet_trackers: Vec<TsTracker>,
-    probe_trackers: Vec<TsTracker>,
-    sock_trackers: Vec<TsTracker>,
-    cwnd_trackers: Vec<TsTracker>
+    time_series_collection: HashMap<String, TimeSeriesWriter>,
 }
 
 impl FlowTracker {
     pub fn new(db: &Box<dyn TSDBInterface + Send>, tuple: &IpTuple) -> FlowTracker {
         let flow = db.create_flow(tuple).expect("Failed to create flow entry!");
-        let packet = TcpPacket::default();
-        let probe = TcpProbe::default();
-        let sock = sock_trace_entry::default();
-        let cwnd = cwnd_trace_entry::default();
 
-        let packet_tracker = FlowTracker::create_time_series::<TcpPacket>(db, &flow, &packet);
-        let probe_tracker = FlowTracker::create_time_series::<TcpProbe>(db, &flow, &probe);
-        let sock_tracker = FlowTracker::create_time_series::<sock_trace_entry>(db, &flow, &sock);
-        let cwnd_tracker = FlowTracker::create_time_series::<cwnd_trace_entry>(db, &flow, &cwnd);
+        // IDEA:
+        // Each struct has a name for each filed in EventIndexer.
+        // We create a map where the name is the key and a buffered writer is the value
+        // This way, we can have a generalized handling, independent of which source trace struct is used
+        // TODO: Does this make performance go down, can it be improved?
+        let time_series_collection: HashMap<String, TimeSeriesWriter> = HashMap::new();
 
         FlowTracker {
-            flow: flow,
-            packet_trackers: packet_tracker,
-            probe_trackers: probe_tracker,
-            sock_trackers: sock_tracker,
-            cwnd_trackers: cwnd_tracker
+            flow,
+            time_series_collection,
         }
     }
 
-    pub fn add_event<T: EventIndexer>(
+    pub fn add_event(
         &mut self,
         db: &Box<dyn TSDBInterface + Send>,
-        etype: EventType,
-        event: &T,
+        event: DBOperation,
     ) -> Result<(), Box<dyn Error>> {
-        match etype {
-            EventType::Packet => {
-                let time = event.get_timestamp();
+        if let Some(writer) = self.time_series_collection.get_mut(&event.time_series) {
+            writer.add_point(event.data_point);
 
-                for i in 0..=event.get_max_index() {
-
-                    if let Some(value) = event.get_field(i) {
-                        let entry = DataPoint {
-                            timestamp: time,
-                            value: value,
-                        };
-    
-                        self.packet_trackers[i].add_entry(entry, db)?;
-                    }
-
-                    
-                }
+            if writer.len() == BUFFER_SIZE {
+                writer.flush(db);
             }
+        } else {
+            // Not recorded yet, create new and insert
+            let value = event.data_point.value.clone();
 
-            EventType::TcpProbe => {
-                let time = event.get_timestamp();
+            let series = db.create_time_series(&self.flow, &event.time_series, value)?;
+            let mut writer = TimeSeriesWriter::new(series, BUFFER_SIZE);
+            writer.add_point(event.data_point);
 
-                for i in 0..=event.get_max_index() {
-                    if let Some(value) = event.get_field(i) {
-
-                        let entry = DataPoint {
-                            timestamp: time,
-                            value: value,
-                        };
-    
-                        self.probe_trackers[i].add_entry(entry, db)?;
-                    }
-                }
-            },
-
-            EventType::Socket => {
-                let time = event.get_timestamp();
-
-                for i in 0..=event.get_max_index() {
-                    if let Some(value) = event.get_field(i) {
-
-                        let entry = DataPoint {
-                            timestamp: time,
-                            value: value,
-                        };
-    
-                        self.sock_trackers[i].add_entry(entry, db)?;
-                    }
-                }
-            },
-
-            EventType::Cwnd => {
-                let time = event.get_timestamp();
-
-                for i in 0..=event.get_max_index() {
-                    if let Some(value) = event.get_field(i) {
-
-                        let entry = DataPoint {
-                            timestamp: time,
-                            value: value,
-                        };
-    
-                        self.cwnd_trackers[i].add_entry(entry, db)?;
-                    }
-                }
-            },
+            self.time_series_collection
+                .insert(event.time_series, writer);
         }
-
         Ok(())
     }
 
-    // TODO: this should use enum instead of the first event
-    fn create_time_series<T: EventIndexer>(
-        db: &Box<dyn TSDBInterface + Send>,
-        flow: &Flow,
-        event: &T,
-    ) -> Vec<TsTracker> {
-        // Vector to hold created time series trackers
-        let mut trackers: Vec<TsTracker> = Vec::with_capacity(event.get_max_index() + 1);
-
-        // Loop over number of fields
-        for i in 0..=event.get_max_index() {
-            trackers.push(TsTracker::new(
-                &db,
-                event.get_field_name(i),
-                &flow,
-                event.get_default_field(i),
-            ));
-        }
-        trackers
-    }
-
     pub fn flush(&mut self, db: &Box<dyn TSDBInterface + Send>) {
-        for tracker in self.packet_trackers.iter_mut() {
-            let res = tracker.flush(&self.flow, &db);
-            if res.is_err() {
-                error!(
-                    "Failed flush packet trackers on {:?} - {}. Continuing...",
-                    tracker.ts,
-                    res.err().unwrap()
-                )
-            }
-        }
-        for tracker in self.probe_trackers.iter_mut() {
-            let res = tracker.flush(&self.flow, &db);
+        for (_name, writer) in self.time_series_collection.iter_mut() {
+            let _result = db
+                .insert_multiple_points(&writer.series, &writer.buffer)
+                .unwrap_or_else(|e| panic!("Failed flush: {}", e));
 
-            if res.is_err() {
-                error!(
-                    "Failed flush probe trackers on {:?} - {}. Continuing...",
-                    tracker.ts,
-                    res.err().unwrap()
-                )
-            }
-        }
-
-        for tracker in self.sock_trackers.iter_mut() {
-            let res = tracker.flush(&self.flow, &db);
-
-            if res.is_err() {
-                error!(
-                    "Failed flush sock trackers on {:?} - {}. Continuing...",
-                    tracker.ts,
-                    res.err().unwrap()
-                )
-            }
-        }
-
-        for tracker in self.cwnd_trackers.iter_mut() {
-            let res = tracker.flush(&self.flow, &db);
-
-            if res.is_err() {
-                error!(
-                    "Failed flush cwnd trackers on {:?} - {}. Continuing...",
-                    tracker.ts,
-                    res.err().unwrap()
-                )
-            }
+            writer.buffer.clear();
         }
     }
 }

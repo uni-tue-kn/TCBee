@@ -6,6 +6,8 @@ mod bindings {
     pub mod ctypes;
     pub mod sock;
     pub mod tcp_packet;
+    pub mod tcp4_packet;
+    pub mod tcp6_packet;
     pub mod tcp_probe;
     pub mod cwnd;
 }
@@ -28,6 +30,8 @@ use ts_storage::DBBackend;
 use std::{
     error::Error, fmt::Debug, path::Path
 };
+
+use crate::bindings::{tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet};
 
 // Kernel sometimes uses a 28 Byte IP Address struct
 // First 4 Bytes are IP Version, Port
@@ -187,22 +191,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: move to config file!
     
     let threads = vec![
-        start_file_reader::<TcpPacket>(
-            prepend_string("xdp.tcp".to_string(),&source),
+        start_file_reader::<Tcp4Packet>(
+            prepend_string("tcp4_receive.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
-        start_file_reader::<TcpPacket>(
-            prepend_string("tc.tcp".to_string(),&source),
+        start_file_reader::<Tcp4Packet>(
+            prepend_string("tcp4_send.tcp".to_string(),&source),
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
+        start_file_reader::<Tcp6Packet>(
+            prepend_string("tcp6_receive.tcp".to_string(),&source),
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
+        start_file_reader::<Tcp6Packet>(
+            prepend_string("tcp6_send.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,
         )
         .await,
         start_file_reader::<TcpProbe>(
-            prepend_string("probe.tcp".to_string(),&source),
+            prepend_string("tcp_probe.tcp".to_string(),&source),
             tx.clone(),
             stop_token.clone(),
             &progress_bars,

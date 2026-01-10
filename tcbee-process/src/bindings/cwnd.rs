@@ -19,10 +19,10 @@ pub struct cwnd_trace_entry {
     pub div: [u8; 4usize],
 }
 impl EventIndexer for cwnd_trace_entry {
-    fn get_field(&self, index: usize) -> Option<DataValue> {
+    fn get_field(&self, index: usize) -> DataValue {
         match index {
-            0 => if self.snd_cwnd > 0 {Some(DataValue::Int(self.snd_cwnd as i64))} else {None}
-            _ => None, // TODO: better error handling
+            0 => DataValue::Int(self.snd_cwnd as i64),
+            _ => panic!("Tried to access out of bounds index!"), // TODO: better error handling
         }
     }
     fn get_default_field(&self, index: usize) -> DataValue {
@@ -85,8 +85,8 @@ impl EventIndexer for cwnd_trace_entry {
     fn get_timestamp(&self) -> f64 {
         self.time as f64
     }
-    fn as_db_op(self) -> DBOperation {
-        DBOperation::Cwnd(self)
+    fn check_divider(&self) -> bool {
+        self.div == 0xFFFFFFFFu32.to_be_bytes()
     }
     fn get_struct_length(&self) -> usize {
         62
