@@ -39,7 +39,7 @@ impl FlowTracker {
     }
 
     fn shorten_to_ipv4(arg: [u8; 16]) -> [u8; 4] {
-        std::array::from_fn(|i| arg[i + 12])
+        std::array::from_fn(|i| arg[i])
     }
 
     pub fn update_scrollbar_state(&self, state: ScrollbarState) -> ScrollbarState {
@@ -95,18 +95,18 @@ impl FlowTracker {
         for entry in self.map.iter() {
             if let Ok((_t, v)) = entry {
                 for tuple in v.iter() {
-                    // TODO: prettier
-                    // Checks if the first 12 bytes of the array are zero
+                    // TODO: Could cause problems if it is just a very large ipv6 prefix.....
+                    // Checks if the last 12 bytes of the array are zero
                     // If so, the address is v4, otherwise its v6
-                    let mut is_ipv6 = true;
-                    for j in 0..13 {
-                        is_ipv6 &= tuple.src_ip[j] == 0;
+                    let mut is_ipv4 = true;
+                    for j in 4..16 {
+                        is_ipv4 &= tuple.src_ip[j] == 0;
                     }
 
                     let src: IpAddr;
                     let dst: IpAddr;
 
-                    if is_ipv6 {
+                    if !is_ipv4 {
                         src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));
                         dst = IpAddr::V6(Ipv6Addr::from(tuple.dst_ip));
                     } else {
@@ -123,7 +123,7 @@ impl FlowTracker {
                         dport: tuple.dport,
                     };
 
-                    self.flows.insert(flow, is_ipv6);
+                    self.flows.insert(flow, !is_ipv4);
                 }
             } else {
                 warn!("Could not read flows for CPU id {} in eBPF watcher!", i);

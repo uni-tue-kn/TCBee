@@ -3,18 +3,13 @@ use aya_ebpf::{
 };
 use memoffset::offset_of;
 use tcbee_common::bindings::{
-    eth_header::ethhdr,
-    ip4_header::iphdr,
-    ip6_header::ipv6hdr,
-    tcp_header::{tcp4_packet_trace, tcp6_packet_trace, tcphdr},
+    eth_header::ethhdr, flow::IpTuple, ip4_header::iphdr, ip6_header::ipv6hdr, tcp_header::{tcp4_packet_trace, tcp6_packet_trace, tcphdr}
 };
 
 use crate::{
-    config::{
-        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TC4_BUF_SIZE, TC6_BUF_SIZE, TCP_PROTOCOL
-    },
-    counters::{try_dropped_counter, try_egress_counter, try_handled_counter, try_ingress_counter},
-    FILTER_PORT,
+    FILTER_PORT, config::{
+        ETH_HDR_LEN, ETHERTYPE_IPV4, ETHERTYPE_IPV6, IP_HDR_LEN, IP6_HDR_LEN, TC4_BUF_SIZE, TC6_BUF_SIZE, TCP_PROTOCOL
+    }, counters::{try_dropped_counter, try_egress_counter, try_handled_counter, try_ingress_counter}, flow_tracker::try_flow_tracker
 };
 
 #[map(name = "TCP4_PACKETS_EGRESS")]
@@ -88,7 +83,7 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
             let seq = u32::from_be(tcp_hdr.seq);
             let ack = u32::from_be(tcp_hdr.ack_seq);
             let window = u16::from_be(tcp_hdr.window);
-            let checksum = u16::from_be(tcp_hdr.check);
+            //let checksum = u16::from_be(tcp_hdr.check);
 
 
             unsafe {
@@ -103,15 +98,15 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp4_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr: 0,
-                        daddr: 0,
-                        sport: 0,
-                        dport: 0,
-                        seq: 0,
-                        ack: 0,
-                        window: 0,
-                        flags: 0
-                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        saddr,
+                        daddr,
+                        sport,
+                        dport,
+                        seq,
+                        ack,
+                        window,
+                        //flags
+                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -120,18 +115,23 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                     let _ = try_dropped_counter();
                 }
             }
-            // 24987847
-            // 16481893
+            
+            // TODO: can this be done cleaner? E.g. have one map for v4 and one map for v6?
+            let mut src_ip = [0u8;16];
+            src_ip[..4].copy_from_slice(&saddr.to_be_bytes());
+            let mut dst_ip = [0u8;16];
+            dst_ip[..4].copy_from_slice(&daddr.to_be_bytes());
 
-            /*
+            
             let _ = try_flow_tracker(IpTuple {
-                src_ip: src,
-                dst_ip: dst,
+                src_ip,
+                dst_ip,
                 sport: tcp_hdr.source.to_be(),
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
-            */
+            
+            
         }
     } else {
         // Get IPv6 header
@@ -170,17 +170,17 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp6_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr_v6: [0u8; 16],
-                        daddr_v6: [0u8; 16],
-                        //saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
-                        //daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
-                        sport: 0,
-                        dport: 0,
-                        seq: 0,
-                        ack: 0,
-                        window: 0,
-                        flags: 0
-                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        //saddr_v6: [0u8; 16],
+                        //daddr_v6: [0u8; 16],
+                        saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
+                        daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
+                        sport,
+                        dport,
+                        seq,
+                        ack,
+                        window,
+                        //flags
+                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -190,16 +190,18 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                 }
             }
 
+
             // Write to flow tracker
-            /*
-            let a = try_flow_tracker(IpTuple {
-                src_ip: packet_trace.saddr_v6,
-                dst_ip: packet_trace.daddr_v6,
+             
+            let _a = try_flow_tracker(IpTuple {
+                src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
+                dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
                 sport: tcp_hdr.source.to_be(),
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
-            */
+            
+            
         }
     }
 
@@ -280,15 +282,15 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp4_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr: 0,
-                        daddr: 0,
-                        sport: 0,
-                        dport: 0,
-                        seq: 0,
-                        ack: 0,
-                        window: 0,
-                        flags: 0
-                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        saddr,
+                        daddr,
+                        sport,
+                        dport,
+                        seq,
+                        ack,
+                        window,
+                        //flags
+                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -298,15 +300,20 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                 }
             }
 
-            /*
+            let mut src_ip = [0u8;16];
+            src_ip[..4].copy_from_slice(&saddr.to_be_bytes());
+            let mut dst_ip = [0u8;16];
+            dst_ip[..4].copy_from_slice(&daddr.to_be_bytes());
+
+            
             let _ = try_flow_tracker(IpTuple {
-                src_ip: src,
-                dst_ip: dst,
+                src_ip,
+                dst_ip,
                 sport: tcp_hdr.source.to_be(),
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
             });
-            */
+            
         }
     } else {
         // Get IPv6 header
@@ -345,17 +352,17 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                     // Enough space, write and track handled events
                     entry.write(tcp6_packet_trace {
                         time: bpf_ktime_get_ns(),
-                        saddr_v6: [0u8; 16],
-                        daddr_v6: [0u8; 16],
-                        //saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
-                        //daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
-                        sport: 0,
-                        dport: 0,
-                        seq: 0,
-                        ack: 0,
-                        window: 0,
-                        flags: 0
-                        //flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
+                        //saddr_v6: [0u8; 16],
+                        //daddr_v6: [0u8; 16],
+                        saddr_v6: ip6_hdr.saddr.in6_u.u6_addr8,
+                        daddr_v6: ip6_hdr.daddr.in6_u.u6_addr8,
+                        sport,
+                        dport,
+                        seq,
+                        ack,
+                        window,
+                        //flags
+                        flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
                     entry.submit(0);
                     let _ = try_handled_counter();
@@ -366,14 +373,15 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
             }
 
             // Write to flow tracker 
-            /* 
-            let a = try_flow_tracker(IpTuple {
-                src_ip: packet_trace.saddr_v6,
-                dst_ip: packet_trace.daddr_v6,
+            
+            let _ = try_flow_tracker(IpTuple {
+                src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
+                dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
                 sport: tcp_hdr.source.to_be(),
                 dport: tcp_hdr.dest.to_be(),
                 protocol: 6,
-            });*/
+            });
+            
             
         }
     }
