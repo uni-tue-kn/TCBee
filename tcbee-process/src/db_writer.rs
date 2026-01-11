@@ -11,7 +11,8 @@ use crate::{
     bindings::{
         cwnd::cwnd_trace_entry, sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe,
     },
-    flow_tracker::{EventIndexer, FlowTracker},
+    flow_tracker::{FlowTracker},
+    bindings::event_indexer::EventIndexer
 };
 
 #[derive(Debug)]

@@ -4,7 +4,7 @@ use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
 use crate::{
-    db_writer::DBOperation, flow_tracker::{EventIndexer, AF_INET}, reader::FromBuffer, shorten_to_ipv4, shorten_to_ipv6
+    db_writer::DBOperation, flow_tracker::AF_INET, bindings::event_indexer::EventIndexer, reader::FromBuffer, shorten_to_ipv4, shorten_to_ipv6
 };
 
 #[repr(C)]

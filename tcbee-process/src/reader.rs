@@ -11,7 +11,7 @@ use tokio::task;
 use tokio_util::sync::CancellationToken;
 
 use crate::db_writer::as_db_operation;
-use crate::{db_writer::DBOperation, flow_tracker::EventIndexer};
+use crate::{db_writer::DBOperation, bindings::event_indexer::EventIndexer};
 
 use indicatif::ProgressBar;
 

@@ -11,12 +11,13 @@ mod bindings {
     pub mod tcp_probe;
     pub mod cwnd;
     pub mod cubic;
+    pub mod event_indexer;
 }
 
 use argparse::{ArgumentParser, Store, StoreTrue};
 use bindings::{sock::sock_trace_entry, cwnd::cwnd_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe};
 use db_writer::{DBOperation, DBWriter};
-use flow_tracker::EventIndexer;
+use crate::bindings::event_indexer::EventIndexer;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{error, info};
 use reader::{FileReader, FromBuffer};
@@ -199,6 +200,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &progress_bars,
         )
         .await,
+        /* 
         start_file_reader::<Tcp4Packet>(
             prepend_string("tcp4_receive.tcp".to_string(),&source),
             tx.clone(),
@@ -261,7 +263,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             stop_token.clone(),
             &progress_bars,
         )
-        .await,
+        .await,*/
         
     ];
 

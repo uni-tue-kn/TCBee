@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{db_writer::DBOperation, flow_tracker::{EventIndexer, AF_INET}, reader::FromBuffer};
+use crate::{db_writer::DBOperation, flow_tracker::AF_INET, bindings::event_indexer::EventIndexer, reader::FromBuffer};
 use arrayref::array_ref;
 
 #[repr(C)]
