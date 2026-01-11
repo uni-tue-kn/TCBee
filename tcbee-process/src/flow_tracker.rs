@@ -106,11 +106,7 @@ impl FlowTracker {
 
     pub fn flush(&mut self, db: &Box<dyn TSDBInterface + Send>) {
         for (_name, writer) in self.time_series_collection.iter_mut() {
-            let _result = db
-                .insert_multiple_points(&writer.series, &writer.buffer)
-                .unwrap_or_else(|e| panic!("Failed flush: {}", e));
-
-            writer.buffer.clear();
+            writer.flush(db);
         }
     }
 }

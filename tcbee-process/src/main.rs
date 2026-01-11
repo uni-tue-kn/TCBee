@@ -10,6 +10,7 @@ mod bindings {
     pub mod tcp6_packet;
     pub mod tcp_probe;
     pub mod cwnd;
+    pub mod cubic;
 }
 
 use argparse::{ArgumentParser, Store, StoreTrue};
@@ -31,7 +32,7 @@ use std::{
     error::Error, fmt::Debug, path::Path
 };
 
-use crate::bindings::{tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet};
+use crate::bindings::{cubic::CubicEvent, tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet};
 
 // Kernel sometimes uses a 28 Byte IP Address struct
 // First 4 Bytes are IP Version, Port
@@ -191,6 +192,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: move to config file!
     
     let threads = vec![
+        start_file_reader::<CubicEvent>(
+            prepend_string("cubic.tcp".to_string(),&source),
+            tx.clone(),
+            stop_token.clone(),
+            &progress_bars,
+        )
+        .await,
         start_file_reader::<Tcp4Packet>(
             prepend_string("tcp4_receive.tcp".to_string(),&source),
             tx.clone(),
@@ -254,6 +262,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &progress_bars,
         )
         .await,
+        
     ];
 
     // Wait for file threads to finish!
