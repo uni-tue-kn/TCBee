@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use aya::{Ebpf, EbpfLoader};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use tcbee_common::bindings::{
     tcp_bad_csum::tcp_bad_csum_entry, tcp_probe::tcp_probe_entry,
     tcp_retransmit_synack::tcp_retransmit_synack_entry,
@@ -152,7 +152,9 @@ impl EbpfRunner {
 
         if self.config.algorithms {
             CubicTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
-            BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
+            if let Err(err) = BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer) {
+                error!("Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",err);
+            };
         }
 
         // Start watcher thread
