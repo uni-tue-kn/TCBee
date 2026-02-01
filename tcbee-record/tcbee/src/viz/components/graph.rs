@@ -7,38 +7,40 @@ use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, LegendPo
 use crate::viz::rate_watcher::RateWatcher;
 
 pub struct Graph {
-    ingress_vals: Vec<(f64, f64)>,
-    egress_vals: Vec<(f64, f64)>,
+    data: Vec<Vec<(f64, f64)>>,
+    labels: Vec<String>,
+    colors: Vec<Color>,
     ymax: f64,
     xmax: f64,
-    in_label: String,
-    out_label: String,
     name: String,
-    in_color: Color,
-    out_color: Color,
 }
 
 impl Graph {
     pub fn new(
-        in_label: String,
-        out_label: String,
-        in_color: Color,
-        out_color: Color,
+        label_1: String,
+        label_2: String,
+        color_1: Color,
+        color_2: Color,
         name: String,
     ) -> Graph {
-        let ingress_vals: Vec<(f64, f64)> = Vec::new();
-        let egress_vals: Vec<(f64, f64)> = Vec::new();
-
         Graph {
-            ingress_vals,
-            egress_vals,
+            data: vec![Vec::new(), Vec::new()],
+            labels: vec![label_1, label_2],
+            colors: vec![color_1, color_2],
             ymax: 0.0,
             xmax: 0.0,
-            in_label,
-            out_label,
             name,
-            in_color,
-            out_color,
+        }
+    }
+
+    pub fn new_single(label: String, color: Color, name: String) -> Graph {
+        Graph {
+            data: vec![Vec::new()],
+            labels: vec![label],
+            colors: vec![color],
+            ymax: 0.0,
+            xmax: 0.0,
+            name,
         }
     }
 
@@ -76,20 +78,22 @@ impl Graph {
             ),
         ];
 
-        Chart::new(vec![
-            Dataset::default()
-                .name(self.in_label.clone())
-                .marker(Braille)
-                .style(Style::default().fg(self.in_color))
-                .graph_type(GraphType::Line)
-                .data(&self.ingress_vals),
-            Dataset::default()
-                .name(self.out_label.clone())
-                .marker(Braille)
-                .style(Style::default().fg(self.out_color))
-                .graph_type(GraphType::Line)
-                .data(&self.egress_vals),
-        ])
+        let datasets: Vec<Dataset> = self
+            .data
+            .iter()
+            .zip(self.labels.iter())
+            .zip(self.colors.iter())
+            .map(|((data, label), color)| {
+                Dataset::default()
+                    .name(label.clone())
+                    .marker(Braille)
+                    .style(Style::default().fg(*color))
+                    .graph_type(GraphType::Line)
+                    .data(data)
+            })
+            .collect();
+
+        Chart::new(datasets)
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -111,21 +115,11 @@ impl Graph {
         .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)))
     }
 
-    pub fn add_ingress(&mut self, val: (f64, f64)) {
-        self.ingress_vals.push(val);
-
-        // update ymax if needed
-        self.ymax = self.ymax.max(val.1);
-
-        // update xmax if needed
-        self.xmax = self.xmax.max(val.0);
-    }
-
-    pub fn add_egress(&mut self, val: (f64, f64)) {
-        self.egress_vals.push(val);
-
-        // update ymax if needed
-        self.ymax = self.ymax.max(val.1);
-        self.xmax = self.xmax.max(val.0);
+    pub fn add_val(&mut self, idx: usize, val: (f64, f64)) {
+        if let Some(data) = self.data.get_mut(idx) {
+            data.push(val);
+            self.ymax = self.ymax.max(val.1);
+            self.xmax = self.xmax.max(val.0);
+        }
     }
 }

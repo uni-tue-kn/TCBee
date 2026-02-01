@@ -13,7 +13,18 @@ pub struct EbpfRunnerConfig {
     pub dir: String,
 }
 
+#[derive(Default)]
+pub struct GraphConfig {
+    pub events: bool,
+    pub packets: bool,
+    pub kernel: bool,
+    pub cubic: bool,
+    pub bbr: bool,
+    pub tracepoints: bool
+}
+
 pub struct EbpfWatcherConfig {
+    pub graphs: GraphConfig,
     pub packets: bool,
     pub stats: bool,
     pub calls: bool,
@@ -85,6 +96,7 @@ impl EbpfRunnerConfig {
 
     pub fn watcher_config(&self) -> EbpfWatcherConfig {
         EbpfWatcherConfig {
+            graphs: GraphConfig::default(),
             packets: self.headers,
             stats: true,
             calls: self.kernel,
