@@ -20,6 +20,9 @@ mod config;
 pub mod counters;
 pub mod flow_tracker;
 
+// Helper functions
+pub mod helpers;
+
 use aya_ebpf::{
     bindings::{TC_ACT_PIPE, xdp_action},
     macros::{classifier, fentry, fexit, kprobe, kretprobe, tracepoint, xdp},

@@ -12,6 +12,7 @@ use crate::config::MAX_FLOWS;
 #[map(name = "FLOWS")]
 static mut FLOWS: PerCpuHashMap<IpTuple, IpTuple> = PerCpuHashMap::with_max_entries(MAX_FLOWS, 0);
 
+// TODO: IpTuple should just carry the family field, makes handling IP a LOT easier than weird format detectors
 #[inline(always)]
 pub fn try_flow_tracker(flow: IpTuple) -> Result<(), c_long> {
     // TODO: add map.increment() to track number of packets per flow

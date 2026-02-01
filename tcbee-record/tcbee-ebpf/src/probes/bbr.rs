@@ -4,7 +4,7 @@ use aya_ebpf::{helpers::{bpf_probe_read_kernel, r#gen::bpf_ktime_get_ns}, macros
 use aya_log_ebpf::info;
 use tcbee_common::bindings::{bbr::{bbr, bbr_trace_entry}, tcp_sock::{inet_connection_sock, sock}};
 
-use crate::{FILTER_PORT, config::BBR_BUF_SIZE, counters::{try_dropped_counter, try_handled_counter}};
+use crate::{FILTER_PORT, config::BBR_BUF_SIZE, counters::{try_count_bbr_event, try_dropped_counter, try_handled_counter}, flow_tracker::try_flow_tracker, helpers::tuple_from_sk};
 
 #[map(name = "BBR_EVENTS")]
 static mut BBR_EVENTS: RingBuf = RingBuf::with_byte_size(BBR_BUF_SIZE as u32, 0);
@@ -30,8 +30,8 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
             .map_err(|_| 0u32)?
     };   
 
-    let sport = ((ports & 0xFFFF) as u16).to_be();
-    let dport = ((ports >> 16) as u16).to_be();
+    let dport = ((ports & 0xFFFF) as u16).to_be();
+    let sport = ((ports >> 16) as u16).to_be();
 
     unsafe {
         // dport needs to be called to_be otherwise value is wrong
@@ -56,6 +56,13 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
             let _ = try_dropped_counter();
         }
 
+        let _ = try_count_bbr_event();
+
     }
+
+    // TODO: Disable with static variable for performance reasons? Not always needed but nice to have
+    let tuple = unsafe {tuple_from_sk(sk_ptr, sport, dport) };
+    let _ = try_flow_tracker(tuple);
+    
     Ok(0)
 }
