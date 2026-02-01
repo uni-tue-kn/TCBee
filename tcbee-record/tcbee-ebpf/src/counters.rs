@@ -14,6 +14,10 @@ static mut INGRESS_EVENTS: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_
 #[map(name = "EGRESS_EVENTS")]
 static mut EGRESS_EVENTS: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
 
+// Tracepoints
+#[map(name = "TRACEPOINT_EVENTS")]
+static mut TRACEPOINT_EVENTS: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
+
 // Kernel tracing
 #[map(name = "SEND_TCP_SOCK")]
 static mut SEND_TCP_SOCK: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
@@ -30,6 +34,15 @@ static mut RECEIVED_TCP_BYTES: PerCpuArray<u32> = PerCpuArray::with_max_entries(
 static mut CUBIC_EVENTS_COUNTER: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
 #[map(name = "BBR_EVENTS_COUNTER")]
 static mut BBR_EVENTS_COUNTER: PerCpuArray<u32> = PerCpuArray::with_max_entries(NUM_CPUS, 0);
+
+#[inline(always)]
+pub fn try_count_tracpoint() -> Result<(), ()> {
+    unsafe {
+        let counter = TRACEPOINT_EVENTS.get_ptr_mut(0).ok_or(())?;
+        *counter += 1;
+    }
+    Ok(())
+}
 
 #[inline(always)]
 pub fn try_count_cubic_event() -> Result<(), ()> {
