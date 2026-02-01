@@ -16,13 +16,10 @@ use tcbee_common::bindings::{
 };
 
 use crate::{
-    config::AF_INET6,
-    counters::{
+    FILTER_PORT, config::AF_INET6, counters::{
         try_dropped_counter, try_handled_counter, try_received_tcp_bytes, try_recv_tcp_sock,
         try_send_tcp_sock, try_sent_tcp_bytes,
-    },
-    flow_tracker::try_flow_tracker,
-    FILTER_PORT,
+    }, flow_tracker::try_flow_tracker, helpers::tuple_from_sk
 };
 
 #[map(name = "TCP_SEND_CWND_EVENTS")]
@@ -68,6 +65,8 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
             .skc_addrpair
             .rotate_right(32)
     };
+
+    // TODO ports are already parsed above, can this extra step be avoided?
     let ports = ports.rotate_right(16);
 
     unsafe {
@@ -83,6 +82,7 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
         // Check if space left for entry
         if let Some(mut entry) = reserved {
             // Enough space, write and track handled events
+            // TODO: we read both v4 and v6 addresses, one could be nulled or we always use v6 space with last bytes
             entry.write(cwnd_trace_entry {
                 time: bpf_ktime_get_ns(),
                 addr_v4,
@@ -98,6 +98,10 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
         } else {
             let _ = try_dropped_counter();
         }
+
+        // TODO: Disable with static variable for performance reasons? Not always needed but nice to have
+        let tuple = tuple_from_sk(sk_ptr, sport, dport);
+        let _ = try_flow_tracker(tuple);
 
         Ok(0)
     }
@@ -141,8 +145,13 @@ pub fn try_sock_sendmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
             let _ = try_dropped_counter();
         }
 
-        Ok(0)
     }
+
+    // TODO: Disable with static variable for performance reasons? Not always needed but nice to have
+    let tuple = unsafe {tuple_from_sk(sk_ptr, sport, dport) };
+    let _ = try_flow_tracker(tuple);
+
+    Ok(0)
 }
 
 #[inline(always)]
@@ -221,6 +230,10 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
             let _ = try_dropped_counter();
         }
     }
+    // TODO: Disable with static variable for performance reasons? Not always needed but nice to have
+    let tuple = unsafe {tuple_from_sk(sk_ptr, sport, dport) };
+    let _ = try_flow_tracker(tuple);
+
     Ok(0)
 }
 
@@ -302,5 +315,9 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
             let _ = try_dropped_counter();
         }
     }
+    // TODO: Disable with static variable for performance reasons? Not always needed but nice to have
+    let tuple = unsafe {tuple_from_sk(sk_ptr, sport, dport) };
+    let _ = try_flow_tracker(tuple);
+
     Ok(0)
 }
