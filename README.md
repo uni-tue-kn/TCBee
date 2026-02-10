@@ -175,12 +175,13 @@ For example code and usage, see [ts-storage/README.md](ts-storage/README.md)
 You can generate custom graphs and visualization using your own tools and scripts by accessing the flow database directly.
 To that end, you either need to implement access over SQLite or DuckDB depending on the storage format.
 You could also use SQL queries to access/manipulate the data in the DB directly.
-For a guide on how to read flow data, see [ts-storage/ACCESS.md](ts-storage/ACCESS.md).
+For a guide on how to read flow data, check the `examples` folder or see [ts-storage/ACCESS.md](ts-storage/ACCESS.md).
 
 ### Accessing the raw data ouput
 
 TCBee stores the recorded data in raw byte files under `/tmp/*.tcp`. 
 If you want to read the raw bytes from your own program, take a look at [tcbee-record/tcbee-common/src/bindings/](tcbee-record/tcbee-common/src/bindings/) to find the appropriate structs (struct names that are written end with `_entry`).
+You can check `examples` for an example python script that does this.
 
 ## Preview of TCBee
 
