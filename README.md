@@ -31,6 +31,7 @@
   - [Visualizing CWND Size](#visualizing-cwnd-size)
   - [Calculating a new metric](#calculating-a-new-metric)
   - [Visualizing Multiple Flows](#visualizing-multiple-flows)
+- [AI Assistance Disclosure](#ai-assistance-disclosure)
 
 ## Disclaimer
 
@@ -206,3 +207,7 @@ See the `examples` folder for a Python script demonstrating this.
 ### Visualizing Multiple Flows
 
 <img alt="TCBee-Viz Multiple Flows" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_multiple_flows.png"/>
+
+## AI Assistance Disclosure
+
+This project has been developed with assistance from AI-powered coding tools for code generation and documentation. All code has been reviewed, tested, and verified by human developers before inclusion.
