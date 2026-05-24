@@ -1,15 +1,13 @@
 use crate::duckdb::DuckDBTSDB;
 use crate::error::TSDBError;
 use crate::sqlite::SQLiteTSDB;
-use std::error::Error;
 use std::net::IpAddr;
-use std::str::FromStr;
 use std::cmp::Eq;
 use std::hash::Hash;
 
 pub mod sqlite;
 pub mod duckdb;
-mod error;
+pub mod error;
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct IpTuple {
@@ -26,29 +24,18 @@ pub struct TSBounds {
     pub xmax: f64,
     pub xmin: f64,
     pub ymax: Option<DataValue>,
-    pub ymin: Option<DataValue>
+    pub ymin: Option<DataValue>,
 }
 
 #[derive(Debug)]
 pub struct Flow {
-    pub id: Option<i64>,
+    pub id: i64,
     pub tuple: IpTuple,
 }
+
 impl Flow {
-    pub fn get_id(&self) -> Option<i64> {
-        return self.id;
-    }
-    pub fn new(tuple: IpTuple) -> Flow {
-        return Flow {
-            id: None,
-            tuple: tuple,
-        };
-    }
-    pub fn new_with_id(id: i64, tuple: IpTuple) -> Flow {
-        return Flow {
-            id: Some(id),
-            tuple: tuple,
-        };
+    pub fn new(id: i64, tuple: IpTuple) -> Flow {
+        Flow { id, tuple }
     }
 }
 
@@ -58,8 +45,6 @@ pub struct FlowAttribute {
     pub value: DataValue,
 }
 
-// Structs that represent time series data
-// Todo: possible vectors?
 #[derive(Debug, Clone)]
 pub enum DataValue {
     Int(i64),
@@ -69,10 +54,10 @@ pub enum DataValue {
 }
 
 impl DataValue {
-    const INT: i16 = 0;
-    const FLOAT: i16 = 1;
-    const BOOLEAN: i16 = 2;
-    const STRING:i16 = 3;
+    pub(crate) const INT: i16 = 0;
+    pub(crate) const FLOAT: i16 = 1;
+    pub(crate) const BOOLEAN: i16 = 2;
+    pub(crate) const STRING: i16 = 3;
 
     pub fn type_from_int(val: i16) -> Result<Self, TSDBError> {
         match val {
@@ -80,9 +65,10 @@ impl DataValue {
             DataValue::FLOAT => Ok(DataValue::Float(0.0)),
             DataValue::BOOLEAN => Ok(DataValue::Boolean(false)),
             DataValue::STRING => Ok(DataValue::String("".to_string())),
-            _ => Err(TSDBError::UnknownDataType { val: val.into() }), // TODO: better error handling?
+            _ => Err(TSDBError::UnknownDataType { val }),
         }
     }
+
     pub fn type_to_int(&self) -> i16 {
         match self {
             DataValue::Int(_) => DataValue::INT,
@@ -96,52 +82,40 @@ impl DataValue {
         match self {
             DataValue::Int(val) => val.to_string(),
             DataValue::Float(val) => val.to_string(),
-            DataValue::Boolean(val) => {
-                if *val {
-                    1.to_string()
-                } else {
-                    0.to_string()
-                }
-            }
+            DataValue::Boolean(val) => if *val { "1".to_string() } else { "0".to_string() },
             DataValue::String(val) => val.clone(),
         }
     }
 
     pub fn as_float(&self) -> Option<f64> {
-        if let DataValue::Float(val) = self {
-            return Some(*val)
-        } else {
-            return None
-        }
+        if let DataValue::Float(val) = self { Some(*val) } else { None }
     }
 
     pub fn as_int(&self) -> Option<i64> {
-        if let DataValue::Int(val) = self {
-            return Some(*val)
-        } else {
-            return None
-        }
+        if let DataValue::Int(val) = self { Some(*val) } else { None }
     }
 
     pub fn type_equal(&self, other: &DataValue) -> bool {
-        return self.type_to_int() == other.type_to_int();
+        self.type_to_int() == other.type_to_int()
     }
 
     pub fn type_as_string(&self) -> String {
         match self {
-            DataValue::Int(_) => String::from_str("Integer").unwrap(),
-            DataValue::Float(_) => String::from_str("Float").unwrap(),
-            DataValue::Boolean(_) => String::from_str("Boolean").unwrap(),
-            DataValue::String(_) => String::from_str("String").unwrap(),
+            DataValue::Int(_) => "Integer".to_string(),
+            DataValue::Float(_) => "Float".to_string(),
+            DataValue::Boolean(_) => "Boolean".to_string(),
+            DataValue::String(_) => "String".to_string(),
         }
     }
-    pub fn column_name(&self) -> Result<&str, TSDBError> {
+
+    // SQLite-specific: maps the DataValue type to the corresponding column name
+    pub(crate) fn column_name(&self) -> Result<&str, TSDBError> {
         match self.type_to_int() {
-            0 => Ok("value_integer"),
-            1 => Ok("value_float"),
-            2 => Ok("value_boolean"),
-            3 => Ok("value_text"),
-            _ => Err(TSDBError::UnknownDataType { val: self.type_to_int() })
+            DataValue::INT => Ok("value_integer"),
+            DataValue::FLOAT => Ok("value_float"),
+            DataValue::BOOLEAN => Ok("value_boolean"),
+            DataValue::STRING => Ok("value_text"),
+            _ => Err(TSDBError::UnknownDataType { val: self.type_to_int() }),
         }
     }
 }
@@ -151,37 +125,21 @@ pub struct DataPoint {
     pub timestamp: f64,
     pub value: DataValue,
 }
-#[derive(Debug)]
+
+#[derive(Debug, Clone)]
 pub struct TimeSeries {
-    pub id: Option<i64>,
+    pub id: i64,
     pub ts_type: DataValue,
     pub flow_id: i64,
     pub name: String,
 }
 
 impl TimeSeries {
-    pub fn get_id(&self) -> Option<i64> {
-        return self.id;
-    }
-    pub fn new(ts_type: DataValue, flow: &Flow, name: &str) -> TimeSeries {
-        return TimeSeries {
-            id: None,
-            ts_type: ts_type,
-            flow_id: flow.get_id().unwrap(),
-            name: name.to_string(),
-        };
-    }
-    pub fn new_with_id(id: i64, ts_type: DataValue, flow_id: i64, name: &str) -> TimeSeries {
-        return TimeSeries {
-            id: Some(id),
-            ts_type: ts_type,
-            flow_id: flow_id,
-            name: name.to_string(),
-        };
+    pub fn new(id: i64, ts_type: DataValue, flow_id: i64, name: &str) -> TimeSeries {
+        TimeSeries { id, ts_type, flow_id, name: name.to_string() }
     }
 }
 
-// For conditional loading of data
 #[derive(Debug)]
 pub enum Condition {
     Greater(DataValue),
@@ -193,8 +151,7 @@ pub enum Condition {
 
 impl ToString for Condition {
     fn to_string(&self) -> String {
-        // TODO: this can be done prettier
-        let str = match self {
+        let op = match self {
             Condition::Greater(_) => "> ",
             Condition::Less(_) => "< ",
             Condition::Equal(_) => "= ",
@@ -202,52 +159,44 @@ impl ToString for Condition {
             Condition::LessEqual(_) => "<= ",
         };
 
-        let mut s = String::from_str(str).unwrap();
+        let val = match self {
+            Condition::Greater(v)
+            | Condition::Less(v)
+            | Condition::Equal(v)
+            | Condition::GreaterEqual(v)
+            | Condition::LessEqual(v) => v,
+        };
 
-        // TODO: make prettier
-        if let Condition::Greater(val)
-        | Condition::Less(val)
-        | Condition::Equal(val)
-        | Condition::GreaterEqual(val)
-        | Condition::LessEqual(val) = self
-        {
-            s.push_str(val.as_string().as_str());
-        }
-
-        s
+        format!("{}{}", op, val.as_string())
     }
 }
 
-// Trait that defines functions supported by TS Database implementation
-// TODO: move type of flow ID etc to type definition
-// TODO: get flow by ID, delete flow by id?
-// TODO: consume Flow object when deleting a flow to ensure it is not accessed naymore?
 pub trait TSDBInterface {
     // --- FLOW CREATION AND MANAGEMENT
-    fn create_flow(&self, tuple: &IpTuple) -> Result<Flow, Box<dyn Error>>;
-    fn delete_flow(&self, flow: &Flow) -> Result<bool, Box<dyn Error>>;
-    fn list_flows(&self) -> Result<Box<dyn Iterator<Item = Flow> + '_>, Box<dyn Error>>;
-    fn get_flow(&self, tuple: &IpTuple) -> Result<Option<Flow>, Box<dyn Error>>;
-    fn get_flow_by_id(&self, id: i64) -> Result<Option<Flow>, Box<dyn Error>>;
+    fn create_flow(&self, tuple: &IpTuple) -> Result<Flow, TSDBError>;
+    fn delete_flow(&self, flow: &Flow) -> Result<bool, TSDBError>;
+    fn list_flows(&self) -> Result<Box<dyn Iterator<Item = Flow> + '_>, TSDBError>;
+    fn get_flow(&self, tuple: &IpTuple) -> Result<Option<Flow>, TSDBError>;
+    fn get_flow_by_id(&self, id: i64) -> Result<Option<Flow>, TSDBError>;
 
     // --- FLOW ATTRIBUTE CREATION AND MANAGEMENT
-    fn get_flow_attribute(&self, flow: &Flow, name: &str) -> Result<FlowAttribute, Box<dyn Error>>;
+    fn get_flow_attribute(&self, flow: &Flow, name: &str) -> Result<FlowAttribute, TSDBError>;
     fn list_flow_attributes(
         &self,
         flow: &Flow,
-    ) -> Result<Box<dyn Iterator<Item = FlowAttribute> + '_>, Box<dyn Error>>;
+    ) -> Result<Box<dyn Iterator<Item = FlowAttribute> + '_>, TSDBError>;
     fn add_flow_attribute(
         &self,
         flow: &Flow,
         attribute: &FlowAttribute,
-    ) -> Result<bool, Box<dyn Error>>;
+    ) -> Result<bool, TSDBError>;
     fn set_flow_attribute(
         &self,
         flow: &Flow,
         attribute: &FlowAttribute,
-    ) -> Result<bool, Box<dyn Error>>;
-    fn delete_flow_attribute(&self, flow: &Flow, name: &str) -> Result<bool, Box<dyn Error>>;
-    fn get_flow_attribute_by_id(&self, id: i64) -> Result<Option<FlowAttribute>, Box<dyn Error>>;
+    ) -> Result<bool, TSDBError>;
+    fn delete_flow_attribute(&self, flow: &Flow, name: &str) -> Result<bool, TSDBError>;
+    fn get_flow_attribute_by_id(&self, id: i64) -> Result<Option<FlowAttribute>, TSDBError>;
 
     // --- TIME SERIES CREATION AND MANAGEMENT
     fn create_time_series(
@@ -255,53 +204,54 @@ pub trait TSDBInterface {
         flow: &Flow,
         name: &str,
         ts_type: DataValue,
-    ) -> Result<TimeSeries, Box<dyn Error>>;
-    fn delete_time_series(&self, flow: &Flow, series: &TimeSeries) -> Result<bool, Box<dyn Error>>;
+    ) -> Result<TimeSeries, TSDBError>;
+    fn delete_time_series(
+        &self,
+        flow: &Flow,
+        series: &TimeSeries,
+    ) -> Result<bool, TSDBError>;
     fn list_time_series(
         &self,
         flow: &Flow,
-    ) -> Result<Box<dyn Iterator<Item = TimeSeries> + '_>, Box<dyn Error>>;
-    fn get_time_series_by_id(&self, id: i64) -> Result<Option<TimeSeries>, Box<dyn Error>>;
-    fn get_time_series_bounds(&self, series: &TimeSeries) -> Result<TSBounds, Box<dyn Error>>;
-    fn get_flow_bounds(&self, flow: &Flow) -> Result<TSBounds, Box<dyn Error>>;
+    ) -> Result<Box<dyn Iterator<Item = TimeSeries> + '_>, TSDBError>;
+    fn get_time_series_by_id(&self, id: i64) -> Result<Option<TimeSeries>, TSDBError>;
+    fn get_time_series_bounds(&self, series: &TimeSeries) -> Result<TSBounds, TSDBError>;
+    fn get_flow_bounds(&self, flow: &Flow) -> Result<TSBounds, TSDBError>;
 
     // --- DATA PER TIME SERIES CREATION AND MANAGEMENT
-    // TODO: also implement function that allows WHERE conditions
     fn get_data_points(
         &self,
         series: &TimeSeries,
-    ) -> Result<Box<dyn Iterator<Item = DataPoint> + '_>, Box<dyn Error>>;
+    ) -> Result<Box<dyn Iterator<Item = DataPoint> + '_>, TSDBError>;
+    fn get_data_points_in_range(
+        &self,
+        series: &TimeSeries,
+        t_start: f64,
+        t_end: f64,
+    ) -> Result<Box<dyn Iterator<Item = DataPoint> + '_>, TSDBError>;
     fn insert_data_point(
         &self,
         series: &TimeSeries,
         point: &DataPoint,
-    ) -> Result<bool, Box<dyn Error>>;
+    ) -> Result<bool, TSDBError>;
     fn insert_multiple_points(
         &self,
         series: &TimeSeries,
-        points: &Vec<DataPoint>,
-    ) -> Result<bool, Box<dyn Error>>;
-    fn get_data_points_count(&self, series: &TimeSeries) -> Result<i64, Box<dyn Error>>;
-
-    /*
-    fn delete_data_points(&self, flow: &Flow, name: String, conditions: Vec<Condition>) -> bool;
-    // Allow direct query execution for special cases
-    //  should not be used on a regular basis
-    fn execute_query(&self) -> Box<dyn TSDBCursor>;
-    */
+        points: &[DataPoint],
+    ) -> Result<bool, TSDBError>;
+    fn get_data_points_count(&self, series: &TimeSeries) -> Result<i64, TSDBError>;
 }
 
 pub enum DBBackend {
     SQLite(String),
-    DuckDB(String)
+    DuckDB(String),
 }
 
-pub fn database_factory<T: TSDBInterface>(
+pub fn database_factory(
     backend: DBBackend,
-) -> Result<Box<dyn TSDBInterface + Send>, Box<dyn Error>> {
+) -> Result<Box<dyn TSDBInterface + Send>, TSDBError> {
     match backend {
         DBBackend::SQLite(path) => Ok(Box::new(SQLiteTSDB::new(path)?)),
         DBBackend::DuckDB(path) => Ok(Box::new(DuckDBTSDB::new(path)?)),
-        _ => Err(Box::new(TSDBError::DBTypeNotImplementedError)), // Default case for future implementations
     }
 }

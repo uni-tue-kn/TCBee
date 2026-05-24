@@ -1,5 +1,6 @@
 mod db;
 mod cursor;
+mod queries;
 use sqlite::Connection;
 
 pub struct SQLiteTSDB {

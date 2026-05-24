@@ -28,7 +28,7 @@ impl SQLiteCursorStruct for Flow {
         }
 
         // Return parsed flow object
-        return Some(Flow::new_with_id(id.unwrap(),tuple.unwrap()));
+        return Some(Flow::new(id.unwrap(), tuple.unwrap()));
 
     }
 }
@@ -97,7 +97,7 @@ impl SQLiteCursorStruct for TimeSeries {
         if ts_type.is_err() {return None;}
 
         Some(
-            TimeSeries::new_with_id(ts_id.unwrap(), ts_type.unwrap(), flow_id.unwrap(), &name.unwrap())
+            TimeSeries::new(ts_id.unwrap(), ts_type.unwrap(), flow_id.unwrap(), &name.unwrap())
         )
     }
 }

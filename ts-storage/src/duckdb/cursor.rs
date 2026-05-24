@@ -1,80 +1,39 @@
+use std::marker::PhantomData;
 use std::net::IpAddr;
-use std::os::linux::raw;
 use std::str::FromStr;
-use std::str;
-use std::{error::Error, marker::PhantomData};
 
-use duckdb::arrow::array::{Datum, UnionArray};
-use duckdb::types::ValueRef;
-use duckdb::{types::Value, Connection, Row, Rows, Statement, ToSql};
+use duckdb::types::Value;
+use duckdb::{Connection, Row, Rows, Statement, ToSql};
+use ouroboros::self_referencing;
 
 use crate::{DataPoint, DataValue, Flow, FlowAttribute, IpTuple, TimeSeries};
 
+// Parses a DuckDB UNION column value of the form {'key': <value>} into DataValue.
 fn parse_value(row: &Row) -> Option<DataValue> {
-    // Value is of type "Union(Text("{'inum': 10}"))"
-    // Thats the way the duckdb library does Unions I guess...
-    let Ok(value) = row.get::<&str,Value>("value") else {
+    let Ok(value) = row.get::<&str, Value>("value") else {
         return None;
     };
-    // Get iner Union
     let Value::Union(val) = value else {
         return None;
     };
-    // Read text from boxed Balue
     let Value::Text(val_text) = *val else {
         return None;
     };
-    // Get value type
-    let Ok(val_type) = row.get::<&str,i16>("type") else {
+    let Ok(val_type) = row.get::<&str, i16>("type") else {
         return None;
     };
 
-    // Parse text based on value typoe
+    // Format is always "{'key': <value>}" — find the ': ' separator and read to the last '}'
+    let colon_pos = val_text.find(": ")?;
+    let raw = val_text[colon_pos + 2..val_text.len() - 1].trim();
 
-    // TODO, the names for struct fields should be constants
     match val_type {
-        DataValue::INT => {
-            // "{'inum': 10}"
-            // -> 9 chars (including whitespace) until value starts
-            // -> split at } in remaining str and select first part
-            // Result is: ' 10' -> Remove space with tr
-            let raw_val = val_text[9..].split("}").next()?;
-
-            Some(DataValue::Int(i64::from_str(raw_val).ok()?))
-        },
-        DataValue::FLOAT => {
-            // "{'fnum': 10.0}"
-            // -> 9 chars (including whitespace) until value starts
-            // -> split at } in remaining str and select first part
-            // Result is: '10.0'
-            let raw_val = val_text[9..].split("}").next()?;
-
-            Some(DataValue::Float(f64::from_str(raw_val).ok()?))
-        },
-        DataValue::BOOLEAN => {
-            // "{'bool': 1}"
-            // -> 9 chars (including whitespace) until value starts
-            // -> split at } in remaining str and select first part
-            // Result is: '1'
-            let raw_val = val_text[9..].split("}").next()?;
-            // bool::from_Str does not work as source is 1 for true and 0 for false
-            // So just compare the int val to 1
-            Some(DataValue::Boolean(i16::from_str(raw_val).ok()? == 1))
-        },
-        DataValue::STRING => {
-            // TODO: this will cause problems if string contains }!
-
-            // "{'str': aaa}"
-            // -> 8 chars (including whitespace) until value starts
-            // -> split at } in remaining str and select first part
-            // Result is: 'aaa'
-            let raw_val = val_text[9..].split("}").next()?;
-
-            Some(DataValue::String(raw_val.to_string()))
-        },
-        // TODO This should return a library Error
-        _ => panic!("Unknown type value!")
-    }    
+        DataValue::INT => Some(DataValue::Int(i64::from_str(raw).ok()?)),
+        DataValue::FLOAT => Some(DataValue::Float(f64::from_str(raw).ok()?)),
+        DataValue::BOOLEAN => Some(DataValue::Boolean(i16::from_str(raw).ok()? == 1)),
+        DataValue::STRING => Some(DataValue::String(raw.to_string())),
+        _ => None,
+    }
 }
 
 pub trait DuckDBCursorStruct: Sized {
@@ -83,12 +42,10 @@ pub trait DuckDBCursorStruct: Sized {
 
 impl DuckDBCursorStruct for Flow {
     fn from_row(row: &Row) -> Option<Self> {
-        // Get Flow ID
         let Ok(id) = row.get::<&str, i64>("id") else {
             return None;
         };
-
-        IpTuple::from_row(row).map(|tuple| Flow::new_with_id(id, tuple))
+        IpTuple::from_row(row).map(|tuple| Flow::new(id, tuple))
     }
 }
 
@@ -97,29 +54,23 @@ impl DuckDBCursorStruct for DataPoint {
         let Ok(timestamp) = row.get::<&str, f64>("timestamp") else {
             return None;
         };
-
-        // Parse UNION value
-        let point_value = parse_value(row);
-
-        point_value.map(|value| DataPoint { timestamp, value })
+        parse_value(row).map(|value| DataPoint { timestamp, value })
     }
 }
 
-// From DataValue into sqlite::value
-impl Into<Value> for DataValue {
-    fn into(self) -> Value {
-        match self {
-            DataValue::Boolean(val) => (if val { 1 } else { 0 }).into(),
-            DataValue::Float(val) => val.into(),
-            DataValue::Int(val) => val.into(),
-            DataValue::String(val) => val.into(),
+impl From<DataValue> for Value {
+    fn from(v: DataValue) -> Value {
+        match v {
+            DataValue::Boolean(val) => Value::Int(if val { 1 } else { 0 }),
+            DataValue::Float(val) => Value::Double(val),
+            DataValue::Int(val) => Value::BigInt(val),
+            DataValue::String(val) => Value::Text(val),
         }
     }
 }
 
 impl DuckDBCursorStruct for TimeSeries {
     fn from_row(row: &Row) -> Option<Self> {
-        // Parse columns
         let Ok(name) = row.get::<&str, String>("name") else {
             return None;
         };
@@ -132,17 +83,9 @@ impl DuckDBCursorStruct for TimeSeries {
         let Ok(val_type) = row.get::<&str, i16>("type") else {
             return None;
         };
-
-        if let Ok(ts_type) = DataValue::type_from_int(val_type) {
-            Some(TimeSeries::new_with_id(
-                time_series_id,
-                ts_type,
-                flow_id,
-                &name,
-            ))
-        } else {
-            None
-        }
+        DataValue::type_from_int(val_type)
+            .ok()
+            .map(|ts_type| TimeSeries::new(time_series_id, ts_type, flow_id, &name))
     }
 }
 
@@ -151,95 +94,82 @@ impl DuckDBCursorStruct for FlowAttribute {
         let Ok(name) = row.get::<&str, String>("name") else {
             return None;
         };
-
-        // Parse UNION "value"
-        let value = parse_value(row);
-
-        value.map(|value| FlowAttribute { name, value })
+        parse_value(row).map(|value| FlowAttribute { name, value })
     }
 }
 
 impl DuckDBCursorStruct for IpTuple {
     fn from_row(row: &Row) -> Option<Self> {
-        // TODO: can this be cleaner?
-        // Get values from row
         let Ok(src) = row.get::<&str, String>("src") else {
             return None;
         };
         let Ok(dst) = row.get::<&str, String>("dst") else {
             return None;
         };
-
         let Ok(sport) = row.get::<&str, i64>("sport") else {
             return None;
         };
         let Ok(dport) = row.get::<&str, i64>("dport") else {
             return None;
         };
-
         let Ok(l4proto) = row.get::<&str, i64>("l4proto") else {
             return None;
         };
-
-        // Convert strings to IP address
         let Ok(src) = IpAddr::from_str(&src) else {
             return None;
         };
         let Ok(dst) = IpAddr::from_str(&dst) else {
             return None;
         };
-
-        Some(IpTuple {
-            src,
-            dst,
-            sport,
-            dport,
-            l4proto,
-        })
+        Some(IpTuple { src, dst, sport, dport, l4proto })
     }
 }
-pub struct DuckDBCursor<'a, T>
-where
-    T: DuckDBCursorStruct,
-{
-    rows: Rows<'a>,
+
+// Self-referential inner struct: stmt is prepared from an external connection ('conn),
+// and rows self-references stmt via ouroboros so both can be stored together.
+// This is the key to lazy iteration without materialising the full result set.
+#[self_referencing]
+pub(crate) struct DuckDBCursorInner<'conn> {
+    stmt: Statement<'conn>,
+    #[borrows(mut stmt)]
+    #[not_covariant]
+    rows: Rows<'this>,
+}
+
+pub struct DuckDBCursor<'conn, T: DuckDBCursorStruct> {
+    inner: DuckDBCursorInner<'conn>,
     _phantom: PhantomData<T>,
 }
 
-impl<'a, T> DuckDBCursor<'a, T>
-where
-    T: DuckDBCursorStruct,
-{
-    pub fn new(rows: Rows<'a>) -> Self {
-        Self {
-            rows,
-            _phantom: PhantomData,
+impl<'conn, T: DuckDBCursorStruct> DuckDBCursor<'conn, T> {
+    /// Prepares `query` on the given connection, binds `param_vals`, and returns a
+    /// cursor that iterates lazily over the result set one row at a time.
+    pub fn new(
+        conn: &'conn Connection,
+        query: &str,
+        param_vals: Vec<Value>,
+    ) -> Result<Self, duckdb::Error> {
+        let stmt = conn.prepare(query)?;
+        let inner = DuckDBCursorInnerTryBuilder {
+            stmt,
+            rows_builder: |stmt: &mut Statement<'_>| {
+                let param_refs: Vec<&dyn ToSql> =
+                    param_vals.iter().map(|v| v as &dyn ToSql).collect();
+                stmt.query(param_refs.as_slice())
+            },
         }
+        .try_build()?;
+        Ok(Self { inner, _phantom: PhantomData })
     }
 }
 
-impl<T> Iterator for DuckDBCursor<'_, T>
-where
-    T: DuckDBCursorStruct,
-{
-    // Type of every iterator item
+impl<T: DuckDBCursorStruct> Iterator for DuckDBCursor<'_, T> {
     type Item = T;
 
-    // Get next element by moving cursor
     fn next(&mut self) -> Option<Self::Item> {
-        // Load next road
-        let Ok(row_option) = self.rows.next() else {
-            return None;
-        };
-
-        // row_option is None when all rows have been handled!
-        let row = row_option?;
-
-        // Parse row based on given generic T
-        let parsed: Option<Self::Item> = Self::Item::from_row(row);
-
-        // Return parsed value
-        // Is already wrapped as option
-        parsed
+        self.inner.with_rows_mut(|rows| {
+            let row = rows.next().ok()??;
+            T::from_row(row)
+        })
     }
 }
