@@ -13,8 +13,6 @@ use serde::{Deserialize, Serialize};
 use crate::bindings::tcp_sock::sock;
 
 pub type u32_ = ::aya_ebpf::cty::c_uint;
-pub type u16_ = ::aya_ebpf::cty::c_ushort;
-pub type u8_ = ::aya_ebpf::cty::c_uchar;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -29,9 +27,7 @@ pub struct cubic {
     pub epoch_start: u32_,
     pub ack_cnt: u32_,
     pub tcp_cwnd: u32_,
-    pub unused: u16_,
-    pub sample_cnt: u8_,
-    pub found: u8_,
+    pub _pad: [u8; 4],  // unused: u16, sample_cnt: u8, found: u8
     pub round_start: u32_,
     pub end_seq: u32_,
     pub last_ack: u32_,

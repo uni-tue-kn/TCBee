@@ -33,13 +33,6 @@ where
         Self::extract_bit(byte, index)
     }
     #[inline]
-    pub unsafe fn raw_get_bit(this: *const Self, index: usize) -> bool {
-        debug_assert!(index / 8 < core::mem::size_of::<Storage>());
-        let byte_index = index / 8;
-        let byte = *(core::ptr::addr_of!((*this).storage) as *const u8).offset(byte_index as isize);
-        Self::extract_bit(byte, index)
-    }
-    #[inline]
     fn change_bit(byte: u8, index: usize, val: bool) -> u8 {
         let bit_index = if cfg!(target_endian = "big") {
             7 - (index % 8)
@@ -61,14 +54,6 @@ where
         *byte = Self::change_bit(*byte, index, val);
     }
     #[inline]
-    pub unsafe fn raw_set_bit(this: *mut Self, index: usize, val: bool) {
-        debug_assert!(index / 8 < core::mem::size_of::<Storage>());
-        let byte_index = index / 8;
-        let byte =
-            (core::ptr::addr_of_mut!((*this).storage) as *mut u8).offset(byte_index as isize);
-        *byte = Self::change_bit(*byte, index, val);
-    }
-    #[inline]
     pub fn get(&self, bit_offset: usize, bit_width: u8) -> u64 {
         debug_assert!(bit_width <= 64);
         debug_assert!(bit_offset / 8 < self.storage.as_ref().len());
@@ -76,24 +61,6 @@ where
         let mut val = 0;
         for i in 0..(bit_width as usize) {
             if self.get_bit(i + bit_offset) {
-                let index = if cfg!(target_endian = "big") {
-                    bit_width as usize - 1 - i
-                } else {
-                    i
-                };
-                val |= 1 << index;
-            }
-        }
-        val
-    }
-    #[inline]
-    pub unsafe fn raw_get(this: *const Self, bit_offset: usize, bit_width: u8) -> u64 {
-        debug_assert!(bit_width <= 64);
-        debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
-        debug_assert!((bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>());
-        let mut val = 0;
-        for i in 0..(bit_width as usize) {
-            if Self::raw_get_bit(this, i + bit_offset) {
                 let index = if cfg!(target_endian = "big") {
                     bit_width as usize - 1 - i
                 } else {
@@ -118,22 +85,6 @@ where
                 i
             };
             self.set_bit(index + bit_offset, val_bit_is_set);
-        }
-    }
-    #[inline]
-    pub unsafe fn raw_set(this: *mut Self, bit_offset: usize, bit_width: u8, val: u64) {
-        debug_assert!(bit_width <= 64);
-        debug_assert!(bit_offset / 8 < core::mem::size_of::<Storage>());
-        debug_assert!((bit_offset + (bit_width as usize)) / 8 <= core::mem::size_of::<Storage>());
-        for i in 0..(bit_width as usize) {
-            let mask = 1 << i;
-            let val_bit_is_set = val & mask == mask;
-            let index = if cfg!(target_endian = "big") {
-                bit_width as usize - 1 - i
-            } else {
-                i
-            };
-            Self::raw_set_bit(this, index + bit_offset, val_bit_is_set);
         }
     }
 }
@@ -173,34 +124,7 @@ impl ipv6hdr {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(0usize, 4u8) as u8) }
     }
     #[inline]
-    pub fn set_priority(&mut self, val: __u8) {
-        unsafe {
-            let val: u8 = ::core::mem::transmute(val);
-            self._bitfield_1.set(0usize, 4u8, val as u64)
-        }
-    }
-    #[inline]
     pub fn version(&self) -> __u8 {
         unsafe { ::core::mem::transmute(self._bitfield_1.get(4usize, 4u8) as u8) }
-    }
-    #[inline]
-    pub fn set_version(&mut self, val: __u8) {
-        unsafe {
-            let val: u8 = ::core::mem::transmute(val);
-            self._bitfield_1.set(4usize, 4u8, val as u64)
-        }
-    }
-    #[inline]
-    pub fn new_bitfield_1(priority: __u8, version: __u8) -> __BindgenBitfieldUnit<[u8; 1usize]> {
-        let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
-        __bindgen_bitfield_unit.set(0usize, 4u8, {
-            let priority: u8 = unsafe { ::core::mem::transmute(priority) };
-            priority as u64
-        });
-        __bindgen_bitfield_unit.set(4usize, 4u8, {
-            let version: u8 = unsafe { ::core::mem::transmute(version) };
-            version as u64
-        });
-        __bindgen_bitfield_unit
     }
 }
