@@ -21,9 +21,9 @@ use log::error;
 use ratatui::{
     crossterm::event::{self, KeyCode},
     layout::{Constraint, Direction, Layout, Margin},
-    style::Color,
+    style::{Color, Style},
     widgets::{
-        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState,
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState, Tabs,
     },
     DefaultTerminal,
 };
@@ -43,6 +43,8 @@ pub struct EBPFWatcher {
     tcp_sock_recv: RateWatcher<u32>,
     tcp_bytes_recv: RateWatcher<u32>,
     tcp_bytes_sent: RateWatcher<u32>,
+    cubic_events: RateWatcher<u32>,
+    bbr_events: RateWatcher<u32>,
     flow_tracker: FlowTracker,
     update_period: u128,
     token: CancellationToken,
@@ -144,6 +146,24 @@ impl EBPFWatcher {
             0,
             "TCP Bytes Sent".to_string(),
         );
+        let cubic_events = RateWatcher::<u32>::new(
+            PerCpuArray::try_from(
+                ebpf.take_map("CUBIC_EVENTS_COUNTER")
+                    .ok_or_else(|| anyhow!("Could not find CUBIC_EVENTS_COUNTER map!"))?,
+            )?,
+            "Calls/s".to_string(),
+            0,
+            "Cubic Events".to_string(),
+        );
+        let bbr_events = RateWatcher::<u32>::new(
+            PerCpuArray::try_from(
+                ebpf.take_map("BBR_EVENTS_COUNTER")
+                    .ok_or_else(|| anyhow!("Could not find BBR_EVENTS_COUNTER map!"))?,
+            )?,
+            "Calls/s".to_string(),
+            0,
+            "BBR Events".to_string(),
+        );
 
         let flow_tracker = FlowTracker::new(PerCpuHashMap::try_from(
             ebpf.take_map("FLOWS")
@@ -164,6 +184,8 @@ impl EBPFWatcher {
             tcp_sock_recv,
             tcp_bytes_sent,
             tcp_bytes_recv,
+            cubic_events,
+            bbr_events,
             flow_tracker,
             update_period,
             token,
@@ -239,6 +261,20 @@ impl EBPFWatcher {
             Color::Blue,
             "Function Calls".to_string(),
         );
+        let mut bbr_graph = Graph::new(
+            "BBR Events".to_string(),
+            String::new(),
+            Color::Magenta,
+            Color::Reset,
+            "BBR".to_string(),
+        );
+        let mut cubic_graph = Graph::new(
+            "Cubic Events".to_string(),
+            String::new(),
+            Color::Yellow,
+            Color::Reset,
+            "Cubic".to_string(),
+        );
 
         let status = Status::new();
 
@@ -247,6 +283,36 @@ impl EBPFWatcher {
         let mut num_flows: usize = 0;
 
         let file_tracker = FileTracker::new();
+
+        #[derive(Clone, Copy)]
+        enum ViewLayout {
+            PacketsOnly,
+            CallsOnly,
+            SplitHorizontal,
+            SplitVertical,
+            BBROnly,
+            CubicOnly,
+        }
+
+        let mut views = Vec::new();
+        if self.config.packets {
+            views.push(("Packets", ViewLayout::PacketsOnly));
+        }
+        if self.config.calls {
+            views.push(("Calls", ViewLayout::CallsOnly));
+        }
+        if self.config.packets && self.config.calls {
+            views.push(("Split H", ViewLayout::SplitHorizontal));
+            views.push(("Split V", ViewLayout::SplitVertical));
+        }
+        if self.config.algorithms {
+            views.push(("BBR", ViewLayout::BBROnly));
+            views.push(("Cubic", ViewLayout::CubicOnly));
+        }
+        if views.is_empty() {
+            views.push(("None", ViewLayout::PacketsOnly));
+        }
+        let mut selected_tab = 0;
 
         while !self.token.is_cancelled() {
             let start_elapsed = application_start.elapsed();
@@ -293,6 +359,14 @@ impl EBPFWatcher {
                 start_elapsed.as_secs_f64(),
                 self.tcp_sock_send.get_rate(loop_elapsed),
             ));
+            bbr_graph.add_ingress((
+                start_elapsed.as_secs_f64(),
+                self.bbr_events.get_rate(loop_elapsed),
+            ));
+            cubic_graph.add_ingress((
+                start_elapsed.as_secs_f64(),
+                self.cubic_events.get_rate(loop_elapsed),
+            ));
 
             // Time elapsed
             let time_string = format!(
@@ -310,7 +384,7 @@ impl EBPFWatcher {
 
             // Tooltips
             let keybindings =
-                Paragraph::new("Close application: q | Esc  - Legend: (K)ilo, (M)ega, (G)iga");
+                Paragraph::new("Close: q | Tabs: Tab | Scroll: \u{2191}\u{2193} | Legend: (K)ilo, (M)ega, (G)iga");
             let keybindings_block = Block::bordered().borders(Borders::ALL).title("Keybindings");
 
             // Render function
@@ -338,19 +412,53 @@ impl EBPFWatcher {
                     .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
                     .split(top_areas[1]);
 
-                // Split into two graphs, only if two graphs are needed
-                if self.config.calls && self.config.packets {
-                    let sub_graphs = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-                        .split(graphs[0]);
+                // Tab and Chart area
+                let graph_area_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(vec![Constraint::Length(3), Constraint::Min(0)])
+                    .split(graphs[0]);
 
-                    frame.render_widget(packet_rates.get_chart("pps"), sub_graphs[0]);
-                    frame.render_widget(function_calls.get_chart("Calls/s"), sub_graphs[1]);
-                } else if self.config.packets {
-                    frame.render_widget(packet_rates.get_chart("pps"), graphs[0]);
-                } else {
-                    frame.render_widget(function_calls.get_chart("Calls/s"), graphs[0]);
+                // Render Tabs
+                let titles = views.iter().map(|(t, _)| *t).collect::<Vec<_>>();
+                let tabs = Tabs::new(titles)
+                    .select(selected_tab)
+                    .block(Block::bordered().title("Views (Tab)"))
+                    .highlight_style(Style::default().fg(Color::Yellow));
+
+                frame.render_widget(tabs, graph_area_layout[0]);
+
+                let chart_area = graph_area_layout[1];
+                let (_, current_layout) = views[selected_tab];
+
+                match current_layout {
+                    ViewLayout::PacketsOnly => {
+                        frame.render_widget(packet_rates.get_chart("pps"), chart_area);
+                    }
+                    ViewLayout::CallsOnly => {
+                        frame.render_widget(function_calls.get_chart("Calls/s"), chart_area);
+                    }
+                    ViewLayout::SplitHorizontal => {
+                        let chunks = Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                            .split(chart_area);
+                        frame.render_widget(packet_rates.get_chart("pps"), chunks[0]);
+                        frame.render_widget(function_calls.get_chart("Calls/s"), chunks[1]);
+                    }
+                    ViewLayout::SplitVertical => {
+                        let chunks = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                            .split(chart_area);
+                        frame.render_widget(packet_rates.get_chart("pps"), chunks[0]);
+                        frame.render_widget(function_calls.get_chart("Calls/s"), chunks[1]);
+                    }
+                    ViewLayout::BBROnly => {
+                        frame.render_widget(bbr_graph.get_chart("Events/s"), chart_area);
+                    }
+                    ViewLayout::CubicOnly => {
+                        frame.render_widget(cubic_graph.get_chart("Events/s"), chart_area);
+                    }
                 }
 
                 let sidebar = Layout::default()
@@ -438,6 +546,10 @@ impl EBPFWatcher {
                     // Check for esc or q to cancel
                     if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
                         self.token.cancel();
+                    }
+
+                    if key.code == KeyCode::Tab {
+                        selected_tab = (selected_tab + 1) % views.len();
                     }
 
                     if key.code == KeyCode::Down {

@@ -19,6 +19,7 @@ pub struct EbpfWatcherConfig {
     pub calls: bool,
     pub flows: bool,
     pub cwnd: bool,
+    pub algorithms: bool,
     pub metrics: bool,
     pub dir: String,
 }
@@ -90,6 +91,7 @@ impl EbpfRunnerConfig {
             calls: self.kernel,
             flows: true,
             cwnd: self.cwnd,
+            algorithms: self.algorithms,
             metrics: self.metrics,
             dir: self.dir.clone(),
         }
