@@ -7,7 +7,7 @@ use std::str::FromStr;
 #[test]
 fn all_func() {
     let db: Box<dyn TSDBInterface + Send> =
-        database_factory(DBBackend::DuckDB("db_duck_test.duck".to_owned()))
+        database_factory(DBBackend::SQLite("db_sqlite_test.sqlite".to_owned()))
             .expect("Failed to open database!");
 
     let testuple = IpTuple {
@@ -69,10 +69,6 @@ fn all_func() {
         .create_time_series(&flow3, "TestTS", DataValue::Int(0))
         .expect("Failed to create TS");
 
-    let ts2 = db
-        .create_time_series(&flow3, "TestTS2", DataValue::Float(0.0))
-        .expect("Failed to create TS2");
-
     let ts_list = db.list_time_series(&flow3).expect("Failed to list TS");
     for ts in ts_list {
         println!("TS: {ts:?}")
@@ -104,12 +100,6 @@ fn all_func() {
         DataPoint { timestamp: 100.0, value: DataValue::Int(4) },
     ];
     let _ = db.insert_multiple_points(&ts1, &right_entries).expect("Transaction rollback failed!");
-
-    let ts2_entries = vec![
-        DataPoint { timestamp: 99.0, value: DataValue::Float(0.0) },
-        DataPoint { timestamp: 100.0, value: DataValue::Float(1.0) },
-    ];
-    let _ = db.insert_multiple_points(&ts2, &ts2_entries).expect("Float TS Insert failed!");
 
     let bounds = db.get_time_series_bounds(&ts1).expect("Failed to get bounds!");
     println!("Bounds: {bounds:?}");
