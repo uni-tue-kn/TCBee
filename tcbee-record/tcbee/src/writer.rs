@@ -22,10 +22,6 @@ const IDLE_WAIT: Duration = Duration::from_millis(2);
 type JobBox = Box<dyn Job>;
 
 /// Serializes entries pulled from eBPF maps and writes them to files on a single worker thread.
-///
-/// A writer is lightweight – construct one, call [`register`] for every `(map, file)` pair you want
-/// to persist, and keep the handle alive for as long as you expect data. Dropping the writer (or
-/// calling [`shutdown`]) flushes any buffered bytes and stops the worker thread.
 pub struct Writer {
     tx: Sender<WriterCommand>,
     handle: Option<JoinHandle<()>>,
@@ -44,7 +40,7 @@ impl Writer {
         }
     }
 
-    /// Register a ring buffer map whose entries should be written to `file_path`.
+    /// Register a ring buffer map whose entries should be written
     pub fn register<T>(
         &self,
         map: RingBuf<MapData>,

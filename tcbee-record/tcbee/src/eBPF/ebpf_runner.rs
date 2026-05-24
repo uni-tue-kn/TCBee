@@ -93,6 +93,7 @@ impl EbpfRunner {
 
         // This is the backend writer thread that reads and writes data to files
         let mut writer = Writer::new();
+        let mut watcher_config = self.config.watcher_config();
 
         // Tracing for packet headers via TC and XDP
         if self.config.headers {
@@ -110,6 +111,8 @@ impl EbpfRunner {
                 self.config.dir.clone(),
                 &mut writer,
             )?;
+
+            watcher_config.graphs.packets = true;
         }
 
         // Tracing kernel metrics via FEntry probe
@@ -119,6 +122,8 @@ impl EbpfRunner {
                 self.config.dir.clone(),
                 &mut writer,
             )?;
+
+            watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
@@ -127,6 +132,8 @@ impl EbpfRunner {
                 self.config.dir.clone(),
                 &mut writer,
             )?;
+
+            watcher_config.graphs.kernel = true;
         }
 
         // Tracing kernel tracepoints
@@ -148,14 +155,21 @@ impl EbpfRunner {
                 self.config.dir.clone(),
                 &mut writer,
             )?;
+
+            watcher_config.graphs.tracepoints = true;
         }
 
         if self.config.algorithms {
             CubicTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
+            watcher_config.graphs.cubic = true;
             if let Err(err) = BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer) {
                 error!("Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",err);
             };
+            watcher_config.graphs.bbr = true;
         }
+
+        // TODO: should be true by default in get_watcher_config()
+        watcher_config.graphs.events = true;
 
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
@@ -163,7 +177,7 @@ impl EbpfRunner {
             &mut ebpf,
             self.config.update_period,
             self.stop_token.clone(),
-            self.config.watcher_config(),
+            watcher_config,
             self.config.do_tui,
         )?;
 

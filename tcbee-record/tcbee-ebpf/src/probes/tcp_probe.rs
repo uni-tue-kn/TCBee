@@ -4,7 +4,7 @@ use aya_ebpf::{
 };
 
 // Central buffer size config
-use crate::config::TCPPROBE_BUF_SIZE;
+use crate::{config::TCPPROBE_BUF_SIZE, counters::try_count_tracpoint};
 
 // Kernel tracepoint data structs
 use tcbee_common::bindings::tcp_probe::{tcp_probe_entry, trace_event_raw_tcp_probe};
@@ -58,6 +58,8 @@ pub fn try_tcp_probe(ctx: TracePointContext) -> Result<u32, u32> {
             let _ = try_dropped_counter();
         }
     }
+
+    let _ = try_count_tracpoint();
 
     Ok(0)
 }

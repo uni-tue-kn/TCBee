@@ -2,9 +2,9 @@ use core::ptr::addr_of;
 
 use aya_ebpf::{helpers::{bpf_probe_read_kernel, r#gen::bpf_ktime_get_ns}, macros::map, maps::RingBuf, programs::{FEntryContext, ProbeContext}};
 use aya_log_ebpf::info;
-use tcbee_common::bindings::{bbr::{bbr, bbr_trace_entry}, tcp_sock::{inet_connection_sock, sock}};
+use tcbee_common::bindings::{bbr::{bbr, bbr_trace_entry}, flow::IpTuple, tcp_sock::{inet_connection_sock, sock}};
 
-use crate::{FILTER_PORT, config::BBR_BUF_SIZE, counters::{try_count_bbr_event, try_dropped_counter, try_handled_counter}, flow_tracker::try_flow_tracker, helpers::tuple_from_sk};
+use crate::{FILTER_PORT, config::{AF_INET6, BBR_BUF_SIZE}, counters::{try_count_bbr_event, try_dropped_counter, try_handled_counter}, flow_tracker::try_flow_tracker, helpers::kernel_read_tuple_from_sk};
 
 #[map(name = "BBR_EVENTS")]
 static mut BBR_EVENTS: RingBuf = RingBuf::with_byte_size(BBR_BUF_SIZE as u32, 0);
@@ -60,8 +60,7 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
 
     }
 
-    // TODO: Disable with static variable for performance reasons? Not always needed but nice to have
-    let tuple = unsafe {tuple_from_sk(sk_ptr, sport, dport) };
+    let tuple = unsafe { kernel_read_tuple_from_sk(sk_ptr, sport, dport) };
     let _ = try_flow_tracker(tuple);
     
     Ok(0)

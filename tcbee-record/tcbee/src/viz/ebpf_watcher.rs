@@ -17,10 +17,13 @@ use aya::{
     maps::{PerCpuArray, PerCpuHashMap},
     Ebpf,
 };
-use log::error;
+use log::{error, info};
 use ratatui::{
-    crossterm::event::{self, KeyCode},
-    layout::{Constraint, Direction, Layout, Margin},
+    crossterm::{
+        event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode},
+        execute,
+    },
+    layout::{Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Style},
     widgets::{
         Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState, Tabs,
@@ -45,6 +48,7 @@ pub struct EBPFWatcher {
     tcp_bytes_sent: RateWatcher<u32>,
     cubic_events: RateWatcher<u32>,
     bbr_events: RateWatcher<u32>,
+    tracepoint_events: RateWatcher<u32>,
     flow_tracker: FlowTracker,
     update_period: u128,
     token: CancellationToken,
@@ -165,13 +169,47 @@ impl EBPFWatcher {
             "BBR Events".to_string(),
         );
 
+        let cubic_events = RateWatcher::<u32>::new(
+            PerCpuArray::try_from(
+                ebpf.take_map("CUBIC_EVENTS_COUNTER")
+                    .ok_or_else(|| anyhow!("Could not find CUBIC_EVENTS_COUNTER map!"))?,
+            )?,
+            "Calls/s".to_string(),
+            0,
+            "Cubic Events".to_string(),
+        );
+
+        let bbr_events = RateWatcher::<u32>::new(
+            PerCpuArray::try_from(
+                ebpf.take_map("BBR_EVENTS_COUNTER")
+                    .ok_or_else(|| anyhow!("Could not find BBR_EVENTS_COUNTER map!"))?,
+            )?,
+            "Calls/s".to_string(),
+            0,
+            "BBR Events".to_string(),
+        );
+
+        let tracepoint_events = RateWatcher::<u32>::new(
+            PerCpuArray::try_from(
+                ebpf.take_map("TRACEPOINT_EVENTS")
+                    .ok_or_else(|| anyhow!("Could not find TRACEPOINT_EVENTS map!"))?,
+            )?,
+            "Calls/s".to_string(),
+            0,
+            "Tracepoint Events".to_string(),
+        );
+
         let flow_tracker = FlowTracker::new(PerCpuHashMap::try_from(
             ebpf.take_map("FLOWS")
                 .ok_or_else(|| anyhow!("Could not find FLOWS map!"))?,
         )?);
 
         let terminal: Option<DefaultTerminal> = match do_tui {
-            true => Some(ratatui::init()),
+            true => {
+                let term = ratatui::init();
+                execute!(io::stdout(), EnableMouseCapture)?;
+                Some(term)
+            }
             false => None,
         };
 
@@ -186,6 +224,7 @@ impl EBPFWatcher {
             tcp_bytes_recv,
             cubic_events,
             bbr_events,
+            tracepoint_events,
             flow_tracker,
             update_period,
             token,
@@ -235,45 +274,77 @@ impl EBPFWatcher {
 
     // TODO: move elements to separate files!
     fn run_tui(&mut self) {
-        // Rate tracking for graph bounds
-        let max_rate: f64 = 0.0;
-        let tcp_sock_max_rate: f64 = 0.0;
-
         let mut last_size: u64 = 0;
 
         // Track time for averages
         let application_start = Instant::now();
         let mut last_loop: Duration = Duration::default();
 
-        // For plotting
-        // TODO: Add max number of entries handling!
-        let mut packet_rates = Graph::new(
+        // Graph definitions
+        let mut selected_tab = 0;
+        let mut graph_titles = Vec::new();
+        let mut graph_ids = Vec::new();
+
+        if self.config.graphs.events {
+            graph_titles.push("Events");
+            graph_ids.push(0);
+        }
+        if self.config.graphs.packets {
+            graph_titles.push("Packets");
+            graph_ids.push(1);
+        }
+        if self.config.graphs.kernel {
+            graph_titles.push("Kernel");
+            graph_ids.push(2);
+        }
+        if self.config.graphs.cubic {
+            graph_titles.push("Cubic");
+            graph_ids.push(3);
+        }
+        if self.config.graphs.bbr {
+            graph_titles.push("BBR");
+            graph_ids.push(4);
+        }
+        if self.config.graphs.tracepoints {
+            graph_titles.push("Tracepoints");
+            graph_ids.push(5);
+        }
+
+        let mut graph_events = Graph::new(
+            "Handled".to_string(),
+            "Dropped".to_string(),
+            Color::Green,
+            Color::Red,
+            "Events".to_string(),
+        );
+        let mut graph_packets = Graph::new(
             "Ingress".to_string(),
             "Egress".to_string(),
             Color::Green,
             Color::Cyan,
             "Packet Rates".to_string(),
         );
-        let mut function_calls = Graph::new(
+        let mut graph_calls = Graph::new(
             "tcp_recvmsg".to_string(),
             "tcp_sendmsg".to_string(),
             Color::Red,
             Color::Blue,
             "Function Calls".to_string(),
         );
-        let mut bbr_graph = Graph::new(
-            "BBR Events".to_string(),
-            String::new(),
-            Color::Magenta,
-            Color::Reset,
-            "BBR".to_string(),
-        );
-        let mut cubic_graph = Graph::new(
-            "Cubic Events".to_string(),
-            String::new(),
-            Color::Yellow,
-            Color::Reset,
+        let mut graph_cubic = Graph::new_single(
             "Cubic".to_string(),
+            Color::Yellow,
+            "Cubic Events".to_string(),
+        );
+        let mut graph_bbr = Graph::new_single(
+            "BBR".to_string(),
+            Color::Magenta,
+            "BBR Events".to_string(),
+        );
+        let mut graph_tracepoints = Graph::new_single(
+            "Tracepoints".to_string(),
+            Color::White,
+            "Tracepoint Events".to_string(),
         );
 
         let status = Status::new();
@@ -343,20 +414,26 @@ impl EBPFWatcher {
             );
 
             // Track changes in rates
-            packet_rates.add_ingress((
-                start_elapsed.as_secs_f64(),
+            let time_sec = start_elapsed.as_secs_f64();
+
+            graph_events.add_val(0, (time_sec, self.events_handled.get_rate(loop_elapsed)));
+            graph_events.add_val(1, (time_sec, self.events_drops.get_rate(loop_elapsed)));
+
+            graph_packets.add_val(0, (
+                time_sec,
                 self.ingress_counter.get_rate(loop_elapsed),
             ));
-            packet_rates.add_egress((
-                start_elapsed.as_secs_f64(),
+            graph_packets.add_val(1, (
+                time_sec,
                 self.egress_counter.get_rate(loop_elapsed),
             ));
-            function_calls.add_ingress((
-                start_elapsed.as_secs_f64(),
+
+            graph_calls.add_val(0, (
+                time_sec,
                 self.tcp_sock_recv.get_rate(loop_elapsed),
             ));
-            function_calls.add_egress((
-                start_elapsed.as_secs_f64(),
+            graph_calls.add_val(1, (
+                time_sec,
                 self.tcp_sock_send.get_rate(loop_elapsed),
             ));
             bbr_graph.add_ingress((
@@ -366,6 +443,19 @@ impl EBPFWatcher {
             cubic_graph.add_ingress((
                 start_elapsed.as_secs_f64(),
                 self.cubic_events.get_rate(loop_elapsed),
+            ));
+
+            graph_cubic.add_val(0, (
+                time_sec,
+                self.cubic_events.get_rate(loop_elapsed),
+            ));
+            graph_bbr.add_val(0, (
+                time_sec,
+                self.bbr_events.get_rate(loop_elapsed),
+            ));
+            graph_tracepoints.add_val(0, (
+                time_sec,
+                self.tracepoint_events.get_rate(loop_elapsed),
             ));
 
             // Time elapsed
@@ -406,60 +496,60 @@ impl EBPFWatcher {
                 let mut constraints = vec![Constraint::Max(3); status.num_blocks()];
                 constraints.push(Constraint::Min(0));
 
-                // Top graph layout
-                let graphs = Layout::default()
+                // Top graph layout (Right side)
+                let right_side = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
                     .split(top_areas[1]);
 
-                // Tab and Chart area
-                let graph_area_layout = Layout::default()
+                // Graph Area (Top of right side)
+                let graph_area_full = right_side[0];
+                let graph_layout = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints(vec![Constraint::Length(3), Constraint::Min(0)])
-                    .split(graphs[0]);
+                    .constraints([Constraint::Length(3), Constraint::Min(0)])
+                    .split(graph_area_full);
+
+                let tab_area = graph_layout[0];
+                let chart_area = graph_layout[1];
 
                 // Render Tabs
-                let titles = views.iter().map(|(t, _)| *t).collect::<Vec<_>>();
-                let tabs = Tabs::new(titles)
-                    .select(selected_tab)
-                    .block(Block::bordered().title("Views (Tab)"))
-                    .highlight_style(Style::default().fg(Color::Yellow));
+                let tab_constraints: Vec<Constraint> = (0..graph_titles.len())
+                    .map(|_| Constraint::Ratio(1, graph_titles.len() as u32))
+                    .collect();
 
-                frame.render_widget(tabs, graph_area_layout[0]);
+                let tab_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(tab_constraints)
+                    .split(tab_area);
 
-                let chart_area = graph_area_layout[1];
-                let (_, current_layout) = views[selected_tab];
-
-                match current_layout {
-                    ViewLayout::PacketsOnly => {
-                        frame.render_widget(packet_rates.get_chart("pps"), chart_area);
-                    }
-                    ViewLayout::CallsOnly => {
-                        frame.render_widget(function_calls.get_chart("Calls/s"), chart_area);
-                    }
-                    ViewLayout::SplitHorizontal => {
-                        let chunks = Layout::default()
-                            .direction(Direction::Horizontal)
-                            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-                            .split(chart_area);
-                        frame.render_widget(packet_rates.get_chart("pps"), chunks[0]);
-                        frame.render_widget(function_calls.get_chart("Calls/s"), chunks[1]);
-                    }
-                    ViewLayout::SplitVertical => {
-                        let chunks = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-                            .split(chart_area);
-                        frame.render_widget(packet_rates.get_chart("pps"), chunks[0]);
-                        frame.render_widget(function_calls.get_chart("Calls/s"), chunks[1]);
-                    }
-                    ViewLayout::BBROnly => {
-                        frame.render_widget(bbr_graph.get_chart("Events/s"), chart_area);
-                    }
-                    ViewLayout::CubicOnly => {
-                        frame.render_widget(cubic_graph.get_chart("Events/s"), chart_area);
-                    }
+                for (i, title) in graph_titles.iter().enumerate() {
+                    let style = if i == selected_tab {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        Style::default()
+                    };
+                    frame.render_widget(
+                        Paragraph::new(*title).block(Block::bordered()).style(style),
+                        tab_chunks[i],
+                    );
                 }
+
+                // Render Selected Graph
+                let chart_id = if !graph_ids.is_empty() {
+                    graph_ids[selected_tab]
+                } else {
+                    0
+                };
+                let chart = match chart_id {
+                    0 => graph_events.get_chart("Events/s"),
+                    1 => graph_packets.get_chart("pps"),
+                    2 => graph_calls.get_chart("Calls/s"),
+                    3 => graph_cubic.get_chart("Events/s"),
+                    4 => graph_bbr.get_chart("Events/s"),
+                    5 => graph_tracepoints.get_chart("Events/s"),
+                    _ => graph_events.get_chart("Events/s"),
+                };
+                frame.render_widget(chart, chart_area);
 
                 let sidebar = Layout::default()
                     .direction(Direction::Vertical)
@@ -492,14 +582,14 @@ impl EBPFWatcher {
                     .begin_symbol(None)
                     .end_symbol(None);
 
-                scrollbar_state =
-                    scrollbar_state.viewport_content_length(graphs[1].height as usize);
+                scrollbar_state = scrollbar_state.viewport_content_length(right_side[1].height as usize);
 
-                frame.render_stateful_widget(flows, graphs[1], &mut flows_state);
+                // Render flows in bottom right
+                frame.render_stateful_widget(flows, right_side[1], &mut flows_state);
 
                 // Render scrollbar when more entries than height
                 if num_flows
-                    > (graphs[1]
+                    > (right_side[1]
                         .inner(Margin {
                             vertical: 1,
                             horizontal: 1,
@@ -509,7 +599,7 @@ impl EBPFWatcher {
                 {
                     frame.render_stateful_widget(
                         scrollbar,
-                        graphs[1].inner(Margin {
+                        right_side[1].inner(Margin {
                             vertical: 1,
                             horizontal: 1,
                         }),
@@ -537,30 +627,105 @@ impl EBPFWatcher {
                 };
 
                 if ready {
-                    // Get key event
-                    // If not a key event or error returned, continue
-                    let Ok(event::Event::Key(key)) = event::read() else {
-                        continue;
-                    };
+                    match event::read() {
+                        Ok(event::Event::Key(key)) => {
+                            // Check for esc or q to cancel
+                            if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
+                                self.token.cancel();
+                            }
 
-                    // Check for esc or q to cancel
-                    if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
-                        self.token.cancel();
-                    }
+                            if key.code == KeyCode::Down {
+                                // Limit index to number of flows
+                                scroll_index = (scroll_index + 1).min(self.flow_tracker.num_flows);
+                            }
 
-                    if key.code == KeyCode::Tab {
-                        selected_tab = (selected_tab + 1) % views.len();
-                    }
+                            if key.code == KeyCode::Up {
+                                // Limit index to be 0 at min
+                                // Cant be with .min() due to overflow at 0 - 1
+                                scroll_index = scroll_index.saturating_sub(1);
+                            }
 
-                    if key.code == KeyCode::Down {
-                        // Limit index to number of flows
-                        scroll_index = (scroll_index + 1).min(self.flow_tracker.num_flows);
-                    }
+                            // Graph navigation
+                            if key.code == KeyCode::Right || key.code == KeyCode::Tab {
+                                if !graph_titles.is_empty() {
+                                    selected_tab = (selected_tab + 1) % graph_titles.len();
+                                }
+                            }
+                            if key.code == KeyCode::Left {
+                                if graph_titles.is_empty() {
+                                    // Do nothing
+                                } else if selected_tab > 0 {
+                                    selected_tab -= 1;
+                                } else {
+                                    selected_tab = graph_titles.len() - 1;
+                                }
+                            }
+                        }
+                        Ok(event::Event::Mouse(mouse)) => {
+                            match mouse.kind {
+                                event::MouseEventKind::ScrollDown => {
+                                    scroll_index =
+                                        (scroll_index + 1).min(self.flow_tracker.num_flows);
+                                }
+                                event::MouseEventKind::ScrollUp => {
+                                    scroll_index = scroll_index.saturating_sub(1);
+                                }
+                                event::MouseEventKind::Down(event::MouseButton::Left) => {
+                                    // Check if click is in tab area
+                                    if let Ok(size) = self.terminal.as_ref().unwrap().size() {
+                                        let rect = Rect::new(0, 0, size.width, size.height);
+                                        // Replicate layout logic to find tab area
+                                        let areas = Layout::default()
+                                            .direction(Direction::Vertical)
+                                            .constraints(vec![
+                                                Constraint::Min(8),
+                                                Constraint::Max(3),
+                                            ])
+                                            .split(rect);
+                                        let top_areas = Layout::default()
+                                            .direction(Direction::Horizontal)
+                                            .constraints(vec![
+                                                Constraint::Percentage(20),
+                                                Constraint::Percentage(80),
+                                            ])
+                                            .split(areas[0]);
+                                        let right_side = Layout::default()
+                                            .direction(Direction::Vertical)
+                                            .constraints(vec![
+                                                Constraint::Percentage(50),
+                                                Constraint::Percentage(50),
+                                            ])
+                                            .split(top_areas[1]);
+                                        let graph_layout = Layout::default()
+                                            .direction(Direction::Vertical)
+                                            .constraints([Constraint::Length(3), Constraint::Min(0)])
+                                            .split(right_side[0]);
+                                        let tab_area = graph_layout[0];
 
-                    if key.code == KeyCode::Up {
-                        // Limit index to be 0 at min
-                        // Cant be with .min() due to overflow at 0 - 1
-                        scroll_index = scroll_index.saturating_sub(1);
+                                        if !tab_area.contains(Position::new(mouse.column, mouse.row)) {
+                                            continue;
+                                        }
+
+                                        let tab_constraints: Vec<Constraint> = (0..graph_titles.len())
+                                            .map(|_| Constraint::Ratio(1, graph_titles.len() as u32))
+                                            .collect();
+
+                                        let tab_chunks = Layout::default()
+                                            .direction(Direction::Horizontal)
+                                            .constraints(tab_constraints)
+                                            .split(tab_area);
+                                        for (i, chunk) in tab_chunks.iter().enumerate() {
+                                            if chunk.contains(Position::new(mouse.column, mouse.row)) {
+                                                selected_tab = i;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -593,6 +758,7 @@ impl EBPFWatcher {
         }
 
         // Restore terminal view
+        let _ = execute!(io::stdout(), DisableMouseCapture);
         ratatui::restore();
     }
 }

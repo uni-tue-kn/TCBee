@@ -3,7 +3,7 @@ use aya_ebpf::{
 };
 
 // Central buffer size config
-use crate::config::TCP_BAD_CSUM_BUF_SIZE;
+use crate::{config::TCP_BAD_CSUM_BUF_SIZE, counters::try_count_tracpoint};
 
 // Kernel tracepoint data structs
 use tcbee_common::bindings::tcp_bad_csum::{tcp_bad_csum_entry, trace_event_raw_tcp_bad_csum};
@@ -43,6 +43,8 @@ pub fn try_tcp_bad_csum(ctx: TracePointContext) -> Result<u32, u32> {
             let _ = try_dropped_counter();
         }
     }
+
+    let _ = try_count_tracpoint();
 
     Ok(0)
 }
