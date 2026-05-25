@@ -2,8 +2,8 @@
 """
 TCBee unified testing launcher.
 
-Interactively selects a tool (tcbee-live or tcbee-record) and a scenario,
-then delegates to topology.py.
+Interactively selects a tool (tcbee-live, tcbee-record, or tcbee-full) and a
+scenario, then delegates to topology.py.
 """
 import os
 import sys
@@ -79,13 +79,19 @@ def rebuild():
     target = menu("Rebuild which?", [
         ("tcbee-live",        "live"),
         ("tcbee-record",      "record"),
-        ("both",              "both"),
+        ("tcbee-process",     "process"),
+        ("tcbee-viz",         "viz"),
+        ("all",               "all"),
     ])
     dirs = []
-    if target in ("live", "both"):
+    if target in ("live", "all"):
         dirs.append(REPO_ROOT / "tcbee-live")
-    if target in ("record", "both"):
+    if target in ("record", "all"):
         dirs.append(REPO_ROOT / "tcbee-record")
+    if target in ("process", "all"):
+        dirs.append(REPO_ROOT / "tcbee-process")
+    if target in ("viz", "all"):
+        dirs.append(REPO_ROOT / "tcbee-viz")
     for d in dirs:
         print(f"\nBuilding {d.name}...")
         result = subprocess.run(
@@ -103,6 +109,7 @@ def main():
     tool = menu("Select tool:", [
         ("tcbee-live   (egui window)",          "live"),
         ("tcbee-record (TUI)",                  "record"),
+        ("tcbee-full   (record, process, viz)", "full"),
         ("Rebuild Program",                     "rebuild"),
     ])
 
@@ -121,8 +128,14 @@ def main():
 
     # ── tcbee-record profile ───────────────────────────────────────────────────
     record_args = ""
-    if tool == "record":
+    if tool in ("record", "full"):
         record_args = ask_record_args()
+        if tool == "full":
+            print(
+                "\n  tcbee-full starts with tcbee-record. Quit the recorder with q\n"
+                "  when the capture is complete; processing and visualization then\n"
+                "  continue automatically.\n"
+            )
         if double:
             print(
                 "\n  Note: tcbee-record supports a single port filter (-p).\n"

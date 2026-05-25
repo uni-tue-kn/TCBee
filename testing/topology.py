@@ -39,6 +39,8 @@ PORT2 = 5002         # used only for the second stream in --double mode
 
 _LIVE_BASE    = Path(__file__).parent.parent / "tcbee-live"   / "target"
 _RECORD_BASE  = Path(__file__).parent.parent / "tcbee-record" / "target"
+_PROCESS_BASE = Path(__file__).parent.parent / "tcbee-process" / "target"
+_VIZ_BASE     = Path(__file__).parent.parent / "tcbee-viz" / "target"
 
 LIVE_BINARY = (
     _LIVE_BASE / "release" / "tcbee-live"
@@ -50,6 +52,18 @@ RECORD_BINARY = (
     if (_RECORD_BASE / "release" / "tcbee-record").exists()
     else _RECORD_BASE / "debug" / "tcbee-record"
 )
+PROCESS_BINARY = (
+    _PROCESS_BASE / "release" / "tcbee-process"
+    if (_PROCESS_BASE / "release" / "tcbee-process").exists()
+    else _PROCESS_BASE / "debug" / "tcbee-process"
+)
+VIZ_BINARY = (
+    _VIZ_BASE / "release" / "tcbee-viz"
+    if (_VIZ_BASE / "release" / "tcbee-viz").exists()
+    else _VIZ_BASE / "debug" / "tcbee-viz"
+)
+
+DUCKDB_PATH = "/tmp/db.duck"
 
 
 class BottleneckTopo(Topo):
@@ -70,8 +84,12 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
 
     if tool == "live" and not LIVE_BINARY.exists():
         sys.exit(f"Error: tcbee-live binary not found.\nBuild: cd tcbee-live && cargo build --release")
-    if tool == "record" and not RECORD_BINARY.exists():
+    if tool in ("record", "full") and not RECORD_BINARY.exists():
         sys.exit(f"Error: tcbee-record binary not found.\nBuild: cd tcbee-record && cargo build --release")
+    if tool == "full" and not PROCESS_BINARY.exists():
+        sys.exit(f"Error: tcbee-process binary not found.\nBuild: cd tcbee-process && cargo build --release")
+    if tool == "full" and not VIZ_BINARY.exists():
+        sys.exit(f"Error: tcbee-viz binary not found.\nBuild: cd tcbee-viz && cargo build --release")
 
     display = os.environ.get("DISPLAY", ":0")
 
@@ -143,11 +161,33 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
         full_args = shlex.split(" ".join(filter(None, [port_arg, record_args])))
         cmd = [str(RECORD_BINARY)] + full_args
         info(f"    Running: {' '.join(cmd)}\n")
-        info("    Quit tcbee-record (q / Ctrl-C) to stop the topology.\n\n")
+        if tool == "full":
+            info("    Quit tcbee-record with q when the capture is complete.\n")
+            info("    The launcher will then process /tmp/db.duck and open tcbee-viz.\n\n")
+        else:
+            info("    Quit tcbee-record (q / Ctrl-C) to stop the topology.\n\n")
         try:
             subprocess.run(cmd)
         except KeyboardInterrupt:
             pass
+
+        if tool == "full":
+            info("*** Stopping topology before processing trace data...\n")
+            net.stop()
+
+            duckdb = Path(DUCKDB_PATH)
+            duckdb.unlink(missing_ok=True)
+
+            process_cmd = [str(PROCESS_BINARY), "--duckdb"]
+            info(f"*** Processing latest recording: {' '.join(process_cmd)}\n")
+            result = subprocess.run(process_cmd)
+            if result.returncode != 0:
+                sys.exit(f"Error: tcbee-process failed with exit code {result.returncode}")
+
+            viz_cmd = [str(VIZ_BINARY), DUCKDB_PATH]
+            info(f"*** Launching tcbee-viz: {' '.join(viz_cmd)}\n")
+            subprocess.run(viz_cmd)
+            return
 
     net.stop()
 
@@ -160,7 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("--cc", choices=["cubic", "bbr"], default="cubic")
     parser.add_argument("--double", action="store_true",
                         help="Start a second stream 30 s after the first")
-    parser.add_argument("--tool", choices=["live", "record"], default="live")
+    parser.add_argument("--tool", choices=["live", "record", "full"], default="live")
     parser.add_argument("--record-args", default="",
                         help="Extra flags forwarded verbatim to tcbee-record")
     args = parser.parse_args()

@@ -1,6 +1,6 @@
 # Testing Environment
 
-Emulates a bottleneck topology using [Mininet](http://mininet.org) to test `tcbee-live` and `tcbee-record` under controlled congestion.
+Emulates a bottleneck topology using [Mininet](http://mininet.org) to test `tcbee-live`, `tcbee-record`, and the full record/process/visualize flow under controlled congestion.
 
 ## Topology
 
@@ -29,9 +29,13 @@ sudo apt install mininet iperf3
 From the repo root, build whichever tool you want to test:
 
 ```bash
-cd tcbee-live   && cargo build
-cd tcbee-record && cargo build
+cd tcbee-live    && cargo build
+cd tcbee-record  && cargo build
+cd tcbee-process && cargo build
+cd tcbee-viz     && cargo build
 ```
+
+The interactive launcher also has a rebuild menu with per-tool options and an `all` option.
 
 ## Running
 
@@ -39,12 +43,15 @@ cd tcbee-record && cargo build
 python3 testing/run.py
 ```
 
-The interactive menu lets you pick the tool, congestion algorithm (CUBIC / BBR), single or double stream, and (for `tcbee-record`) which probes to enable.
+The interactive menu lets you pick the tool, congestion algorithm (CUBIC / BBR), single or double stream, and (for `tcbee-record`/`tcbee-full`) which probes to enable.
 
 - **tcbee-live** opens as a GUI window; the Mininet CLI stays in the terminal. Type `exit` to stop.
 - **tcbee-record** runs as a TUI in the current terminal. Quit with `q` or `Ctrl-C` to stop the topology.
+- **tcbee-full** first runs `tcbee-record` exactly like the record mode. Quit the recorder with `q` when you have captured enough data; the launcher then stops Mininet, runs `tcbee-process --duckdb` to create `/tmp/db.duck`, and opens `tcbee-viz /tmp/db.duck`.
 
 In double-stream mode a second iperf3 flow starts 30 s after the first.
+
+In single-stream record/full mode the launcher passes `-p 5001` to `tcbee-record` so recordings are filtered to the test flow. In double-stream mode it omits the port filter because `tcbee-record` accepts only one `-p` value and both flows should remain visible.
 
 ## Tuning
 
