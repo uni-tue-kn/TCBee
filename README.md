@@ -15,6 +15,7 @@
   - [1. Record](#1-record)
   - [2. Process](#2-process)
   - [3. Visualize](#3-visualize)
+- [tcbee-live](#tcbee-live)
 - [Installation](#installation)
   - [Prerequisites](#prerequisites)
   - [Compilation](#compilation)
@@ -26,6 +27,7 @@
   - [Using the Rust ts-storage Library](#using-the-rust-ts-storage-library)
   - [Using Custom Scripts and Programs](#using-custom-scripts-and-programs)
   - [Accessing the raw data output](#accessing-the-raw-data-output)
+- [Testing](#testing)
 - [Preview of TCBee](#preview-of-tcbee)
   - [Recording TCP Flows](#recording-tcp-flows)
   - [Visualizing CWND Size](#visualizing-cwnd-size)
@@ -75,17 +77,31 @@ The tool is designed for high-speed online processing with extensibility in mind
 TCBee monitors incoming and outgoing TCP traffic, identifies flows, and stores all available information in a database.
 For each flow, TCP headers from every packet are collected via eBPF XDP (incoming) or TC hooks (outgoing) and stored with timestamps.
 eBPF tracepoints also monitor kernel metrics like congestion window size.
+See [tcbee-record/README.md](tcbee-record/README.md) for details.
 
 ### 2. Process
 
 This phase extracts more complex metrics like duplicate ACK events or retransmissions that would bog down live recording.
 TCBee provides a plugin system for calculating custom metrics.
 Writing plugins is straightforward and doesn't require understanding TCBee's internals.
+See [tcbee-process/README.md](tcbee-process/README.md) for details.
 
 ### 3. Visualize
 
 Flow data from the database can be analyzed through visualization tools that generate graphs or provide a GUI.
 TCBee uses a structured format with SQLite or DuckDB databases to simplify access for custom scripts and visualization tools.
+
+## tcbee-live
+
+`tcbee-live` is a live cwnd monitor that requires no post-processing step. It attaches eBPF probes and displays congestion window metrics in real time via an egui GUI. Useful for quick inspection of a running flow without writing data to disk.
+
+```bash
+cd tcbee-live
+cargo build --release
+sudo ./target/release/tcbee-live --select-port 5001
+```
+
+See [tcbee-live/README.md](tcbee-live/README.md) for full documentation.
 
 ## Installation
 
@@ -102,6 +118,17 @@ To compile and run the program, the following requirements need to be fulfilled:
 - Stable Rust toolchain `rustup toolchain install stable`
 - Nightly Rust toolchain `rustup toolchain install nightly --component rust-src`
 - BPF linker `cargo install bpf-linker`
+
+For the database libraries (SQLite and DuckDB):
+
+- SQLite development headers (e.g. for Ubuntu `sudo apt install -y libsqlite3-dev`, for Arch `sudo pacman -S sqlite`)
+- DuckDB shared library and headers — download the appropriate release from the [DuckDB GitHub releases](https://github.com/duckdb/duckdb/releases) and install them to a location your linker can find (e.g. `/usr/local/lib` and `/usr/local/include`)
+
+> **Shipping to systems without DuckDB or SQLite installed?** Enable the `bundled` feature for either library in [ts-storage/Cargo.toml](ts-storage/Cargo.toml) to compile the library from source and statically link it — no system installation required on the target machine. Note that this significantly increases compile times.
+> ```toml
+> duckdb = { version = "1.3.2", features = ["bundled"] }
+> sqlite = { version = "0.36.1", features = ["bundled"] }
+> ```
 
 For the visualization tool:
 
@@ -176,13 +203,17 @@ See [ts-storage/README.md](ts-storage/README.md) for examples and usage.
 
 Generate custom graphs and visualizations by accessing the flow database directly with your own scripts.
 Use SQLite or DuckDB libraries depending on your storage format, or just run SQL queries directly.
-Check the `examples` folder or [ts-storage/ACCESS.md](ts-storage/ACCESS.md) for guides on reading flow data.
+Check the [`examples/db/`](examples/db/) folder or [ts-storage/README.md](ts-storage/README.md) for guides on reading flow data.
 
 ### Accessing the raw data output
 
 TCBee stores raw recording data as byte files in `/tmp/*.tcp`.
 To read these files from your own program, check [tcbee-record/tcbee-common/src/bindings/](tcbee-record/tcbee-common/src/bindings/) for the appropriate structs (look for struct names ending with `_entry`).
-See the `examples` folder for a Python script demonstrating this.
+See the [`examples/raw/`](examples/raw/) folder for Python scripts demonstrating this.
+
+## Testing
+
+The [`testing/`](testing/) folder contains a Mininet-based emulation environment for both `tcbee-live` and `tcbee-record`. It sets up a bottleneck topology, drives traffic with `iperf3`, and launches the selected tool automatically. See [testing/README.md](testing/README.md) for setup and usage.
 
 ## Preview of TCBee
 
