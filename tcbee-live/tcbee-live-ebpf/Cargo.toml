@@ -1,0 +1,16 @@
+[package]
+name = "tcbee-live-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+tcbee-live-common = { path = "../tcbee-live-common" }
+
+aya-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "tcbee-live"
+path = "src/main.rs"
