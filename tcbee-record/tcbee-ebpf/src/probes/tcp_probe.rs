@@ -1,13 +1,20 @@
 use aya_ebpf::{
-    helpers::bpf_tcp_sock, helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf,
-    programs::TracePointContext,
+    helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf, programs::TracePointContext,
 };
 
 // Central buffer size config
-use crate::{config::TCPPROBE_BUF_SIZE, counters::try_count_tracpoint};
+use crate::{
+    config::{AF_INET6, TCPPROBE_BUF_SIZE},
+    counters::try_count_tracpoint,
+    flow_tracker::try_flow_tracker,
+    FILTER_PORT,
+};
 
 // Kernel tracepoint data structs
-use tcbee_common::bindings::tcp_probe::{tcp_probe_entry, trace_event_raw_tcp_probe};
+use tcbee_common::bindings::{
+    flow::IpTuple,
+    tcp_probe::{tcp_probe_entry, trace_event_raw_tcp_probe},
+};
 
 // Counters for performance metrics
 use crate::counters::{try_dropped_counter, try_handled_counter};
@@ -23,6 +30,27 @@ pub fn try_tcp_probe(ctx: TracePointContext) -> Result<u32, u32> {
         let event: trace_event_raw_tcp_probe = ctx
             .read_at::<trace_event_raw_tcp_probe>(0)
             .map_err(|e| e as u32)?;
+
+        if FILTER_PORT != 0 && event.sport != FILTER_PORT && event.dport != FILTER_PORT {
+            return Ok(0);
+        }
+
+        let mut src_ip = [0u8; 16];
+        let mut dst_ip = [0u8; 16];
+        if event.family == AF_INET6 {
+            src_ip.copy_from_slice(&event.saddr[8..24]);
+            dst_ip.copy_from_slice(&event.daddr[8..24]);
+        } else {
+            src_ip[..4].copy_from_slice(&event.saddr[4..8]);
+            dst_ip[..4].copy_from_slice(&event.daddr[4..8]);
+        }
+        let _ = try_flow_tracker(IpTuple {
+            src_ip,
+            dst_ip,
+            sport: event.sport,
+            dport: event.dport,
+            protocol: 6,
+        });
 
         // Create queue entry
         let queue_entry = tcp_probe_entry {
