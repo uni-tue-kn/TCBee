@@ -28,9 +28,8 @@ pub struct EbpfRunner {
     writer: Option<Writer>,
 }
 
-pub fn prepend_string(mut src: String, prefix: &str) -> String {
-    src.insert_str(0, prefix);
-    src
+pub fn prepend_string(filename: String, dir: &str) -> String {
+    std::path::Path::new(dir).join(&filename).to_string_lossy().into_owned()
 }
 
 impl EbpfRunner {

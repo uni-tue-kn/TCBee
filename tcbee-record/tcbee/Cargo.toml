@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tcbee-common = { path = "../tcbee-common", features = ["user"]  }
+tcbee-trace = { path = "../tcbee-trace" }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }

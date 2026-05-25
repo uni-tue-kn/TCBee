@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tcbee", "tcbee-common", "tcbee-ebpf"]
+members = ["tcbee", "tcbee-common", "tcbee-ebpf", "tcbee-trace"]
 default-members = ["tcbee", "tcbee-common"]
 
 [workspace.dependencies]

@@ -6,6 +6,7 @@ mod viz;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::EbpfRunnerConfig;
+use tcbee_trace::TCBeeTrace;
 
 // Error handling
 use log::info;
@@ -101,9 +102,15 @@ fn main() -> anyhow::Result<()> {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
 
+    // Create a timestamped recording directory inside the requested base dir
+    let trace = TCBeeTrace::create(&dir)
+        .map_err(|e| anyhow!("Failed to create trace directory in {}: {}", dir, e))?;
+    let trace_dir = trace.dir().to_string_lossy().into_owned();
+
     // Greet user if running without TUI
     if quiet {
         println!("Running TCBee without terminal UI, Ctrl+c to stop recording!");
+        println!("Recording to: {}", trace_dir);
         println!("------------------------------------------------------------");
     }
 
@@ -121,7 +128,7 @@ fn main() -> anyhow::Result<()> {
         .cwnd(trace_cwnd)
         .metrics(metrics)
         .algorithms(trace_algorithms)
-        .dir(dir);
+        .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!

@@ -150,24 +150,6 @@ impl EBPFWatcher {
             0,
             "TCP Bytes Sent".to_string(),
         );
-        let cubic_events = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("CUBIC_EVENTS_COUNTER")
-                    .ok_or_else(|| anyhow!("Could not find CUBIC_EVENTS_COUNTER map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "Cubic Events".to_string(),
-        );
-        let bbr_events = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("BBR_EVENTS_COUNTER")
-                    .ok_or_else(|| anyhow!("Could not find BBR_EVENTS_COUNTER map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "BBR Events".to_string(),
-        );
 
         let cubic_events = RateWatcher::<u32>::new(
             PerCpuArray::try_from(
@@ -353,7 +335,7 @@ impl EBPFWatcher {
         let mut scroll_index: usize = 0;
         let mut num_flows: usize = 0;
 
-        let file_tracker = FileTracker::new();
+        let file_tracker = FileTracker::new(&self.config.dir);
 
         #[derive(Clone, Copy)]
         enum ViewLayout {
@@ -436,15 +418,6 @@ impl EBPFWatcher {
                 time_sec,
                 self.tcp_sock_send.get_rate(loop_elapsed),
             ));
-            bbr_graph.add_ingress((
-                start_elapsed.as_secs_f64(),
-                self.bbr_events.get_rate(loop_elapsed),
-            ));
-            cubic_graph.add_ingress((
-                start_elapsed.as_secs_f64(),
-                self.cubic_events.get_rate(loop_elapsed),
-            ));
-
             graph_cubic.add_val(0, (
                 time_sec,
                 self.cubic_events.get_rate(loop_elapsed),

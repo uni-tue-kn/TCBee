@@ -7,10 +7,10 @@ pub struct FileTracker {
 }
 
 impl FileTracker {
-    pub fn new() -> FileTracker {
-        // Open all .tcp files to watch file size!
+    pub fn new(dir: &str) -> FileTracker {
+        let pattern = format!("{}/*.tcp", dir);
         let mut files: Vec<File> = Vec::new();
-        if let Ok(paths) = glob::glob("/tmp/*.tcp") {
+        if let Ok(paths) = glob::glob(&pattern) {
             for p in paths {
                 if let Ok(path) = p {
                     let open = File::open(path);
@@ -20,7 +20,7 @@ impl FileTracker {
                 }
             }
         } else {
-            error!("No *.tcp files found in /tmp/! Will not display write speed corrently!")
+            error!("No *.tcp files found in {}! Will not display write speed correctly!", dir)
         }
 
         FileTracker { files: files }
