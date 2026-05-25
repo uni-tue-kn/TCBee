@@ -1,0 +1,184 @@
+use ts_storage::TimeSeries;
+
+use crate::{
+    backend::db::{format_flow, DbBackend},
+    data::{
+        preprocessing::{compute_skip_step, downsample, generate_colors},
+        series_data::SeriesData,
+    },
+    settings::AppSettings,
+};
+
+/// Per-tab state for a single flow's plot: selected series, loaded data, and zoom bookkeeping.
+pub struct PlotState {
+    pub flow_id: Option<i64>,
+    pub selected_series_ids: Vec<i64>,
+    pub series: Vec<SeriesData>,
+    /// Available series metadata + point count for the currently selected flow.
+    pub available_series: Vec<(TimeSeries, i64)>,
+    /// Current visible X bounds (mirrors egui_plot's view).
+    pub x_min: f64,
+    pub x_max: f64,
+    /// Full extent of the flow — used for reset.
+    pub data_x_min: f64,
+    pub data_x_max: f64,
+    /// Display each series in its own subplot.
+    pub split_view: bool,
+    /// Set to true inside the plot closure when the view has moved enough to reload.
+    pub pending_reload: bool,
+    /// Human-readable label for the flow (e.g. for legends).
+    pub flow_label: String,
+}
+
+impl Default for PlotState {
+    fn default() -> Self {
+        Self {
+            flow_id: None,
+            selected_series_ids: Vec::new(),
+            series: Vec::new(),
+            available_series: Vec::new(),
+            x_min: 0.0,
+            x_max: 1.0,
+            data_x_min: 0.0,
+            data_x_max: 1.0,
+            split_view: false,
+            pending_reload: false,
+            flow_label: String::new(),
+        }
+    }
+}
+
+impl PlotState {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Called when the user picks a new flow. Loads metadata and clears series selections.
+    pub fn select_flow(&mut self, db: &DbBackend, flow_id: i64) {
+        self.flow_id = Some(flow_id);
+        self.selected_series_ids.clear();
+        self.series.clear();
+        self.pending_reload = false;
+
+        if let Some(flow) = db.get_flow_by_id(flow_id) {
+            self.flow_label = format_flow(&flow);
+            self.available_series = db
+                .list_series_for_flow(&flow)
+                .into_iter()
+                .map(|ts| {
+                    let count = db.get_point_count(ts.id);
+                    (ts, count)
+                })
+                .collect();
+        }
+        if let Some((t_min, t_max)) = db.get_flow_x_bounds(flow_id) {
+            self.data_x_min = t_min;
+            self.data_x_max = t_max;
+            self.x_min = t_min;
+            self.x_max = t_max;
+        }
+    }
+
+    /// Toggle a series on/off. Assigns a color when added.
+    pub fn toggle_series(&mut self, db: &DbBackend, series_id: i64, settings: &AppSettings) {
+        if let Some(pos) = self.selected_series_ids.iter().position(|&id| id == series_id) {
+            self.selected_series_ids.remove(pos);
+            self.series.retain(|s| s.series_id != series_id);
+        } else {
+            self.selected_series_ids.push(series_id);
+            // Assign the next color in the palette
+            let color_idx = self.series.len();
+            let colors = generate_colors(color_idx + 1);
+            let color = *colors.last().unwrap_or(&egui::Color32::WHITE);
+
+            if let Some(ts) = db.get_series_by_id(series_id) {
+                let (y_min, y_max) = db.get_series_y_bounds(&[series_id]).unwrap_or((0.0, 1.0));
+                let mut sd = SeriesData::new(
+                    ts.name.clone(),
+                    series_id,
+                    ts.ts_type.clone(),
+                    self.data_x_min,
+                    self.data_x_max,
+                    y_min,
+                    y_max,
+                    color,
+                );
+                let x_min = self.x_min;
+                let x_max = self.x_max;
+                load_series_window(db, &mut sd, x_min, x_max, settings);
+                self.series.push(sd);
+            }
+        }
+    }
+
+    /// Returns the combined y extent across all loaded series.
+    pub fn y_bounds(&self) -> (f64, f64) {
+        let y_min = self.series.iter().map(|s| s.global_y_min).fold(f64::MAX, f64::min);
+        let y_max = self.series.iter().map(|s| s.global_y_max).fold(f64::MIN, f64::max);
+        if y_min > y_max { (0.0, 1.0) } else { (y_min, y_max) }
+    }
+
+    /// Returns true when the visible window has shifted more than 10% of the loaded span.
+    pub fn needs_reload(&self, new_x_min: f64, new_x_max: f64) -> bool {
+        if self.series.is_empty() {
+            return false;
+        }
+        match self.series.first().and_then(|s| s.loaded_range) {
+            None => true,
+            Some((loaded_min, loaded_max)) => {
+                let loaded_span = loaded_max - loaded_min;
+                if loaded_span == 0.0 {
+                    return true;
+                }
+                let shift_lo = (loaded_min - new_x_min).abs() / loaded_span;
+                let shift_hi = (loaded_max - new_x_max).abs() / loaded_span;
+                shift_lo > 0.10 || shift_hi > 0.10
+            }
+        }
+    }
+
+    /// Fetch data for all series in the given visible range + 20% margin.
+    pub fn reload_visible_data(&mut self, db: &DbBackend, settings: &AppSettings) {
+        let span = self.x_max - self.x_min;
+        let margin = span * 0.20;
+        let fetch_min = (self.x_min - margin).max(self.data_x_min);
+        let fetch_max = (self.x_max + margin).min(self.data_x_max);
+
+        for sd in &mut self.series {
+            fetch_range(db, sd, fetch_min, fetch_max, settings);
+        }
+    }
+}
+
+/// Load data for a series, applying a 20% margin around the visible window.
+pub fn load_series_window(
+    db: &DbBackend,
+    sd: &mut SeriesData,
+    x_min: f64,
+    x_max: f64,
+    settings: &AppSettings,
+) {
+    let span = x_max - x_min;
+    let margin = span * 0.20;
+    let fetch_min = (x_min - margin).max(sd.global_t_min);
+    let fetch_max = (x_max + margin).min(sd.global_t_max);
+    fetch_range(db, sd, fetch_min, fetch_max, settings);
+}
+
+/// Fetch a specific range from the DB and store into `sd.points` / `sd.string_points`.
+pub fn fetch_range(
+    db: &DbBackend,
+    sd: &mut SeriesData,
+    fetch_min: f64,
+    fetch_max: f64,
+    settings: &AppSettings,
+) {
+    if sd.is_string_type() {
+        sd.string_points = db.load_range_strings(sd.series_id, fetch_min, fetch_max);
+    } else {
+        let raw = db.load_range(sd.series_id, fetch_min, fetch_max);
+        let step = compute_skip_step(raw.len(), settings.skip_every_nth);
+        sd.points = downsample(raw, step);
+    }
+    sd.loaded_range = Some((fetch_min, fetch_max));
+}
