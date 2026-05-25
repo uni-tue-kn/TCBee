@@ -1,6 +1,6 @@
 use std::{collections::HashMap, error::Error};
 
-use indicatif::ProgressBar;
+use indicatif::{ProgressBar, ProgressStyle};
 use log::error;
 use tokio::sync::mpsc::Receiver;
 use ts_storage::{
@@ -41,18 +41,20 @@ pub fn as_db_operation<T: EventIndexer>(event: T) -> Vec<DBOperation> {
 pub struct DBWriter {
     db: Box<dyn TSDBInterface + Send>,
     streams: HashMap<IpTuple, FlowTracker>,
-    rx: Receiver<DBOperation>,
+    rx: Receiver<Vec<DBOperation>>,
     status: ProgressBar,
+    flush_bar: ProgressBar,
     num_flows: i32,
 }
 
 impl DBWriter {
     pub fn new(
         backend: DBBackend,
-        rx: Receiver<DBOperation>,
+        rx: Receiver<Vec<DBOperation>>,
         status: ProgressBar,
+        flush_bar: ProgressBar,
     ) -> Result<DBWriter, Box<dyn Error>> {
-        let db: Box<dyn TSDBInterface + Send> = database_factory::<SQLiteTSDB>(backend)?;
+        let db: Box<dyn TSDBInterface + Send> = database_factory(backend)?;
 
         let streams: HashMap<IpTuple, FlowTracker> = HashMap::new();
 
@@ -63,6 +65,7 @@ impl DBWriter {
             streams,
             rx,
             status,
+            flush_bar,
             num_flows: 0,
         })
     }
@@ -85,32 +88,50 @@ impl DBWriter {
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        // Time of first entry, will be used to normalize all other times
-        while let Some(event) = self.rx.blocking_recv() {
-            self.status.inc(1);
+        while let Some(batch) = self.rx.blocking_recv() {
+            self.status.inc(batch.len() as u64);
 
-            if let Some(tracker) = self.streams.get_mut(&event.tuple) {
-                let res = tracker.add_event(&self.db, event);
+            for event in batch {
+                if let Some(tracker) = self.streams.get_mut(&event.tuple) {
+                    let res = tracker.add_event(&self.db, event);
 
-                if res.is_err() {
-                    error!("Failed to handle event. Error: {}", res.err().unwrap());
+                    if res.is_err() {
+                        error!("Failed to handle event. Error: {}", res.err().unwrap());
+                    }
+                } else {
+                    self.setup_new_stream(&event.tuple)?;
+                    let tracker = self.streams.get_mut(&event.tuple).unwrap();
+                    let res = tracker.add_event(&self.db, event);
+
+                    if res.is_err() {
+                        error!("Failed to handle event. Error: {}", res.err().unwrap());
+                    }
                 }
-            } else {
-                self.setup_new_stream(&event.tuple)?;
-                let tracker = self.streams.get_mut(&event.tuple).unwrap();
-                let res = tracker.add_event(&self.db, event);
-
-                if res.is_err() {
-                    error!("Failed to handle event. Error: {}", res.err().unwrap());
-                }
-
             }
         }
         // This is reached when all tx channels are dropped, flush files!
-        for (tuple, tracker) in self.streams.iter_mut() {
+        self.flush_bar.set_length(self.streams.len() as u64);
+        self.flush_bar.set_style(
+            ProgressStyle::with_template(
+                "{msg} [{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7}",
+            )
+            .unwrap(),
+        );
+        self.flush_bar.set_message("Flushing buffers to DuckDB");
+
+        for (_tuple, tracker) in self.streams.iter_mut() {
             tracker.flush(&self.db);
-            //println!("Stream: {:?} - Tracker: {:?}",tuple,tracker);
+            self.flush_bar.inc(1);
         }
+
+        self.flush_bar.set_style(
+            ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
+                .unwrap()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+        );
+        self.flush_bar.enable_steady_tick(std::time::Duration::from_millis(100));
+        self.flush_bar.set_message("DuckDB checkpointing to disk...");
+
         Ok(())
     }
 }

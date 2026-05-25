@@ -22,6 +22,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{error, info};
 use reader::{FileReader, FromBuffer};
 use serde::Deserialize;
+use tcbee_trace::TCBeeTrace;
 use tokio::{
     sync::mpsc::{self, Sender},
     task::{self, JoinHandle},
@@ -46,18 +47,13 @@ fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
     std::array::from_fn(|i| arg[i + 4])
 }
 
-pub fn prepend_string(mut src: String, prefix: &str) -> String {
-    src.insert_str(0, prefix);
-    src
-}
-
 
 async fn start_file_reader<
     'a,
     T: EventIndexer + FromBuffer + Debug + Send + Clone + Deserialize<'a> + 'static,
 >(
     path: String,
-    tx: Sender<DBOperation>,
+    tx: Sender<Vec<DBOperation>>,
     token: CancellationToken,
     bars: &MultiProgress,
 ) -> Option<JoinHandle<()>> {
@@ -110,7 +106,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         argparser.refer(&mut source).add_option(
             &["-s", "--source"],
             Store,
-            "Directory to search for TCBee recording *.tcp files!",
+            "TCBee recording directory (tcbee_*) or a base directory to search for the latest recording. Defaults to /tmp/",
         );
         argparser.refer(&mut output).add_option(
             &["-o", "--output"],
@@ -163,15 +159,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
     );
 
+    let flush_bar = progress_bars.add(ProgressBar::new(0));
+
     // Channel to send operations to DB Backend
-    let (tx, rx) = mpsc::channel::<DBOperation>(100000);
+    let (tx, rx) = mpsc::channel::<Vec<DBOperation>>(100_000);
     let stop_token = CancellationToken::new();
 
     info!("Starting db backend!");
     println!("Starting readers, initial processing may be slow due to setup of streams!");
 
     // Create DB Backend handler
-    let db_res = DBWriter::new(backend, rx,status);
+    let db_res = DBWriter::new(backend, rx, status, flush_bar.clone());
     if db_res.is_err() {
         panic!("Could not open Database! Error: {}", db_res.err().unwrap())
     }
@@ -189,83 +187,55 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Starting file readers!");
 
-    // Start all tasks
-    // TODO: move to config file!
-    
-    let threads = vec![
-        start_file_reader::<CubicEvent>(
-            prepend_string("cubic.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        /* 
-        start_file_reader::<Tcp4Packet>(
-            prepend_string("tcp4_receive.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<Tcp4Packet>(
-            prepend_string("tcp4_send.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<Tcp6Packet>(
-            prepend_string("tcp6_receive.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<Tcp6Packet>(
-            prepend_string("tcp6_send.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<TcpProbe>(
-            prepend_string("tcp_probe.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<sock_trace_entry>(
-            prepend_string("send_sock.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<sock_trace_entry>(
-            prepend_string("recv_sock.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<cwnd_trace_entry>(
-            prepend_string("recv_cwnd.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,
-        start_file_reader::<cwnd_trace_entry>(
-            prepend_string("send_cwnd.tcp".to_string(),&source),
-            tx.clone(),
-            stop_token.clone(),
-            &progress_bars,
-        )
-        .await,*/
-        
-    ];
+    // Resolve the trace directory: if the path looks like a tcbee_* folder use
+    // it directly; otherwise search for the latest recording inside it.
+    let trace = if Path::new(&source)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with("tcbee_"))
+        .unwrap_or(false)
+    {
+        TCBeeTrace::open(&source)
+            .unwrap_or_else(|e| panic!("Could not open trace directory {}: {}", source, e))
+    } else {
+        TCBeeTrace::find_latest(&source)
+            .unwrap_or_else(|| panic!("No tcbee_* recording found in {}", source))
+    };
+
+    println!("Reading from: {}", trace.dir().display());
+
+    let mut threads = Vec::new();
+
+    for file in trace.available_traces() {
+        use tcbee_trace::TraceFile;
+        let path = trace.path_for(file).to_string_lossy().into_owned();
+        let handle = match file {
+            TraceFile::Cubic => {
+                start_file_reader::<CubicEvent>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+            }
+            TraceFile::Tcp4Receive | TraceFile::Tcp4Send => {
+                start_file_reader::<Tcp4Packet>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+            }
+            TraceFile::Tcp6Receive | TraceFile::Tcp6Send => {
+                start_file_reader::<Tcp6Packet>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+            }
+            TraceFile::TcpProbe => {
+                start_file_reader::<TcpProbe>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+            }
+            TraceFile::SendSock | TraceFile::RecvSock => {
+                start_file_reader::<sock_trace_entry>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+            }
+            TraceFile::SendCwnd | TraceFile::RecvCwnd => {
+                start_file_reader::<cwnd_trace_entry>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+            }
+            // No reader implementation yet for these types
+            TraceFile::Bbr | TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => {
+                println!("No reader available for {:?}, skipping.", file);
+                None
+            }
+        };
+        threads.push(handle);
+    }
 
     // Wait for file threads to finish!
     // TODO add ctrl + c check!
@@ -276,6 +246,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     drop(tx);
 
     info!("File readers finished!");
+
+    // Wait for DB backend to finish flushing and DuckDB to checkpoint
+    let _ = _db_thread.await;
+    flush_bar.finish_and_clear();
 
     // Signal stop to db backend
     stop_token.cancel();

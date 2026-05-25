@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ts_storage = { path = "../ts-storage"}
+tcbee-trace = { path = "../tcbee-record/tcbee-trace" }
 #tcbee-common = { path = "../tcbee/tcbee-common" }
 tokio = { version = "1.43.0", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time", "io-util","fs"] }
 tokio-util = "0.7.13"

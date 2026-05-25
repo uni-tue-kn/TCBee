@@ -8,7 +8,7 @@ use crate::{
     },
     db_writer::DBOperation,
 };
-const BUFFER_SIZE: usize = 10000;
+const BUFFER_SIZE: usize = 100_000;
 
 pub const AF_INET: u16 = 2;
 

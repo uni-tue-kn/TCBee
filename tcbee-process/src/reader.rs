@@ -26,7 +26,7 @@ pub struct FileReader<T> {
     path: String,
     reader: BufReader<File>,
     to_read: u64,
-    tx: Sender<DBOperation>,
+    tx: Sender<Vec<DBOperation>>,
     token: CancellationToken,
     progress: ProgressBar,
     _marker: PhantomData<T>,
@@ -35,7 +35,7 @@ pub struct FileReader<T> {
 impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileReader<T> {
     pub async fn new(
         path: &str,
-        tx: Sender<DBOperation>,
+        tx: Sender<Vec<DBOperation>>,
         token: CancellationToken,
         progress: ProgressBar
     ) -> Result<FileReader<T>, Box<dyn Error>> {
@@ -87,15 +87,11 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
 
             let db_ops = as_db_operation(event);
 
-            for op in db_ops {
-                let res = self.tx.send(op).await;
-
-                // If an error is returned, then channel is closed
-                if res.is_err() {
-                    info!("Stopping file read {} on channel close!", self.path);
-                    self.progress.finish();
-                    return;
-                }
+            let res = self.tx.send(db_ops).await;
+            if res.is_err() {
+                info!("Stopping file read {} on channel close!", self.path);
+                self.progress.finish();
+                return;
             }
             
 
