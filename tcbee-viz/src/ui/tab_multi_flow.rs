@@ -10,8 +10,9 @@ use crate::{
         flow_table::FlowTable,
         series_table::SeriesTable,
         tab_single_flow::{
-            compact_axis_label, plot_height_with_footer, seconds_grid_spacer,
-            seconds_since_formatter, split_plot_height_with_footer, to_plot_points,
+            compact_axis_label, compact_coordinates_formatter, plot_height_with_footer,
+            seconds_grid_spacer, seconds_since_formatter, split_plot_height_with_footer,
+            to_plot_points,
         },
     },
 };
@@ -259,6 +260,10 @@ impl TabMultiFlow {
             .x_grid_spacer(seconds_grid_spacer(x_origin))
             .x_axis_formatter(seconds_since_formatter(x_origin))
             .y_axis_formatter(|mark, _| compact_axis_label(mark.value))
+            .coordinates_formatter(
+                egui_plot::Corner::LeftBottom,
+                compact_coordinates_formatter(x_origin),
+            )
             .legend(Legend::default())
             .height(plot_height_with_footer(ui.available_height()))
             .show(ui, |plot_ui| {
@@ -355,6 +360,10 @@ impl TabMultiFlow {
             .x_grid_spacer(seconds_grid_spacer(x_origin))
             .x_axis_formatter(seconds_since_formatter(x_origin))
             .y_axis_formatter(|mark, _| compact_axis_label(mark.value))
+            .coordinates_formatter(
+                egui_plot::Corner::LeftBottom,
+                compact_coordinates_formatter(x_origin),
+            )
             .legend(Legend::default())
             .height(half_height)
             .show(ui, |plot_ui| {
@@ -397,6 +406,10 @@ impl TabMultiFlow {
             .x_grid_spacer(seconds_grid_spacer(x_origin))
             .x_axis_formatter(seconds_since_formatter(x_origin))
             .y_axis_formatter(|mark, _| compact_axis_label(mark.value))
+            .coordinates_formatter(
+                egui_plot::Corner::LeftBottom,
+                compact_coordinates_formatter(x_origin),
+            )
             .legend(Legend::default())
             .height(half_height)
             .show(ui, |plot_ui| {
@@ -495,6 +508,10 @@ impl TabMultiFlow {
                     .x_grid_spacer(seconds_grid_spacer(x_origin))
                     .x_axis_formatter(seconds_since_formatter(x_origin))
                     .y_axis_formatter(|mark, _| compact_axis_label(mark.value))
+                    .coordinates_formatter(
+                        egui_plot::Corner::LeftBottom,
+                        compact_coordinates_formatter(x_origin),
+                    )
                     .height(plot_height)
                     .show(ui, |plot_ui| {
                         if fit {

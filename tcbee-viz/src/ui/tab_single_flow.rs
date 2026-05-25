@@ -1,5 +1,8 @@
 use egui::{RichText, ScrollArea};
-use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text};
+use egui_plot::{
+    CoordinatesFormatter, Corner, GridInput, GridMark, Legend, Line, Plot, PlotBounds, PlotPoint,
+    PlotPoints, Text,
+};
 
 use crate::{
     backend::db::DbBackend,
@@ -290,6 +293,10 @@ impl TabSingleFlow {
             .x_grid_spacer(seconds_grid_spacer(self.state.data_x_min))
             .x_axis_formatter(seconds_since_formatter(self.state.data_x_min))
             .y_axis_formatter(time_or_compact_formatter(self.state.data_x_min))
+            .coordinates_formatter(
+                Corner::LeftBottom,
+                time_or_compact_coordinates_formatter(self.state.data_x_min),
+            )
             .legend(Legend::default())
             .height(plot_height_with_footer(ui.available_height()));
 
@@ -403,6 +410,10 @@ impl TabSingleFlow {
                         .x_grid_spacer(seconds_grid_spacer(self.state.data_x_min))
                         .x_axis_formatter(seconds_since_formatter(self.state.data_x_min))
                         .y_axis_formatter(time_or_compact_formatter(self.state.data_x_min))
+                        .coordinates_formatter(
+                            Corner::LeftBottom,
+                            time_or_compact_coordinates_formatter(self.state.data_x_min),
+                        )
                         .height(plot_height);
 
                     let pr = plot.show(ui, |plot_ui| {
@@ -527,6 +538,32 @@ pub fn time_or_compact_formatter(
     }
 }
 
+pub fn time_or_compact_coordinates_formatter(origin_ns: f64) -> CoordinatesFormatter<'static> {
+    CoordinatesFormatter::new(move |point, bounds| {
+        let y_range = bounds.min()[1]..=bounds.max()[1];
+        let y = if range_looks_like_ktime_ns(&y_range, origin_ns) {
+            format_seconds_since_step(point.y, origin_ns, y_step(bounds))
+        } else {
+            compact_axis_label(point.y)
+        };
+        format!(
+            "x: {}\ny: {}",
+            format_seconds_since_step(point.x, origin_ns, x_step(bounds)),
+            y
+        )
+    })
+}
+
+pub fn compact_coordinates_formatter(origin_ns: f64) -> CoordinatesFormatter<'static> {
+    CoordinatesFormatter::new(move |point, bounds| {
+        format!(
+            "x: {}\ny: {}",
+            format_seconds_since_step(point.x, origin_ns, x_step(bounds)),
+            compact_axis_label(point.y)
+        )
+    })
+}
+
 fn format_seconds_since_step(value_ns: f64, origin_ns: f64, step_ns: f64) -> String {
     let seconds = (value_ns - origin_ns) / 1_000_000_000.0;
     let step_seconds = (step_ns / 1_000_000_000.0).abs();
@@ -541,6 +578,14 @@ fn format_seconds_since_step(value_ns: f64, origin_ns: f64, step_ns: f64) -> Str
     } else {
         format!("{}s", format_seconds_number(value, step_seconds))
     }
+}
+
+fn x_step(bounds: &PlotBounds) -> f64 {
+    ((bounds.max()[0] - bounds.min()[0]).abs() / 6.0).max(1.0)
+}
+
+fn y_step(bounds: &PlotBounds) -> f64 {
+    ((bounds.max()[1] - bounds.min()[1]).abs() / 6.0).max(1.0)
 }
 
 pub fn compact_axis_label(value: f64) -> String {
