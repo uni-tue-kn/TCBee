@@ -1,5 +1,5 @@
 use egui::{RichText, ScrollArea};
-use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text};
+use egui_plot::{GridInput, GridMark, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text};
 
 use crate::{
     backend::db::DbBackend,
@@ -7,6 +7,10 @@ use crate::{
     settings::AppSettings,
     ui::{flow_table::FlowTable, series_table::SeriesTable},
 };
+
+const INITIAL_POINTS_TO_DROP: usize = 5;
+const PLOT_AXIS_FOOTER: f32 = 36.0;
+type PlotDataBounds = ((f64, f64), (f64, f64));
 
 pub struct TabSingleFlow {
     state: PlotState,
@@ -16,6 +20,7 @@ pub struct TabSingleFlow {
     manual_x_max: f64,
     apply_manual_x: bool,
     needs_fit: bool,
+    drop_initial_points: bool,
 }
 
 impl Default for TabSingleFlow {
@@ -28,6 +33,7 @@ impl Default for TabSingleFlow {
             manual_x_max: 1.0,
             apply_manual_x: false,
             needs_fit: false,
+            drop_initial_points: false,
         }
     }
 }
@@ -41,6 +47,7 @@ impl TabSingleFlow {
         self.manual_x_max = 1.0;
         self.apply_manual_x = false;
         self.needs_fit = false;
+        self.drop_initial_points = false;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
@@ -56,7 +63,13 @@ impl TabSingleFlow {
             .min_width(240.0)
             .max_width(500.0)
             .show_inside(ui, |ui| {
-                self.show_sidebar(ui, db, settings);
+                let sidebar_height = ui.available_height();
+                ScrollArea::vertical()
+                    .id_salt("single_flow_sidebar_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        self.show_sidebar(ui, db, settings, sidebar_height);
+                    });
             });
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -64,19 +77,25 @@ impl TabSingleFlow {
         });
     }
 
-    fn show_sidebar(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
+    fn show_sidebar(
+        &mut self,
+        ui: &mut egui::Ui,
+        db: &DbBackend,
+        settings: &AppSettings,
+        sidebar_height: f32,
+    ) {
         // ── Flow table ──────────────────────────────────────────────────
         ui.add_space(4.0);
         section_heading(ui, "Flow Selection");
 
         let flows = db.list_flows();
+        let flow_table_height = (sidebar_height * 0.45).max(120.0);
         if flows.is_empty() {
             ui.label(RichText::new("No flows found in database.").color(egui::Color32::GRAY));
         } else {
             // Reserve space for flow table — takes up top half of sidebar
-            let table_height = (ui.available_height() * 0.45).max(120.0);
             egui::Frame::none().show(ui, |ui| {
-                ui.set_max_height(table_height);
+                ui.set_max_height(flow_table_height);
                 if let Some(new_id) = self.flow_table.show(ui, &flows) {
                     self.state.select_flow(db, new_id);
                     self.manual_x_min = self.state.data_x_min;
@@ -88,7 +107,11 @@ impl TabSingleFlow {
 
         if self.state.flow_id.is_none() {
             ui.add_space(8.0);
-            ui.label(RichText::new("← Select a flow above.").color(egui::Color32::GRAY).italics());
+            ui.label(
+                RichText::new("← Select a flow above.")
+                    .color(egui::Color32::GRAY)
+                    .italics(),
+            );
             return;
         }
 
@@ -103,18 +126,39 @@ impl TabSingleFlow {
             ui.label(RichText::new("No time series in this flow.").color(egui::Color32::GRAY));
         } else {
             let selected_ids = self.state.selected_series_ids.clone();
-            let colors: Vec<(i64, egui::Color32)> =
-                self.state.series.iter().map(|s| (s.series_id, s.color)).collect();
+            let colors: Vec<(i64, egui::Color32)> = self
+                .state
+                .series
+                .iter()
+                .map(|s| (s.series_id, s.color))
+                .collect();
 
-            let metrics_height = (ui.available_height() - 120.0).max(80.0);
+            let metrics_height = (sidebar_height - flow_table_height - 180.0).max(100.0);
             egui::Frame::none().show(ui, |ui| {
                 ui.set_max_height(metrics_height);
                 if let Some(toggled_id) =
-                    self.series_table.show(ui, &available, &selected_ids, &colors)
+                    self.series_table
+                        .show(ui, &available, &selected_ids, &colors)
                 {
                     self.state.toggle_series(db, toggled_id, settings);
                     self.needs_fit = true;
                 }
+            });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let tooltip = "Values like CWND or SEQ can have large initial values. This removes them and fixes plots such as CWND.";
+                let checkbox_response = ui
+                    .checkbox(&mut self.drop_initial_points, "Drop first 5 points")
+                    .on_hover_text(tooltip);
+                if checkbox_response.changed() {
+                    self.needs_fit = true;
+                }
+                ui.add_sized(
+                    [18.0, 18.0],
+                    egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
+                )
+                .on_hover_text(tooltip);
             });
         }
 
@@ -124,21 +168,27 @@ impl TabSingleFlow {
         // ── View options ─────────────────────────────────────────────────
         section_heading(ui, "View");
 
-        if ui.checkbox(&mut self.state.split_view, "Split into separate plots").changed() {
+        if ui
+            .checkbox(&mut self.state.split_view, "Split into separate plots")
+            .changed()
+        {
             self.needs_fit = true;
         }
 
         ui.add_space(8.0);
         ui.label(RichText::new("X range").strong().size(12.0));
 
-        egui::Grid::new("x_range_grid").num_columns(2).spacing([6.0, 4.0]).show(ui, |ui| {
-            ui.label("Min:");
-            ui.add(egui::DragValue::new(&mut self.manual_x_min).speed(0.1));
-            ui.end_row();
-            ui.label("Max:");
-            ui.add(egui::DragValue::new(&mut self.manual_x_max).speed(0.1));
-            ui.end_row();
-        });
+        egui::Grid::new("x_range_grid")
+            .num_columns(2)
+            .spacing([6.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Min:");
+                ui.add(egui::DragValue::new(&mut self.manual_x_min).speed(0.1));
+                ui.end_row();
+                ui.label("Max:");
+                ui.add(egui::DragValue::new(&mut self.manual_x_max).speed(0.1));
+                ui.end_row();
+            });
 
         ui.horizontal(|ui| {
             if ui.button("Apply").clicked() {
@@ -156,9 +206,13 @@ impl TabSingleFlow {
         if self.state.series.is_empty() {
             ui.centered_and_justified(|ui| {
                 if self.state.flow_id.is_none() {
-                    ui.label(RichText::new("Select a flow from the sidebar.").color(egui::Color32::GRAY));
+                    ui.label(
+                        RichText::new("Select a flow from the sidebar.").color(egui::Color32::GRAY),
+                    );
                 } else {
-                    ui.label(RichText::new("Select metrics to display.").color(egui::Color32::GRAY));
+                    ui.label(
+                        RichText::new("Select metrics to display.").color(egui::Color32::GRAY),
+                    );
                 }
             });
             return;
@@ -184,17 +238,17 @@ impl TabSingleFlow {
 
             ui.separator();
             ui.label(RichText::new("String series (events):").strong());
-            ScrollArea::vertical().id_salt("string_series_scroll").max_height(120.0).show(
-                ui,
-                |ui| {
+            ScrollArea::vertical()
+                .id_salt("string_series_scroll")
+                .max_height(120.0)
+                .show(ui, |ui| {
                     for (name, color, points) in &string_data {
                         ui.label(RichText::new(name).color(*color).strong());
                         for (t, val) in points {
                             ui.label(format!("  t={:.4}  {}", t, val));
                         }
                     }
-                },
-            );
+                });
         }
     }
 
@@ -205,24 +259,39 @@ impl TabSingleFlow {
         self.apply_manual_x = false;
 
         let fit = std::mem::take(&mut self.needs_fit);
-        let fit_x_min = self.state.data_x_min;
-        let fit_x_max = self.state.data_x_max;
-        let (fit_y_min, fit_y_max) = self.state.y_bounds();
+        let drop_initial_points = self.drop_initial_points;
 
         let display: Vec<(Vec<[f64; 2]>, egui::Color32, String)> = self
             .state
             .series
             .iter()
             .filter(|s| !s.is_string_type())
-            .map(|s| (to_plot_points(&s.points), s.color, s.name.clone()))
+            .map(|s| {
+                let points = points_after_initial_drop(&s.points, drop_initial_points);
+                (to_plot_points(points), s.color, s.name.clone())
+            })
             .collect();
+        let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) = if drop_initial_points {
+            display_bounds(&display).unwrap_or((
+                (self.state.data_x_min, self.state.data_x_max),
+                self.state.y_bounds(),
+            ))
+        } else {
+            (
+                (self.state.data_x_min, self.state.data_x_max),
+                self.state.y_bounds(),
+            )
+        };
 
         let plot = Plot::new("single_combined")
             .allow_boxed_zoom(true)
             .allow_drag(true)
             .allow_scroll(true)
+            .x_grid_spacer(seconds_grid_spacer(self.state.data_x_min))
+            .x_axis_formatter(seconds_since_formatter(self.state.data_x_min))
+            .y_axis_formatter(time_or_compact_formatter(self.state.data_x_min))
             .legend(Legend::default())
-            .height(ui.available_height());
+            .height(plot_height_with_footer(ui.available_height()));
 
         let mut new_x_min = self.state.x_min;
         let mut new_x_max = self.state.x_max;
@@ -255,7 +324,9 @@ impl TabSingleFlow {
 
             for (pts, color, name) in &display {
                 plot_ui.line(
-                    Line::new(PlotPoints::from(pts.clone())).color(*color).name(name),
+                    Line::new(PlotPoints::from(pts.clone()))
+                        .color(*color)
+                        .name(name),
                 );
             }
         });
@@ -278,88 +349,113 @@ impl TabSingleFlow {
         self.apply_manual_x = false;
 
         let fit = std::mem::take(&mut self.needs_fit);
-        let fit_x_min = self.state.data_x_min;
-        let fit_x_max = self.state.data_x_max;
+        let drop_initial_points = self.drop_initial_points;
 
-        // Include global y bounds per series for explicit fit.
         let display: Vec<(i64, Vec<[f64; 2]>, egui::Color32, String, f64, f64)> = self
             .state
             .series
             .iter()
             .filter(|s| !s.is_string_type())
             .map(|s| {
-                (s.series_id, to_plot_points(&s.points), s.color, s.name.clone(),
-                 s.global_y_min, s.global_y_max)
+                let points = points_after_initial_drop(&s.points, drop_initial_points);
+                let pts = to_plot_points(points);
+                let (y_min, y_max) = if drop_initial_points {
+                    points_bounds(&pts)
+                        .map(|(_, y)| y)
+                        .unwrap_or((s.global_y_min, s.global_y_max))
+                } else {
+                    (s.global_y_min, s.global_y_max)
+                };
+                (s.series_id, pts, s.color, s.name.clone(), y_min, y_max)
             })
             .collect();
+        let (fit_x_min, fit_x_max) = if drop_initial_points {
+            merge_bounds(
+                display
+                    .iter()
+                    .filter_map(|(_, pts, _, _, _, _)| points_bounds(pts)),
+            )
+            .map(|(x, _)| x)
+            .unwrap_or((self.state.data_x_min, self.state.data_x_max))
+        } else {
+            (self.state.data_x_min, self.state.data_x_max)
+        };
 
-        let plot_height = (ui.available_height() / display.len().max(1) as f32).max(80.0);
+        let plot_height =
+            split_plot_height_with_footer(ui.available_height(), display.len().max(1));
 
         let mut needs_reload = false;
         let mut new_x_min = self.state.x_min;
         let mut new_x_max = self.state.x_max;
         let mut right_clicked = false;
 
-        ScrollArea::vertical().id_salt("split_scroll").show(ui, |ui| {
-            for (sid, pts, color, name, y_min, y_max) in &display {
-                ui.label(RichText::new(name).color(*color).strong());
+        ScrollArea::vertical()
+            .id_salt("split_scroll")
+            .show(ui, |ui| {
+                for (sid, pts, color, name, y_min, y_max) in &display {
+                    ui.label(RichText::new(name).color(*color).strong());
 
-                let plot = Plot::new(format!("split_{}", sid))
-                    .allow_boxed_zoom(true)
-                    .allow_drag(true)
-                    .allow_scroll(true)
-                    .link_axis("single_x_axis", [true, false])
-                    .height(plot_height);
+                    let plot = Plot::new(format!("split_{}", sid))
+                        .allow_boxed_zoom(true)
+                        .allow_drag(true)
+                        .allow_scroll(true)
+                        .link_axis("single_x_axis", [true, false])
+                        .x_grid_spacer(seconds_grid_spacer(self.state.data_x_min))
+                        .x_axis_formatter(seconds_since_formatter(self.state.data_x_min))
+                        .y_axis_formatter(time_or_compact_formatter(self.state.data_x_min))
+                        .height(plot_height);
 
-                let pr = plot.show(ui, |plot_ui| {
-                    if fit {
-                        // Fit both axes; skip needs_reload for same reason as combined view.
-                        let pad = (y_max - y_min).abs() * 0.05;
-                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                            [fit_x_min, y_min - pad],
-                            [fit_x_max, y_max + pad],
-                        ));
-                    } else {
-                        if apply_x {
-                            let cur = plot_ui.plot_bounds();
+                    let pr = plot.show(ui, |plot_ui| {
+                        if fit {
+                            // Fit both axes; skip needs_reload for same reason as combined view.
+                            let pad = (y_max - y_min).abs() * 0.05;
                             plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                [x_min, cur.min()[1]],
-                                [x_max, cur.max()[1]],
+                                [fit_x_min, y_min - pad],
+                                [fit_x_max, y_max + pad],
                             ));
+                        } else {
+                            if apply_x {
+                                let cur = plot_ui.plot_bounds();
+                                plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                    [x_min, cur.min()[1]],
+                                    [x_max, cur.max()[1]],
+                                ));
+                            }
+                            let bounds = plot_ui.plot_bounds();
+                            let vx_min = bounds.min()[0];
+                            let vx_max = bounds.max()[0];
+                            if self.state.needs_reload(vx_min, vx_max) {
+                                new_x_min = vx_min;
+                                new_x_max = vx_max;
+                                needs_reload = true;
+                            }
                         }
-                        let bounds = plot_ui.plot_bounds();
-                        let vx_min = bounds.min()[0];
-                        let vx_max = bounds.max()[0];
-                        if self.state.needs_reload(vx_min, vx_max) {
-                            new_x_min = vx_min;
-                            new_x_max = vx_max;
-                            needs_reload = true;
-                        }
+
+                        plot_ui.line(
+                            Line::new(PlotPoints::from(pts.clone()))
+                                .color(*color)
+                                .name(name),
+                        );
+
+                        // Show fit y bounds in the lower-right corner for debugging.
+                        let vb = plot_ui.plot_bounds();
+                        plot_ui.text(
+                            Text::new(
+                                PlotPoint::new(vb.max()[0], vb.min()[1]),
+                                format!("Fit y: [{:.4}, {:.4}]", y_min, y_max),
+                            )
+                            .anchor(egui::Align2::RIGHT_BOTTOM)
+                            .color(egui::Color32::from_gray(150)),
+                        );
+                    });
+
+                    if pr.response.secondary_clicked() {
+                        right_clicked = true;
                     }
 
-                    plot_ui.line(
-                        Line::new(PlotPoints::from(pts.clone())).color(*color).name(name),
-                    );
-
-                    // Show DB y bounds in the lower-right corner for debugging.
-                    let vb = plot_ui.plot_bounds();
-                    plot_ui.text(
-                        Text::new(
-                            PlotPoint::new(vb.max()[0], vb.min()[1]),
-                            format!("DB y: [{:.4}, {:.4}]", y_min, y_max),
-                        )
-                        .anchor(egui::Align2::RIGHT_BOTTOM)
-                        .color(egui::Color32::from_gray(150)),
-                    );
-                });
-
-                if pr.response.secondary_clicked() {
-                    right_clicked = true;
+                    ui.add_space(4.0);
                 }
-
-                ui.add_space(4.0);
-            }
-        });
+            });
 
         if right_clicked {
             self.needs_fit = true;
@@ -376,6 +472,216 @@ impl TabSingleFlow {
 /// Convert (f64, f64) pairs to egui_plot's expected [f64; 2] arrays.
 pub fn to_plot_points(pts: &[(f64, f64)]) -> Vec<[f64; 2]> {
     pts.iter().map(|&(x, y)| [x, y]).collect()
+}
+
+fn points_after_initial_drop(pts: &[(f64, f64)], drop_initial_points: bool) -> &[(f64, f64)] {
+    if drop_initial_points {
+        pts.get(INITIAL_POINTS_TO_DROP..).unwrap_or(&[])
+    } else {
+        pts
+    }
+}
+
+fn display_bounds(display: &[(Vec<[f64; 2]>, egui::Color32, String)]) -> Option<PlotDataBounds> {
+    merge_bounds(display.iter().filter_map(|(pts, _, _)| points_bounds(pts)))
+}
+
+fn merge_bounds(bounds_iter: impl Iterator<Item = PlotDataBounds>) -> Option<PlotDataBounds> {
+    bounds_iter.fold(
+        None,
+        |bounds, ((x_min, x_max), (y_min, y_max))| match bounds {
+            None => Some(((x_min, x_max), (y_min, y_max))),
+            Some(((cur_x_min, cur_x_max), (cur_y_min, cur_y_max))) => Some((
+                (cur_x_min.min(x_min), cur_x_max.max(x_max)),
+                (cur_y_min.min(y_min), cur_y_max.max(y_max)),
+            )),
+        },
+    )
+}
+
+fn points_bounds(pts: &[[f64; 2]]) -> Option<PlotDataBounds> {
+    pts.iter().fold(None, |bounds, [x, y]| match bounds {
+        None => Some(((*x, *x), (*y, *y))),
+        Some(((x_min, x_max), (y_min, y_max))) => Some((
+            (x_min.min(*x), x_max.max(*x)),
+            (y_min.min(*y), y_max.max(*y)),
+        )),
+    })
+}
+
+pub fn seconds_since_formatter(
+    origin_ns: f64,
+) -> impl Fn(GridMark, &std::ops::RangeInclusive<f64>) -> String {
+    move |mark, _| format_seconds_since_step(mark.value, origin_ns, mark.step_size)
+}
+
+pub fn time_or_compact_formatter(
+    origin_ns: f64,
+) -> impl Fn(GridMark, &std::ops::RangeInclusive<f64>) -> String {
+    move |mark, range| {
+        if range_looks_like_ktime_ns(range, origin_ns) {
+            format_seconds_since_step(mark.value, origin_ns, mark.step_size)
+        } else {
+            compact_axis_label(mark.value)
+        }
+    }
+}
+
+fn format_seconds_since_step(value_ns: f64, origin_ns: f64, step_ns: f64) -> String {
+    let seconds = (value_ns - origin_ns) / 1_000_000_000.0;
+    let step_seconds = (step_ns / 1_000_000_000.0).abs();
+    let value = if seconds.abs() < 0.000_000_001 {
+        0.0
+    } else {
+        seconds
+    };
+
+    if value.abs() >= 1_000_000.0 {
+        format!("{}s", compact_axis_label(value))
+    } else {
+        format!("{}s", format_seconds_number(value, step_seconds))
+    }
+}
+
+pub fn compact_axis_label(value: f64) -> String {
+    let abs = value.abs();
+    if abs >= 1_000_000_000_000.0 {
+        format_scaled(value, 1_000_000_000_000.0, "T")
+    } else if abs >= 1_000_000_000.0 {
+        format_scaled(value, 1_000_000_000.0, "G")
+    } else if abs >= 1_000_000.0 {
+        format_scaled(value, 1_000_000.0, "M")
+    } else if abs >= 1_000.0 {
+        format_scaled(value, 1_000.0, "k")
+    } else if value != 0.0 && abs < 0.001 {
+        format_scaled(value, 0.000_001, "u")
+    } else if value.fract().abs() < f64::EPSILON {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.3}")
+    }
+}
+
+pub fn seconds_grid_spacer(origin_ns: f64) -> impl Fn(GridInput) -> Vec<GridMark> {
+    move |input| {
+        let (min_ns, max_ns) = if input.bounds.0 <= input.bounds.1 {
+            input.bounds
+        } else {
+            (input.bounds.1, input.bounds.0)
+        };
+        let span_seconds = (max_ns - min_ns).abs() / 1_000_000_000.0;
+        if span_seconds <= 0.0 || !span_seconds.is_finite() {
+            return Vec::new();
+        }
+
+        let major_step_seconds = nice_seconds_step(span_seconds / 6.0);
+        let major_step_ns = major_step_seconds * 1_000_000_000.0;
+
+        let mut marks = Vec::new();
+        push_second_marks(
+            &mut marks,
+            origin_ns,
+            min_ns,
+            max_ns,
+            major_step_seconds,
+            major_step_ns,
+        );
+        marks.sort_by(|a, b| {
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        marks
+    }
+}
+
+fn format_seconds_number(value: f64, step_seconds: f64) -> String {
+    if step_seconds >= 1.0 {
+        format!("{value:.0}")
+    } else if step_seconds >= 0.1 {
+        format!("{value:.1}")
+    } else if step_seconds >= 0.01 {
+        format!("{value:.2}")
+    } else if step_seconds >= 0.001 {
+        format!("{value:.3}")
+    } else {
+        format!("{value:.4}")
+    }
+}
+
+fn format_scaled(value: f64, scale: f64, suffix: &str) -> String {
+    let scaled = value / scale;
+    if scaled.abs() >= 100.0 || scaled.fract().abs() < 0.005 {
+        format!("{scaled:.0}{suffix}")
+    } else if scaled.abs() >= 10.0 {
+        format!("{scaled:.1}{suffix}")
+    } else {
+        format!("{scaled:.2}{suffix}")
+    }
+}
+
+fn nice_seconds_step(base_step_seconds: f64) -> f64 {
+    if base_step_seconds <= 0.0 || !base_step_seconds.is_finite() {
+        return 1.0;
+    }
+
+    let magnitude = 10_f64.powi(base_step_seconds.log10().floor() as i32);
+    for multiplier in [1.0, 2.0, 5.0, 10.0] {
+        let step = multiplier * magnitude;
+        if step >= base_step_seconds {
+            return step;
+        }
+    }
+    10.0 * magnitude
+}
+
+fn push_second_marks(
+    marks: &mut Vec<GridMark>,
+    origin_ns: f64,
+    min_ns: f64,
+    max_ns: f64,
+    step_seconds: f64,
+    step_ns: f64,
+) {
+    if step_seconds <= 0.0 || !step_seconds.is_finite() {
+        return;
+    }
+
+    let first = ((min_ns - origin_ns) / step_ns).floor() as i64 - 1;
+    let last = ((max_ns - origin_ns) / step_ns).ceil() as i64 + 1;
+    for i in first..=last {
+        marks.push(GridMark {
+            value: origin_ns + i as f64 * step_ns,
+            step_size: step_ns,
+        });
+    }
+}
+
+fn range_looks_like_ktime_ns(range: &std::ops::RangeInclusive<f64>, origin_ns: f64) -> bool {
+    let start = *range.start();
+    let end = *range.end();
+    if !origin_ns.is_finite()
+        || !start.is_finite()
+        || !end.is_finite()
+        || origin_ns.abs() < 1_000_000_000.0
+    {
+        return false;
+    }
+
+    let lo = start.min(end);
+    let hi = start.max(end);
+    let span = (hi - lo).abs();
+    let midpoint = (lo + hi) * 0.5;
+    (midpoint - origin_ns).abs() <= span.max(60_000_000_000.0) * 4.0
+}
+
+pub fn plot_height_with_footer(available_height: f32) -> f32 {
+    (available_height - PLOT_AXIS_FOOTER).max(80.0)
+}
+
+pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -> f32 {
+    let count = plot_count.max(1) as f32;
+    ((available_height - PLOT_AXIS_FOOTER) / count).max(80.0)
 }
 
 fn section_heading(ui: &mut egui::Ui, label: &str) {

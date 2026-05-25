@@ -11,7 +11,9 @@ pub struct UpperWindowPlugin {
 
 impl Default for UpperWindowPlugin {
     fn default() -> Self {
-        Self { required: vec!["SND_UNA".to_string(), "SND_WND".to_string()] }
+        Self {
+            required: vec!["SND_UNA".to_string(), "SND_WND".to_string()],
+        }
     }
 }
 
@@ -45,9 +47,7 @@ impl Plugin for UpperWindowPlugin {
         let mut y_min = f64::MAX;
         let mut y_max = f64::MIN;
 
-        for ((t_una, v_una), (_, v_wnd)) in
-            snd_una.raw_data.iter().zip(snd_wnd.raw_data.iter())
-        {
+        for ((t_una, v_una), (_, v_wnd)) in snd_una.raw_data.iter().zip(snd_wnd.raw_data.iter()) {
             let sum = match ts_type {
                 0 => {
                     let DataValue::Int(a) = v_una else { continue };

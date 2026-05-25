@@ -64,7 +64,9 @@ impl SeriesTable {
 
         if visible.is_empty() {
             ui.label(
-                RichText::new("No metrics match the filter.").color(Color32::GRAY).italics(),
+                RichText::new("No metrics match the filter.")
+                    .color(Color32::GRAY)
+                    .italics(),
             );
             return None;
         }
@@ -105,10 +107,8 @@ impl SeriesTable {
                             let (ts, count) = visible[i];
                             let sid = ts.id;
                             let is_selected = selected_ids.contains(&sid);
-                            let dot_color = colors
-                                .iter()
-                                .find(|&&(id, _)| id == sid)
-                                .map(|&(_, c)| c);
+                            let dot_color =
+                                colors.iter().find(|&&(id, _)| id == sid).map(|&(_, c)| c);
 
                             let base = if is_selected {
                                 ROW_SELECTED
@@ -122,7 +122,11 @@ impl SeriesTable {
                                 ui.set_height(ROW_HEIGHT);
                                 let rect = ui.max_rect();
                                 let hovered = ui.rect_contains_pointer(rect);
-                                let bg = if hovered && !is_selected { ROW_HOVER } else { base };
+                                let bg = if hovered && !is_selected {
+                                    ROW_HOVER
+                                } else {
+                                    base
+                                };
                                 ui.painter().rect_filled(rect, 0.0, bg);
 
                                 // Checkbox / color dot cell
@@ -167,7 +171,11 @@ impl SeriesTable {
                             // Clicking anywhere in the row toggles the series
                             let row_rect = row_resp.response.rect;
                             if ui
-                                .interact(row_rect, ui.id().with(("srow", sid)), egui::Sense::click())
+                                .interact(
+                                    row_rect,
+                                    ui.id().with(("srow", sid)),
+                                    egui::Sense::click(),
+                                )
                                 .clicked()
                             {
                                 toggled = Some(sid);
@@ -195,8 +203,11 @@ fn header_cell(ui: &mut Ui, label: &str, width: f32) {
 }
 
 fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) {
-    let color =
-        if selected { Color32::from_rgb(20, 40, 80) } else { Color32::from_rgb(30, 30, 40) };
+    let color = if selected {
+        Color32::from_rgb(20, 40, 80)
+    } else {
+        Color32::from_rgb(30, 30, 40)
+    };
     ui.add_sized(
         [width, ROW_HEIGHT],
         egui::Label::new(RichText::new(text).color(color).size(12.0)).truncate(),
@@ -212,7 +223,11 @@ fn type_cell(ui: &mut Ui, val_type: &DataValue, width: f32, selected: bool) {
 }
 
 fn count_cell(ui: &mut Ui, count: i64, width: f32, selected: bool) {
-    let color = if selected { Color32::from_rgb(40, 60, 120) } else { Color32::from_gray(90) };
+    let color = if selected {
+        Color32::from_rgb(40, 60, 120)
+    } else {
+        Color32::from_gray(90)
+    };
     let text = if count >= 1_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
     } else if count >= 1_000 {

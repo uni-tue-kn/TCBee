@@ -1,12 +1,9 @@
+use crate::ui::{flow_table::FlowTable, tab_single_flow::to_plot_points};
 use egui::RichText;
 use egui_plot::{Legend, Line, Plot, PlotPoints};
-use crate::ui::{flow_table::FlowTable, tab_single_flow::to_plot_points};
 
 use crate::{
-    backend::{
-        db::DbBackend,
-        plugin::PluginKind,
-    },
+    backend::{db::DbBackend, plugin::PluginKind},
     data::{preprocessing::generate_colors, series_data::SeriesData},
     settings::AppSettings,
 };
@@ -117,7 +114,10 @@ impl TabProcess {
         ui.separator();
 
         let can_preview = self.flow_table.selected_id.is_some() && self.selected_plugin.is_some();
-        if ui.add_enabled(can_preview, egui::Button::new("Load & Preview")).clicked() {
+        if ui
+            .add_enabled(can_preview, egui::Button::new("Load & Preview"))
+            .clicked()
+        {
             self.run_preview(db);
         }
 
@@ -134,7 +134,10 @@ impl TabProcess {
         if !self.preview_series.is_empty() {
             ui.add_space(8.0);
             let can_save = self.flow_table.selected_id.is_some();
-            if ui.add_enabled(can_save, egui::Button::new("Save to database")).clicked() {
+            if ui
+                .add_enabled(can_save, egui::Button::new("Save to database"))
+                .clicked()
+            {
                 self.save_results(db);
             }
             if !self.save_status.is_empty() {
@@ -175,7 +178,8 @@ impl TabProcess {
     }
 
     fn run_preview(&mut self, db: &DbBackend) {
-        let (Some(flow_id), Some(plugin_kind)) = (self.flow_table.selected_id, self.selected_plugin)
+        let (Some(flow_id), Some(plugin_kind)) =
+            (self.flow_table.selected_id, self.selected_plugin)
         else {
             return;
         };
@@ -201,7 +205,9 @@ impl TabProcess {
 
         self.input_series.clear();
         for (i, &sid) in series_ids.iter().enumerate() {
-            let Some(ts) = db.get_series_by_id(sid) else { continue };
+            let Some(ts) = db.get_series_by_id(sid) else {
+                continue;
+            };
             let (y_min, y_max) = db.get_series_y_bounds(&[sid]).unwrap_or((0.0, 1.0));
             let color = colors.get(i).copied().unwrap_or(egui::Color32::WHITE);
             let mut sd = SeriesData::new(
@@ -217,7 +223,9 @@ impl TabProcess {
             // Load raw data for plugin computation
             sd.raw_data = db.load_all(sid);
             // Also load points for visualisation
-            sd.points = sd.raw_data.iter()
+            sd.points = sd
+                .raw_data
+                .iter()
                 .filter_map(|(t, v)| crate::backend::db::datavalue_as_f64(v).map(|f| (*t, f)))
                 .collect();
             sd.loaded_range = Some((x_min, x_max));
@@ -227,10 +235,7 @@ impl TabProcess {
         match plugin.compute(&self.input_series) {
             Ok(results) => {
                 self.preview_series = results;
-                self.status = format!(
-                    "OK — {} new series computed.",
-                    self.preview_series.len()
-                );
+                self.status = format!("OK — {} new series computed.", self.preview_series.len());
             }
             Err(e) => {
                 self.status = format!("Error: {}", e);
@@ -239,7 +244,9 @@ impl TabProcess {
     }
 
     fn save_results(&mut self, db: &DbBackend) {
-        let Some(flow_id) = self.flow_table.selected_id else { return };
+        let Some(flow_id) = self.flow_table.selected_id else {
+            return;
+        };
         let Some(flow) = db.get_flow_by_id(flow_id) else {
             self.save_status = "Error: flow not found".to_string();
             return;

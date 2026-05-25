@@ -22,7 +22,10 @@ pub struct FlowTable {
 
 impl Default for FlowTable {
     fn default() -> Self {
-        Self { filter: String::new(), selected_id: None }
+        Self {
+            filter: String::new(),
+            selected_id: None,
+        }
     }
 }
 
@@ -61,7 +64,11 @@ impl FlowTable {
             .collect();
 
         if visible.is_empty() {
-            ui.label(RichText::new("No flows match the filter.").color(Color32::GRAY).italics());
+            ui.label(
+                RichText::new("No flows match the filter.")
+                    .color(Color32::GRAY)
+                    .italics(),
+            );
             return None;
         }
 
@@ -105,8 +112,13 @@ impl FlowTable {
                             let fid = flow.id;
                             let is_selected = self.selected_id == Some(fid);
 
-                            let base_color =
-                                if is_selected { ROW_SELECTED } else if i % 2 == 0 { ROW_EVEN } else { ROW_ODD };
+                            let base_color = if is_selected {
+                                ROW_SELECTED
+                            } else if i % 2 == 0 {
+                                ROW_EVEN
+                            } else {
+                                ROW_ODD
+                            };
 
                             let row_response = ui.horizontal(|ui| {
                                 ui.set_height(ROW_HEIGHT);
@@ -114,7 +126,11 @@ impl FlowTable {
                                 let rect = ui.max_rect();
                                 let hovered = ui.rect_contains_pointer(rect);
                                 let bg = if is_selected {
-                                    if hovered { ROW_SELECTED_HOVER } else { ROW_SELECTED }
+                                    if hovered {
+                                        ROW_SELECTED_HOVER
+                                    } else {
+                                        ROW_SELECTED
+                                    }
                                 } else if hovered {
                                     ROW_HOVER
                                 } else {
@@ -131,7 +147,14 @@ impl FlowTable {
 
                             // Make the whole row clickable
                             let row_rect = row_response.response.rect;
-                            if ui.interact(row_rect, ui.id().with(("row", fid)), egui::Sense::click()).clicked() {
+                            if ui
+                                .interact(
+                                    row_rect,
+                                    ui.id().with(("row", fid)),
+                                    egui::Sense::click(),
+                                )
+                                .clicked()
+                            {
                                 if !is_selected {
                                     self.selected_id = Some(fid);
                                     new_selection = Some(fid);
@@ -177,7 +200,11 @@ fn header_cell(ui: &mut Ui, label: &str, width: f32) {
 }
 
 fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) {
-    let color = if selected { Color32::from_rgb(20, 40, 80) } else { Color32::from_rgb(30, 30, 40) };
+    let color = if selected {
+        Color32::from_rgb(20, 40, 80)
+    } else {
+        Color32::from_rgb(30, 30, 40)
+    };
     ui.add_sized(
         [width, ROW_HEIGHT],
         egui::Label::new(RichText::new(text).color(color).size(12.0)).truncate(),

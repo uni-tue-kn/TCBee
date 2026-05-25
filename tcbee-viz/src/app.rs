@@ -1,12 +1,11 @@
+use std::path::PathBuf;
+
 use crate::{
     backend::db::DbBackend,
     settings::AppSettings,
     ui::{
-        tab_home::TabHome,
-        tab_multi_flow::TabMultiFlow,
-        tab_process::TabProcess,
-        tab_settings::TabSettings,
-        tab_single_flow::TabSingleFlow,
+        tab_home::TabHome, tab_multi_flow::TabMultiFlow, tab_process::TabProcess,
+        tab_settings::TabSettings, tab_single_flow::TabSingleFlow,
     },
 };
 
@@ -65,7 +64,10 @@ impl eframe::App for TcbeeApp {
 
         // Apply font size
         let mut style = (*ctx.style()).clone();
-        style.text_styles.values_mut().for_each(|s| s.size = self.settings.text_size);
+        style
+            .text_styles
+            .values_mut()
+            .for_each(|s| s.size = self.settings.text_size);
         ctx.set_style(style);
 
         // Tab bar
@@ -83,29 +85,50 @@ impl eframe::App for TcbeeApp {
         });
 
         // Main content
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.active_tab {
-                Tab::Home => {
-                    self.tab_home.show(ui, &mut self.db, &mut self.settings);
-                }
-                Tab::Single => {
-                    self.tab_single.show(ui, &self.db, &self.settings);
-                }
-                Tab::Multi => {
-                    self.tab_multi.show(ui, &self.db, &self.settings);
-                }
-                Tab::Process => {
-                    self.tab_process.show(ui, &self.db, &self.settings);
-                }
-                Tab::Settings => {
-                    self.tab_settings.show(ui, &mut self.settings);
-                }
+        egui::CentralPanel::default().show(ctx, |ui| match self.active_tab {
+            Tab::Home => {
+                self.tab_home.show(ui, &mut self.db, &mut self.settings);
+            }
+            Tab::Single => {
+                self.tab_single.show(ui, &self.db, &self.settings);
+            }
+            Tab::Multi => {
+                self.tab_multi.show(ui, &self.db, &self.settings);
+            }
+            Tab::Process => {
+                self.tab_process.show(ui, &self.db, &self.settings);
+            }
+            Tab::Settings => {
+                self.tab_settings.show(ui, &mut self.settings);
             }
         });
     }
 }
 
 impl TcbeeApp {
+    pub fn new(database_path: Option<PathBuf>) -> Self {
+        let mut app = Self::default();
+
+        if let Some(path) = database_path {
+            match DbBackend::open(path.clone()) {
+                Ok(db) => {
+                    app.db = db;
+                    app.tab_home
+                        .set_status(format!("Connected: {}", path.to_string_lossy()));
+                }
+                Err(e) => {
+                    app.tab_home.set_status(format!(
+                        "Error opening {}: {}",
+                        path.to_string_lossy(),
+                        e
+                    ));
+                }
+            }
+        }
+
+        app
+    }
+
     fn reset_tab(&mut self, tab: Tab) {
         match tab {
             Tab::Single => self.tab_single.reset(),

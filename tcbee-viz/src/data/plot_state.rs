@@ -81,7 +81,11 @@ impl PlotState {
 
     /// Toggle a series on/off. Assigns a color when added.
     pub fn toggle_series(&mut self, db: &DbBackend, series_id: i64, settings: &AppSettings) {
-        if let Some(pos) = self.selected_series_ids.iter().position(|&id| id == series_id) {
+        if let Some(pos) = self
+            .selected_series_ids
+            .iter()
+            .position(|&id| id == series_id)
+        {
             self.selected_series_ids.remove(pos);
             self.series.retain(|s| s.series_id != series_id);
         } else {
@@ -113,9 +117,21 @@ impl PlotState {
 
     /// Returns the combined y extent across all loaded series.
     pub fn y_bounds(&self) -> (f64, f64) {
-        let y_min = self.series.iter().map(|s| s.global_y_min).fold(f64::MAX, f64::min);
-        let y_max = self.series.iter().map(|s| s.global_y_max).fold(f64::MIN, f64::max);
-        if y_min > y_max { (0.0, 1.0) } else { (y_min, y_max) }
+        let y_min = self
+            .series
+            .iter()
+            .map(|s| s.global_y_min)
+            .fold(f64::MAX, f64::min);
+        let y_max = self
+            .series
+            .iter()
+            .map(|s| s.global_y_max)
+            .fold(f64::MIN, f64::max);
+        if y_min > y_max {
+            (0.0, 1.0)
+        } else {
+            (y_min, y_max)
+        }
     }
 
     /// Returns true when the visible window has shifted more than 10% of the loaded span.

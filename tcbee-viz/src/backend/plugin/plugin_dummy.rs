@@ -11,7 +11,9 @@ pub struct DummyPlugin {
 
 impl Default for DummyPlugin {
     fn default() -> Self {
-        Self { required: vec!["ack_num".to_string(), "seq_num".to_string()] }
+        Self {
+            required: vec!["ack_num".to_string(), "seq_num".to_string()],
+        }
     }
 }
 
@@ -44,7 +46,11 @@ impl Plugin for DummyPlugin {
         let points: Vec<(f64, f64)> = raw_data
             .iter()
             .filter_map(|(t, v)| {
-                if let DataValue::Float(f) = v { Some((*t, *f)) } else { None }
+                if let DataValue::Float(f) = v {
+                    Some((*t, *f))
+                } else {
+                    None
+                }
             })
             .collect();
 

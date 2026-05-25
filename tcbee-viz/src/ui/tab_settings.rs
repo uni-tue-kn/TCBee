@@ -18,8 +18,7 @@ impl TabSettings {
 
                 ui.label("Skip every Nth point:");
                 ui.add(
-                    egui::Slider::new(&mut settings.skip_every_nth, 1..=100)
-                        .text("(1 = draw all)"),
+                    egui::Slider::new(&mut settings.skip_every_nth, 1..=100).text("(1 = draw all)"),
                 );
                 ui.end_row();
 
