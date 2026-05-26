@@ -2,10 +2,13 @@ use std::{
     fmt,
     fs::{File, OpenOptions},
     io::{self, ErrorKind, Write},
+    mem,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use aya::maps::{MapData, RingBuf};
@@ -17,32 +20,42 @@ use serde::Serialize;
 use crate::config::WRITER_BUFFER_SIZE;
 
 const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
-const IDLE_WAIT: Duration = Duration::from_millis(2);
 
-type JobBox = Box<dyn Job>;
-
-/// Serializes entries pulled from eBPF maps and writes them to files on a single worker thread.
+/// Serializes entries pulled from eBPF maps and writes them to files.
+///
+/// Each registered ring buffer gets its own dedicated OS thread so that a busy
+/// probe cannot starve others. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so
+/// one thread per buffer is both the safe and the optimal arrangement.
 pub struct Writer {
-    tx: Sender<WriterCommand>,
-    handle: Option<JoinHandle<()>>,
+    running: Arc<AtomicBool>,
+    handles: Vec<JoinHandle<()>>,
+    /// CPU IDs to pin writer threads to, assigned round-robin.
+    /// Requires `isolcpus=<ids>` in the kernel boot parameters for full isolation.
+    cpu_pool: Vec<usize>,
+    next_cpu: usize,
 }
 
 impl Writer {
-    /// Spawn a dedicated worker thread.
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<WriterCommand>();
-
-        let handle = thread::spawn(move || worker_loop(rx));
-
         Writer {
-            tx,
-            handle: Some(handle),
+            running: Arc::new(AtomicBool::new(true)),
+            handles: Vec::new(),
+            cpu_pool: Vec::new(),
+            next_cpu: 0,
         }
     }
 
-    /// Register a ring buffer map whose entries should be written
+    /// Pin each writer thread to one of the given CPU IDs (round-robin).
+    /// For full isolation, also boot with `isolcpus=<ids>` so the kernel
+    /// scheduler never places other tasks on those cores.
+    pub fn with_cpu_affinity(mut self, cpus: Vec<usize>) -> Self {
+        self.cpu_pool = cpus;
+        self
+    }
+
+    /// Register a ring buffer map. Spawns a dedicated worker thread immediately.
     pub fn register<T>(
-        &self,
+        &mut self,
         map: RingBuf<MapData>,
         file_path: impl Into<PathBuf>,
     ) -> Result<(), WriterError>
@@ -50,30 +63,86 @@ impl Writer {
         T: Serialize + Copy + Send + 'static,
     {
         let job = MapWriterJob::<T>::new(map, file_path.into())?;
+        let running = self.running.clone();
 
-        self.tx
-            .send(WriterCommand::Register(Box::new(job)))
-            .map_err(|_| WriterError::WorkerClosed)
-    }
+        let cpu = if self.cpu_pool.is_empty() {
+            None
+        } else {
+            let id = self.cpu_pool[self.next_cpu % self.cpu_pool.len()];
+            self.next_cpu += 1;
+            Some(id)
+        };
 
-    /// Flush outstanding data and stop the worker thread.
-    pub fn shutdown(mut self) -> Result<(), WriterError> {
-        self.send_shutdown()?;
-        self.join()?;
+        debug!(
+            "Spawning writer thread for {} (cpu: {:?})",
+            job.file_path.display(),
+            cpu
+        );
+
+        let handle = thread::spawn(move || job_loop(Box::new(job), running, cpu));
+        self.handles.push(handle);
+
         Ok(())
     }
 
-    fn send_shutdown(&mut self) -> Result<(), WriterError> {
-        self.tx
-            .send(WriterCommand::Shutdown)
-            .map_err(|_| WriterError::WorkerClosed)
+    /// Signal all worker threads to stop, flush their buffers, and join them.
+    pub fn shutdown(mut self) -> Result<(), WriterError> {
+        self.signal_stop();
+        self.join_all()
     }
 
-    fn join(&mut self) -> Result<(), WriterError> {
-        if let Some(handle) = self.handle.take() {
+    fn signal_stop(&self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+
+    fn join_all(&mut self) -> Result<(), WriterError> {
+        for handle in self.handles.drain(..) {
             handle.join().map_err(|_| WriterError::WorkerPanicked)?;
         }
         Ok(())
+    }
+}
+
+fn pin_to_cpu(cpu_id: usize) {
+    unsafe {
+        let mut set: libc::cpu_set_t = mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        libc::CPU_SET(cpu_id, &mut set);
+        let ret = libc::sched_setaffinity(0, mem::size_of::<libc::cpu_set_t>(), &set);
+        if ret != 0 {
+            error!("Failed to pin writer thread to CPU {}: errno {}", cpu_id, io::Error::last_os_error());
+        } else {
+            info!("Writer thread pinned to CPU {}", cpu_id);
+        }
+    }
+}
+
+fn job_loop(mut job: Box<dyn Job>, running: Arc<AtomicBool>, cpu: Option<usize>) {
+    if let Some(cpu_id) = cpu {
+        pin_to_cpu(cpu_id);
+    }
+
+    while running.load(Ordering::Relaxed) {
+        match job.poll() {
+            Ok(()) => {}
+            Err(err) => {
+                error!(
+                    "Writer job {} failed: {}. Stopping thread.",
+                    job.name(),
+                    err
+                );
+                break;
+            }
+        }
+        thread::yield_now();
+    }
+
+    if let Err(err) = job.flush() {
+        error!(
+            "Failed to flush job {} during shutdown: {}",
+            job.name(),
+            err
+        );
     }
 }
 
@@ -207,18 +276,18 @@ impl Default for Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
-        if self.handle.is_none() {
+        if self.handles.is_empty() {
             return;
         }
-
-        if self.send_shutdown().is_ok() {
-            let _ = self.join();
+        self.signal_stop();
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
         }
     }
 }
 
 trait Job: Send {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn poll(&mut self) -> Result<(), JobError>;
     fn flush(&mut self) -> Result<(), JobError>;
 }
@@ -267,8 +336,8 @@ impl<T> Job for MapWriterJob<T>
 where
     T: Serialize + Copy + Send + 'static,
 {
-    fn name(&self) -> &'static str {
-        std::any::type_name::<T>()
+    fn name(&self) -> &str {
+        self.file_path.to_str().unwrap_or("<unknown>")
     }
 
     fn poll(&mut self) -> Result<(), JobError> {
@@ -279,12 +348,10 @@ where
         };
 
         while let Some(entry) = self.map.next() {
-            // Safety: the map entry is the same struct T that the eBPF program writes.
             let value = unsafe { *(entry.as_ptr() as *const T) };
             drop(entry);
 
             bincode::serialize_into(&mut *sink, &value).map_err(JobError::Serialize)?;
-
             sink.write_all(&RECORD_DELIMITER).map_err(JobError::Io)?;
 
             reads += 1;
@@ -292,9 +359,8 @@ where
 
         if reads > 0 {
             trace!(
-                "Wrote {} records of {} to {}",
+                "Wrote {} records to {}",
                 reads,
-                std::any::type_name::<T>(),
                 self.file_path.display()
             );
         }
@@ -310,96 +376,9 @@ where
     }
 }
 
-fn worker_loop(rx: Receiver<WriterCommand>) {
-    let mut jobs: Vec<JobBox> = Vec::new();
-    let mut running = true;
-
-    while running {
-        // Drain pending commands without blocking.
-        loop {
-            match rx.try_recv() {
-                Ok(command) => handle_command(command, &mut jobs, &mut running),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    running = false;
-                    break;
-                }
-            }
-        }
-
-        if !running {
-            break;
-        }
-
-        if jobs.is_empty() {
-            match rx.recv_timeout(IDLE_WAIT) {
-                Ok(command) => handle_command(command, &mut jobs, &mut running),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    running = false;
-                }
-            }
-            continue;
-        }
-
-        let mut idx = 0;
-        while idx < jobs.len() {
-            match jobs[idx].poll() {
-                Ok(()) => idx += 1,
-                Err(err) => {
-                    error!(
-                        "Writer job {} failed: {}. Dropping job.",
-                        jobs[idx].name(),
-                        err
-                    );
-                    let mut job = jobs.remove(idx);
-                    if let Err(flush_err) = job.flush() {
-                        error!(
-                            "Failed to flush job {} after error: {}",
-                            job.name(),
-                            flush_err
-                        );
-                    }
-                }
-            }
-        }
-
-        thread::yield_now();
-    }
-
-    // Flush remaining jobs before shutting down.
-    for mut job in jobs {
-        if let Err(err) = job.flush() {
-            error!(
-                "Failed to flush job {} during shutdown: {}",
-                job.name(),
-                err
-            );
-        }
-    }
-}
-
-fn handle_command(command: WriterCommand, jobs: &mut Vec<JobBox>, running: &mut bool) {
-    match command {
-        WriterCommand::Register(job) => {
-            debug!("Registered new writer job {}", job.name());
-            jobs.push(job);
-        }
-        WriterCommand::Shutdown => {
-            *running = false;
-        }
-    }
-}
-
-enum WriterCommand {
-    Register(JobBox),
-    Shutdown,
-}
-
 #[derive(Debug)]
 pub enum WriterError {
     Io(io::Error),
-    WorkerClosed,
     WorkerPanicked,
 }
 
@@ -407,7 +386,6 @@ impl fmt::Display for WriterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WriterError::Io(err) => write!(f, "I/O error: {}", err),
-            WriterError::WorkerClosed => write!(f, "writer worker is no longer running"),
             WriterError::WorkerPanicked => write!(f, "writer worker thread panicked"),
         }
     }
