@@ -108,7 +108,7 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                         //flags
                         flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
-                    entry.submit(0);
+                    entry.submit(1);
                     let _ = try_handled_counter();
                 } else {
                     // Not enough space, drop event
@@ -182,7 +182,7 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                         //flags
                         flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
-                    entry.submit(0);
+                    entry.submit(1);
                     let _ = try_handled_counter();
                 } else {
                     // Not enough space, drop event
@@ -292,7 +292,7 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                         //flags
                         flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
-                    entry.submit(0);
+                    entry.submit(1);
                     let _ = try_handled_counter();
                 } else {
                     // Not enough space, drop event
@@ -364,7 +364,7 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                         //flags
                         flags: tcp_hdr._bitfield_1.get(8, 8) as u8,
                     });
-                    entry.submit(0);
+                    entry.submit(1);
                     let _ = try_handled_counter();
                 } else {
                     // Not enough space, drop event

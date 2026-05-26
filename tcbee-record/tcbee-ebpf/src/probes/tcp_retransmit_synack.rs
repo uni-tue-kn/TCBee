@@ -71,7 +71,7 @@ pub fn try_tcp_retransmit_synack(ctx: TracePointContext) -> Result<u32, u32> {
         if let Some(mut entry) = reserved {
             // Enough space, write and track handled events
             entry.write(queue_entry);
-            entry.submit(0);
+            entry.submit(1);
             let _ = try_handled_counter();
         } else {
             // Not enough space, drop event

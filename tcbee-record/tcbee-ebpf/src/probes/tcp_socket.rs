@@ -92,7 +92,7 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
                 family: (*sk_ptr).__sk_common.skc_family,
                 snd_cwnd: read_kernel(&(*tcp_sck_ptr).snd_cwnd),
             });
-            entry.submit(0);
+            entry.submit(1);
             let _ = try_send_tcp_sock();
             let _ = try_handled_counter();
         } else {
@@ -138,7 +138,7 @@ pub fn try_sock_sendmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
                 family: (*sk_ptr).__sk_common.skc_family,
                 snd_cwnd: read_kernel(&(*tcp_sck_ptr).snd_cwnd),
             });
-            entry.submit(0);
+            entry.submit(1);
             let _ = try_send_tcp_sock();
             let _ = try_handled_counter();
         } else {
@@ -223,7 +223,7 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
 
             // Enough space, write and track handled events
             //entry.write(sock_entry);
-            entry.submit(0);
+            entry.submit(1);
             let _ = try_send_tcp_sock();
             let _ = try_handled_counter();
         } else {
@@ -308,7 +308,7 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
 
             // Enough space, write and track handled events
             //entry.write(sock_entry);
-            entry.submit(0);
+            entry.submit(1);
             let _ = try_recv_tcp_sock();
             let _ = try_handled_counter();
         } else {

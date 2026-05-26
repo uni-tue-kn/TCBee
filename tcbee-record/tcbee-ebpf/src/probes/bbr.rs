@@ -50,7 +50,7 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
         if let Some(mut entry) = reserved {
             // Enough space, write and track handled events
             entry.write(bbr_entry);
-            entry.submit(0);
+            entry.submit(1);
             let _ = try_handled_counter();
         } else {
             let _ = try_dropped_counter();

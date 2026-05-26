@@ -138,7 +138,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                     flag_syn: tcp_hdr.syn() != 0,
                     checksum,
                 });
-                entry.submit(0);
+                entry.submit(1);
                 let _ = try_handled_counter();
             } else {
                 // Not enough space, drop event
@@ -231,7 +231,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
                     flag_syn: tcp_hdr.syn() != 0,
                     checksum,
                 });
-                entry.submit(0);
+                entry.submit(1);
                 let _ = try_handled_counter();
             } else {
                 // Not enough space, drop event
