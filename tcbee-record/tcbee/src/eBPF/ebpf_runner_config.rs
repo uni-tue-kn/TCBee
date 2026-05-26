@@ -3,6 +3,7 @@ pub struct EbpfRunnerConfig {
     pub iface: String,
     pub do_tui: bool,
     pub update_period: u128,
+    pub observation_window: f64,
     pub port: u16,
     pub headers: bool,
     pub tracepoints: bool,
@@ -20,7 +21,7 @@ pub struct GraphConfig {
     pub kernel: bool,
     pub cubic: bool,
     pub bbr: bool,
-    pub tracepoints: bool
+    pub tracepoints: bool,
 }
 
 pub struct EbpfWatcherConfig {
@@ -32,6 +33,7 @@ pub struct EbpfWatcherConfig {
     pub cwnd: bool,
     pub algorithms: bool,
     pub metrics: bool,
+    pub observation_window: Option<f64>,
     pub dir: String,
 }
 
@@ -52,6 +54,11 @@ impl EbpfRunnerConfig {
 
     pub fn update_period(mut self, update_period: u128) -> EbpfRunnerConfig {
         self.update_period = update_period;
+        self
+    }
+
+    pub fn observation_window(mut self, observation_window: f64) -> EbpfRunnerConfig {
+        self.observation_window = observation_window;
         self
     }
 
@@ -105,6 +112,7 @@ impl EbpfRunnerConfig {
             cwnd: self.cwnd,
             algorithms: self.algorithms,
             metrics: self.metrics,
+            observation_window: (self.observation_window > 0.0).then_some(self.observation_window),
             dir: self.dir.clone(),
         }
     }

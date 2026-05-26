@@ -17,16 +17,16 @@ use aya::{
     maps::{PerCpuArray, PerCpuHashMap},
     Ebpf,
 };
-use log::{error, info};
+use log::error;
 use ratatui::{
     crossterm::{
         event::{self, DisableMouseCapture, EnableMouseCapture, KeyCode},
         execute,
     },
     layout::{Constraint, Direction, Layout, Margin, Position, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{
-        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState, Tabs,
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState,
     },
     DefaultTerminal,
 };
@@ -239,7 +239,11 @@ impl EBPFWatcher {
             let egress = self.egress_counter.get_rate_string(loop_elapsed);
 
             // Time elapsed display string
-            let time_string = format!("{}s {}ms", start_elapsed.as_secs(), start_elapsed.subsec_millis());
+            let time_string = format!(
+                "{}s {}ms",
+                start_elapsed.as_secs(),
+                start_elapsed.subsec_millis()
+            );
 
             let to_display = format!(
                 // \r returns cursor to beginning of line, effectively overwriting the last line
@@ -266,7 +270,6 @@ impl EBPFWatcher {
         let mut last_loop: Duration = Duration::default();
 
         // Graph definitions
-        let mut selected_tab = 0;
         let mut graph_titles = Vec::new();
         let mut graph_ids = Vec::new();
 
@@ -300,6 +303,7 @@ impl EBPFWatcher {
             "Dropped".to_string(),
             Color::Green,
             Color::Red,
+            self.config.observation_window,
             "Events".to_string(),
         );
         let mut graph_packets = Graph::new(
@@ -307,6 +311,7 @@ impl EBPFWatcher {
             "Egress".to_string(),
             Color::Green,
             Color::Cyan,
+            self.config.observation_window,
             "Packet Rates".to_string(),
         );
         let mut graph_calls = Graph::new(
@@ -314,21 +319,25 @@ impl EBPFWatcher {
             "tcp_sendmsg".to_string(),
             Color::Red,
             Color::Blue,
+            self.config.observation_window,
             "Function Calls".to_string(),
         );
         let mut graph_cubic = Graph::new_single(
             "Cubic".to_string(),
             Color::Yellow,
+            self.config.observation_window,
             "Cubic Events".to_string(),
         );
         let mut graph_bbr = Graph::new_single(
             "BBR".to_string(),
             Color::Magenta,
+            self.config.observation_window,
             "BBR Events".to_string(),
         );
         let mut graph_tracepoints = Graph::new_single(
             "Tracepoints".to_string(),
-            Color::White,
+            Color::Reset,
+            self.config.observation_window,
             "Tracepoint Events".to_string(),
         );
 
@@ -336,7 +345,7 @@ impl EBPFWatcher {
 
         let mut scrollbar_state = ScrollbarState::new(0);
         let mut scroll_index: usize = 0;
-        let mut num_flows: usize = 0;
+        let mut num_flows: usize;
 
         let file_tracker = FileTracker::new(&self.config.dir);
 
@@ -382,13 +391,15 @@ impl EBPFWatcher {
             scrollbar_state.next();
             num_flows = self.flow_tracker.num_flows;
 
-            let flows =
-                self.flow_tracker
-                    .get_flows()
-                    .block(Block::bordered().borders(Borders::ALL).title(format!(
+            let flows = self.flow_tracker.get_flows().block(
+                Block::bordered()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Reset))
+                    .title(format!(
                         "Tracking {} Flows. Scroll with arrows or mousewheel.",
                         num_flows
-                    )));
+                    )),
+            );
             let mut flows_state = TableState::new().with_offset(scroll_index);
 
             // Track file size and rate
@@ -406,35 +417,14 @@ impl EBPFWatcher {
             graph_events.add_val(0, (time_sec, handled_rate));
             graph_events.add_val(1, (time_sec, dropped_rate));
 
-            graph_packets.add_val(0, (
-                time_sec,
-                self.ingress_counter.get_rate(loop_elapsed),
-            ));
-            graph_packets.add_val(1, (
-                time_sec,
-                self.egress_counter.get_rate(loop_elapsed),
-            ));
+            graph_packets.add_val(0, (time_sec, self.ingress_counter.get_rate(loop_elapsed)));
+            graph_packets.add_val(1, (time_sec, self.egress_counter.get_rate(loop_elapsed)));
 
-            graph_calls.add_val(0, (
-                time_sec,
-                self.tcp_sock_recv.get_rate(loop_elapsed),
-            ));
-            graph_calls.add_val(1, (
-                time_sec,
-                self.tcp_sock_send.get_rate(loop_elapsed),
-            ));
-            graph_cubic.add_val(0, (
-                time_sec,
-                self.cubic_events.get_rate(loop_elapsed),
-            ));
-            graph_bbr.add_val(0, (
-                time_sec,
-                self.bbr_events.get_rate(loop_elapsed),
-            ));
-            graph_tracepoints.add_val(0, (
-                time_sec,
-                self.tracepoint_events.get_rate(loop_elapsed),
-            ));
+            graph_calls.add_val(0, (time_sec, self.tcp_sock_recv.get_rate(loop_elapsed)));
+            graph_calls.add_val(1, (time_sec, self.tcp_sock_send.get_rate(loop_elapsed)));
+            graph_cubic.add_val(0, (time_sec, self.cubic_events.get_rate(loop_elapsed)));
+            graph_bbr.add_val(0, (time_sec, self.bbr_events.get_rate(loop_elapsed)));
+            graph_tracepoints.add_val(0, (time_sec, self.tracepoint_events.get_rate(loop_elapsed)));
 
             // Time elapsed
             let time_string = format!(
@@ -443,19 +433,30 @@ impl EBPFWatcher {
                 start_elapsed.subsec_millis()
             );
 
-            let event_rate = RateWatcher::<u32>::format_rate(
-                handled_rate + dropped_rate,
-                " Events/s",
-            );
+            let event_rate =
+                RateWatcher::<u32>::format_rate(handled_rate + dropped_rate, " Events/s");
 
             // Tooltips
-            let keybindings =
-                Paragraph::new("Close: q | Tabs: Tab | Scroll: \u{2191}\u{2193} | Legend: (K)ilo, (M)ega, (G)iga");
-            let keybindings_block = Block::bordered().borders(Borders::ALL).title("Keybindings");
+            let window_label = self
+                .config
+                .observation_window
+                .map(|window| format!(" | Window: {:.2}s", window))
+                .unwrap_or_default();
+            let keybindings = Paragraph::new(format!(
+                "Close: q | Tabs: Tab | Scroll: \u{2191}\u{2193} | Legend: (K)ilo, (M)ega, (G)iga{}",
+                window_label
+            ))
+            .style(Style::default().fg(Color::Reset));
+            let keybindings_block = Block::bordered()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Reset))
+                .title("Keybindings");
 
             // Render function
             // TODO: move to own function
             let _ = self.terminal.as_mut().unwrap().draw(|frame| {
+                frame.render_widget(Block::default().style(Style::default()), frame.area());
+
                 // Main layout
                 let areas = Layout::default()
                     .direction(Direction::Vertical)
@@ -500,12 +501,18 @@ impl EBPFWatcher {
 
                 for (i, title) in graph_titles.iter().enumerate() {
                     let style = if i == selected_tab {
-                        Style::default().fg(Color::Yellow)
-                    } else {
                         Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Reset)
                     };
                     frame.render_widget(
-                        Paragraph::new(*title).block(Block::bordered()).style(style),
+                        Paragraph::new(*title)
+                            .block(
+                                Block::bordered().border_style(Style::default().fg(Color::Reset)),
+                            )
+                            .style(style),
                         tab_chunks[i],
                     );
                 }
@@ -517,13 +524,13 @@ impl EBPFWatcher {
                     0
                 };
                 let chart = match chart_id {
-                    0 => graph_events.get_chart("Events/s"),
-                    1 => graph_packets.get_chart("pps"),
-                    2 => graph_calls.get_chart("Calls/s"),
-                    3 => graph_cubic.get_chart("Events/s"),
-                    4 => graph_bbr.get_chart("Events/s"),
-                    5 => graph_tracepoints.get_chart("Events/s"),
-                    _ => graph_events.get_chart("Events/s"),
+                    0 => graph_events.get_chart("Events/s", Color::Reset, Color::Reset),
+                    1 => graph_packets.get_chart("pps", Color::Reset, Color::Reset),
+                    2 => graph_calls.get_chart("Calls/s", Color::Reset, Color::Reset),
+                    3 => graph_cubic.get_chart("Events/s", Color::Reset, Color::Reset),
+                    4 => graph_bbr.get_chart("Events/s", Color::Reset, Color::Reset),
+                    5 => graph_tracepoints.get_chart("Events/s", Color::Reset, Color::Reset),
+                    _ => graph_events.get_chart("Events/s", Color::Reset, Color::Reset),
                 };
                 frame.render_widget(chart, chart_area);
 
@@ -545,6 +552,7 @@ impl EBPFWatcher {
                         file_rate,
                         self.tcp_bytes_recv.get_counter_sum_string(),
                         self.tcp_bytes_sent.get_counter_sum_string(),
+                        Color::Reset,
                     )
                     .into_iter()
                     .enumerate()
@@ -558,7 +566,8 @@ impl EBPFWatcher {
                     .begin_symbol(None)
                     .end_symbol(None);
 
-                scrollbar_state = scrollbar_state.viewport_content_length(right_side[1].height as usize);
+                scrollbar_state =
+                    scrollbar_state.viewport_content_length(right_side[1].height as usize);
 
                 // Render flows in bottom right
                 frame.render_stateful_widget(flows, right_side[1], &mut flows_state);
@@ -605,7 +614,6 @@ impl EBPFWatcher {
                 if ready {
                     match event::read() {
                         Ok(event::Event::Key(key)) => {
-                            // Check for esc or q to cancel
                             if key.code == KeyCode::Esc || key.code == KeyCode::Char('q') {
                                 self.token.cancel();
                             }
@@ -674,16 +682,24 @@ impl EBPFWatcher {
                                             .split(top_areas[1]);
                                         let graph_layout = Layout::default()
                                             .direction(Direction::Vertical)
-                                            .constraints([Constraint::Length(3), Constraint::Min(0)])
+                                            .constraints([
+                                                Constraint::Length(3),
+                                                Constraint::Min(0),
+                                            ])
                                             .split(right_side[0]);
                                         let tab_area = graph_layout[0];
 
-                                        if !tab_area.contains(Position::new(mouse.column, mouse.row)) {
+                                        if !tab_area
+                                            .contains(Position::new(mouse.column, mouse.row))
+                                        {
                                             continue;
                                         }
 
-                                        let tab_constraints: Vec<Constraint> = (0..graph_titles.len())
-                                            .map(|_| Constraint::Ratio(1, graph_titles.len() as u32))
+                                        let tab_constraints: Vec<Constraint> = (0..graph_titles
+                                            .len())
+                                            .map(|_| {
+                                                Constraint::Ratio(1, graph_titles.len() as u32)
+                                            })
                                             .collect();
 
                                         let tab_chunks = Layout::default()
@@ -691,7 +707,9 @@ impl EBPFWatcher {
                                             .constraints(tab_constraints)
                                             .split(tab_area);
                                         for (i, chunk) in tab_chunks.iter().enumerate() {
-                                            if chunk.contains(Position::new(mouse.column, mouse.row)) {
+                                            if chunk
+                                                .contains(Position::new(mouse.column, mouse.row))
+                                            {
                                                 selected_tab = i;
                                                 break;
                                             }

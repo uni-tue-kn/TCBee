@@ -8,7 +8,7 @@ use aya::maps::PerCpuHashMap;
 use log::warn;
 use ratatui::{
     layout::Constraint,
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     widgets::{Cell, Row, ScrollbarState, Table},
 };
 use tcbee_common::bindings::flow::IpTuple;
@@ -30,7 +30,6 @@ pub struct FlowTracker {
 impl FlowTracker {
     pub fn new(map: PerCpuHashMap<aya::maps::MapData, IpTuple, IpTuple>) -> FlowTracker {
         let flows: HashMap<Flow, bool> = HashMap::new();
-        let scrollbar_state = ScrollbarState::new(0);
         FlowTracker {
             map,
             flows,
@@ -47,29 +46,36 @@ impl FlowTracker {
     }
 
     pub fn get_flows(&mut self) -> Table<'_> {
-        let header = ["Source", "Source Port", "Destination", "Destination Port"]
-            .into_iter()
-            .map(Cell::from)
-            .collect::<Row>()
-            .height(1)
-            .style(Style::new().bold());
+        let header = [
+            "#",
+            "Source",
+            "Source Port",
+            "Destination",
+            "Destination Port",
+        ]
+        .into_iter()
+        .map(Cell::from)
+        .collect::<Row>()
+        .height(1)
+        .style(Style::new().fg(Color::Reset).bold());
 
-        let rows = self.flows.iter().enumerate().map(|(i, (flow, is_ipv6))| {
-            let color = match i % 2 {
-                0 => Color::Reset,
-                _ => Color::DarkGray,
-            };
-
+        let rows = self.flows.iter().enumerate().map(|(i, (flow, _is_ipv6))| {
             let src = flow.src.to_string();
             let dst = flow.dst.to_string();
             let sport = flow.sport.to_string();
             let dport = flow.dport.to_string();
 
-            [src, sport, dst, dport]
+            let style = if i % 2 == 0 {
+                Style::new().fg(Color::Reset)
+            } else {
+                Style::new().fg(Color::Reset).add_modifier(Modifier::DIM)
+            };
+
+            [(i + 1).to_string(), src, sport, dst, dport]
                 .into_iter()
                 .collect::<Row>()
                 .height(1)
-                .style(Style::new().bg(color))
+                .style(style)
         });
 
         // Update number of entries that can be scrolled
@@ -78,13 +84,16 @@ impl FlowTracker {
         let tab = Table::new(
             rows,
             [
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
-                Constraint::Percentage(33),
+                Constraint::Length(5),
+                Constraint::Percentage(32),
+                Constraint::Length(13),
+                Constraint::Percentage(32),
+                Constraint::Length(18),
             ],
         )
-        .header(header);
+        .header(header)
+        .column_spacing(1)
+        .style(Style::new().fg(Color::Reset));
 
         tab
     }
@@ -102,17 +111,23 @@ impl FlowTracker {
 
                     let (src, dst, is_ipv6) = if ipv4_mapped {
                         let src = IpAddr::V4(Ipv4Addr::from([
-                            tuple.src_ip[12], tuple.src_ip[13],
-                            tuple.src_ip[14], tuple.src_ip[15],
+                            tuple.src_ip[12],
+                            tuple.src_ip[13],
+                            tuple.src_ip[14],
+                            tuple.src_ip[15],
                         ]));
                         let dst = IpAddr::V4(Ipv4Addr::from([
-                            tuple.dst_ip[12], tuple.dst_ip[13],
-                            tuple.dst_ip[14], tuple.dst_ip[15],
+                            tuple.dst_ip[12],
+                            tuple.dst_ip[13],
+                            tuple.dst_ip[14],
+                            tuple.dst_ip[15],
                         ]));
                         (src, dst, false)
                     } else if ipv4_compat {
-                        let src = IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.src_ip)));
-                        let dst = IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.dst_ip)));
+                        let src =
+                            IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.src_ip)));
+                        let dst =
+                            IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.dst_ip)));
                         (src, dst, false)
                     } else {
                         let src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));

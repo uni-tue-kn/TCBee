@@ -1,8 +1,8 @@
 // Crate components
 mod config;
 mod eBPF;
-mod writer;
 mod viz;
+mod writer;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::EbpfRunnerConfig;
@@ -25,6 +25,7 @@ fn main() -> anyhow::Result<()> {
     let mut quiet: bool = false;
     let mut port: u16 = 0;
     let mut update_period: u128 = 100;
+    let mut observation_window: f64 = 0.0;
     let mut trace_tracepoints: bool = false;
     let mut trace_kernel: bool = false;
     let mut trace_algorithms: bool = false;
@@ -37,9 +38,11 @@ fn main() -> anyhow::Result<()> {
         argparser.set_description(
             "TCBee: A High-Performance and Extensible Tool For TCP Connection Analysis Using eBPF",
         );
-        argparser
-            .refer(&mut iface)
-            .add_option(&["-h", "--headers"], Store, "Record TCP headers of incoming and outgoing packets on the specified interface.");
+        argparser.refer(&mut iface).add_option(
+            &["-h", "--headers"],
+            Store,
+            "Record TCP headers of incoming and outgoing packets on the specified interface.",
+        );
         argparser.refer(&mut dir).add_option(
             &["-d", "--dir"],
             Store,
@@ -54,6 +57,11 @@ fn main() -> anyhow::Result<()> {
             &["--tui-update-ms"],
             Store,
             "Miliseconds between each TUI update. Default is 100ms, higher values may help with tearing.",
+        );
+        argparser.refer(&mut observation_window).add_option(
+            &["--tui-observation-window-s"],
+            Store,
+            "Sliding TUI graph observation window in seconds. Use 0 for the full recording. Default is 0.",
         );
         argparser.refer(&mut cpus).add_option(
             &["-c", "--cpus"],
@@ -121,6 +129,7 @@ fn main() -> anyhow::Result<()> {
         .filter_port(port)
         .tui(!quiet)
         .update_period(update_period)
+        .observation_window(observation_window)
         .headers(trace_headers)
         .tracepoints(trace_tracepoints)
         .kernel(trace_kernel)
