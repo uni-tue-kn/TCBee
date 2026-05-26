@@ -22,6 +22,8 @@ pub struct SeriesData {
     pub color: Color32,
     /// The time range that is currently loaded in `points` / `string_points`.
     pub loaded_range: Option<(f64, f64)>,
+    /// Minimum time distance used when loading the current points.
+    pub loaded_sample_interval: f64,
 }
 
 impl SeriesData {
@@ -48,6 +50,7 @@ impl SeriesData {
             global_y_max,
             color,
             loaded_range: None,
+            loaded_sample_interval: 0.0,
         }
     }
 

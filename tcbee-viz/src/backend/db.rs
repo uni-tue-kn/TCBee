@@ -133,8 +133,14 @@ impl DbBackend {
         }
     }
 
-    /// Load data points for a series in a time range. Materialises the lazy iterator.
-    pub fn load_range(&self, series_id: i64, t_min: f64, t_max: f64) -> Vec<(f64, f64)> {
+    /// Load numeric points in a time range, keeping at most one point per sample interval.
+    pub fn load_range_sampled(
+        &self,
+        series_id: i64,
+        t_min: f64,
+        t_max: f64,
+        sample_interval: f64,
+    ) -> Vec<(f64, f64)> {
         let Some(db) = &self.interface else {
             return Vec::new();
         };
@@ -144,12 +150,28 @@ impl DbBackend {
         let Ok(iter) = db.get_data_points_in_range(&series, t_min, t_max) else {
             return Vec::new();
         };
-        iter.filter_map(|p| datavalue_as_f64(&p.value).map(|v| (p.timestamp, v)))
-            .collect()
+
+        let mut next_timestamp = f64::NEG_INFINITY;
+        iter.filter_map(|p| {
+            let value = datavalue_as_f64(&p.value)?;
+            if sample_interval <= 0.0 || p.timestamp >= next_timestamp {
+                next_timestamp = p.timestamp + sample_interval;
+                Some((p.timestamp, value))
+            } else {
+                None
+            }
+        })
+        .collect()
     }
 
-    /// Load string-type data points for a series in a time range.
-    pub fn load_range_strings(&self, series_id: i64, t_min: f64, t_max: f64) -> Vec<(f64, String)> {
+    /// Load string points in a time range, keeping at most one point per sample interval.
+    pub fn load_range_strings_sampled(
+        &self,
+        series_id: i64,
+        t_min: f64,
+        t_max: f64,
+        sample_interval: f64,
+    ) -> Vec<(f64, String)> {
         let Some(db) = &self.interface else {
             return Vec::new();
         };
@@ -159,9 +181,16 @@ impl DbBackend {
         let Ok(iter) = db.get_data_points_in_range(&series, t_min, t_max) else {
             return Vec::new();
         };
+
+        let mut next_timestamp = f64::NEG_INFINITY;
         iter.filter_map(|p| {
             if let DataValue::String(s) = p.value {
-                Some((p.timestamp, s))
+                if sample_interval <= 0.0 || p.timestamp >= next_timestamp {
+                    next_timestamp = p.timestamp + sample_interval;
+                    Some((p.timestamp, s))
+                } else {
+                    None
+                }
             } else {
                 None
             }

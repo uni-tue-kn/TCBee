@@ -221,6 +221,10 @@ impl TabSingleFlow {
             return;
         }
 
+        let plot_width_px = ui.available_width().max(1.0);
+        self.state
+            .reload_if_sampling_changed(db, settings, plot_width_px);
+
         let has_string = self.state.series.iter().any(|s| s.is_string_type());
         let split_view = self.state.split_view;
 
@@ -345,7 +349,8 @@ impl TabSingleFlow {
         if needs_reload {
             self.state.x_min = new_x_min;
             self.state.x_max = new_x_max;
-            self.state.reload_visible_data(db, settings);
+            self.state
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
     }
 
@@ -475,7 +480,8 @@ impl TabSingleFlow {
         if needs_reload {
             self.state.x_min = new_x_min;
             self.state.x_max = new_x_max;
-            self.state.reload_visible_data(db, settings);
+            self.state
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
     }
 }

@@ -223,6 +223,12 @@ impl TabMultiFlow {
             return;
         }
 
+        let plot_width_px = ui.available_width().max(1.0);
+        self.state_a
+            .reload_if_sampling_changed(db, settings, plot_width_px);
+        self.state_b
+            .reload_if_sampling_changed(db, settings, plot_width_px);
+
         if self.split_series_view {
             self.show_series_split_plots(ui, db, settings);
         } else if self.merged_view {
@@ -318,12 +324,14 @@ impl TabMultiFlow {
         if reload_a {
             self.state_a.x_min = new_x_min;
             self.state_a.x_max = new_x_max;
-            self.state_a.reload_visible_data(db, settings);
+            self.state_a
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
         if reload_b {
             self.state_b.x_min = new_x_min;
             self.state_b.x_max = new_x_max;
-            self.state_b.reload_visible_data(db, settings);
+            self.state_b
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
     }
 
@@ -447,11 +455,13 @@ impl TabMultiFlow {
 
         if reload_a {
             (self.state_a.x_min, self.state_a.x_max) = new_x_a;
-            self.state_a.reload_visible_data(db, settings);
+            self.state_a
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
         if reload_b {
             (self.state_b.x_min, self.state_b.x_max) = new_x_b;
-            self.state_b.reload_visible_data(db, settings);
+            self.state_b
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
     }
 
@@ -561,11 +571,13 @@ impl TabMultiFlow {
 
         if reload_a {
             (self.state_a.x_min, self.state_a.x_max) = new_x_a;
-            self.state_a.reload_visible_data(db, settings);
+            self.state_a
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
         if reload_b {
             (self.state_b.x_min, self.state_b.x_max) = new_x_b;
-            self.state_b.reload_visible_data(db, settings);
+            self.state_b
+                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
         }
     }
 }

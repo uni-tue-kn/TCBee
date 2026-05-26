@@ -3,7 +3,7 @@ use ts_storage::TimeSeries;
 use crate::{
     backend::db::{format_flow, DbBackend},
     data::{
-        preprocessing::{compute_skip_step, downsample, generate_colors},
+        preprocessing::{compute_sample_interval, compute_skip_step, downsample, generate_colors},
         series_data::SeriesData,
     },
     settings::AppSettings,
@@ -109,7 +109,7 @@ impl PlotState {
                 );
                 let x_min = self.x_min;
                 let x_max = self.x_max;
-                load_series_window(db, &mut sd, x_min, x_max, settings);
+                load_series_window(db, &mut sd, x_min, x_max, settings, None);
                 self.series.push(sd);
             }
         }
@@ -154,14 +154,50 @@ impl PlotState {
     }
 
     /// Fetch data for all series in the given visible range + 20% margin.
-    pub fn reload_visible_data(&mut self, db: &DbBackend, settings: &AppSettings) {
+    pub fn reload_visible_data(
+        &mut self,
+        db: &DbBackend,
+        settings: &AppSettings,
+        plot_width_px: Option<f32>,
+    ) {
         let span = self.x_max - self.x_min;
         let margin = span * 0.20;
         let fetch_min = (self.x_min - margin).max(self.data_x_min);
         let fetch_max = (self.x_max + margin).min(self.data_x_max);
 
         for sd in &mut self.series {
-            fetch_range(db, sd, fetch_min, fetch_max, settings);
+            fetch_range(db, sd, fetch_min, fetch_max, settings, plot_width_px);
+        }
+    }
+
+    pub fn reload_if_sampling_changed(
+        &mut self,
+        db: &DbBackend,
+        settings: &AppSettings,
+        plot_width_px: f32,
+    ) {
+        let Some((fetch_min, fetch_max)) = self.series.first().and_then(|s| s.loaded_range) else {
+            return;
+        };
+        let interval = compute_sample_interval(
+            fetch_min,
+            fetch_max,
+            Some(plot_width_px),
+            settings.time_granularity_ms,
+            settings.adaptive_downsample,
+            settings.pointseries_threshold,
+        );
+        let stale = self.series.iter().any(|s| {
+            if s.loaded_range != Some((fetch_min, fetch_max)) {
+                return true;
+            }
+            let old = s.loaded_sample_interval;
+            (old - interval).abs() > interval.max(old).max(1.0e-9) * 0.10
+        });
+        if stale {
+            for sd in &mut self.series {
+                fetch_range(db, sd, fetch_min, fetch_max, settings, Some(plot_width_px));
+            }
         }
     }
 }
@@ -173,12 +209,13 @@ pub fn load_series_window(
     x_min: f64,
     x_max: f64,
     settings: &AppSettings,
+    plot_width_px: Option<f32>,
 ) {
     let span = x_max - x_min;
     let margin = span * 0.20;
     let fetch_min = (x_min - margin).max(sd.global_t_min);
     let fetch_max = (x_max + margin).min(sd.global_t_max);
-    fetch_range(db, sd, fetch_min, fetch_max, settings);
+    fetch_range(db, sd, fetch_min, fetch_max, settings, plot_width_px);
 }
 
 /// Fetch a specific range from the DB and store into `sd.points` / `sd.string_points`.
@@ -188,13 +225,24 @@ pub fn fetch_range(
     fetch_min: f64,
     fetch_max: f64,
     settings: &AppSettings,
+    plot_width_px: Option<f32>,
 ) {
+    let sample_interval = compute_sample_interval(
+        fetch_min,
+        fetch_max,
+        plot_width_px,
+        settings.time_granularity_ms,
+        settings.adaptive_downsample,
+        settings.pointseries_threshold,
+    );
     if sd.is_string_type() {
-        sd.string_points = db.load_range_strings(sd.series_id, fetch_min, fetch_max);
+        sd.string_points =
+            db.load_range_strings_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
     } else {
-        let raw = db.load_range(sd.series_id, fetch_min, fetch_max);
+        let raw = db.load_range_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
         let step = compute_skip_step(raw.len(), settings.skip_every_nth);
         sd.points = downsample(raw, step);
     }
     sd.loaded_range = Some((fetch_min, fetch_max));
+    sd.loaded_sample_interval = sample_interval;
 }

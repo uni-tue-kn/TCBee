@@ -1,6 +1,8 @@
 use egui::Color32;
 use rand::{rng, Rng};
 
+pub const MAX_RENDER_POINTS: usize = 2000;
+
 /// Return `n` visually-distinct colors.
 pub fn generate_colors(n: usize) -> Vec<Color32> {
     if n == 0 {
@@ -43,12 +45,37 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
 
 /// Compute how many points to skip so that at most `max_render` points are passed to egui_plot.
 pub fn compute_skip_step(point_count: usize, base_skip: usize) -> usize {
-    const MAX_RENDER: usize = 2000;
-    if point_count <= MAX_RENDER {
+    if point_count <= MAX_RENDER_POINTS {
         base_skip.max(1)
     } else {
-        (point_count / MAX_RENDER).max(base_skip).max(1)
+        (point_count / MAX_RENDER_POINTS).max(base_skip).max(1)
     }
+}
+
+/// Compute the minimum time distance between displayed points.
+pub fn compute_sample_interval(
+    fetch_min: f64,
+    fetch_max: f64,
+    plot_width_px: Option<f32>,
+    time_granularity_ms: f64,
+    adaptive_downsample: bool,
+    min_pixels_per_point: f64,
+) -> f64 {
+    let manual = (time_granularity_ms / 1000.0).max(0.0);
+    let adaptive = if adaptive_downsample {
+        plot_width_px
+            .filter(|w| *w > 0.0)
+            .map(|w| {
+                let target_points = ((w as f64) / min_pixels_per_point.max(0.5))
+                    .floor()
+                    .clamp(50.0, MAX_RENDER_POINTS as f64);
+                ((fetch_max - fetch_min) / target_points).max(0.0)
+            })
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    manual.max(adaptive)
 }
 
 /// Downsample `points` by keeping one out of every `step` entries.

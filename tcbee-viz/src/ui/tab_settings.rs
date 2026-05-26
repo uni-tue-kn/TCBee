@@ -22,17 +22,19 @@ impl TabSettings {
                 );
                 ui.end_row();
 
-                ui.label("Reduce density on zoom:");
-                ui.checkbox(&mut settings.reduce_density_on_zoom, "");
+                ui.label("Time granularity:");
+                ui.add(
+                    egui::Slider::new(&mut settings.time_granularity_ms, 0.0..=1000.0)
+                        .suffix(" ms")
+                        .text("(0 = automatic only)"),
+                );
                 ui.end_row();
 
-                if settings.reduce_density_on_zoom {
-                    ui.label("Zoom skip amount:");
-                    ui.add(egui::Slider::new(&mut settings.zoom_skip_amount, 1..=50));
-                    ui.end_row();
-                }
+                ui.label("Adaptive downsample:");
+                ui.checkbox(&mut settings.adaptive_downsample, "");
+                ui.end_row();
 
-                ui.label("Point series threshold:");
+                ui.label("Min pixels per point:");
                 ui.add(
                     egui::Slider::new(&mut settings.pointseries_threshold, 0.5..=20.0)
                         .text("px/point"),
