@@ -226,18 +226,20 @@ impl EBPFWatcher {
     fn run_no_tui(&mut self) {
         // To calculate rate over multiple iterations
         let application_start = Instant::now();
+        let mut last_loop: Duration = Duration::default();
 
         while !self.token.is_cancelled() {
-            let elapsed = application_start.elapsed();
+            let start_elapsed = application_start.elapsed();
+            let loop_elapsed = start_elapsed - last_loop;
 
             // Get current counter values
-            let dropped = self.events_drops.get_rate_string(elapsed);
-            let handled = self.events_handled.get_rate_string(elapsed);
-            let ingress = self.ingress_counter.get_rate_string(elapsed);
-            let egress = self.egress_counter.get_rate_string(elapsed);
+            let dropped = self.events_drops.get_rate_string(loop_elapsed);
+            let handled = self.events_handled.get_rate_string(loop_elapsed);
+            let ingress = self.ingress_counter.get_rate_string(loop_elapsed);
+            let egress = self.egress_counter.get_rate_string(loop_elapsed);
 
             // Time elapsed display string
-            let time_string = format!("{}s {}ms", elapsed.as_secs(), elapsed.subsec_millis());
+            let time_string = format!("{}s {}ms", start_elapsed.as_secs(), start_elapsed.subsec_millis());
 
             let to_display = format!(
                 // \r returns cursor to beginning of line, effectively overwriting the last line
@@ -249,6 +251,7 @@ impl EBPFWatcher {
 
             let _ = io::stdout().flush();
 
+            last_loop = application_start.elapsed();
             // Sleep until next calc
             sleep(Duration::from_millis(500))
         }
@@ -398,8 +401,10 @@ impl EBPFWatcher {
             // Track changes in rates
             let time_sec = start_elapsed.as_secs_f64();
 
-            graph_events.add_val(0, (time_sec, self.events_handled.get_rate(loop_elapsed)));
-            graph_events.add_val(1, (time_sec, self.events_drops.get_rate(loop_elapsed)));
+            let handled_rate = self.events_handled.get_rate(loop_elapsed);
+            let dropped_rate = self.events_drops.get_rate(loop_elapsed);
+            graph_events.add_val(0, (time_sec, handled_rate));
+            graph_events.add_val(1, (time_sec, dropped_rate));
 
             graph_packets.add_val(0, (
                 time_sec,
@@ -438,10 +443,8 @@ impl EBPFWatcher {
                 start_elapsed.subsec_millis()
             );
 
-            // Track rate of all events as sum of dropped and handled
             let event_rate = RateWatcher::<u32>::format_rate(
-                self.events_handled.get_rate(loop_elapsed)
-                    + self.events_drops.get_rate(loop_elapsed),
+                handled_rate + dropped_rate,
                 " Events/s",
             );
 

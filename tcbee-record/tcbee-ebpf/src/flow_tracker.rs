@@ -1,4 +1,4 @@
-use aya_ebpf::bindings::BPF_EXIST;
+use aya_ebpf::bindings::BPF_NOEXIST;
 use aya_ebpf::cty::c_long;
 use aya_ebpf::helpers::bpf_map_push_elem;
 
@@ -16,8 +16,11 @@ static mut FLOWS: PerCpuHashMap<IpTuple, IpTuple> = PerCpuHashMap::with_max_entr
 #[inline(always)]
 pub fn try_flow_tracker(flow: IpTuple) -> Result<(), c_long> {
     // TODO: add map.increment() to track number of packets per flow
+    let key = flow.canonical();
     unsafe {
-        FLOWS.insert(&flow, &flow, 0)?;
+        // BPF_NOEXIST: skip the write if this flow is already tracked.
+        // EEXIST is expected for established flows; ignore it.
+        let _ = FLOWS.insert(&key, &key, BPF_NOEXIST as u64);
     }
 
     Ok(())

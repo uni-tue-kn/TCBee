@@ -95,26 +95,30 @@ impl FlowTracker {
         for entry in self.map.iter() {
             if let Ok((_t, v)) = entry {
                 for tuple in v.iter() {
-                    // TODO: Could cause problems if it is just a very large ipv6 prefix.....
-                    // Checks if the last 12 bytes of the array are zero
-                    // If so, the address is v4, otherwise its v6
-                    let mut is_ipv4 = true;
-                    for j in 4..16 {
-                        is_ipv4 &= tuple.src_ip[j] == 0;
-                    }
+                    let ipv4_mapped = tuple.src_ip[0..10].iter().all(|&b| b == 0)
+                        && tuple.src_ip[10] == 0xFF
+                        && tuple.src_ip[11] == 0xFF;
+                    let ipv4_compat = tuple.src_ip[4..16].iter().all(|&b| b == 0);
 
-                    let src: IpAddr;
-                    let dst: IpAddr;
-
-                    if !is_ipv4 {
-                        src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));
-                        dst = IpAddr::V6(Ipv6Addr::from(tuple.dst_ip));
+                    let (src, dst, is_ipv6) = if ipv4_mapped {
+                        let src = IpAddr::V4(Ipv4Addr::from([
+                            tuple.src_ip[12], tuple.src_ip[13],
+                            tuple.src_ip[14], tuple.src_ip[15],
+                        ]));
+                        let dst = IpAddr::V4(Ipv4Addr::from([
+                            tuple.dst_ip[12], tuple.dst_ip[13],
+                            tuple.dst_ip[14], tuple.dst_ip[15],
+                        ]));
+                        (src, dst, false)
+                    } else if ipv4_compat {
+                        let src = IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.src_ip)));
+                        let dst = IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.dst_ip)));
+                        (src, dst, false)
                     } else {
-                        src =
-                            IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.src_ip)));
-                        dst =
-                            IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.dst_ip)));
-                    }
+                        let src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));
+                        let dst = IpAddr::V6(Ipv6Addr::from(tuple.dst_ip));
+                        (src, dst, true)
+                    };
 
                     let flow = Flow {
                         src,
@@ -123,7 +127,7 @@ impl FlowTracker {
                         dport: tuple.dport,
                     };
 
-                    self.flows.insert(flow, !is_ipv4);
+                    self.flows.insert(flow, is_ipv6);
                 }
             } else {
                 warn!("Could not read flows for CPU id {} in eBPF watcher!", i);

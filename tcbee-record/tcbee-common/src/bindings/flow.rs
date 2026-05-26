@@ -13,3 +13,24 @@ pub struct IpTuple {
 
 #[cfg(feature = "user")]
 unsafe impl Pod for IpTuple {}
+
+impl IpTuple {
+    /// Returns a canonical form with the lexicographically smaller (ip, port) pair as src,
+    /// so both directions of a TCP connection map to the same hash-map key.
+    #[inline(always)]
+    pub fn canonical(self) -> Self {
+        let swap = self.src_ip > self.dst_ip
+            || (self.src_ip == self.dst_ip && self.sport > self.dport);
+        if swap {
+            IpTuple {
+                src_ip: self.dst_ip,
+                dst_ip: self.src_ip,
+                sport: self.dport,
+                dport: self.sport,
+                protocol: self.protocol,
+            }
+        } else {
+            self
+        }
+    }
+}
