@@ -160,14 +160,17 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
         port_arg = f"-p {PORT1}" if not double else ""
         full_args = shlex.split(" ".join(filter(None, [port_arg, record_args])))
         cmd = [str(RECORD_BINARY)] + full_args
-        info(f"    Running: {' '.join(cmd)}\n")
+        uses_headers = any(arg == "-h" or arg == "--headers" or arg.startswith("--headers=")
+                           for arg in full_args)
+        run_cmd = ["nsenter", f"--net=/proc/{tcbee.pid}/ns/net"] + cmd if uses_headers else cmd
+        info(f"    Running: {' '.join(run_cmd)}\n")
         if tool == "full":
             info("    Quit tcbee-record with q when the capture is complete.\n")
             info("    The launcher will then process /tmp/db.duck and open tcbee-viz.\n\n")
         else:
             info("    Quit tcbee-record (q / Ctrl-C) to stop the topology.\n\n")
         try:
-            subprocess.run(cmd)
+            subprocess.run(run_cmd)
         except KeyboardInterrupt:
             pass
 

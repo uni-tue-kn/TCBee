@@ -33,6 +33,7 @@ def menu(title, options):
 
 
 RECORD_FLAGS = [
+    ("-h tcbee-eth0", "headers",       "TCP packet headers on tcbee-eth0"),
     ("-w", "cwnd",          "send_cwnd kernel calls"),
     ("-a", "algorithms",    "CUBIC / BBR algorithm state"),
     ("-t", "tracepoints",   "tcp_probe tracepoint (main TCP metrics)"),
@@ -48,7 +49,7 @@ def ask_record_args():
         ("algorithms            [-a]",           "-a"),
         ("tracepoints           [-t]",           "-t"),
         ("kernel functions      [-k]",           "-k"),
-        ("full trace            [-w -t -k -a -m]", "-w -t -k -a -m"),
+        ("full trace            [-h tcbee-eth0 -w -t -k -a -m]", "-h tcbee-eth0 -w -t -k -a -m"),
         ("custom",                               None),
     ]
     choice = menu("Select recording profile:", profiles)
