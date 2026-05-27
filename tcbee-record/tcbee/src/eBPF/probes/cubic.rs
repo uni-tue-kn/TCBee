@@ -12,7 +12,6 @@ pub struct CubicTracer {}
 
 impl CubicTracer {
     pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
-        let name = "cubic_tracer";
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
         // For Algo Update

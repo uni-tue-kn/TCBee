@@ -1,5 +1,5 @@
 use aya_ebpf::{
-    bindings::TC_ACT_OK, helpers::r#gen::bpf_ktime_get_ns, macros::map, maps::RingBuf,
+    bindings::TC_ACT_OK, helpers::generated::bpf_ktime_get_ns, macros::map, maps::RingBuf,
     programs::TcContext,
 };
 use memoffset::offset_of;

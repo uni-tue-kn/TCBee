@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-// XDP, TC, Tracepoint probes and counters
+// TC, Tracepoint probes and counters
 mod probes {
     pub mod bbr;
     pub mod cubic;
@@ -10,7 +10,6 @@ mod probes {
     pub mod tcp_probe;
     pub mod tcp_retransmit_synack;
     pub mod tcp_socket;
-    pub mod xdp;
 }
 
 // Configuration variables
@@ -25,11 +24,9 @@ pub mod flow_tracker;
 pub mod helpers;
 
 use aya_ebpf::{
-    bindings::{xdp_action, TC_ACT_PIPE},
-    macros::{classifier, fentry, fexit, kprobe, kretprobe, tracepoint, xdp},
-    programs::{
-        FEntryContext, FExitContext, ProbeContext, TcContext, TracePointContext, XdpContext,
-    },
+    bindings::TC_ACT_PIPE,
+    macros::{classifier, fentry, kprobe, tracepoint},
+    programs::{FEntryContext, ProbeContext, TcContext, TracePointContext},
 };
 
 use probes::{
@@ -41,7 +38,6 @@ use probes::{
         try_sock_recvmsg_cwnd_only, try_sock_sendmsg, try_sock_sendmsg_cwnd_only,
         try_tcp_recv_socket,
     },
-    xdp::xdp_hook,
 };
 
 use crate::probes::{bbr::bbr_handle, cubic::cubic_handle};
@@ -121,14 +117,6 @@ pub fn cwnd_sock_recvmsg(ctx: FEntryContext) -> u32 {
     match try_sock_recvmsg_cwnd_only(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
-    }
-}
-
-#[xdp]
-pub fn xdp_packet_tracer(ctx: XdpContext) -> u32 {
-    match xdp_hook(ctx) {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_ABORTED,
     }
 }
 

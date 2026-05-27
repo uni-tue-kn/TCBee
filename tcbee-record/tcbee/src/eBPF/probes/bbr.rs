@@ -1,9 +1,4 @@
-use anyhow::Context;
-use aya::{
-    maps::RingBuf,
-    programs::{FEntry, KProbe},
-    Btf, Ebpf,
-};
+use aya::{maps::RingBuf, programs::KProbe, Ebpf};
 use std::error::Error;
 use tcbee_common::{bindings::bbr::bbr_trace_entry, prog_bindings::TraceProbe};
 
@@ -16,8 +11,6 @@ pub struct BBRTracer {}
 
 impl BBRTracer {
     pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
-        let name = "bbr_tracer";
-
         // For Algo Update
         let update_hook: &mut KProbe = ebpf.program_mut("bbr_cong_control").unwrap().try_into()?;
         update_hook.load()?;

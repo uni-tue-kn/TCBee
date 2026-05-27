@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "ebpf")]
 use crate::kread::read_kernel;
 #[cfg(feature = "ebpf")]
-use aya_ebpf::helpers::gen::bpf_ktime_get_ns;
+use aya_ebpf::helpers::generated::bpf_ktime_get_ns;
 #[cfg(feature = "ebpf")]
 use kernel_read_derive::KernelRead;
 

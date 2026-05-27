@@ -1,5 +1,5 @@
 use aya_ebpf::{
-    helpers::gen::bpf_ktime_get_ns, macros::map, maps::RingBuf, programs::TracePointContext,
+    helpers::generated::bpf_ktime_get_ns, macros::map, maps::RingBuf, programs::TracePointContext,
 };
 
 // Central buffer size config

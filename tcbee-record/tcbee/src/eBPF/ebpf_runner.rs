@@ -17,7 +17,7 @@ use crate::{
         bbr::BBRTracer,
         cubic::CubicTracer,
         cwnd::CwndTracer,
-        headers::{TCTracer, XDPTracer},
+        headers::TCTracer,
         kernel::KernelTracer,
         tracepoints::TracepointTracer,
     },
@@ -153,14 +153,6 @@ impl EbpfRunner {
         // Tracing for packet headers via TC and XDP
         if self.config.headers {
             TCTracer::spawn(
-                &mut ebpf,
-                self.config.iface.clone(),
-                self.config.dir.clone(),
-                &mut writer,
-            )?;
-
-            // FIXME: currently not doing anything
-            XDPTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
                 self.config.dir.clone(),

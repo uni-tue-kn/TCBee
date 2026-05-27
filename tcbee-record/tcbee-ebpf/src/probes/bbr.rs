@@ -1,7 +1,7 @@
 use core::ptr::addr_of;
 
 use aya_ebpf::{
-    helpers::{bpf_probe_read_kernel, r#gen::bpf_ktime_get_ns},
+    helpers::{bpf_probe_read_kernel, generated::bpf_ktime_get_ns},
     macros::map,
     maps::RingBuf,
     programs::{FEntryContext, ProbeContext},
