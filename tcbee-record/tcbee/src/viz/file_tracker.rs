@@ -20,7 +20,10 @@ impl FileTracker {
                 }
             }
         } else {
-            error!("No *.tcp files found in {}! Will not display write speed correctly!", dir)
+            error!(
+                "No *.tcp files found in {}! Will not display write speed correctly!",
+                dir
+            )
         }
 
         FileTracker { files: files }

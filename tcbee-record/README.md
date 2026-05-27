@@ -20,6 +20,32 @@ cargo run --release --config 'target."cfg(all())".runner="sudo -E"'
 Cargo build scripts are used to automatically build the eBPF correctly and include it in the
 program.
 
+## Filtering
+
+By default no filter is enabled, so probes only take the fast no-filter branch.
+
+Use `-p`/`--port` for the fastest filtered mode when you only need one local or remote port:
+
+```shell
+cargo run --release --config 'target."cfg(all())".runner="sudo -E"' -- -k --port 443
+```
+
+For more flexible filtering, use the map-backed filter options:
+
+```shell
+--ports 80,443
+--src-ports 12345
+--dst-ports 443
+--ips 10.0.0.1,2001:db8::1
+--src-ips 10.0.0.10
+--dst-ips 10.0.0.20
+```
+
+Ports and IPs are exact matches. `--ports` and `--ips` match either source or destination;
+the `src`/`dst` variants require that direction. Values inside the same option are ORed.
+Different dimensions are ANDed, so `--ports 80,443 --ips 10.0.0.1` records traffic where
+either endpoint port is 80 or 443 and either endpoint IP is `10.0.0.1`.
+
 ## Cross-compiling on macOS
 
 Cross compilation should work on both Intel and Apple Silicon Macs.

@@ -77,12 +77,12 @@ pub struct sock_common {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct sock {
-    pub __sk_common: sock_common,    //   0..136
-    pub _pad_136: [u8; 352],         // 136..488
-    pub sk_pacing_rate: u64,         // 488..496
-    pub _pad_496: [u8; 24],          // 496..520
-    pub sk_max_pacing_rate: u64,     // 520..528
-    pub _pad_528: [u8; 280],         // 528..808
+    pub __sk_common: sock_common, //   0..136
+    pub _pad_136: [u8; 352],      // 136..488
+    pub sk_pacing_rate: u64,      // 488..496
+    pub _pad_496: [u8; 24],       // 496..520
+    pub sk_max_pacing_rate: u64,  // 520..528
+    pub _pad_528: [u8; 280],      // 528..808
 }
 
 // ---- inet_connection_sock (size: 1440) -------------------------------------
@@ -101,13 +101,13 @@ pub struct icsk_ack_t {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct inet_connection_sock {
-    pub _pad_0: [u8; 1224],   //    0..1224
-    pub icsk_rto: u32,        // 1224..1228
-    pub _pad_1228: [u8; 63],  // 1228..1291
-    pub icsk_backoff: u8,     // 1291..1292
-    pub _pad_1292: [u8; 4],   // 1292..1296
-    pub icsk_ack: icsk_ack_t, // 1296..1312
-    pub _pad_1312: [u8; 24],  // 1312..1336
+    pub _pad_0: [u8; 1224],      //    0..1224
+    pub icsk_rto: u32,           // 1224..1228
+    pub _pad_1228: [u8; 63],     // 1228..1291
+    pub icsk_backoff: u8,        // 1291..1292
+    pub _pad_1292: [u8; 4],      // 1292..1296
+    pub icsk_ack: icsk_ack_t,    // 1296..1312
+    pub _pad_1312: [u8; 24],     // 1312..1336
     pub icsk_ca_priv: [u64; 13], // 1336..1440 (congestion control private data)
 }
 
@@ -133,35 +133,35 @@ pub struct tcp_sock_rcvq_space {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct tcp_sock {
-    pub inet_conn: inet_connection_sock, //    0..1440
-    pub _pad_1440: [u8; 4],              // 1440..1444
-    pub rcv_ssthresh: u32,               // 1444..1448
-    pub reordering: u32,                 // 1448..1452
-    pub _pad_1452: [u8; 40],             // 1452..1492
-    pub snd_cwnd: u32,                   // 1492..1496
-    pub _pad_1496: [u8; 8],              // 1496..1504
-    pub sacked_out: u32,                 // 1504..1508
-    pub _pad_1508: [u8; 16],             // 1508..1524
-    pub rttvar_us: u32,                  // 1524..1528
-    pub retrans_out: u32,                // 1528..1532
-    pub advmss: u16,                     // 1532..1534
-    pub _pad_1534: [u8; 2],              // 1534..1536
-    pub lost: u32,                       // 1536..1540
-    pub snd_ssthresh: u32,               // 1540..1544
-    pub _pad_1544: [u8; 56],             // 1544..1600
-    pub segs_out: u32,                   // 1600..1604  (64-byte aligned in kernel)
-    pub _pad_1604: [u8; 204],            // 1604..1808
-    pub bytes_received: u64,             // 1808..1816
-    pub segs_in: u32,                    // 1816..1820
-    pub _pad_1820: [u8; 60],             // 1820..1880
-    pub bytes_acked: u64,                // 1880..1888
+    pub inet_conn: inet_connection_sock,   //    0..1440
+    pub _pad_1440: [u8; 4],                // 1440..1444
+    pub rcv_ssthresh: u32,                 // 1444..1448
+    pub reordering: u32,                   // 1448..1452
+    pub _pad_1452: [u8; 40],               // 1452..1492
+    pub snd_cwnd: u32,                     // 1492..1496
+    pub _pad_1496: [u8; 8],                // 1496..1504
+    pub sacked_out: u32,                   // 1504..1508
+    pub _pad_1508: [u8; 16],               // 1508..1524
+    pub rttvar_us: u32,                    // 1524..1528
+    pub retrans_out: u32,                  // 1528..1532
+    pub advmss: u16,                       // 1532..1534
+    pub _pad_1534: [u8; 2],                // 1534..1536
+    pub lost: u32,                         // 1536..1540
+    pub snd_ssthresh: u32,                 // 1540..1544
+    pub _pad_1544: [u8; 56],               // 1544..1600
+    pub segs_out: u32,                     // 1600..1604  (64-byte aligned in kernel)
+    pub _pad_1604: [u8; 204],              // 1604..1808
+    pub bytes_received: u64,               // 1808..1816
+    pub segs_in: u32,                      // 1816..1820
+    pub _pad_1820: [u8; 60],               // 1820..1880
+    pub bytes_acked: u64,                  // 1880..1888
     pub rcv_rtt_est: tcp_sock_rcv_rtt_est, // 1888..1904
     pub rcvq_space: tcp_sock_rcvq_space,   // 1904..1920
-    pub _pad_1920: [u8; 53],             // 1920..1973
-    pub keepalive_probes: u8,            // 1973..1974
-    pub _pad_1974: [u8; 282],            // 1974..2256
-    pub total_retrans: u32,              // 2256..2260
-    pub _pad_2260: [u8; 108],            // 2260..2368
+    pub _pad_1920: [u8; 53],               // 1920..1973
+    pub keepalive_probes: u8,              // 1973..1974
+    pub _pad_1974: [u8; 282],              // 1974..2256
+    pub total_retrans: u32,                // 2256..2260
+    pub _pad_2260: [u8; 108],              // 2260..2368
 }
 
 // ---- sk_buff (size: 232) ---------------------------------------------------
@@ -171,8 +171,8 @@ pub struct tcp_sock {
 #[derive(Copy, Clone)]
 pub struct sk_buff {
     pub _pad_0: [u8; 116],   //   0..116
-    pub data_len: u32,        // 116..120
-    pub _pad_120: [u8; 112],  // 120..232
+    pub data_len: u32,       // 116..120
+    pub _pad_120: [u8; 112], // 120..232
 }
 
 // ---- Trace entry types (output ring-buffer structs) -----------------------

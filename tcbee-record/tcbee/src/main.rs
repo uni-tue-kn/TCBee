@@ -3,9 +3,11 @@ mod config;
 mod eBPF;
 mod viz;
 mod writer;
+use std::net::IpAddr;
+
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
-use eBPF::ebpf_runner_config::EbpfRunnerConfig;
+use eBPF::ebpf_runner_config::{ip_to_filter_addr, EbpfRunnerConfig, FilterConfig};
 use tcbee_trace::TCBeeTrace;
 
 // Error handling
@@ -18,12 +20,41 @@ use tokio_util::sync::CancellationToken;
 // Commandline arguments
 use argparse::{ArgumentParser, Store, StoreTrue};
 
+fn parse_csv<T>(arg: &str, name: &str) -> anyhow::Result<Vec<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    if arg.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    arg.split(',')
+        .map(|value| {
+            value
+                .trim()
+                .parse::<T>()
+                .map_err(|err| anyhow!("Invalid {} '{}': {}", name, value, err))
+        })
+        .collect()
+}
+
+fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
+    parse_csv::<IpAddr>(arg, name).map(|ips| ips.into_iter().map(ip_to_filter_addr).collect())
+}
+
 fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let mut iface: String = String::new();
     let mut dir: String = "/tmp/".to_string();
     let mut quiet: bool = false;
     let mut port: u16 = 0;
+    let mut ports: String = String::new();
+    let mut src_ports: String = String::new();
+    let mut dst_ports: String = String::new();
+    let mut ips: String = String::new();
+    let mut src_ips: String = String::new();
+    let mut dst_ips: String = String::new();
     let mut update_period: u128 = 100;
     let mut observation_window: f64 = 0.0;
     let mut trace_tracepoints: bool = false;
@@ -51,7 +82,37 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut port).add_option(
             &["-p", "--port"],
             Store,
-            "Filter streams for remote or local port.",
+            "Fast single-port filter for remote or local port.",
+        );
+        argparser.refer(&mut ports).add_option(
+            &["--ports"],
+            Store,
+            "Comma-separated remote or local ports to record. Enables map-backed filtering.",
+        );
+        argparser.refer(&mut src_ports).add_option(
+            &["--src-ports"],
+            Store,
+            "Comma-separated source ports to record. Enables map-backed filtering.",
+        );
+        argparser.refer(&mut dst_ports).add_option(
+            &["--dst-ports"],
+            Store,
+            "Comma-separated destination ports to record. Enables map-backed filtering.",
+        );
+        argparser.refer(&mut ips).add_option(
+            &["--ips"],
+            Store,
+            "Comma-separated remote or local IPv4/IPv6 addresses to record. Enables map-backed filtering.",
+        );
+        argparser.refer(&mut src_ips).add_option(
+            &["--src-ips"],
+            Store,
+            "Comma-separated source IPv4/IPv6 addresses to record. Enables map-backed filtering.",
+        );
+        argparser.refer(&mut dst_ips).add_option(
+            &["--dst-ips"],
+            Store,
+            "Comma-separated destination IPv4/IPv6 addresses to record. Enables map-backed filtering.",
         );
         argparser.refer(&mut update_period).add_option(
             &["--tui-update-ms"],
@@ -105,6 +166,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     let trace_headers = !iface.is_empty();
+    let filter = FilterConfig {
+        single_port: port,
+        any_ports: parse_csv(&ports, "port")?,
+        src_ports: parse_csv(&src_ports, "source port")?,
+        dst_ports: parse_csv(&dst_ports, "destination port")?,
+        any_ips: parse_ip_csv(&ips, "IP address")?,
+        src_ips: parse_ip_csv(&src_ips, "source IP address")?,
+        dst_ips: parse_ip_csv(&dst_ips, "destination IP address")?,
+    };
 
     if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd && !trace_algorithms {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
@@ -126,7 +196,7 @@ fn main() -> anyhow::Result<()> {
     let token = CancellationToken::new();
 
     let config = EbpfRunnerConfig::new()
-        .filter_port(port)
+        .filter(filter)
         .tui(!quiet)
         .update_period(update_period)
         .observation_window(observation_window)

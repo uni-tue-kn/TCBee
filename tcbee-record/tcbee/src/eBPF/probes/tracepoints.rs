@@ -18,7 +18,6 @@ impl TracepointTracer {
         dir: String,
         writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
-
         let name = T::NAME;
         let category = T::CATEGORY;
 

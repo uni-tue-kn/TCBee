@@ -6,8 +6,8 @@ use aya_ebpf::{
 use crate::{
     config::{AF_INET6, TCP_RETRANSMIT_SYNACK_BUF_SIZE},
     counters::try_count_tracpoint,
+    filter::{filter_needs_tuple, filter_ports_match, filter_tuple_match},
     flow_tracker::try_flow_tracker,
-    FILTER_PORT,
 };
 
 // Kernel tracepoint data structs
@@ -31,7 +31,7 @@ pub fn try_tcp_retransmit_synack(ctx: TracePointContext) -> Result<u32, u32> {
             .read_at::<trace_event_raw_tcp_retransmit_synack>(0)
             .map_err(|e| e as u32)?;
 
-        if FILTER_PORT != 0 && event.sport != FILTER_PORT && event.dport != FILTER_PORT {
+        if !filter_ports_match(event.sport, event.dport) {
             return Ok(0);
         }
 
@@ -44,13 +44,17 @@ pub fn try_tcp_retransmit_synack(ctx: TracePointContext) -> Result<u32, u32> {
             src_ip[..4].copy_from_slice(&event.saddr);
             dst_ip[..4].copy_from_slice(&event.daddr);
         }
-        let _ = try_flow_tracker(IpTuple {
+        let tuple = IpTuple {
             src_ip,
             dst_ip,
             sport: event.sport,
             dport: event.dport,
             protocol: 6,
-        });
+        };
+        if filter_needs_tuple() && !filter_tuple_match(&tuple) {
+            return Ok(0);
+        }
+        let _ = try_flow_tracker(tuple);
 
         // Create queue entry
         let queue_entry = tcp_retransmit_synack_entry {

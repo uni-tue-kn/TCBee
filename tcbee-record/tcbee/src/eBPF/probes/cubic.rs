@@ -1,18 +1,17 @@
-use aya::{Btf, Ebpf, maps::RingBuf, programs::FEntry};
-use tcbee_common::{bindings::cubic::cubic_trace_entry, prog_bindings::TraceProbe};
-use std::error::Error;
 use anyhow::Context;
+use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
+use std::error::Error;
+use tcbee_common::{bindings::cubic::cubic_trace_entry, prog_bindings::TraceProbe};
 
-use crate::{eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError}, writer::Writer};
+use crate::{
+    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
+    writer::Writer,
+};
 
 pub struct CubicTracer {}
 
 impl CubicTracer {
-    pub fn spawn(
-        ebpf: &mut Ebpf,
-        dir: String,
-        writer: &mut Writer,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
         let name = "cubic_tracer";
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
@@ -27,17 +26,20 @@ impl CubicTracer {
         recvmsg.attach()?;
 
         // Both programs write to the same map
-        let map =
-            ebpf.take_map("CUBIC_EVENTS")
-                .ok_or(EBPFRunnerError::QueueNotFoundError {
-                    name: "CUBIC_EVENTS".to_string(),
-                    trace: "Congestion Algorithm Tracer - Cubic".to_string(),
-                })?;
+        let map = ebpf
+            .take_map("CUBIC_EVENTS")
+            .ok_or(EBPFRunnerError::QueueNotFoundError {
+                name: "CUBIC_EVENTS".to_string(),
+                trace: "Congestion Algorithm Tracer - Cubic".to_string(),
+            })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
 
         // We use a centrealized writing scheme
-        writer.register::<cubic_trace_entry>(buff, prepend_string(cubic_trace_entry::FILE.to_string(), &dir))?;
+        writer.register::<cubic_trace_entry>(
+            buff,
+            prepend_string(cubic_trace_entry::FILE.to_string(), &dir),
+        )?;
 
         Ok(())
     }

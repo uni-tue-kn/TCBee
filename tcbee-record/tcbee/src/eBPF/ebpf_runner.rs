@@ -1,20 +1,28 @@
 use std::error::Error;
 
-use aya::{Ebpf, EbpfLoader};
+use aya::{maps::HashMap, Ebpf, EbpfLoader};
 use log::{debug, error, info, warn};
-use tcbee_common::bindings::{
-    tcp_bad_csum::tcp_bad_csum_entry, tcp_probe::tcp_probe_entry,
-    tcp_retransmit_synack::tcp_retransmit_synack_entry,
+use tcbee_common::{
+    bindings::{
+        tcp_bad_csum::tcp_bad_csum_entry, tcp_probe::tcp_probe_entry,
+        tcp_retransmit_synack::tcp_retransmit_synack_entry,
+    },
+    filter::FilterIp,
 };
 use tokio::task::{spawn_blocking, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     eBPF::probes::{
-        bbr::BBRTracer, cubic::CubicTracer, cwnd::CwndTracer, headers::{TCTracer, XDPTracer}, kernel::KernelTracer, tracepoints::TracepointTracer
+        bbr::BBRTracer,
+        cubic::CubicTracer,
+        cwnd::CwndTracer,
+        headers::{TCTracer, XDPTracer},
+        kernel::KernelTracer,
+        tracepoints::TracepointTracer,
     },
-    writer::Writer,
     viz::ebpf_watcher::EBPFWatcher,
+    writer::Writer,
 };
 
 use super::ebpf_runner_config::EbpfRunnerConfig;
@@ -29,7 +37,10 @@ pub struct EbpfRunner {
 }
 
 pub fn prepend_string(filename: String, dir: &str) -> String {
-    std::path::Path::new(dir).join(&filename).to_string_lossy().into_owned()
+    std::path::Path::new(dir)
+        .join(&filename)
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl EbpfRunner {
@@ -43,6 +54,46 @@ impl EbpfRunner {
             ebpf: None,
             writer: None,
         }
+    }
+
+    fn insert_filter_ports(
+        ebpf: &mut Ebpf,
+        map_name: &str,
+        ports: &[u16],
+    ) -> Result<(), Box<dyn Error>> {
+        let mut map: HashMap<_, u16, u8> = HashMap::try_from(
+            ebpf.map_mut(map_name)
+                .ok_or_else(|| format!("Filter map {} not found", map_name))?,
+        )?;
+        for port in ports {
+            map.insert(*port, 1, 0)?;
+        }
+        Ok(())
+    }
+
+    fn insert_filter_ips(
+        ebpf: &mut Ebpf,
+        map_name: &str,
+        ips: &[[u8; 16]],
+    ) -> Result<(), Box<dyn Error>> {
+        let mut map: HashMap<_, FilterIp, u8> = HashMap::try_from(
+            ebpf.map_mut(map_name)
+                .ok_or_else(|| format!("Filter map {} not found", map_name))?,
+        )?;
+        for ip in ips {
+            map.insert(FilterIp { addr: *ip }, 1, 0)?;
+        }
+        Ok(())
+    }
+
+    fn configure_filter(&self, ebpf: &mut Ebpf) -> Result<(), Box<dyn Error>> {
+        Self::insert_filter_ports(ebpf, "FILTER_ANY_PORTS", &self.config.filter.any_ports)?;
+        Self::insert_filter_ports(ebpf, "FILTER_SRC_PORTS", &self.config.filter.src_ports)?;
+        Self::insert_filter_ports(ebpf, "FILTER_DST_PORTS", &self.config.filter.dst_ports)?;
+        Self::insert_filter_ips(ebpf, "FILTER_ANY_IPS", &self.config.filter.any_ips)?;
+        Self::insert_filter_ips(ebpf, "FILTER_SRC_IPS", &self.config.filter.src_ips)?;
+        Self::insert_filter_ips(ebpf, "FILTER_DST_IPS", &self.config.filter.dst_ips)?;
+        Ok(())
     }
 
     pub async fn stop(self) {
@@ -74,12 +125,17 @@ impl EbpfRunner {
             debug!("remove limit on locked memory failed, ret is: {}", ret);
         }
 
+        let filter_mode = self.config.filter.mode();
+        let filter_rules = self.config.filter.rule_flags();
         let mut ebpf = EbpfLoader::new()
-            .set_global("FILTER_PORT", &self.config.port, true)
+            .set_global("FILTER_PORT", &self.config.filter.single_port, true)
+            .set_global("FILTER_MODE", &filter_mode, true)
+            .set_global("FILTER_RULE_FLAGS", &filter_rules, true)
             .load(aya::include_bytes_aligned!(concat!(
                 env!("OUT_DIR"),
                 "/tcbee"
             )))?;
+        self.configure_filter(&mut ebpf)?;
 
         if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
             // This can happen if you remove all log statements from your eBPF program.
@@ -116,21 +172,13 @@ impl EbpfRunner {
 
         // Tracing kernel metrics via FEntry probe
         if self.config.kernel {
-            KernelTracer::spawn(
-                &mut ebpf,
-                self.config.dir.clone(),
-                &mut writer,
-            )?;
+            KernelTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
 
             watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
-            CwndTracer::spawn(
-                &mut ebpf,
-                self.config.dir.clone(),
-                &mut writer,
-            )?;
+            CwndTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
 
             watcher_config.graphs.kernel = true;
         }
@@ -162,7 +210,10 @@ impl EbpfRunner {
             CubicTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
             watcher_config.graphs.cubic = true;
             if let Err(err) = BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer) {
-                error!("Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",err);
+                error!(
+                    "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
+                    err
+                );
             };
             watcher_config.graphs.bbr = true;
         }

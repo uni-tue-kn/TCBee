@@ -1,15 +1,24 @@
 use aya_ebpf::{
-    bindings::TC_ACT_OK, helpers::r#gen::bpf_ktime_get_ns, macros::map, maps::RingBuf, programs::TcContext
+    bindings::TC_ACT_OK, helpers::r#gen::bpf_ktime_get_ns, macros::map, maps::RingBuf,
+    programs::TcContext,
 };
 use memoffset::offset_of;
 use tcbee_common::bindings::{
-    eth_header::ethhdr, flow::IpTuple, ip4_header::iphdr, ip6_header::ipv6hdr, tcp_header::{tcp4_packet_trace, tcp6_packet_trace, tcphdr}
+    eth_header::ethhdr,
+    flow::IpTuple,
+    ip4_header::iphdr,
+    ip6_header::ipv6hdr,
+    tcp_header::{tcp4_packet_trace, tcp6_packet_trace, tcphdr},
 };
 
 use crate::{
-    FILTER_PORT, config::{
-        ETH_HDR_LEN, ETHERTYPE_IPV4, ETHERTYPE_IPV6, IP_HDR_LEN, IP6_HDR_LEN, TC4_BUF_SIZE, TC6_BUF_SIZE, TCP_PROTOCOL
-    }, counters::{try_dropped_counter, try_egress_counter, try_handled_counter, try_ingress_counter}, flow_tracker::try_flow_tracker
+    config::{
+        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TC4_BUF_SIZE,
+        TC6_BUF_SIZE, TCP_PROTOCOL,
+    },
+    counters::{try_dropped_counter, try_egress_counter, try_handled_counter, try_ingress_counter},
+    filter::{filter_needs_tuple, filter_ports_match, filter_tuple_match},
+    flow_tracker::try_flow_tracker,
 };
 
 #[map(name = "TCP4_PACKETS_EGRESS")]
@@ -26,7 +35,6 @@ static mut TCP6_PACKETS_INGRESS: RingBuf = RingBuf::with_byte_size(TC6_BUF_SIZE,
 
 #[inline(always)]
 pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
-
     // Get memory offset to ethertype field of ethhdr
     let ethertype_offset = offset_of!(ethhdr, h_proto);
 
@@ -68,23 +76,30 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
         let tcp_hdr = ctx.load::<tcphdr>(tcp_offset).map_err(|_| TC_ACT_OK)?;
 
         unsafe {
-            // Filter source and dest port if FILTER_PORT is set!
-            if FILTER_PORT != 0
-                && tcp_hdr.source.to_be() != FILTER_PORT
-                && tcp_hdr.dest.to_be() != FILTER_PORT
-            {
-                return Ok(TC_ACT_OK);
-            }
-
             let saddr = u32::from_be(ip4_hdr.saddr);
             let daddr = u32::from_be(ip4_hdr.daddr);
             let sport = u16::from_be(tcp_hdr.source);
             let dport = u16::from_be(tcp_hdr.dest);
+            let mut src_ip = [0u8; 16];
+            src_ip[..4].copy_from_slice(&saddr.to_be_bytes());
+            let mut dst_ip = [0u8; 16];
+            dst_ip[..4].copy_from_slice(&daddr.to_be_bytes());
+            let tuple = IpTuple {
+                src_ip,
+                dst_ip,
+                sport,
+                dport,
+                protocol: 6,
+            };
+            if !filter_ports_match(sport, dport)
+                || (filter_needs_tuple() && !filter_tuple_match(&tuple))
+            {
+                return Ok(TC_ACT_OK);
+            }
             let seq = u32::from_be(tcp_hdr.seq);
             let ack = u32::from_be(tcp_hdr.ack_seq);
             let window = u16::from_be(tcp_hdr.window);
             //let checksum = u16::from_be(tcp_hdr.check);
-
 
             unsafe {
                 // Prepare ringbuf entry
@@ -115,23 +130,9 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                     let _ = try_dropped_counter();
                 }
             }
-            
-            // TODO: can this be done cleaner? E.g. have one map for v4 and one map for v6?
-            let mut src_ip = [0u8;16];
-            src_ip[..4].copy_from_slice(&saddr.to_be_bytes());
-            let mut dst_ip = [0u8;16];
-            dst_ip[..4].copy_from_slice(&daddr.to_be_bytes());
 
-            
-            let _ = try_flow_tracker(IpTuple {
-                src_ip,
-                dst_ip,
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                protocol: 6,
-            });
-            
-            
+            // TODO: can this be done cleaner? E.g. have one map for v4 and one map for v6?
+            let _ = try_flow_tracker(tuple);
         }
     } else {
         // Get IPv6 header
@@ -143,16 +144,20 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
             .map_err(|_| TC_ACT_OK)?;
 
         unsafe {
-            // Filter source and dest port if FILTER_PORT is set!
-            if FILTER_PORT != 0
-                && tcp_hdr.source.to_be() != FILTER_PORT
-                && tcp_hdr.dest.to_be() != FILTER_PORT
+            let sport = u16::from_be(tcp_hdr.source);
+            let dport = u16::from_be(tcp_hdr.dest);
+            let tuple = IpTuple {
+                src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
+                dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
+                sport,
+                dport,
+                protocol: 6,
+            };
+            if !filter_ports_match(sport, dport)
+                || (filter_needs_tuple() && !filter_tuple_match(&tuple))
             {
                 return Ok(TC_ACT_OK);
             }
-
-            let sport = u16::from_be(tcp_hdr.source);
-            let dport = u16::from_be(tcp_hdr.dest);
             let seq = u32::from_be(tcp_hdr.seq);
             let ack = u32::from_be(tcp_hdr.ack_seq);
             let window = u16::from_be(tcp_hdr.window);
@@ -190,18 +195,9 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
                 }
             }
 
-
             // Write to flow tracker
-             
-            let _a = try_flow_tracker(IpTuple {
-                src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
-                dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                protocol: 6,
-            });
-            
-            
+
+            let _a = try_flow_tracker(tuple);
         }
     }
 
@@ -209,10 +205,8 @@ pub fn tc_egress_hook(ctx: TcContext) -> Result<i32, i32> {
     Ok(TC_ACT_OK)
 }
 
-
 #[inline(always)]
 pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
-
     // Get memory offset to ethertype field of ethhdr
     let ethertype_offset = offset_of!(ethhdr, h_proto);
 
@@ -254,18 +248,26 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
         let tcp_hdr = ctx.load::<tcphdr>(tcp_offset).map_err(|_| TC_ACT_OK)?;
 
         unsafe {
-            // Filter source and dest port if FILTER_PORT is set!
-            if FILTER_PORT != 0
-                && tcp_hdr.source.to_be() != FILTER_PORT
-                && tcp_hdr.dest.to_be() != FILTER_PORT
-            {
-                return Ok(TC_ACT_OK);
-            }
-
             let saddr = u32::from_be(ip4_hdr.saddr);
             let daddr = u32::from_be(ip4_hdr.daddr);
             let sport = u16::from_be(tcp_hdr.source);
             let dport = u16::from_be(tcp_hdr.dest);
+            let mut src_ip = [0u8; 16];
+            src_ip[..4].copy_from_slice(&saddr.to_be_bytes());
+            let mut dst_ip = [0u8; 16];
+            dst_ip[..4].copy_from_slice(&daddr.to_be_bytes());
+            let tuple = IpTuple {
+                src_ip,
+                dst_ip,
+                sport,
+                dport,
+                protocol: 6,
+            };
+            if !filter_ports_match(sport, dport)
+                || (filter_needs_tuple() && !filter_tuple_match(&tuple))
+            {
+                return Ok(TC_ACT_OK);
+            }
             let seq = u32::from_be(tcp_hdr.seq);
             let ack = u32::from_be(tcp_hdr.ack_seq);
             let window = u16::from_be(tcp_hdr.window);
@@ -300,20 +302,7 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                 }
             }
 
-            let mut src_ip = [0u8;16];
-            src_ip[..4].copy_from_slice(&saddr.to_be_bytes());
-            let mut dst_ip = [0u8;16];
-            dst_ip[..4].copy_from_slice(&daddr.to_be_bytes());
-
-            
-            let _ = try_flow_tracker(IpTuple {
-                src_ip,
-                dst_ip,
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                protocol: 6,
-            });
-            
+            let _ = try_flow_tracker(tuple);
         }
     } else {
         // Get IPv6 header
@@ -325,16 +314,20 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
             .map_err(|_| TC_ACT_OK)?;
 
         unsafe {
-            // Filter source and dest port if FILTER_PORT is set!
-            if FILTER_PORT != 0
-                && tcp_hdr.source.to_be() != FILTER_PORT
-                && tcp_hdr.dest.to_be() != FILTER_PORT
+            let sport = u16::from_be(tcp_hdr.source);
+            let dport = u16::from_be(tcp_hdr.dest);
+            let tuple = IpTuple {
+                src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
+                dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
+                sport,
+                dport,
+                protocol: 6,
+            };
+            if !filter_ports_match(sport, dport)
+                || (filter_needs_tuple() && !filter_tuple_match(&tuple))
             {
                 return Ok(TC_ACT_OK);
             }
-
-            let sport = u16::from_be(tcp_hdr.source);
-            let dport = u16::from_be(tcp_hdr.dest);
             let seq = u32::from_be(tcp_hdr.seq);
             let ack = u32::from_be(tcp_hdr.ack_seq);
             let window = u16::from_be(tcp_hdr.window);
@@ -372,17 +365,9 @@ pub fn tc_ingress_hook(ctx: TcContext) -> Result<i32, i32> {
                 }
             }
 
-            // Write to flow tracker 
-            
-            let _ = try_flow_tracker(IpTuple {
-                src_ip: ip6_hdr.saddr.in6_u.u6_addr8,
-                dst_ip: ip6_hdr.daddr.in6_u.u6_addr8,
-                sport: tcp_hdr.source.to_be(),
-                dport: tcp_hdr.dest.to_be(),
-                protocol: 6,
-            });
-            
-            
+            // Write to flow tracker
+
+            let _ = try_flow_tracker(tuple);
         }
     }
 

@@ -1,7 +1,13 @@
 use core::mem;
 
 use tcbee_common::bindings::{
-    bbr::bbr_trace_entry, cubic::cubic_trace_entry, eth_header::ethhdr, ip4_header::iphdr, ip6_header::ipv6hdr, tcp_header::{tcp4_packet_trace, tcp6_packet_trace, tcphdr}, tcp_probe::tcp_probe_entry
+    bbr::bbr_trace_entry,
+    cubic::cubic_trace_entry,
+    eth_header::ethhdr,
+    ip4_header::iphdr,
+    ip6_header::ipv6hdr,
+    tcp_header::{tcp4_packet_trace, tcp6_packet_trace, tcphdr},
+    tcp_probe::tcp_probe_entry,
 };
 
 // Ringbuffer Sizes

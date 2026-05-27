@@ -3,18 +3,19 @@
 
 // XDP, TC, Tracepoint probes and counters
 mod probes {
+    pub mod bbr;
+    pub mod cubic;
     pub mod tc;
     pub mod tcp_bad_csum;
     pub mod tcp_probe;
     pub mod tcp_retransmit_synack;
     pub mod tcp_socket;
-    pub mod bbr;
-    pub mod cubic;
     pub mod xdp;
 }
 
 // Configuration variables
 mod config;
+mod filter;
 
 // Performance counters for UI
 pub mod counters;
@@ -24,13 +25,15 @@ pub mod flow_tracker;
 pub mod helpers;
 
 use aya_ebpf::{
-    bindings::{TC_ACT_PIPE, xdp_action},
+    bindings::{xdp_action, TC_ACT_PIPE},
     macros::{classifier, fentry, fexit, kprobe, kretprobe, tracepoint, xdp},
-    programs::{FEntryContext, FExitContext, ProbeContext, TcContext, TracePointContext, XdpContext},
+    programs::{
+        FEntryContext, FExitContext, ProbeContext, TcContext, TracePointContext, XdpContext,
+    },
 };
 
 use probes::{
-    tc::{tc_ingress_hook,tc_egress_hook},
+    tc::{tc_egress_hook, tc_ingress_hook},
     tcp_bad_csum::try_tcp_bad_csum,
     tcp_probe::try_tcp_probe,
     tcp_retransmit_synack::try_tcp_retransmit_synack,
@@ -43,11 +46,12 @@ use probes::{
 
 use crate::probes::{bbr::bbr_handle, cubic::cubic_handle};
 
-
-
-
 #[no_mangle]
 static mut FILTER_PORT: u16 = 0;
+#[no_mangle]
+static mut FILTER_MODE: u32 = tcbee_common::filter::FILTER_MODE_NONE;
+#[no_mangle]
+static mut FILTER_RULE_FLAGS: u32 = 0;
 
 /// net/ipv4/tcp_bbr.c
 // Called on update
@@ -55,7 +59,7 @@ static mut FILTER_PORT: u16 = 0;
 pub fn bbr_cong_control(ctx: ProbeContext) -> u32 {
     match bbr_handle(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
 // Called on congestion
@@ -63,28 +67,27 @@ pub fn bbr_cong_control(ctx: ProbeContext) -> u32 {
 pub fn bbr_cwnd_event(ctx: ProbeContext) -> u32 {
     match bbr_handle(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
 
 /// net/ipv4/tcp_cubic.c
 // Called on update
-#[fentry(function="cubictcp_cong_avoid")]
+#[fentry(function = "cubictcp_cong_avoid")]
 pub fn cubic_cong_control(ctx: FEntryContext) -> u32 {
     match cubic_handle(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
 // Called on congestion ? TODO: I think this is the wrong hook
-#[fentry(function="cubictcp_cwnd_event")]
+#[fentry(function = "cubictcp_cwnd_event")]
 pub fn cubic_cwnd_event(ctx: FEntryContext) -> u32 {
     match cubic_handle(ctx) {
         Ok(ret) => ret,
-        Err(ret) => ret
+        Err(ret) => ret,
     }
 }
-
 
 /// tcp_write_xmit from net/ipv4/tcp_output.c
 #[fentry(function = "__tcp_transmit_skb")]

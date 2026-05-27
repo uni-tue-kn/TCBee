@@ -1,3 +1,6 @@
+pub mod bbr;
+pub mod common;
+pub mod cubic;
 pub mod eth_header;
 pub mod flow;
 pub mod ip4_header;
@@ -7,9 +10,6 @@ pub mod tcp_header;
 pub mod tcp_probe;
 pub mod tcp_retransmit_synack;
 pub mod tcp_sock;
-pub mod bbr;
-pub mod cubic;
-pub mod common;
 
 #[cfg(feature = "user")]
 use aya::Pod;

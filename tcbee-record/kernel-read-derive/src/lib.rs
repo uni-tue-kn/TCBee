@@ -17,7 +17,7 @@ use syn::{
 ///
 /// Example:
 ///   #[kernel_read(ctx(sk: *const sock, bbr: *const bbr), default_src = "bbr")]
-/// 
+///
 /// And field overrides:
 ///   #[kr(expr = "...")] -> e.g. "obj.function()?" /
 ///   #[kr(src = "tcp", path = "foo.bar")]
@@ -52,7 +52,10 @@ fn expand_kernel_read(input: &DeriveInput) -> Result<TokenStream2> {
         ))?;
 
     // Choose default source ident (must exist in ctx, and cannot be `sk`)
-    let default_src_name = kr_cfg.default_src.clone().unwrap_or_else(|| "sk".to_string());
+    let default_src_name = kr_cfg
+        .default_src
+        .clone()
+        .unwrap_or_else(|| "sk".to_string());
     if default_src_name == "sk" {
         return Err(Error::new_spanned(
             struct_name,
@@ -66,21 +69,19 @@ fn expand_kernel_read(input: &DeriveInput) -> Result<TokenStream2> {
         ctx_map.insert(id.to_string(), (id.clone(), ty.clone()));
     }
 
-    let (default_ident, _default_ty) = ctx_map.get(&default_src_name).cloned().ok_or_else(|| {
-        Error::new_spanned(
-            struct_name,
-            format!(
-                "KernelRead: default_src=\"{}\" not found in ctx(...)",
-                default_src_name
-            ),
-        )
-    })?;
+    let (default_ident, _default_ty) =
+        ctx_map.get(&default_src_name).cloned().ok_or_else(|| {
+            Error::new_spanned(
+                struct_name,
+                format!(
+                    "KernelRead: default_src=\"{}\" not found in ctx(...)",
+                    default_src_name
+                ),
+            )
+        })?;
 
     // Generate read_from(...) params in the same order as user wrote in ctx(...)
-    let fn_params = kr_cfg
-        .ctx_args
-        .iter()
-        .map(|(id, ty)| quote! { #id: #ty });
+    let fn_params = kr_cfg.ctx_args.iter().map(|(id, ty)| quote! { #id: #ty });
 
     // Collect struct fields and generate initializers
     let fields_named = match &input.data {
@@ -127,7 +128,10 @@ fn expand_kernel_read(input: &DeriveInput) -> Result<TokenStream2> {
             let (src_ident, _src_ty) = ctx_map.get(&src_name).cloned().ok_or_else(|| {
                 Error::new_spanned(
                     &field_ident,
-                    format!("KernelRead: kr(src=\"{}\", ...) not found in ctx(...)", src_name),
+                    format!(
+                        "KernelRead: kr(src=\"{}\", ...) not found in ctx(...)",
+                        src_name
+                    ),
                 )
             })?;
 
@@ -324,7 +328,10 @@ impl KernelReadArgs {
             )
         })?;
 
-        Ok(KernelReadCfg { ctx_args, default_src })
+        Ok(KernelReadCfg {
+            ctx_args,
+            default_src,
+        })
     }
 }
 

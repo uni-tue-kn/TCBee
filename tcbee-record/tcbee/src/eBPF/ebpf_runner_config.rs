@@ -1,10 +1,69 @@
+use std::net::IpAddr;
+
+use tcbee_common::filter::*;
+
+#[derive(Default, Debug, Clone)]
+pub struct FilterConfig {
+    pub single_port: u16,
+    pub any_ports: Vec<u16>,
+    pub src_ports: Vec<u16>,
+    pub dst_ports: Vec<u16>,
+    pub any_ips: Vec<[u8; 16]>,
+    pub src_ips: Vec<[u8; 16]>,
+    pub dst_ips: Vec<[u8; 16]>,
+}
+
+impl FilterConfig {
+    pub fn mode(&self) -> u32 {
+        if self.rule_flags() != 0 {
+            FILTER_MODE_MAPS
+        } else if self.single_port != 0 {
+            FILTER_MODE_SINGLE_PORT
+        } else {
+            FILTER_MODE_NONE
+        }
+    }
+
+    pub fn rule_flags(&self) -> u32 {
+        let mut flags = 0;
+        if !self.any_ports.is_empty() {
+            flags |= FILTER_ANY_PORT;
+        }
+        if !self.src_ports.is_empty() {
+            flags |= FILTER_SRC_PORT;
+        }
+        if !self.dst_ports.is_empty() {
+            flags |= FILTER_DST_PORT;
+        }
+        if !self.any_ips.is_empty() {
+            flags |= FILTER_ANY_IP;
+        }
+        if !self.src_ips.is_empty() {
+            flags |= FILTER_SRC_IP;
+        }
+        if !self.dst_ips.is_empty() {
+            flags |= FILTER_DST_IP;
+        }
+        flags
+    }
+}
+
+pub fn ip_to_filter_addr(ip: IpAddr) -> [u8; 16] {
+    let mut addr = [0u8; 16];
+    match ip {
+        IpAddr::V4(ip) => addr[..4].copy_from_slice(&ip.octets()),
+        IpAddr::V6(ip) => addr = ip.octets(),
+    }
+    addr
+}
+
 #[derive(Default, Debug)]
 pub struct EbpfRunnerConfig {
     pub iface: String,
     pub do_tui: bool,
     pub update_period: u128,
     pub observation_window: f64,
-    pub port: u16,
+    pub filter: FilterConfig,
     pub headers: bool,
     pub tracepoints: bool,
     pub kernel: bool,
@@ -62,8 +121,8 @@ impl EbpfRunnerConfig {
         self
     }
 
-    pub fn filter_port(mut self, port: u16) -> EbpfRunnerConfig {
-        self.port = port;
+    pub fn filter(mut self, filter: FilterConfig) -> EbpfRunnerConfig {
+        self.filter = filter;
         self
     }
 

@@ -558,7 +558,7 @@ pub struct tcp4_packet_trace {
     pub seq: u32,
     pub ack: u32,
     pub window: u16,
-    pub flags: u8
+    pub flags: u8,
 }
 
 #[repr(C)]
@@ -573,5 +573,5 @@ pub struct tcp6_packet_trace {
     pub seq: u32,
     pub ack: u32,
     pub window: u16,
-    pub flags: u8
+    pub flags: u8,
 }

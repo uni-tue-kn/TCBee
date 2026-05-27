@@ -19,8 +19,8 @@ impl IpTuple {
     /// so both directions of a TCP connection map to the same hash-map key.
     #[inline(always)]
     pub fn canonical(self) -> Self {
-        let swap = self.src_ip > self.dst_ip
-            || (self.src_ip == self.dst_ip && self.sport > self.dport);
+        let swap =
+            self.src_ip > self.dst_ip || (self.src_ip == self.dst_ip && self.sport > self.dport);
         if swap {
             IpTuple {
                 src_ip: self.dst_ip,

@@ -49,7 +49,7 @@ pub fn xdp_hook(ctx: XdpContext) -> Result<u32, u32> {
         }
     }
 
-    /* 
+    /*
     // Handle both IP versions separately
     if ethertype == ETHERTYPE_IPV4 {
         // Check if data long enough to read ip header header

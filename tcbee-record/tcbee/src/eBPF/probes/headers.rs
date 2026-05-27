@@ -5,7 +5,10 @@ use aya::{
     programs::{tc, SchedClassifier, TcAttachType, Xdp, XdpFlags},
     Ebpf,
 };
-use tcbee_common::{bindings::tcp_header::{tcp4_packet_trace,tcp6_packet_trace}, prog_bindings::TraceInoutProbe};
+use tcbee_common::{
+    bindings::tcp_header::{tcp4_packet_trace, tcp6_packet_trace},
+    prog_bindings::TraceInoutProbe,
+};
 
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
@@ -51,7 +54,10 @@ impl TCTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<tcp4_packet_trace>(buff, prepend_string(tcp4_packet_trace::IN_FILE.to_string(), &dir))?;
+        writer.register::<tcp4_packet_trace>(
+            buff,
+            prepend_string(tcp4_packet_trace::IN_FILE.to_string(), &dir),
+        )?;
 
         let map =
             ebpf.take_map("TCP6_PACKETS_INGRESS")
@@ -61,7 +67,10 @@ impl TCTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<tcp6_packet_trace>(buff, prepend_string(tcp6_packet_trace::IN_FILE.to_string(), &dir))?;
+        writer.register::<tcp6_packet_trace>(
+            buff,
+            prepend_string(tcp6_packet_trace::IN_FILE.to_string(), &dir),
+        )?;
 
         let name = "tc_egress_packet_tracer";
 
@@ -93,7 +102,10 @@ impl TCTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<tcp4_packet_trace>(buff, prepend_string(tcp4_packet_trace::OUT_FILE.to_string(), &dir))?;
+        writer.register::<tcp4_packet_trace>(
+            buff,
+            prepend_string(tcp4_packet_trace::OUT_FILE.to_string(), &dir),
+        )?;
 
         let map =
             ebpf.take_map("TCP6_PACKETS_EGRESS")
@@ -103,10 +115,10 @@ impl TCTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<tcp6_packet_trace>(buff, prepend_string(tcp6_packet_trace::OUT_FILE.to_string(), &dir))?;
-
-
-
+        writer.register::<tcp6_packet_trace>(
+            buff,
+            prepend_string(tcp6_packet_trace::OUT_FILE.to_string(), &dir),
+        )?;
 
         Ok(())
     }
@@ -121,7 +133,7 @@ impl XDPTracer {
         file_path: String,
         writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
-        /* 
+        /*
         // Get tracepoint name
         let name = "xdp_packet_tracer";
 

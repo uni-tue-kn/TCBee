@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 
 // TODO: This is ugly, can it be fixed?
 #[cfg(feature = "ebpf")]
-use kernel_read_derive::{KernelRead};
-#[cfg(feature = "ebpf")]
 use crate::kread::read_kernel;
 #[cfg(feature = "ebpf")]
 use aya_ebpf::helpers::gen::bpf_ktime_get_ns;
+#[cfg(feature = "ebpf")]
+use kernel_read_derive::KernelRead;
 
 use crate::bindings::tcp_sock::sock;
 
@@ -155,9 +155,7 @@ pub struct bbr_trace_entry {
     pub lt_last_delivered: u32,
     pub lt_last_stamp: u32,
     pub lt_last_lost: u32,
-   // pub bitfield2: u32,
+    // pub bitfield2: u32,
     pub prior_cwnd: u32,
     pub full_bw: u32,
 }
-
-

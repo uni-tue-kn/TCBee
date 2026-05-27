@@ -110,7 +110,11 @@ fn pin_to_cpu(cpu_id: usize) {
         libc::CPU_SET(cpu_id, &mut set);
         let ret = libc::sched_setaffinity(0, mem::size_of::<libc::cpu_set_t>(), &set);
         if ret != 0 {
-            error!("Failed to pin writer thread to CPU {}: errno {}", cpu_id, io::Error::last_os_error());
+            error!(
+                "Failed to pin writer thread to CPU {}: errno {}",
+                cpu_id,
+                io::Error::last_os_error()
+            );
         } else {
             info!("Writer thread pinned to CPU {}", cpu_id);
         }
@@ -358,11 +362,7 @@ where
         }
 
         if reads > 0 {
-            trace!(
-                "Wrote {} records to {}",
-                reads,
-                self.file_path.display()
-            );
+            trace!("Wrote {} records to {}", reads, self.file_path.display());
         }
 
         Ok(())

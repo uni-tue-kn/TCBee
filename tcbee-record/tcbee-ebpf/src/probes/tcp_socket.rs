@@ -9,9 +9,9 @@ use crate::{
         try_dropped_counter, try_handled_counter, try_received_tcp_bytes, try_recv_tcp_sock,
         try_send_tcp_sock, try_sent_tcp_bytes,
     },
+    filter::{filter_needs_tuple, filter_ports_match, filter_tuple_match},
     flow_tracker::try_flow_tracker,
     helpers::tuple_from_sk,
-    FILTER_PORT,
 };
 
 #[map(name = "TCP_SEND_CWND_EVENTS")]
@@ -38,14 +38,17 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     // So take the opposite order from sendmsg here
     let sport = ((ports & 0xFFFF) as u16).to_be();
     let dport = ((ports >> 16) as u16).to_be();
-
-    unsafe {
-        // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
-            //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
+    if !filter_ports_match(sport, dport) {
+        return Ok(0);
+    }
+    if filter_needs_tuple() {
+        let tuple = unsafe { tuple_from_sk(sk_ptr, sport, dport) };
+        if !filter_tuple_match(&tuple) {
             return Ok(0);
         }
+    }
 
+    unsafe {
         let mut cwnd_entry = cwnd_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
         cwnd_entry.addr_v4 = cwnd_entry.addr_v4.rotate_right(32);
         cwnd_entry.src_v6 = read_kernel(&(*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8)?;
@@ -81,14 +84,17 @@ pub fn try_sock_sendmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
     let dport = ((ports & 0xFFFF) as u16).to_be();
     let sport = ((ports >> 16) as u16).to_be();
-
-    unsafe {
-        // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
-            //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
+    if !filter_ports_match(sport, dport) {
+        return Ok(0);
+    }
+    if filter_needs_tuple() {
+        let tuple = unsafe { tuple_from_sk(sk_ptr, sport, dport) };
+        if !filter_tuple_match(&tuple) {
             return Ok(0);
         }
+    }
 
+    unsafe {
         let cwnd_entry = cwnd_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
 
         // Prepare ringbuf entry
@@ -128,14 +134,17 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
     let _ = try_sent_tcp_bytes(length);
 
     // Track flow IP and Port
-
-    unsafe {
-        // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
-            //info!(&ctx, "Dropped: {} - {}",sport,dport.to_be());
+    if !filter_ports_match(sport, dport) {
+        return Ok(0);
+    }
+    if filter_needs_tuple() {
+        let tuple = unsafe { tuple_from_sk(sk_ptr, sport, dport) };
+        if !filter_tuple_match(&tuple) {
             return Ok(0);
         }
+    }
 
+    unsafe {
         let sock_entry = sock_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
 
         // Prepare ringbuf entry
@@ -171,13 +180,17 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
     let skb: *const sk_buff = unsafe { ctx.arg(1) };
     let length = unsafe { read_kernel(&(*skb).data_len)? };
     let _ = try_received_tcp_bytes(length);
-
-    unsafe {
-        // dport needs to be called to_be otherwise value is wrong
-        if FILTER_PORT != 0 && sport != FILTER_PORT && dport != FILTER_PORT {
+    if !filter_ports_match(sport, dport) {
+        return Ok(0);
+    }
+    if filter_needs_tuple() {
+        let tuple = unsafe { tuple_from_sk(sk_ptr, sport, dport) };
+        if !filter_tuple_match(&tuple) {
             return Ok(0);
         }
+    }
 
+    unsafe {
         let mut sock_entry = sock_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
         sock_entry.addr_v4 = sock_entry.addr_v4.rotate_right(32);
         sock_entry.src_v6 = read_kernel(&(*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8)?;

@@ -12,11 +12,7 @@ use crate::{
 pub struct CwndTracer {}
 
 impl CwndTracer {
-    pub fn spawn(
-        ebpf: &mut Ebpf,
-        dir: String,
-        writer: &mut Writer,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
         // Outgoing TCP
@@ -39,7 +35,10 @@ impl CwndTracer {
                 })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<cwnd_trace_entry>(buff, prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), &dir),)?;
+        writer.register::<cwnd_trace_entry>(
+            buff,
+            prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), &dir),
+        )?;
 
         // Start SOCK_RECV handling
         // Get queue from
@@ -51,7 +50,10 @@ impl CwndTracer {
         )?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<cwnd_trace_entry>(buff, prepend_string(cwnd_trace_entry::IN_FILE.to_string(), &dir),)?;
+        writer.register::<cwnd_trace_entry>(
+            buff,
+            prepend_string(cwnd_trace_entry::IN_FILE.to_string(), &dir),
+        )?;
 
         Ok(())
     }
