@@ -1,9 +1,9 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{db_writer::DBOperation, bindings::event_indexer::EventIndexer, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -64,8 +64,8 @@ impl EventIndexer for Tcp6Packet {
         }
     }
     fn get_ip_tuple(&self) -> IpTuple {
-        let src: IpAddr = IpAddr::V6(Ipv6Addr::from(self.saddr));
-        let dst: IpAddr = IpAddr::V6(Ipv6Addr::from(self.daddr));
+        let src = ip_addr_from_16_bytes(self.saddr);
+        let dst = ip_addr_from_16_bytes(self.daddr);
 
         IpTuple {
             src,

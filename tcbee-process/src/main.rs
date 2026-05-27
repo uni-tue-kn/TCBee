@@ -1,5 +1,6 @@
 mod db_writer;
 mod flow_tracker;
+mod ip;
 mod reader;
 
 mod bindings {

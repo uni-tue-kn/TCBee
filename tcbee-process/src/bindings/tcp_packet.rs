@@ -1,9 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{db_writer::DBOperation, bindings::event_indexer::EventIndexer, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -98,8 +100,8 @@ impl EventIndexer for TcpPacket {
             src = IpAddr::V4(Ipv4Addr::from(self.saddr));
             dst = IpAddr::V4(Ipv4Addr::from(self.daddr));
         } else {
-            src = IpAddr::V6(Ipv6Addr::from(self.saddr_v6));
-            dst = IpAddr::V6(Ipv6Addr::from(self.daddr_v6));
+            src = ip_addr_from_16_bytes(self.saddr_v6);
+            dst = ip_addr_from_16_bytes(self.daddr_v6);
         }
         IpTuple {
             src,

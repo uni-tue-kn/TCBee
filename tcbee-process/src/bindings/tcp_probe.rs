@@ -1,10 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
 use crate::{
-    db_writer::DBOperation, flow_tracker::AF_INET, bindings::event_indexer::EventIndexer, reader::FromBuffer, shorten_to_ipv4, shorten_to_ipv6
+    bindings::event_indexer::EventIndexer, flow_tracker::AF_INET, ip::ip_addr_from_16_bytes,
+    reader::FromBuffer, shorten_to_ipv4, shorten_to_ipv6,
 };
 
 #[repr(C)]
@@ -97,8 +98,8 @@ impl EventIndexer for TcpProbe {
             src = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.saddr)));
             dst = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.daddr)));
         } else {
-            src = IpAddr::V6(Ipv6Addr::from(shorten_to_ipv6(self.saddr)));
-            dst = IpAddr::V6(Ipv6Addr::from(shorten_to_ipv6(self.daddr)));
+            src = ip_addr_from_16_bytes(shorten_to_ipv6(self.saddr));
+            dst = ip_addr_from_16_bytes(shorten_to_ipv6(self.daddr));
         }
         IpTuple {
             src: src,

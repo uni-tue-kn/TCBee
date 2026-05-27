@@ -1,9 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{db_writer::DBOperation, bindings::event_indexer::EventIndexer, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -133,8 +135,8 @@ impl EventIndexer for CubicEvent {
             src = IpAddr::V4(parsed_src);
             dst = IpAddr::V4(parsed_dst);
         } else {
-            src = IpAddr::V6(Ipv6Addr::from(self.src_v6));
-            dst = IpAddr::V6(Ipv6Addr::from(self.dst_v6));
+            src = ip_addr_from_16_bytes(self.src_v6);
+            dst = ip_addr_from_16_bytes(self.dst_v6);
         }
 
         let (sport, dport) = unpack_ports(self.ports);

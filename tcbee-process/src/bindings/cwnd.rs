@@ -1,9 +1,12 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr};
 
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{db_writer::DBOperation, flow_tracker::AF_INET, bindings::event_indexer::EventIndexer, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, flow_tracker::AF_INET, ip::ip_addr_from_16_bytes,
+    reader::FromBuffer,
+};
 use arrayref::array_ref;
 
 #[repr(C)]
@@ -57,8 +60,8 @@ impl EventIndexer for cwnd_trace_entry {
             src = IpAddr::V4(Ipv4Addr::from(srcbytes));
             dst = IpAddr::V4(Ipv4Addr::from(dstbytes));
         } else {
-            src = IpAddr::V6(Ipv6Addr::from(self.src_v6));
-            dst = IpAddr::V6(Ipv6Addr::from(self.dst_v6));
+            src = ip_addr_from_16_bytes(self.src_v6);
+            dst = ip_addr_from_16_bytes(self.dst_v6);
         }
 
         let port_bytes = self.ports.to_be_bytes();
@@ -108,4 +111,3 @@ impl FromBuffer for cwnd_trace_entry {
     }
     const ENTRY_SIZE: usize = 62;
 }
-
