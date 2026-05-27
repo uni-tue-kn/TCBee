@@ -178,25 +178,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aya-log"
-version = "0.2.2"
-source = "git+https://github.com/aya-rs/aya#6742ec9b331d7519a355af48e9cf8d4e2194d8ae"
-dependencies = [
- "aya",
- "aya-log-common",
- "log",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aya-log-common"
-version = "0.1.16"
-source = "git+https://github.com/aya-rs/aya#6742ec9b331d7519a355af48e9cf8d4e2194d8ae"
-dependencies = [
- "num_enum",
-]
-
-[[package]]
 name = "aya-obj"
 version = "0.2.2"
 source = "git+https://github.com/aya-rs/aya#6742ec9b331d7519a355af48e9cf8d4e2194d8ae"
@@ -2154,7 +2135,6 @@ dependencies = [
  "anyhow",
  "aya",
  "aya-build",
- "aya-log",
  "cargo_metadata",
  "eframe",
  "egui",

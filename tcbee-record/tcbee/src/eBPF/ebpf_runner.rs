@@ -137,10 +137,6 @@ impl EbpfRunner {
             )))?;
         self.configure_filter(&mut ebpf)?;
 
-        if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
-            // This can happen if you remove all log statements from your eBPF program.
-            warn!("failed to initialize eBPF logger: {}", e);
-        }
 
         info!("Starting eBPF probes!");
 

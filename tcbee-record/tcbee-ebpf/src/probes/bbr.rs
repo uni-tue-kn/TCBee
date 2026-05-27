@@ -6,7 +6,6 @@ use aya_ebpf::{
     maps::RingBuf,
     programs::{FEntryContext, ProbeContext},
 };
-use aya_log_ebpf::info;
 use tcbee_common::bindings::{
     bbr::{bbr, bbr_trace_entry},
     flow::IpTuple,

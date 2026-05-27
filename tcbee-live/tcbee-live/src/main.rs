@@ -27,13 +27,7 @@ fn main() -> anyhow::Result<()> {
         "/tcbee-live"
     )))?;
 
-    match aya_log::EbpfLogger::init(&mut ebpf) {
-        Err(e) => warn!("failed to initialize eBPF logger: {e}"),
-        Ok(_) => info!("eBPF logger initialised"),
-    }
-
     let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
-    info!("BTF loaded from sysfs");
 
     let program: &mut FEntry = ebpf.program_mut("cwnd_sock_sendmsg").unwrap().try_into()?;
     program.load("__tcp_transmit_skb", &btf)?;

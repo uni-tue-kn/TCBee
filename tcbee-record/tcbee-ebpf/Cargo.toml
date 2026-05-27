@@ -9,7 +9,6 @@ tcbee-common = { path = "../tcbee-common", features = ["ebpf"]}
 kernel-read-derive = { path = "../kernel-read-derive"}
 
 aya-ebpf = { workspace = true }
-aya-log-ebpf = { workspace = true }
 memoffset = "0.9.1"
 
 

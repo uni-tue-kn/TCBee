@@ -4,7 +4,6 @@ use aya_ebpf::helpers::bpf_map_push_elem;
 
 use aya_ebpf::{macros::map, maps::PerCpuHashMap};
 
-use aya_log_ebpf::warn;
 use tcbee_common::bindings::flow::IpTuple;
 
 use crate::config::MAX_FLOWS;
