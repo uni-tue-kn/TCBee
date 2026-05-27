@@ -1,3 +1,5 @@
 target/*
 db.sqlite
 db.duck
+*.duck
+*.sqlite
