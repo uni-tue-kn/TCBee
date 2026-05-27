@@ -45,7 +45,6 @@ pub fn unpack_ipv4_pair(packed: u64) -> (Ipv4Addr, Ipv4Addr) {
     (src, dst)
 }
 
-
 impl FromBuffer for CubicEvent {
     fn from_buffer(buf: &Vec<u8>) -> Self {
         let try_deserialize = bincode::deserialize::<'_, CubicEvent>(buf);

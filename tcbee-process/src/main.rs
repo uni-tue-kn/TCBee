@@ -6,20 +6,20 @@ mod reader;
 mod bindings {
     pub mod bbr;
     pub mod ctypes;
+    pub mod cubic;
+    pub mod cwnd;
+    pub mod event_indexer;
     pub mod sock;
-    pub mod tcp_packet;
     pub mod tcp4_packet;
     pub mod tcp6_packet;
+    pub mod tcp_packet;
     pub mod tcp_probe;
-    pub mod cwnd;
-    pub mod cubic;
-    pub mod event_indexer;
 }
 
-use argparse::{ArgumentParser, Store, StoreTrue};
-use bindings::{sock::sock_trace_entry, cwnd::cwnd_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe};
-use db_writer::{DBOperation, DBWriter};
 use crate::bindings::event_indexer::EventIndexer;
+use argparse::{ArgumentParser, Store, StoreTrue};
+use bindings::{cwnd::cwnd_trace_entry, sock::sock_trace_entry, tcp_probe::TcpProbe};
+use db_writer::{DBOperation, DBWriter};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{error, info};
 use reader::{FileReader, FromBuffer};
@@ -32,9 +32,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use ts_storage::DBBackend;
 
-use std::{
-    error::Error, fmt::Debug, path::Path
-};
+use std::{error::Error, fmt::Debug, path::Path, time::Duration};
 
 use crate::bindings::{
     bbr::BbrEvent, cubic::CubicEvent, tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet,
@@ -51,6 +49,40 @@ fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
     std::array::from_fn(|i| arg[i + 4])
 }
 
+fn reader_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{spinner:.green} {prefix:.bold.dim} [{elapsed_precise}] \
+         {bar:40.cyan/blue} {pos:>7}/{len:7} {percent:>3}% eta {eta_precise}",
+    )
+    .unwrap()
+    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+}
+
+const PROGRESS_LABEL_WIDTH: usize = 24;
+
+fn progress_label(path: &str) -> String {
+    let label = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_string();
+
+    let label = if label.chars().count() > PROGRESS_LABEL_WIDTH {
+        let tail: String = label
+            .chars()
+            .rev()
+            .take(PROGRESS_LABEL_WIDTH - 3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        format!("...{}", tail)
+    } else {
+        label
+    };
+
+    format!("{:<width$}", label, width = PROGRESS_LABEL_WIDTH)
+}
 
 async fn start_file_reader<
     'a,
@@ -61,22 +93,20 @@ async fn start_file_reader<
     token: CancellationToken,
     bars: &MultiProgress,
 ) -> Option<JoinHandle<()>> {
-    // Add progress bar to multibar
-    let mut progress = ProgressBar::new(0).with_message(path.clone());
-    progress.set_style(
-        ProgressStyle::with_template(
-            "{msg} - [{eta_precise}/{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7}",
-        )
-        .unwrap(),
-    );
-    progress = bars.add(progress);
-
     // File does not exist
     if !Path::new(&path).exists() {
-        progress.set_message(format!("No Entries: {}!",path));
-        progress.finish();
         return None;
     }
+
+    let num_entries = std::fs::metadata(&path)
+        .map(|metadata| metadata.len() / T::ENTRY_SIZE as u64)
+        .unwrap_or(0);
+
+    // Add progress bar to multibar only after its final style and length are known.
+    let progress = bars.add(ProgressBar::new(num_entries));
+    progress.set_prefix(progress_label(&path));
+    progress.set_style(reader_progress_style());
+    progress.enable_steady_tick(Duration::from_millis(100));
 
     // Initialize reader to db
     // TODO: change to if let
@@ -132,11 +162,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if !sqlite && !duckdb {
-        print!("Please select either --sqlite or --duckdb");
+        eprintln!("Please select either --sqlite or --duckdb");
         return Ok(());
     }
     if sqlite && duckdb {
-        print!("Please select either --sqlite or --duckdb");
+        eprintln!("Please select either --sqlite or --duckdb");
         return Ok(());
     }
 
@@ -156,24 +186,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let progress_bars = MultiProgress::new();
 
-    let status = progress_bars.add(ProgressBar::new(5));
-    status.set_style(
-        ProgressStyle::with_template("{prefix:.bold.dim} {spinner} {wide_msg}")
-            .unwrap()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-    );
-
-    let flush_bar = progress_bars.add(ProgressBar::new(0));
+    let status = ProgressBar::hidden();
 
     // Channel to send operations to DB Backend
     let (tx, rx) = mpsc::channel::<Vec<DBOperation>>(100_000);
     let stop_token = CancellationToken::new();
 
     info!("Starting db backend!");
-    println!("Starting readers, initial processing may be slow due to setup of streams!");
+    progress_bars.println("Starting readers; stream setup can make the first updates slower.")?;
 
     // Create DB Backend handler
-    let db_res = DBWriter::new(backend, rx, status, flush_bar.clone());
+    let db_res = DBWriter::new(backend, rx, status);
     if db_res.is_err() {
         panic!("Could not open Database! Error: {}", db_res.err().unwrap())
     }
@@ -206,7 +229,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|| panic!("No tcbee_* recording found in {}", source))
     };
 
-    println!("Reading from: {}", trace.dir().display());
+    progress_bars.println(format!("Reading from {}", trace.dir().display()))?;
 
     let mut threads = Vec::new();
 
@@ -215,29 +238,61 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let path = trace.path_for(file).to_string_lossy().into_owned();
         let handle = match file {
             TraceFile::Bbr => {
-                start_file_reader::<BbrEvent>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+                start_file_reader::<BbrEvent>(path, tx.clone(), stop_token.clone(), &progress_bars)
+                    .await
             }
             TraceFile::Cubic => {
-                start_file_reader::<CubicEvent>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+                start_file_reader::<CubicEvent>(
+                    path,
+                    tx.clone(),
+                    stop_token.clone(),
+                    &progress_bars,
+                )
+                .await
             }
             TraceFile::Tcp4Receive | TraceFile::Tcp4Send => {
-                start_file_reader::<Tcp4Packet>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+                start_file_reader::<Tcp4Packet>(
+                    path,
+                    tx.clone(),
+                    stop_token.clone(),
+                    &progress_bars,
+                )
+                .await
             }
             TraceFile::Tcp6Receive | TraceFile::Tcp6Send => {
-                start_file_reader::<Tcp6Packet>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+                start_file_reader::<Tcp6Packet>(
+                    path,
+                    tx.clone(),
+                    stop_token.clone(),
+                    &progress_bars,
+                )
+                .await
             }
             TraceFile::TcpProbe => {
-                start_file_reader::<TcpProbe>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+                start_file_reader::<TcpProbe>(path, tx.clone(), stop_token.clone(), &progress_bars)
+                    .await
             }
             TraceFile::SendSock | TraceFile::RecvSock => {
-                start_file_reader::<sock_trace_entry>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+                start_file_reader::<sock_trace_entry>(
+                    path,
+                    tx.clone(),
+                    stop_token.clone(),
+                    &progress_bars,
+                )
+                .await
             }
             TraceFile::SendCwnd | TraceFile::RecvCwnd => {
-                start_file_reader::<cwnd_trace_entry>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+                start_file_reader::<cwnd_trace_entry>(
+                    path,
+                    tx.clone(),
+                    stop_token.clone(),
+                    &progress_bars,
+                )
+                .await
             }
             // No reader implementation yet for these types
             TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => {
-                println!("No reader available for {:?}, skipping.", file);
+                progress_bars.println(format!("Skipping {:?}: no reader available", file))?;
                 None
             }
         };
@@ -249,6 +304,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for t in threads.into_iter().flatten() {
         let _res = t.await;
     }
+    drop(progress_bars);
+    eprintln!("---- readers complete; flushing buffers ----");
+
     // Ensure that all channel tx are dropped to signal db_backend to stop
     drop(tx);
 
@@ -256,7 +314,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Wait for DB backend to finish flushing and DuckDB to checkpoint
     let _ = _db_thread.await;
-    flush_bar.finish_and_clear();
 
     // Signal stop to db backend
     stop_token.cancel();
