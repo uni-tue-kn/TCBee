@@ -16,10 +16,13 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Install Rust Nightly
+      run: rustup toolchain install nightly --component rust-src
+
     - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y llvm clang libelf-dev libclang-dev pkg-config fontconfig libfontconfig1-dev
+        sudo apt install -y llvm clang libelf-dev libclang-dev pkg-config fontconfig libfontconfig1-dev libgl-dev libegl-dev
         cargo install bpf-linker
 
     - name: TCBee-Record Build
@@ -29,4 +32,7 @@ jobs:
       run: cd tcbee-process && cargo build --release
 
     - name: TCBee-Viz Build
-      run: cd tcbee-viz && cargo build --release      
+      run: cd tcbee-viz && cargo build --release
+
+    - name: TCBee-Live Build
+      run: cd tcbee-live && cargo build --release
