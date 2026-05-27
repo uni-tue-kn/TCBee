@@ -8,20 +8,28 @@
 
 </div>
 
-TCBee monitors TCP flows at up to 5M events/s. It captures packet headers via XDP and TC hooks, reads kernel metrics through eBPF function hooks, and stores everything in a DuckDB or SQLite database for offline analysis and visualization.
+TCBee monitors TCP flows at up to 5M events/s. It captures packet headers via TC hooks, reads kernel metrics through eBPF function hooks, and stores everything in a DuckDB or SQLite database for offline analysis and visualization.
 
 **Linux-only.** Tested on kernel 6.13.6.
 
 ---
 
 - [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Build](#build)
+  - [Record → Process → Visualize](#record--process--visualize)
 - [What TCBee Does](#what-tcbee-does)
 - [Architecture](#architecture)
 - [Usage](#usage)
+  - [`tcbee record`](#tcbee-record)
+  - [`tcbee process`](#tcbee-process)
+  - [`tcbee viz`](#tcbee-viz)
 - [tcbee-live](#tcbee-live)
 - [Custom Data Access](#custom-data-access)
 - [Testing](#testing)
 - [Screenshots](#screenshots)
+  - [Recording](#recording)
+  - [Visualization](#visualization)
 - [Status](#status)
 
 ---
@@ -43,6 +51,13 @@ TCBee monitors TCP flows at up to 5M events/s. It captures packet headers via XD
 **Visualization:**
 - `sudo apt install -y pkg-config fontconfig libfontconfig1-dev`
 
+**Testing environment:**
+- Python 3
+- Mininet
+- Open vSwitch
+- iperf3
+- Linux with root privileges for Mininet and eBPF programs
+
 > **Bundled mode:** To statically link SQLite or DuckDB instead of relying on system libraries, enable the `bundled` feature in [ts-storage/Cargo.toml](ts-storage/Cargo.toml). This removes the system dependency at the cost of longer compile times.
 
 ### Build
@@ -50,7 +65,10 @@ TCBee monitors TCP flows at up to 5M events/s. It captures packet headers via XD
 ```bash
 make           # builds everything; binaries are copied to install/
 # or individually:
-make record | make process | make viz
+make record
+make process
+make viz
+make live
 ```
 
 Move the binaries from `install/` to a directory in your `PATH`. The `tcbee` script dispatches to the right binary based on the subcommand.
@@ -105,7 +123,9 @@ All subcommands are called through the `tcbee` script.
 
 ### `tcbee record`
 
-At least one metric source flag is required:
+At least one metric source flag is required.
+
+Metric sources:
 
 | Flag | Description |
 |---|---|
@@ -115,11 +135,28 @@ At least one metric source flag is required:
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
 
+Filtering:
+
+| Flag | Default | Description |
+|---|---|---|
+| `-p PORT` | | Fast single-port filter for source or destination port |
+| `--ports PORTS` | | Comma-separated source or destination ports |
+| `--src-ports PORTS` | | Comma-separated source ports |
+| `--dst-ports PORTS` | | Comma-separated destination ports |
+| `--ips IPS` | | Comma-separated source or destination IPv4/IPv6 addresses |
+| `--src-ips IPS` | | Comma-separated source IPv4/IPv6 addresses |
+| `--dst-ips IPS` | | Comma-separated destination IPv4/IPv6 addresses |
+
+Filtering is disabled by default, so probes only take the fast no-filter branch. Use
+`-p`/`--port` when a single local or remote port is enough; this uses the fastest filtered path.
+The multi-value port and IP filters use eBPF maps for exact matches. Values inside one option are
+ORed, while port and IP dimensions are ANDed. For example, `--ports 80,443 --ips 10.0.0.1`
+records traffic where either endpoint port is 80 or 443 and either endpoint IP is `10.0.0.1`.
+
 Other options:
 
 | Flag | Default | Description |
 |---|---|---|
-| `-p PORT` | | Filter flows by source or destination port |
 | `-d DIR` | `/tmp/` | Output directory for raw recordings |
 | `-c N` | `1` | Number of CPUs used for processing |
 | `-q` | | Disable the terminal UI |
@@ -157,8 +194,8 @@ Load a `*.sqlite` or `*.duck` file from within the tool. The navigation bar swit
 A live cwnd monitor with no recording or post-processing needed. Attaches eBPF probes and shows congestion window metrics in real time via a GUI.
 
 ```bash
-cd tcbee-live && cargo build --release
-sudo ./target/release/tcbee-live --select-port 5001
+make live
+sudo ./install/tcbee live --select-port 5001
 ```
 
 See [tcbee-live/README.md](tcbee-live/README.md) for details.
@@ -177,7 +214,37 @@ The flow database is standard SQLite or DuckDB and can be queried with any compa
 
 ## Testing
 
-The [`testing/`](testing/) directory has a Mininet-based emulation environment. It sets up a bottleneck topology, drives traffic with `iperf3`, and launches `tcbee-record` or `tcbee-live` automatically. See [testing/README.md](testing/README.md).
+The [`testing/`](testing/) directory has a Mininet-based emulation environment. It sets up a bottleneck topology, drives traffic with `iperf3`, and launches `tcbee-record`, `tcbee-live`, or the full record/process/visualize pipeline automatically.
+
+Additional packages for the test environment:
+
+```bash
+# Debian / Ubuntu
+sudo apt install -y mininet openvswitch-switch iperf3 python3
+
+# Arch Linux
+sudo pacman -S mininet openvswitch iperf3 python
+sudo systemctl start ovsdb-server ovs-vswitchd
+```
+
+Before running the tests, build the tools you want to exercise:
+
+```bash
+make           # build record, process, viz, and live
+# or individually:
+make record
+make process
+make viz
+make live
+```
+
+Run the launcher from the repository root:
+
+```bash
+python3 testing/run.py
+```
+
+The launcher needs root-capable networking through Mininet, and `tcbee-record` / `tcbee-live` need eBPF privileges. See [testing/README.md](testing/README.md) for the topology and menu options.
 
 ---
 

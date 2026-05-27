@@ -3,28 +3,47 @@
 # Check if at least one argument is provided
 if [ $# -lt 1 ]; then
     echo "Error: Missing command argument"
-    echo "Usage: $0 [record|process|visualize]"
+    echo "Usage: $0 [record|process|visualize|viz|live]"
     exit 1
 fi
 
 # Get command to call and remove from argument storage
 COMMAND=$1
-shift 
+shift
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+run_tool() {
+    local tool=$1
+    shift
+
+    if [ -x "$SCRIPT_DIR/$tool" ]; then
+        "$SCRIPT_DIR/$tool" "$@"
+    else
+        "$tool" "$@"
+    fi
+}
 
 # Call tcbee tool based on passed command
 case "$COMMAND" in
     record)
-        tcbee-record $@
+        run_tool tcbee-record "$@"
         ;;
     process)
-        tcbee-process $@
+        run_tool tcbee-process "$@"
         ;;
     visualize)
-        tcbee-viz $@
+        run_tool tcbee-viz "$@"
+        ;;
+    viz)
+        run_tool tcbee-viz "$@"
+        ;;
+    live)
+        run_tool tcbee-live "$@"
         ;;
     *)
         echo "Error: Invalid command '$COMMAND'"
-        echo "Usage: $0 [record|process|visualize]"
+        echo "Usage: $0 [record|process|visualize|viz|live]"
         exit 1
         ;;
 esac

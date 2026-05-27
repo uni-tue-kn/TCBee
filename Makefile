@@ -1,13 +1,13 @@
 # Directory to output binaries to
 INSTALL_DIR := install
 # Available tcbee parts for clean all
-TCBEE_PARTS := tcbee-record/ tcbee-process/ tcbee-viz/
+TCBEE_PARTS := tcbee-record/ tcbee-process/ tcbee-viz/ tcbee-live/
 # Binaries to copy for install
-BINARIES := tcbee-record/target/release/tcbee-record tcbee-process/target/release/tcbee-process tcbee-viz/target/release/tcbee-viz
+BINARIES := tcbee-record/target/release/tcbee-record tcbee-process/target/release/tcbee-process tcbee-viz/target/release/tcbee-viz tcbee-live/target/release/tcbee-live
 
 # Default target: build all projects and install them
 .PHONY: all
-all: record process viz install
+all: record process viz live install
 
 .PHONY: record
 record:
@@ -25,6 +25,12 @@ process:
 viz:
 	@echo "Building tcbee-viz ..."
 	cd tcbee-viz && cargo build --release && cd ..
+	$(MAKE) install
+
+.PHONY: live
+live:
+	@echo "Building tcbee-live ..."
+	cd tcbee-live && cargo build --release && cd ..
 	$(MAKE) install
 
 .PHONY: install
