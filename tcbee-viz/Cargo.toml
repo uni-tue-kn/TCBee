@@ -3,6 +3,7 @@ name = "tcbee-viz"
 version = "0.1.0"
 authors = ["ScatteredDrifter","MoritzFlu"]
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 eframe = "0.31"
