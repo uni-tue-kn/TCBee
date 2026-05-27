@@ -2,9 +2,10 @@ use egui::{Color32, RichText, Stroke, Ui, Vec2};
 use ts_storage::Flow;
 
 const COL_ID: f32 = 36.0;
-const COL_IP: f32 = 120.0;
 const COL_PORT: f32 = 54.0;
 const ROW_HEIGHT: f32 = 22.0;
+const SEARCH_ICON_W: f32 = 18.0;
+const CLEAR_BUTTON_W: f32 = 22.0;
 const HEADER_BG: Color32 = Color32::from_rgb(45, 55, 72);
 const HEADER_FG: Color32 = Color32::from_rgb(226, 232, 240);
 const ROW_ODD: Color32 = Color32::from_rgb(247, 248, 250);
@@ -37,24 +38,43 @@ impl FlowTable {
 
     /// Render the table. Returns `Some(flow_id)` when a new row is clicked.
     pub fn show(&mut self, ui: &mut Ui, flows: &[Flow]) -> Option<i64> {
+        self.show_with_id_salt(ui, flows, "flow_table")
+    }
+
+    /// Render the table with a caller-provided ID salt for repeated table instances.
+    pub fn show_with_id_salt(
+        &mut self,
+        ui: &mut Ui,
+        flows: &[Flow],
+        id_salt: &'static str,
+    ) -> Option<i64> {
         let mut new_selection: Option<i64> = None;
+        let content_w = ui.available_width();
 
         // ── Filter bar ──────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("🔍").size(14.0));
-            // Reserve space for the clear button before sizing the text edit,
-            // so the button never overflows the panel and inflates available_width.
-            let clear_w = if self.filter.is_empty() { 0.0 } else { 22.0 };
-            let text_w = (ui.available_width() - clear_w).max(0.0);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text("Filter by IP or port…")
-                    .desired_width(text_w),
-            );
-            if !self.filter.is_empty() && ui.small_button("✕").clicked() {
-                self.filter.clear();
-            }
-        });
+        ui.allocate_ui_with_layout(
+            Vec2::new(content_w, ROW_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_width(content_w);
+                ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
+                let text_w = (ui.available_width() - CLEAR_BUTTON_W).max(40.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.filter)
+                        .hint_text("Filter by IP or port…")
+                        .desired_width(text_w),
+                );
+                ui.allocate_ui_with_layout(
+                    Vec2::new(CLEAR_BUTTON_W, ROW_HEIGHT),
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        if !self.filter.is_empty() && ui.small_button("✕").clicked() {
+                            self.filter.clear();
+                        }
+                    },
+                );
+            },
+        );
         ui.add_space(4.0);
 
         let filter_lower = self.filter.to_lowercase();
@@ -77,8 +97,9 @@ impl FlowTable {
             .stroke(Stroke::new(1.0, BORDER))
             .corner_radius(6.0)
             .show(ui, |ui| {
+                ui.set_width(content_w);
                 // Measure inside the frame so border/padding is already subtracted.
-                let available_w = ui.available_width();
+                let available_w = content_w;
                 // Fixed columns: ID + Sport + Dport + 5 gaps of 8px each
                 let fixed_w = COL_ID + COL_PORT + COL_PORT + 5.0 * 8.0;
                 let col_ip = ((available_w - fixed_w) / 2.0).max(40.0);
@@ -104,9 +125,10 @@ impl FlowTable {
                 // Rows
                 let row_count = visible.len();
                 egui::ScrollArea::vertical()
-                    .id_salt("flow_table_scroll")
+                    .id_salt((id_salt, "scroll"))
                     .auto_shrink([false, false])
                     .show_rows(ui, ROW_HEIGHT, row_count, |ui, range| {
+                        ui.set_width(available_w);
                         for i in range {
                             let flow = visible[i];
                             let fid = flow.id;
@@ -121,6 +143,7 @@ impl FlowTable {
                             };
 
                             let row_response = ui.horizontal(|ui| {
+                                ui.set_width(available_w);
                                 ui.set_height(ROW_HEIGHT);
 
                                 let rect = ui.max_rect();
@@ -147,14 +170,15 @@ impl FlowTable {
 
                             // Make the whole row clickable
                             let row_rect = row_response.response.rect;
-                            if ui
-                                .interact(
-                                    row_rect,
-                                    ui.id().with(("row", fid)),
-                                    egui::Sense::click(),
-                                )
-                                .clicked()
-                            {
+                            let row_click = ui.interact(
+                                row_rect,
+                                ui.id().with((id_salt, "row", fid)),
+                                egui::Sense::click(),
+                            );
+                            if row_click.hovered() {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                            }
+                            if row_click.clicked() {
                                 if !is_selected {
                                     self.selected_id = Some(fid);
                                     new_selection = Some(fid);

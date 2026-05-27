@@ -6,13 +6,13 @@ use egui_plot::{
 
 use crate::{
     backend::db::DbBackend,
-    data::plot_state::PlotState,
+    data::{plot_state::PlotState, preprocessing::remove_leading_outliers},
     settings::AppSettings,
     ui::{flow_table::FlowTable, series_table::SeriesTable},
 };
 
-const INITIAL_POINTS_TO_DROP: usize = 5;
 const PLOT_AXIS_FOOTER: f32 = 36.0;
+const OUTLIER_TOOLTIP: &str = "Automatically removes only leading points whose values are far outside the following steady-state data, so large initial CWND or ssthresh values do not distort auto-fit.";
 type PlotDataBounds = ((f64, f64), (f64, f64));
 
 pub struct TabSingleFlow {
@@ -23,7 +23,7 @@ pub struct TabSingleFlow {
     manual_x_max: f64,
     apply_manual_x: bool,
     needs_fit: bool,
-    drop_initial_points: bool,
+    remove_outliers: bool,
 }
 
 impl Default for TabSingleFlow {
@@ -36,7 +36,7 @@ impl Default for TabSingleFlow {
             manual_x_max: 1.0,
             apply_manual_x: false,
             needs_fit: false,
-            drop_initial_points: false,
+            remove_outliers: true,
         }
     }
 }
@@ -50,7 +50,7 @@ impl TabSingleFlow {
         self.manual_x_max = 1.0;
         self.apply_manual_x = false;
         self.needs_fit = false;
-        self.drop_initial_points = false;
+        self.remove_outliers = true;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
@@ -149,19 +149,21 @@ impl TabSingleFlow {
             });
 
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let tooltip = "Values like CWND or SEQ can have large initial values. This removes them and fixes plots such as CWND.";
-                let checkbox_response = ui
-                    .checkbox(&mut self.drop_initial_points, "Drop first 5 points")
-                    .on_hover_text(tooltip);
-                if checkbox_response.changed() {
-                    self.needs_fit = true;
-                }
-                ui.add_sized(
-                    [18.0, 18.0],
-                    egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
-                )
-                .on_hover_text(tooltip);
+            ui.scope(|ui| {
+                ui.style_mut().interaction.tooltip_delay = 0.0;
+                ui.horizontal(|ui| {
+                    let checkbox_response = ui
+                        .checkbox(&mut self.remove_outliers, "Remove Outliers")
+                        .on_hover_text(OUTLIER_TOOLTIP);
+                    if checkbox_response.changed() {
+                        self.needs_fit = true;
+                    }
+                    ui.add_sized(
+                        [18.0, 18.0],
+                        egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
+                    )
+                    .on_hover_text(OUTLIER_TOOLTIP);
+                });
             });
         }
 
@@ -266,7 +268,7 @@ impl TabSingleFlow {
         self.apply_manual_x = false;
 
         let fit = std::mem::take(&mut self.needs_fit);
-        let drop_initial_points = self.drop_initial_points;
+        let remove_outliers = self.remove_outliers;
 
         let display: Vec<(Vec<[f64; 2]>, egui::Color32, String)> = self
             .state
@@ -274,11 +276,11 @@ impl TabSingleFlow {
             .iter()
             .filter(|s| !s.is_string_type())
             .map(|s| {
-                let points = points_after_initial_drop(&s.points, drop_initial_points);
+                let points = points_after_outlier_removal(&s.points, remove_outliers);
                 (to_plot_points(points), s.color, s.name.clone())
             })
             .collect();
-        let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) = if drop_initial_points {
+        let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) = if remove_outliers {
             display_bounds(&display).unwrap_or((
                 (self.state.data_x_min, self.state.data_x_max),
                 self.state.y_bounds(),
@@ -361,7 +363,7 @@ impl TabSingleFlow {
         self.apply_manual_x = false;
 
         let fit = std::mem::take(&mut self.needs_fit);
-        let drop_initial_points = self.drop_initial_points;
+        let remove_outliers = self.remove_outliers;
 
         let display: Vec<(i64, Vec<[f64; 2]>, egui::Color32, String, f64, f64)> = self
             .state
@@ -369,9 +371,9 @@ impl TabSingleFlow {
             .iter()
             .filter(|s| !s.is_string_type())
             .map(|s| {
-                let points = points_after_initial_drop(&s.points, drop_initial_points);
+                let points = points_after_outlier_removal(&s.points, remove_outliers);
                 let pts = to_plot_points(points);
-                let (y_min, y_max) = if drop_initial_points {
+                let (y_min, y_max) = if remove_outliers {
                     points_bounds(&pts)
                         .map(|(_, y)| y)
                         .unwrap_or((s.global_y_min, s.global_y_max))
@@ -381,7 +383,7 @@ impl TabSingleFlow {
                 (s.series_id, pts, s.color, s.name.clone(), y_min, y_max)
             })
             .collect();
-        let (fit_x_min, fit_x_max) = if drop_initial_points {
+        let (fit_x_min, fit_x_max) = if remove_outliers {
             merge_bounds(
                 display
                     .iter()
@@ -491,9 +493,9 @@ pub fn to_plot_points(pts: &[(f64, f64)]) -> Vec<[f64; 2]> {
     pts.iter().map(|&(x, y)| [x, y]).collect()
 }
 
-fn points_after_initial_drop(pts: &[(f64, f64)], drop_initial_points: bool) -> &[(f64, f64)] {
-    if drop_initial_points {
-        pts.get(INITIAL_POINTS_TO_DROP..).unwrap_or(&[])
+fn points_after_outlier_removal(pts: &[(f64, f64)], remove_outliers: bool) -> &[(f64, f64)] {
+    if remove_outliers {
+        remove_leading_outliers(pts)
     } else {
         pts
     }

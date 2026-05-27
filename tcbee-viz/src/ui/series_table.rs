@@ -5,6 +5,8 @@ const COL_CHECK: f32 = 28.0;
 const COL_TYPE: f32 = 44.0;
 const COL_COUNT: f32 = 64.0;
 const ROW_HEIGHT: f32 = 22.0;
+const SEARCH_ICON_W: f32 = 18.0;
+const CLEAR_BUTTON_W: f32 = 22.0;
 const HEADER_BG: Color32 = Color32::from_rgb(45, 55, 72);
 const HEADER_FG: Color32 = Color32::from_rgb(226, 232, 240);
 const ROW_ODD: Color32 = Color32::from_rgb(247, 248, 250);
@@ -38,22 +40,45 @@ impl SeriesTable {
         selected_ids: &[i64],
         colors: &[(i64, Color32)],
     ) -> Option<i64> {
+        self.show_with_id_salt(ui, entries, selected_ids, colors, "series_table")
+    }
+
+    /// Render the table with a caller-provided ID salt for repeated table instances.
+    pub fn show_with_id_salt(
+        &mut self,
+        ui: &mut Ui,
+        entries: &[(TimeSeries, i64)],
+        selected_ids: &[i64],
+        colors: &[(i64, Color32)],
+        id_salt: &'static str,
+    ) -> Option<i64> {
         let mut toggled: Option<i64> = None;
+        let content_w = ui.available_width();
 
         // ── Filter bar ───────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("🔍").size(14.0));
-            let clear_w = if self.filter.is_empty() { 0.0 } else { 22.0 };
-            let text_w = (ui.available_width() - clear_w).max(0.0);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.filter)
-                    .hint_text("Search metrics…")
-                    .desired_width(text_w),
-            );
-            if !self.filter.is_empty() && ui.small_button("✕").clicked() {
-                self.filter.clear();
-            }
-        });
+        ui.allocate_ui_with_layout(
+            Vec2::new(content_w, ROW_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_width(content_w);
+                ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
+                let text_w = (ui.available_width() - CLEAR_BUTTON_W).max(40.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.filter)
+                        .hint_text("Search metrics…")
+                        .desired_width(text_w),
+                );
+                ui.allocate_ui_with_layout(
+                    Vec2::new(CLEAR_BUTTON_W, ROW_HEIGHT),
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        if !self.filter.is_empty() && ui.small_button("✕").clicked() {
+                            self.filter.clear();
+                        }
+                    },
+                );
+            },
+        );
         ui.add_space(4.0);
 
         let filter_lower = self.filter.to_lowercase();
@@ -76,8 +101,9 @@ impl SeriesTable {
             .stroke(Stroke::new(1.0, BORDER))
             .corner_radius(6.0)
             .show(ui, |ui| {
+                ui.set_width(content_w);
                 // Measure inside the frame so border/padding is already subtracted.
-                let available_w = ui.available_width();
+                let available_w = content_w;
                 let fixed_w = COL_CHECK + COL_TYPE + COL_COUNT + 4.0 * 6.0;
                 let col_name = (available_w - fixed_w).max(40.0);
 
@@ -100,9 +126,10 @@ impl SeriesTable {
 
                 // Rows
                 egui::ScrollArea::vertical()
-                    .id_salt("series_table_scroll")
+                    .id_salt((id_salt, "scroll"))
                     .auto_shrink([false, false])
                     .show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
+                        ui.set_width(available_w);
                         for i in range {
                             let (ts, count) = visible[i];
                             let sid = ts.id;
@@ -119,6 +146,7 @@ impl SeriesTable {
                             };
 
                             let row_resp = ui.horizontal(|ui| {
+                                ui.set_width(available_w);
                                 ui.set_height(ROW_HEIGHT);
                                 let rect = ui.max_rect();
                                 let hovered = ui.rect_contains_pointer(rect);
@@ -170,14 +198,15 @@ impl SeriesTable {
 
                             // Clicking anywhere in the row toggles the series
                             let row_rect = row_resp.response.rect;
-                            if ui
-                                .interact(
-                                    row_rect,
-                                    ui.id().with(("srow", sid)),
-                                    egui::Sense::click(),
-                                )
-                                .clicked()
-                            {
+                            let row_click = ui.interact(
+                                row_rect,
+                                ui.id().with((id_salt, "srow", sid)),
+                                egui::Sense::click(),
+                            );
+                            if row_click.hovered() {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                            }
+                            if row_click.clicked() {
                                 toggled = Some(sid);
                             }
 

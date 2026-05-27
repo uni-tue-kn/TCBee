@@ -4,7 +4,9 @@ use ts_storage::Flow;
 
 use crate::{
     backend::db::DbBackend,
-    data::{plot_state::PlotState, series_data::SeriesData},
+    data::{
+        plot_state::PlotState, preprocessing::remove_leading_outliers, series_data::SeriesData,
+    },
     settings::AppSettings,
     ui::{
         flow_table::FlowTable,
@@ -17,6 +19,7 @@ use crate::{
     },
 };
 
+const OUTLIER_TOOLTIP: &str = "Automatically removes only leading points whose values are far outside the following steady-state data, so large initial CWND or ssthresh values do not distort auto-fit.";
 type PlotDataBounds = ((f64, f64), (f64, f64));
 
 pub struct TabMultiFlow {
@@ -28,7 +31,7 @@ pub struct TabMultiFlow {
     series_table_b: SeriesTable,
     merged_view: bool,
     split_series_view: bool,
-    drop_initial_points: bool,
+    remove_outliers: bool,
     manual_x_min: f64,
     manual_x_max: f64,
     apply_manual_x: bool,
@@ -46,7 +49,7 @@ impl Default for TabMultiFlow {
             series_table_b: SeriesTable::default(),
             merged_view: true,
             split_series_view: false,
-            drop_initial_points: false,
+            remove_outliers: true,
             manual_x_min: 0.0,
             manual_x_max: 1.0,
             apply_manual_x: false,
@@ -65,7 +68,7 @@ impl TabMultiFlow {
         self.series_table_b.reset();
         self.merged_view = true;
         self.split_series_view = false;
-        self.drop_initial_points = false;
+        self.remove_outliers = true;
         self.manual_x_min = 0.0;
         self.manual_x_max = 1.0;
         self.apply_manual_x = false;
@@ -121,6 +124,8 @@ impl TabMultiFlow {
             db,
             settings,
             half_h,
+            "multi_flow_a_flows",
+            "multi_flow_a_series",
         ) {
             self.needs_fit = true;
         }
@@ -141,6 +146,8 @@ impl TabMultiFlow {
             db,
             settings,
             half_h,
+            "multi_flow_b_flows",
+            "multi_flow_b_series",
         ) {
             self.needs_fit = true;
         }
@@ -168,20 +175,22 @@ impl TabMultiFlow {
         }
 
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let tooltip = "Values like CWND or SEQ can have large initial values. This removes them and fixes plots such as CWND.";
-            if ui
-                .checkbox(&mut self.drop_initial_points, "Drop first 5 points")
-                .on_hover_text(tooltip)
-                .changed()
-            {
-                self.needs_fit = true;
-            }
-            ui.add_sized(
-                [18.0, 18.0],
-                egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
-            )
-            .on_hover_text(tooltip);
+        ui.scope(|ui| {
+            ui.style_mut().interaction.tooltip_delay = 0.0;
+            ui.horizontal(|ui| {
+                if ui
+                    .checkbox(&mut self.remove_outliers, "Remove Outliers")
+                    .on_hover_text(OUTLIER_TOOLTIP)
+                    .changed()
+                {
+                    self.needs_fit = true;
+                }
+                ui.add_sized(
+                    [18.0, 18.0],
+                    egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
+                )
+                .on_hover_text(OUTLIER_TOOLTIP);
+            });
         });
 
         ui.add_space(6.0);
@@ -245,8 +254,8 @@ impl TabMultiFlow {
         self.apply_manual_x = false;
         let fit = std::mem::take(&mut self.needs_fit);
 
-        let display_a = series_display(&self.state_a.series, "A:", self.drop_initial_points);
-        let display_b = series_display(&self.state_b.series, "B:", self.drop_initial_points);
+        let display_a = series_display(&self.state_a.series, "A:", self.remove_outliers);
+        let display_b = series_display(&self.state_b.series, "B:", self.remove_outliers);
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
         let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) =
             merged_display_bounds(&display_a, &display_b).unwrap_or((
@@ -343,8 +352,8 @@ impl TabMultiFlow {
         let fit = std::mem::take(&mut self.needs_fit);
 
         let half_height = split_plot_height_with_footer(ui.available_height(), 2);
-        let display_a = series_display(&self.state_a.series, "", self.drop_initial_points);
-        let display_b = series_display(&self.state_b.series, "", self.drop_initial_points);
+        let display_a = series_display(&self.state_a.series, "", self.remove_outliers);
+        let display_b = series_display(&self.state_b.series, "", self.remove_outliers);
         let label_a = self.state_a.flow_label.clone();
         let label_b = self.state_b.flow_label.clone();
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
@@ -480,7 +489,7 @@ impl TabMultiFlow {
         let display = split_series_display(
             &self.state_a.series,
             &self.state_b.series,
-            self.drop_initial_points,
+            self.remove_outliers,
         );
         if display.is_empty() {
             ui.centered_and_justified(|ui| {
@@ -604,13 +613,13 @@ struct SplitSeriesDisplay {
 fn series_display(
     series: &[SeriesData],
     prefix: &str,
-    drop_initial_points: bool,
+    remove_outliers: bool,
 ) -> Vec<(Vec<[f64; 2]>, egui::Color32, String)> {
     series
         .iter()
         .filter(|s| !s.is_string_type())
         .map(|s| {
-            let pts = to_plot_points(points_after_initial_drop(&s.points, drop_initial_points));
+            let pts = to_plot_points(points_after_outlier_removal(&s.points, remove_outliers));
             let name = format!("{}{}", prefix, s.name);
             (pts, s.color, name)
         })
@@ -620,17 +629,17 @@ fn series_display(
 fn split_series_display(
     series_a: &[SeriesData],
     series_b: &[SeriesData],
-    drop_initial_points: bool,
+    remove_outliers: bool,
 ) -> Vec<SplitSeriesDisplay> {
     series_a
         .iter()
         .filter(|s| !s.is_string_type())
-        .map(|s| split_series_item(s, "A", drop_initial_points))
+        .map(|s| split_series_item(s, "A", remove_outliers))
         .chain(
             series_b
                 .iter()
                 .filter(|s| !s.is_string_type())
-                .map(|s| split_series_item(s, "B", drop_initial_points)),
+                .map(|s| split_series_item(s, "B", remove_outliers)),
         )
         .collect()
 }
@@ -638,11 +647,11 @@ fn split_series_display(
 fn split_series_item(
     series: &SeriesData,
     flow_prefix: &'static str,
-    drop_initial_points: bool,
+    remove_outliers: bool,
 ) -> SplitSeriesDisplay {
-    let points = to_plot_points(points_after_initial_drop(
+    let points = to_plot_points(points_after_outlier_removal(
         &series.points,
-        drop_initial_points,
+        remove_outliers,
     ));
     let (_, (y_min, y_max)) = points_bounds(&points).unwrap_or((
         (series.global_t_min, series.global_t_max),
@@ -660,9 +669,9 @@ fn split_series_item(
     }
 }
 
-fn points_after_initial_drop(pts: &[(f64, f64)], drop_initial_points: bool) -> &[(f64, f64)] {
-    if drop_initial_points {
-        pts.get(5..).unwrap_or(&[])
+fn points_after_outlier_removal(pts: &[(f64, f64)], remove_outliers: bool) -> &[(f64, f64)] {
+    if remove_outliers {
+        remove_leading_outliers(pts)
     } else {
         pts
     }
@@ -744,6 +753,8 @@ fn flow_section(
     db: &DbBackend,
     settings: &AppSettings,
     table_height: f32,
+    flow_table_id: &'static str,
+    series_table_id: &'static str,
 ) -> bool {
     let mut changed = false;
 
@@ -762,7 +773,7 @@ fn flow_section(
 
     egui::Frame::none().show(ui, |ui| {
         ui.set_max_height(table_height * 0.45);
-        if let Some(new_id) = flow_table.show(ui, flows) {
+        if let Some(new_id) = flow_table.show_with_id_salt(ui, flows, flow_table_id) {
             state.select_flow(db, new_id);
             changed = true;
         }
@@ -790,7 +801,9 @@ fn flow_section(
     let metrics_height = (table_height * 0.5).max(80.0);
     egui::Frame::none().show(ui, |ui| {
         ui.set_max_height(metrics_height);
-        if let Some(toggled_id) = series_table.show(ui, &available, &selected_ids, &colors) {
+        if let Some(toggled_id) =
+            series_table.show_with_id_salt(ui, &available, &selected_ids, &colors, series_table_id)
+        {
             state.toggle_series(db, toggled_id, settings);
             changed = true;
         }
