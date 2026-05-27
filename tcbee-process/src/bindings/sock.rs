@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr};
 
+use arrayref::array_ref;
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
@@ -8,7 +9,6 @@ use crate::{
     reader::FromBuffer,
 };
 
-use arrayref::array_ref;
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default, Deserialize)]
 pub struct sock_trace_entry {
@@ -16,7 +16,8 @@ pub struct sock_trace_entry {
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
-    pub ports: u32,
+    pub sport: u16,
+    pub dport: u16,
     pub family: u16,
     // SOCK Stats
     pub pacing_rate: u64,
@@ -180,21 +181,11 @@ impl EventIndexer for sock_trace_entry {
             dst = ip_addr_from_16_bytes(self.dst_v6);
         }
 
-        let port_bytes = self.ports.to_be_bytes();
-
-        let srcbytes = array_ref![port_bytes, 0, 2].clone();
-        let dstbytes = array_ref![port_bytes, 2, 2].clone();
-
-        // TODO: check byte order if ports are correct
-        // Dport could be be bytes
-        let sport = u16::from_be_bytes(srcbytes);
-        let dport = u16::from_le_bytes(dstbytes);
-
         IpTuple {
-            src: src,
-            dst: dst,
-            sport: sport as i64,
-            dport: dport as i64,
+            src,
+            dst,
+            sport: self.sport as i64,
+            dport: self.dport as i64,
             l4proto: 6,
         }
     }

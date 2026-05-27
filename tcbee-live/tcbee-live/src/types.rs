@@ -52,9 +52,8 @@ pub fn flow_key_from_entry(entry: &cwnd_trace_entry) -> FlowKey {
     FlowKey {
         src_v6: entry.src_v6,
         dst_v6: entry.dst_v6,
-        // raw portpair: high 16 = local port, low 16 = remote port
-        src_port: ((entry.ports >> 16) as u16).to_be(),
-        dst_port: ((entry.ports & 0xFFFF) as u16).to_be(),
+        src_port: entry.sport,
+        dst_port: entry.dport,
         family: entry.family,
         _pad: 0,
     }

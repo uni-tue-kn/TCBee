@@ -34,10 +34,8 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    // The order of ports in the socket is fixed for both sending and receiving
-    // So take the opposite order from sendmsg here
-    let sport = ((ports & 0xFFFF) as u16).to_be();
-    let dport = ((ports >> 16) as u16).to_be();
+    let dport = ((ports & 0xFFFF) as u16).swap_bytes();
+    let sport = (ports >> 16) as u16;
     if !filter_ports_match(sport, dport) {
         return Ok(0);
     }
@@ -49,11 +47,7 @@ pub fn try_sock_recvmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     }
 
     unsafe {
-        let mut cwnd_entry = cwnd_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
-        cwnd_entry.addr_v4 = cwnd_entry.addr_v4.rotate_right(32);
-        cwnd_entry.src_v6 = read_kernel(&(*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8)?;
-        cwnd_entry.dst_v6 = read_kernel(&(*sk_ptr).__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8)?;
-        cwnd_entry.ports = cwnd_entry.ports.rotate_right(16);
+        let cwnd_entry = cwnd_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
 
         // Prepare ringbuf entry
         let reserved = TCP_RECEIVE_CWND_EVENTS.reserve::<cwnd_trace_entry>(0);
@@ -82,8 +76,8 @@ pub fn try_sock_sendmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let dport = ((ports & 0xFFFF) as u16).to_be();
-    let sport = ((ports >> 16) as u16).to_be();
+    let dport = ((ports & 0xFFFF) as u16).swap_bytes();
+    let sport = (ports >> 16) as u16;
     if !filter_ports_match(sport, dport) {
         return Ok(0);
     }
@@ -126,8 +120,8 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let dport = ((ports & 0xFFFF) as u16).to_be();
-    let sport = ((ports >> 16) as u16).to_be();
+    let dport = ((ports & 0xFFFF) as u16).swap_bytes();
+    let sport = (ports >> 16) as u16;
 
     let skb: *const sk_buff = unsafe { ctx.arg(1) };
     let length = unsafe { read_kernel(&(*skb).data_len)? };
@@ -174,8 +168,8 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
     let tcp_sck_ptr = sk_ptr as *const tcp_sock;
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
-    let sport = ((ports & 0xFFFF) as u16).to_be();
-    let dport = ((ports >> 16) as u16).to_be();
+    let dport = ((ports & 0xFFFF) as u16).swap_bytes();
+    let sport = (ports >> 16) as u16;
 
     let skb: *const sk_buff = unsafe { ctx.arg(1) };
     let length = unsafe { read_kernel(&(*skb).data_len)? };
@@ -191,11 +185,7 @@ pub fn try_tcp_recv_socket(ctx: FEntryContext) -> Result<u32, u32> {
     }
 
     unsafe {
-        let mut sock_entry = sock_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
-        sock_entry.addr_v4 = sock_entry.addr_v4.rotate_right(32);
-        sock_entry.src_v6 = read_kernel(&(*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8)?;
-        sock_entry.dst_v6 = read_kernel(&(*sk_ptr).__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8)?;
-        sock_entry.ports = sock_entry.ports.rotate_right(16);
+        let sock_entry = sock_trace_entry::read_from(sk_ptr, tcp_sck_ptr)?;
 
         // Prepare ringbuf entry
         let reserved = TCP_RECV_SOCK_EVENTS.reserve::<sock_trace_entry>(0);

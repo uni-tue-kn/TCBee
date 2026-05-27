@@ -43,8 +43,8 @@ pub fn cubic_handle(ctx: FEntryContext) -> Result<u32, u32> {
 
     let ports = unsafe { &(*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
 
-    let dport = ((ports & 0xFFFF) as u16).to_be();
-    let sport = ((ports >> 16) as u16).to_be();
+    let dport = ((ports & 0xFFFF) as u16).swap_bytes();
+    let sport = (ports >> 16) as u16;
 
     let family = unsafe { (*sk_ptr).__sk_common.skc_family };
     if !filter_ports_match(sport, dport) {
@@ -59,8 +59,7 @@ pub fn cubic_handle(ctx: FEntryContext) -> Result<u32, u32> {
 
     unsafe {
         // Copies fields with same name from cubic_ptr
-        let mut cubic_entry = cubic_trace_entry::read_from(sk_ptr, cubic_ptr)?;
-        cubic_entry.ports = ((sport as u32) << 16) | dport as u32;
+        let cubic_entry = cubic_trace_entry::read_from(sk_ptr, cubic_ptr)?;
 
         // Prepare ringbuf entry
         let reserved = CUBIC_EVENTS.reserve::<cubic_trace_entry>(0);

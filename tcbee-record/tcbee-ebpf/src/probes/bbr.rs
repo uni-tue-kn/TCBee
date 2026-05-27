@@ -46,8 +46,8 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
         .map_err(|_| 0u32)?
     };
 
-    let dport = ((ports & 0xFFFF) as u16).to_be();
-    let sport = ((ports >> 16) as u16).to_be();
+    let dport = ((ports & 0xFFFF) as u16).swap_bytes();
+    let sport = (ports >> 16) as u16;
     if !filter_ports_match(sport, dport) {
         return Ok(0);
     }
@@ -60,9 +60,7 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
 
     unsafe {
         // Copies fields with same name from bbr_ptr
-        let mut bbr_entry = bbr_trace_entry::read_from(sk_ptr, bbr_ptr)?;
-        bbr_entry.ports = ((sport as u32) << 16) | dport as u32;
-        //let bbr_entry = bbr_trace_entry::default();
+        let bbr_entry = bbr_trace_entry::read_from(sk_ptr, bbr_ptr)?;
         let reserved = BBR_EVENTS.reserve::<bbr_trace_entry>(0);
 
         // Check if space left for entry

@@ -13,7 +13,8 @@ pub struct BbrEvent {
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
-    pub ports: u32,
+    pub sport: u16,
+    pub dport: u16,
     pub family: u16,
     // BBR
     pub min_rtt_us: u32,
@@ -41,11 +42,6 @@ pub fn unpack_ipv4_pair(packed: u64) -> (Ipv4Addr, Ipv4Addr) {
     (src, dst)
 }
 
-pub fn unpack_ports(v: u32) -> (u16, u16) {
-    let src = (v >> 16) as u16;
-    let dst = v as u16;
-    (src, dst)
-}
 
 impl FromBuffer for BbrEvent {
     fn from_buffer(buf: &Vec<u8>) -> Self {
@@ -128,13 +124,11 @@ impl EventIndexer for BbrEvent {
             dst = ip_addr_from_16_bytes(self.dst_v6);
         }
 
-        let (sport, dport) = unpack_ports(self.ports);
-
         IpTuple {
             src,
             dst,
-            sport: sport as i64,
-            dport: dport as i64,
+            sport: self.sport as i64,
+            dport: self.dport as i64,
             l4proto: 6,
         }
     }

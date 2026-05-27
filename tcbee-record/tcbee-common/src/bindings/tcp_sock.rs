@@ -188,7 +188,8 @@ pub struct cwnd_trace_entry {
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
-    pub ports: u32,
+    pub sport: u16,
+    pub dport: u16,
     pub family: u16,
     // Data
     pub snd_cwnd: u32,
@@ -204,7 +205,8 @@ pub struct sock_trace_entry {
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
-    pub ports: u32,
+    pub sport: u16,
+    pub dport: u16,
     pub family: u16,
     // SOCK Stats
     #[cfg_attr(feature = "ebpf", kr(src = "sk", path = "sk_pacing_rate"))]

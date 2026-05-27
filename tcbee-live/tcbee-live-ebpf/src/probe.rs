@@ -71,8 +71,8 @@ unsafe fn make_flow_key(sk_ptr: *const sock) -> FlowKey {
         FlowKey {
             src_v6: (*sk_ptr).__sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8,
             dst_v6: (*sk_ptr).__sk_common.skc_v6_daddr.in6_u.u6_addr8,
-            src_port: ((ports >> 16) as u16).to_be(),
-            dst_port: ((ports & 0xFFFF) as u16).to_be(),
+            src_port: (ports >> 16) as u16,
+            dst_port: ((ports & 0xFFFF) as u16).swap_bytes(),
             family: (*sk_ptr).__sk_common.skc_family,
             _pad: 0,
         }
@@ -97,7 +97,6 @@ pub fn try_sock_recvmsg(ctx: FEntryContext) -> Result<u32, u32> {
         //dbg_reach!("recvmsg passed", key);
     }
 
-    let ports = unsafe { (*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
     // Swap addr_v4 to show from the receiver's perspective in the event.
     let addr_v4 = unsafe {
         (*sk_ptr)
@@ -107,7 +106,6 @@ pub fn try_sock_recvmsg(ctx: FEntryContext) -> Result<u32, u32> {
             .rotate_right(32)
     };
 
-    
     unsafe {
         if let Some(mut entry) = TCP_RECEIVE_CWND_EVENTS.reserve::<cwnd_trace_entry>(0) {
             entry.write(cwnd_trace_entry {
@@ -115,7 +113,8 @@ pub fn try_sock_recvmsg(ctx: FEntryContext) -> Result<u32, u32> {
                 addr_v4,
                 src_v6: key.src_v6,
                 dst_v6: key.dst_v6,
-                ports,
+                sport: key.src_port,
+                dport: key.dst_port,
                 family: key.family,
                 snd_cwnd: read_kernel(&(*tcp_sck_ptr).snd_cwnd),
             });
@@ -144,7 +143,6 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
         //dbg_reach!("sendmsg passed", key);
     }
 
-    let ports = unsafe { (*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair };
     let addr_v4 = unsafe { (*sk_ptr).__sk_common.__bindgen_anon_1.skc_addrpair };
 
     unsafe {
@@ -154,7 +152,8 @@ pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
                 addr_v4,
                 src_v6: key.src_v6,
                 dst_v6: key.dst_v6,
-                ports,
+                sport: key.src_port,
+                dport: key.dst_port,
                 family: key.family,
                 snd_cwnd: read_kernel(&(*tcp_sck_ptr).snd_cwnd),
             });

@@ -184,11 +184,22 @@ fn expand_kernel_read(input: &DeriveInput) -> Result<TokenStream2> {
                 });
                 continue;
             }
-            "ports" => {
+            "sport" => {
                 inits.push(quote! {
-                    ports: {
+                    sport: {
                         let p = core::ptr::addr_of!((*#sk_ident).__sk_common.__bindgen_anon_3.skc_portpair);
-                        read_kernel(p as *const _)?
+                        let portpair: u32 = read_kernel(p as *const _)?;
+                        (portpair >> 16) as u16
+                    }
+                });
+                continue;
+            }
+            "dport" => {
+                inits.push(quote! {
+                    dport: {
+                        let p = core::ptr::addr_of!((*#sk_ident).__sk_common.__bindgen_anon_3.skc_portpair);
+                        let portpair: u32 = read_kernel(p as *const _)?;
+                        ((portpair & 0xFFFF) as u16).swap_bytes()
                     }
                 });
                 continue;

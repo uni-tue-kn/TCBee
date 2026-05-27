@@ -1,6 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use arrayref::array_ref;
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
@@ -14,7 +13,8 @@ pub struct CubicEvent {
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
-    pub ports: u32,
+    pub sport: u16,
+    pub dport: u16,
     pub family: u16,
     // Cubic
     pub cnt: u32,
@@ -45,19 +45,6 @@ pub fn unpack_ipv4_pair(packed: u64) -> (Ipv4Addr, Ipv4Addr) {
     (src, dst)
 }
 
-pub fn unpack_ports(v: u32) -> (u16, u16) {
-    let port_bytes = v.to_be_bytes();
-
-    let srcbytes = array_ref![port_bytes, 0, 2].clone();
-    let dstbytes = array_ref![port_bytes, 2, 2].clone();
-
-    // TODO: check byte order if ports are correct
-    // Dport could be be bytes
-    let sport = u16::from_be_bytes(srcbytes);
-    let dport = u16::from_le_bytes(dstbytes);
-
-    (sport, dport)
-}
 
 impl FromBuffer for CubicEvent {
     fn from_buffer(buf: &Vec<u8>) -> Self {
@@ -143,13 +130,11 @@ impl EventIndexer for CubicEvent {
             dst = ip_addr_from_16_bytes(self.dst_v6);
         }
 
-        let (sport, dport) = unpack_ports(self.ports);
-
         IpTuple {
             src,
             dst,
-            sport: sport as i64,
-            dport: dport as i64,
+            sport: self.sport as i64,
+            dport: self.dport as i64,
             l4proto: 6,
         }
     }

@@ -140,7 +140,8 @@ pub struct bbr_trace_entry {
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
-    pub ports: u32,
+    pub sport: u16,
+    pub dport: u16,
     pub family: u16,
     // General
     pub min_rtt_us: u32,
