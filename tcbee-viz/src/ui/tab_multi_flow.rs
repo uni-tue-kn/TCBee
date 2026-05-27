@@ -1,5 +1,5 @@
 use egui::{RichText, ScrollArea};
-use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoints};
+use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
 use ts_storage::Flow;
 
 use crate::{
@@ -14,8 +14,9 @@ use crate::{
         tab_single_flow::{
             compact_axis_label, compact_coordinates_formatter, plot_height_with_footer,
             seconds_grid_spacer, seconds_since_formatter, split_plot_height_with_footer,
-            to_plot_points,
+            to_plot_points, vertical_marker_label,
         },
+        theme,
     },
 };
 
@@ -87,19 +88,29 @@ impl TabMultiFlow {
             .resizable(true)
             .min_width(240.0)
             .max_width(500.0)
+            .default_width(500.0)
+            .frame(theme::sidebar_frame(settings.dark_mode))
             .show_inside(ui, |ui| {
                 let sidebar_height = ui.available_height();
                 ScrollArea::vertical()
                     .id_salt("multi_flow_sidebar_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        self.show_sidebar(ui, db, settings, sidebar_height);
+                        egui::Frame::NONE
+                            .inner_margin(egui::Margin::symmetric(16, 0))
+                            .show(ui, |ui| {
+                                ui.set_min_height(sidebar_height);
+                                self.show_sidebar(ui, db, settings, sidebar_height);
+                            });
                     });
             });
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            self.show_plot_area(ui, db, settings);
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::panel_bg(settings.dark_mode)))
+            .show_inside(ui, |ui| {
+                ui.add_space(4.0);
+                self.show_plot_area(ui, db, settings);
+            });
     }
 
     fn show_sidebar(
@@ -110,7 +121,7 @@ impl TabMultiFlow {
         sidebar_height: f32,
     ) {
         let flows = db.list_flows();
-        let half_h = ((sidebar_height - 180.0) / 2.0).max(120.0);
+        let half_h = ((sidebar_height - 120.0) / 2.0).max(220.0);
 
         // ── Flow A ───────────────────────────────────────────────────────
         if flow_section(
@@ -256,6 +267,10 @@ impl TabMultiFlow {
 
         let display_a = series_display(&self.state_a.series, "A:", self.remove_outliers);
         let display_b = series_display(&self.state_b.series, "B:", self.remove_outliers);
+        let bool_markers_a = bool_marker_display(&self.state_a.series, "A:");
+        let bool_markers_b = bool_marker_display(&self.state_b.series, "B:");
+        let string_markers_a = string_marker_display(&self.state_a.series, "A:");
+        let string_markers_b = string_marker_display(&self.state_b.series, "B:");
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
         let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) =
             merged_display_bounds(&display_a, &display_b).unwrap_or((
@@ -324,10 +339,29 @@ impl TabMultiFlow {
                             .name(name),
                     );
                 }
+
+                for (name, color, timestamps) in bool_markers_a.iter().chain(&bool_markers_b) {
+                    for t in timestamps {
+                        plot_ui.vline(VLine::new(*t).color(*color).name(name));
+                    }
+                }
+
+                let bounds = plot_ui.plot_bounds();
+                let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
+                for (name, color, points) in string_markers_a.iter().chain(&string_markers_b) {
+                    for (t, label) in points {
+                        plot_ui.vline(VLine::new(*t).color(*color).name(name));
+                        plot_ui.text(
+                            Text::new(PlotPoint::new(*t, marker_y), vertical_marker_label(label))
+                                .anchor(egui::Align2::LEFT_CENTER)
+                                .color(*color),
+                        );
+                    }
+                }
             });
 
         if plot_response.response.secondary_clicked() {
-            self.needs_fit = true;
+            self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
 
         if reload_a {
@@ -459,7 +493,7 @@ impl TabMultiFlow {
             });
 
         if response_a.response.secondary_clicked() || response_b.response.secondary_clicked() {
-            self.needs_fit = true;
+            self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
 
         if reload_a {
@@ -575,7 +609,7 @@ impl TabMultiFlow {
             });
 
         if right_clicked {
-            self.needs_fit = true;
+            self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
 
         if reload_a {
@@ -587,6 +621,27 @@ impl TabMultiFlow {
             (self.state_b.x_min, self.state_b.x_max) = new_x_b;
             self.state_b
                 .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
+        }
+    }
+
+    fn reset_to_full_autofit(&mut self, db: &DbBackend, settings: &AppSettings, plot_width: f32) {
+        let (x_min, x_max) = selected_x_bounds(&self.state_a, &self.state_b);
+        self.manual_x_min = x_min;
+        self.manual_x_max = x_max;
+        self.apply_manual_x = false;
+        self.needs_fit = true;
+
+        if self.state_a.flow_id.is_some() {
+            self.state_a.x_min = self.state_a.data_x_min;
+            self.state_a.x_max = self.state_a.data_x_max;
+            self.state_a
+                .reload_visible_data(db, settings, Some(plot_width));
+        }
+        if self.state_b.flow_id.is_some() {
+            self.state_b.x_min = self.state_b.data_x_min;
+            self.state_b.x_max = self.state_b.data_x_max;
+            self.state_b
+                .reload_visible_data(db, settings, Some(plot_width));
         }
     }
 }
@@ -617,11 +672,46 @@ fn series_display(
 ) -> Vec<(Vec<[f64; 2]>, egui::Color32, String)> {
     series
         .iter()
-        .filter(|s| !s.is_string_type())
+        .filter(|s| !s.is_string_type() && !s.is_boolean_type())
         .map(|s| {
             let pts = to_plot_points(points_after_outlier_removal(&s.points, remove_outliers));
             let name = format!("{}{}", prefix, s.name);
             (pts, s.color, name)
+        })
+        .collect()
+}
+
+fn bool_marker_display(
+    series: &[SeriesData],
+    prefix: &str,
+) -> Vec<(String, egui::Color32, Vec<f64>)> {
+    series
+        .iter()
+        .filter(|s| s.is_boolean_type())
+        .map(|s| {
+            let timestamps = s
+                .points
+                .iter()
+                .filter_map(|(t, value)| (*value >= 0.5).then_some(*t))
+                .collect();
+            (format!("{}{}", prefix, s.name), s.color, timestamps)
+        })
+        .collect()
+}
+
+fn string_marker_display(
+    series: &[SeriesData],
+    prefix: &str,
+) -> Vec<(String, egui::Color32, Vec<(f64, String)>)> {
+    series
+        .iter()
+        .filter(|s| s.is_string_type())
+        .map(|s| {
+            (
+                format!("{}{}", prefix, s.name),
+                s.color,
+                s.string_points.clone(),
+            )
         })
         .collect()
 }
@@ -771,9 +861,9 @@ fn flow_section(
         return false;
     }
 
-    egui::Frame::none().show(ui, |ui| {
-        ui.set_max_height(table_height * 0.45);
-        if let Some(new_id) = flow_table.show_with_id_salt(ui, flows, flow_table_id) {
+    egui::Frame::NONE.show(ui, |ui| {
+        ui.set_max_height((table_height * 0.62).max(160.0));
+        if let Some(new_id) = flow_table.show_with_id_salt(ui, db, flows, flow_table_id) {
             state.select_flow(db, new_id);
             changed = true;
         }
@@ -787,7 +877,8 @@ fn flow_section(
     ui.label(
         RichText::new("Metrics")
             .size(12.0)
-            .color(egui::Color32::DARK_GRAY),
+            .strong()
+            .color(theme::muted_text(ui.visuals().dark_mode)),
     );
 
     let available = state.available_series.clone();
@@ -798,8 +889,8 @@ fn flow_section(
         .map(|s| (s.series_id, s.color))
         .collect();
 
-    let metrics_height = (table_height * 0.5).max(80.0);
-    egui::Frame::none().show(ui, |ui| {
+    let metrics_height = (table_height * 0.72).max(180.0);
+    egui::Frame::NONE.show(ui, |ui| {
         ui.set_max_height(metrics_height);
         if let Some(toggled_id) =
             series_table.show_with_id_salt(ui, &available, &selected_ids, &colors, series_table_id)

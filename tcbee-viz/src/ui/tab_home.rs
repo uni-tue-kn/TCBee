@@ -1,7 +1,7 @@
 use egui::RichText;
 use rfd::FileDialog;
 
-use crate::{backend::db::DbBackend, settings::AppSettings};
+use crate::{backend::db::DbBackend, settings::AppSettings, ui::theme};
 
 #[derive(Default)]
 pub struct TabHome {
@@ -14,17 +14,46 @@ impl TabHome {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &mut DbBackend, _settings: &mut AppSettings) {
-        ui.heading(RichText::new("TCBee — TCP Flow Visualizer").size(28.0));
-        ui.separator();
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(22, 18))
+            .show(ui, |ui| self.show_content(ui, db));
+    }
+
+    fn show_content(&mut self, ui: &mut egui::Ui, db: &mut DbBackend) {
+        let dark_mode = ui.visuals().dark_mode;
+        ui.horizontal(|ui| {
+            ui.heading(
+                RichText::new("TCP Flow Visualizer")
+                    .size(26.0)
+                    .color(theme::text(dark_mode)),
+            );
+        });
+        ui.add_space(6.0);
 
         ui.columns(2, |columns| {
             // Left column: database selection
             columns[0].vertical(|ui| {
+                ui.add_space(8.0);
                 ui.set_min_width(300.0);
-                ui.heading("Select Database");
+                ui.label(
+                    RichText::new("Select Database")
+                        .strong()
+                        .size(15.0)
+                        .color(theme::text(dark_mode)),
+                );
                 ui.separator();
 
-                if ui.button("Open database file…").clicked() {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Open database file…")
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(theme::TOP_BAR_ACTIVE),
+                    )
+                    .clicked()
+                {
                     if let Some(path) = FileDialog::new()
                         .add_filter("Database files", &["sqlite", "duck"])
                         .set_directory("~/")
@@ -45,22 +74,28 @@ impl TabHome {
 
                 ui.add_space(8.0);
                 if db.is_connected() {
-                    ui.label(
-                        RichText::new(&self.status).color(egui::Color32::from_rgb(50, 180, 50)),
-                    );
+                    ui.label(RichText::new(&self.status).color(theme::SUCCESS));
                     if let Some(src) = db.source {
-                        ui.label(format!("Backend: {}", src));
+                        ui.label(
+                            RichText::new(format!("Backend: {}", src))
+                                .color(theme::muted_text(dark_mode)),
+                        );
                     }
                 } else if !self.status.is_empty() {
-                    ui.label(RichText::new(&self.status).color(egui::Color32::RED));
+                    ui.label(RichText::new(&self.status).color(theme::ERROR));
                 } else {
                     ui.label(
-                        RichText::new("No database loaded.").color(egui::Color32::GRAY),
+                        RichText::new("No database loaded.").color(theme::muted_text(dark_mode)),
                     );
                 }
 
                 ui.separator();
-                ui.label(RichText::new("About").strong().size(15.0));
+                ui.label(
+                    RichText::new("About")
+                        .strong()
+                        .size(15.0)
+                        .color(theme::text(dark_mode)),
+                );
                 paragraph(
                     ui,
                     "This program visualizes recorded TCP flow metrics for exploratory analysis.",
@@ -77,7 +112,13 @@ impl TabHome {
 
             // Right column: usage guide
             columns[1].vertical(|ui| {
-                ui.heading("Usage Guide");
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Usage Guide")
+                        .strong()
+                        .size(15.0)
+                        .color(theme::text(dark_mode)),
+                );
                 ui.separator();
                 egui::ScrollArea::vertical().id_salt("home_scroll").show(ui, |ui| {
                     section(ui, "Home", "The starting screen where you select the database file (.sqlite or .duck) containing recorded TCP flow data. If the button to open a file is not visible, increase the window size.");
@@ -92,12 +133,21 @@ impl TabHome {
 }
 
 fn section(ui: &mut egui::Ui, title: &str, body: &str) {
+    let dark_mode = ui.visuals().dark_mode;
     ui.add_space(6.0);
-    ui.label(RichText::new(title).strong().size(15.0));
+    ui.label(
+        RichText::new(title)
+            .strong()
+            .size(14.0)
+            .color(theme::text(dark_mode)),
+    );
     paragraph(ui, body);
     ui.add_space(4.0);
 }
 
 fn paragraph(ui: &mut egui::Ui, body: &str) {
-    ui.add(egui::Label::new(body).wrap());
+    ui.add(
+        egui::Label::new(RichText::new(body).color(theme::muted_text(ui.visuals().dark_mode)))
+            .wrap(),
+    );
 }

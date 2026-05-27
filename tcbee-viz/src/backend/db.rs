@@ -103,8 +103,29 @@ impl DbBackend {
     pub fn get_flow_x_bounds(&self, flow_id: i64) -> Option<(f64, f64)> {
         let db = self.interface.as_ref()?;
         let flow = db.get_flow_by_id(flow_id).ok()??;
-        let bounds = db.get_flow_bounds(&flow).ok()?;
-        Some((bounds.xmin, bounds.xmax))
+        let mut t_min = f64::MAX;
+        let mut t_max = f64::MIN;
+        let all = db.list_time_series(&flow).ok()?;
+
+        for series in all {
+            let Ok(count) = db.get_data_points_count(&series) else {
+                continue;
+            };
+            if count == 0 {
+                continue;
+            }
+            let Ok(bounds) = db.get_time_series_bounds(&series) else {
+                continue;
+            };
+            t_min = t_min.min(bounds.xmin);
+            t_max = t_max.max(bounds.xmax);
+        }
+
+        if t_min > t_max {
+            None
+        } else {
+            Some((t_min, t_max))
+        }
     }
 
     /// Returns (y_min, y_max) across all given series IDs.
@@ -198,6 +219,39 @@ impl DbBackend {
         .collect()
     }
 
+    /// Load true boolean events in a time range, keeping at most one event per sample interval.
+    pub fn load_range_bool_events_sampled(
+        &self,
+        series_id: i64,
+        t_min: f64,
+        t_max: f64,
+        sample_interval: f64,
+    ) -> Vec<(f64, f64)> {
+        let Some(db) = &self.interface else {
+            return Vec::new();
+        };
+        let Some(series) = db.get_time_series_by_id(series_id).ok().flatten() else {
+            return Vec::new();
+        };
+        let Ok(iter) = db.get_data_points_in_range(&series, t_min, t_max) else {
+            return Vec::new();
+        };
+
+        let mut next_timestamp = f64::NEG_INFINITY;
+        iter.filter_map(|p| {
+            let DataValue::Boolean(true) = p.value else {
+                return None;
+            };
+            if sample_interval <= 0.0 || p.timestamp >= next_timestamp {
+                next_timestamp = p.timestamp + sample_interval;
+                Some((p.timestamp, 1.0))
+            } else {
+                None
+            }
+        })
+        .collect()
+    }
+
     /// Load ALL data points for a series (used by plugins — they need the full dataset).
     pub fn load_all(&self, series_id: i64) -> Vec<(f64, DataValue)> {
         let Some(db) = &self.interface else {
@@ -235,6 +289,32 @@ impl DbBackend {
         Ok(())
     }
 
+    /// Delete an existing series with the same name, then persist the computed replacement.
+    pub fn replace_series_for_flow(&self, flow: &Flow, series: &SeriesData) -> Result<(), String> {
+        let db = self.interface.as_ref().ok_or("No database connection")?;
+
+        for existing in self.existing_series_for_flow(flow, &[series.name.clone()])? {
+            db.delete_time_series(flow, &existing)
+                .map_err(|e| format!("delete_time_series failed: {:?}", e))?;
+        }
+
+        self.create_series_for_flow(flow, series)
+    }
+
+    pub fn existing_series_for_flow(
+        &self,
+        flow: &Flow,
+        names: &[String],
+    ) -> Result<Vec<TimeSeries>, String> {
+        let db = self.interface.as_ref().ok_or("No database connection")?;
+        let all = db
+            .list_time_series(flow)
+            .map_err(|e| format!("list_time_series failed: {:?}", e))?;
+        Ok(all
+            .filter(|series| names.iter().any(|name| series.name == *name))
+            .collect())
+    }
+
     /// Return the total number of data points for a series.
     pub fn get_point_count(&self, series_id: i64) -> i64 {
         let Some(db) = &self.interface else { return 0 };
@@ -242,33 +322,6 @@ impl DbBackend {
             return 0;
         };
         db.get_data_points_count(&series).unwrap_or(0)
-    }
-
-    /// Look up series IDs by name for the given flow.
-    pub fn find_series_ids_by_name(
-        &self,
-        flow: &Flow,
-        names: &[String],
-    ) -> Result<Vec<i64>, String> {
-        let db = self.interface.as_ref().ok_or("No database connection")?;
-        let all = db
-            .list_time_series(flow)
-            .map_err(|e| format!("list_time_series failed: {:?}", e))?;
-
-        let found: Vec<i64> = all
-            .filter(|s| names.contains(&s.name))
-            .map(|s| s.id)
-            .collect();
-
-        if found.len() != names.len() {
-            Err(format!(
-                "Could not find all required series. Found {} of {}",
-                found.len(),
-                names.len()
-            ))
-        } else {
-            Ok(found)
-        }
     }
 }
 

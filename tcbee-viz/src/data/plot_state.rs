@@ -58,7 +58,13 @@ impl PlotState {
         self.flow_id = Some(flow_id);
         self.selected_series_ids.clear();
         self.series.clear();
+        self.available_series.clear();
+        self.flow_label.clear();
         self.pending_reload = false;
+        self.x_min = 0.0;
+        self.x_max = 1.0;
+        self.data_x_min = 0.0;
+        self.data_x_max = 1.0;
 
         if let Some(flow) = db.get_flow_by_id(flow_id) {
             self.flow_label = format_flow(&flow);
@@ -238,6 +244,9 @@ pub fn fetch_range(
     if sd.is_string_type() {
         sd.string_points =
             db.load_range_strings_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
+    } else if sd.is_boolean_type() {
+        sd.points =
+            db.load_range_bool_events_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
     } else {
         let raw = db.load_range_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
         let step = compute_skip_step(raw.len(), settings.skip_every_nth);
