@@ -34,6 +34,8 @@ BOTTLENECK_BW = 10   # Mbps  — s1↔s2 (the constrained link)
 BOTTLENECK_DELAY = "40ms"
 QUEUE_SIZE = 150     # packets — ~1.5× BDP for 10 Mbps / 82 ms RTT
 
+TCBEE_IP = "10.0.0.1"
+RECV_IP = "10.0.0.2"
 PORT1 = 5001
 PORT2 = 5002         # used only for the second stream in --double mode
 
@@ -68,8 +70,8 @@ DUCKDB_PATH = "/tmp/db.duck"
 
 class BottleneckTopo(Topo):
     def build(self):
-        tcbee = self.addHost("tcbee", ip="10.0.0.1/24")
-        recv  = self.addHost("recv",  ip="10.0.0.2/24")
+        tcbee = self.addHost("tcbee", ip=f"{TCBEE_IP}/24")
+        recv  = self.addHost("recv",  ip=f"{RECV_IP}/24")
         s1 = self.addSwitch("s1")
         s2 = self.addSwitch("s2")
 
@@ -157,8 +159,14 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
     else:
         # tcbee-record is a TUI — run it in the foreground of this terminal so
         # it gets the real PTY it needs.  No second terminal required.
-        port_arg = f"-p {PORT1}" if not double else ""
-        full_args = shlex.split(" ".join(filter(None, [port_arg, record_args])))
+        test_ports = f"{PORT1},{PORT2}" if double else str(PORT1)
+        test_hosts = f"{TCBEE_IP},{RECV_IP}"
+        test_filter_args = (
+            f"--ports {test_ports} "
+            f"--src-ips {test_hosts} "
+            f"--dst-ips {test_hosts}"
+        )
+        full_args = shlex.split(" ".join(filter(None, [record_args, test_filter_args])))
         cmd = [str(RECORD_BINARY)] + full_args
         uses_headers = any(arg == "-h" or arg == "--headers" or arg.startswith("--headers=")
                            for arg in full_args)

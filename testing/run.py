@@ -137,12 +137,10 @@ def main():
                 "  when the capture is complete; processing and visualization then\n"
                 "  continue automatically.\n"
             )
-        if double:
-            print(
-                "\n  Note: tcbee-record supports a single port filter (-p).\n"
-                "  In double-stream mode the port filter is omitted so both\n"
-                "  streams are visible in the TUI.\n"
-            )
+        print(
+            "\n  The topology adds tcbee-record filters for the selected test flow(s)\n"
+            "  automatically.\n"
+        )
 
     # ── Build the topology command ─────────────────────────────────────────────
     cmd = [

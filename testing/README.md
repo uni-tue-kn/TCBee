@@ -29,10 +29,12 @@ sudo apt install mininet iperf3
 From the repo root, build whichever tool you want to test:
 
 ```bash
-cd tcbee-live    && cargo build
-cd tcbee-record  && cargo build
-cd tcbee-process && cargo build
-cd tcbee-viz     && cargo build
+make           # build record, process, viz, and live
+# or individually:
+make record
+make process
+make viz
+make live
 ```
 
 The interactive launcher also has a rebuild menu with per-tool options and an `all` option.
@@ -51,7 +53,7 @@ The interactive menu lets you pick the tool, congestion algorithm (CUBIC / BBR),
 
 In double-stream mode a second iperf3 flow starts 30 s after the first.
 
-In single-stream record/full mode the launcher passes `-p 5001` to `tcbee-record` so recordings are filtered to the test flow. In double-stream mode it omits the port filter because `tcbee-record` accepts only one `-p` value and both flows should remain visible.
+In record/full mode the topology passes map-backed filters to `tcbee-record` so recordings are limited to the test flow(s): port `5001` for single-stream runs, ports `5001,5002` for double-stream runs, and traffic whose source and destination endpoints are the two Mininet test hosts.
 
 ## Tuning
 
