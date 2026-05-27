@@ -11,11 +11,9 @@ use tokio::task;
 use tokio_util::sync::CancellationToken;
 
 use crate::db_writer::as_db_operation;
-use crate::{db_writer::DBOperation, bindings::event_indexer::EventIndexer};
+use crate::{bindings::event_indexer::EventIndexer, db_writer::DBOperation};
 
 use indicatif::ProgressBar;
-
-
 
 pub trait FromBuffer {
     const ENTRY_SIZE: usize;
@@ -32,12 +30,12 @@ pub struct FileReader<T> {
     _marker: PhantomData<T>,
 }
 
-impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileReader<T> {
+impl<'a, T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileReader<T> {
     pub async fn new(
         path: &str,
         tx: Sender<Vec<DBOperation>>,
         token: CancellationToken,
-        progress: ProgressBar
+        progress: ProgressBar,
     ) -> Result<FileReader<T>, Box<dyn Error>> {
         let infile = OpenOptions::new().read(true).open(path).await?;
 
@@ -82,7 +80,10 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
             // Sometimes structs are misaligned, this causes all subsequent reads to fail
             // Have not yet found what could cause this...
             if !event.check_divider() {
-                panic!("Misaligned PACKET: {:?}. Something went horribly wrong during recording!",event);
+                panic!(
+                    "Misaligned PACKET: {:?}. Something went horribly wrong during recording!",
+                    event
+                );
             }
 
             let db_ops = as_db_operation(event);
@@ -93,7 +94,6 @@ impl<'a,T: EventIndexer + Debug + FromBuffer + Deserialize<'a> + Clone> FileRead
                 self.progress.finish();
                 return;
             }
-            
 
             self.progress.inc(1);
 

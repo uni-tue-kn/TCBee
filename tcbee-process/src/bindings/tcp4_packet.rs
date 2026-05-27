@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use serde::Deserialize;
 use ts_storage::{DataPoint, DataValue, IpTuple};
 
-use crate::{db_writer::DBOperation, bindings::event_indexer::EventIndexer, reader::FromBuffer};
+use crate::{bindings::event_indexer::EventIndexer, db_writer::DBOperation, reader::FromBuffer};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -79,7 +79,7 @@ impl EventIndexer for Tcp4Packet {
     fn get_timestamp(&self) -> f64 {
         self.time as f64
     }
-    
+
     fn get_struct_length(&self) -> usize {
         40
     }

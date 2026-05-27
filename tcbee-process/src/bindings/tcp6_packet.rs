@@ -1,9 +1,7 @@
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{
-    bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer,
-};
+use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -20,7 +18,6 @@ pub struct Tcp6Packet {
     pub div: [u8; 4usize],
 }
 
-
 impl FromBuffer for Tcp6Packet {
     fn from_buffer(buf: &Vec<u8>) -> Self {
         let try_deserialize = bincode::deserialize::<'_, Tcp6Packet>(buf);
@@ -30,7 +27,6 @@ impl FromBuffer for Tcp6Packet {
         } else {
             try_deserialize.unwrap()
         }
-
     }
     const ENTRY_SIZE: usize = 64;
 }

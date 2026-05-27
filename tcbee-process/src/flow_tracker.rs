@@ -12,9 +12,6 @@ const BUFFER_SIZE: usize = 100_000;
 
 pub const AF_INET: u16 = 2;
 
-
-
-
 #[derive(Debug)]
 pub struct TimeSeriesWriter {
     series: TimeSeries,

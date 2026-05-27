@@ -46,13 +46,12 @@ impl EventIndexer for cwnd_trace_entry {
 
         //print!("Family: {}",self.family);
 
-
         if self.family == AF_INET {
             // TODO: check offsets
             let bytes = self.addr_v4.to_be_bytes();
 
-            let mut srcbytes = array_ref![bytes,0,4].clone();
-            let mut dstbytes = array_ref![bytes,4,4].clone();
+            let mut srcbytes = array_ref![bytes, 0, 4].clone();
+            let mut dstbytes = array_ref![bytes, 4, 4].clone();
             //srcbytes.reverse();
 
             srcbytes.reverse();
@@ -66,8 +65,8 @@ impl EventIndexer for cwnd_trace_entry {
 
         let port_bytes = self.ports.to_be_bytes();
 
-        let srcbytes = array_ref![port_bytes,0,2].clone();
-        let dstbytes = array_ref![port_bytes,2,2].clone();
+        let srcbytes = array_ref![port_bytes, 0, 2].clone();
+        let dstbytes = array_ref![port_bytes, 2, 2].clone();
 
         // TODO: check byte order if ports are correct
         // Dport could be be bytes
@@ -107,7 +106,6 @@ impl FromBuffer for cwnd_trace_entry {
         } else {
             try_deserialize.unwrap()
         }
-
     }
     const ENTRY_SIZE: usize = 62;
 }

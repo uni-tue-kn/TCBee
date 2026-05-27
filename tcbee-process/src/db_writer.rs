@@ -8,11 +8,11 @@ use ts_storage::{
 };
 
 use crate::{
+    bindings::event_indexer::EventIndexer,
     bindings::{
         cwnd::cwnd_trace_entry, sock::sock_trace_entry, tcp_packet::TcpPacket, tcp_probe::TcpProbe,
     },
-    flow_tracker::{FlowTracker},
-    bindings::event_indexer::EventIndexer
+    flow_tracker::FlowTracker,
 };
 
 #[derive(Debug)]
@@ -129,8 +129,10 @@ impl DBWriter {
                 .unwrap()
                 .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
         );
-        self.flush_bar.enable_steady_tick(std::time::Duration::from_millis(100));
-        self.flush_bar.set_message("DuckDB checkpointing to disk...");
+        self.flush_bar
+            .enable_steady_tick(std::time::Duration::from_millis(100));
+        self.flush_bar
+            .set_message("DuckDB checkpointing to disk...");
 
         Ok(())
     }

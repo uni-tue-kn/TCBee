@@ -1,11 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr};
 
+use arrayref::array_ref;
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{
-    bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer,
-};
+use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -35,7 +34,6 @@ pub struct CubicEvent {
     pub div: [u8; 4usize],
 }
 
-
 pub fn unpack_ipv4_pair(packed: u64) -> (Ipv4Addr, Ipv4Addr) {
     let src = (packed >> 32) as u32;
     let dst = packed as u32;
@@ -48,11 +46,18 @@ pub fn unpack_ipv4_pair(packed: u64) -> (Ipv4Addr, Ipv4Addr) {
 }
 
 pub fn unpack_ports(v: u32) -> (u16, u16) {
-    let src = (v >> 16) as u16;
-    let dst = v as u16;
-    (src, dst)
-}
+    let port_bytes = v.to_be_bytes();
 
+    let srcbytes = array_ref![port_bytes, 0, 2].clone();
+    let dstbytes = array_ref![port_bytes, 2, 2].clone();
+
+    // TODO: check byte order if ports are correct
+    // Dport could be be bytes
+    let sport = u16::from_be_bytes(srcbytes);
+    let dport = u16::from_le_bytes(dstbytes);
+
+    (sport, dport)
+}
 
 impl FromBuffer for CubicEvent {
     fn from_buffer(buf: &Vec<u8>) -> Self {
@@ -63,7 +68,6 @@ impl FromBuffer for CubicEvent {
         } else {
             try_deserialize.unwrap()
         }
-
     }
     const ENTRY_SIZE: usize = 114;
 }
@@ -122,7 +126,7 @@ impl EventIndexer for CubicEvent {
             10 => "round_start",
             11 => "end_seq",
             12 => "last_ack",
-            13 => "curr_rtt", 
+            13 => "curr_rtt",
             _ => panic!("Tried to access out of bounds index!"), // TODO: better error handling
         }
     }

@@ -4,6 +4,7 @@ mod ip;
 mod reader;
 
 mod bindings {
+    pub mod bbr;
     pub mod ctypes;
     pub mod sock;
     pub mod tcp_packet;
@@ -35,7 +36,9 @@ use std::{
     error::Error, fmt::Debug, path::Path
 };
 
-use crate::bindings::{cubic::CubicEvent, tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet};
+use crate::bindings::{
+    bbr::BbrEvent, cubic::CubicEvent, tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet,
+};
 
 // Kernel sometimes uses a 28 Byte IP Address struct
 // First 4 Bytes are IP Version, Port
@@ -211,6 +214,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         use tcbee_trace::TraceFile;
         let path = trace.path_for(file).to_string_lossy().into_owned();
         let handle = match file {
+            TraceFile::Bbr => {
+                start_file_reader::<BbrEvent>(path, tx.clone(), stop_token.clone(), &progress_bars).await
+            }
             TraceFile::Cubic => {
                 start_file_reader::<CubicEvent>(path, tx.clone(), stop_token.clone(), &progress_bars).await
             }
@@ -230,7 +236,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 start_file_reader::<cwnd_trace_entry>(path, tx.clone(), stop_token.clone(), &progress_bars).await
             }
             // No reader implementation yet for these types
-            TraceFile::Bbr | TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => {
+            TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => {
                 println!("No reader available for {:?}, skipping.", file);
                 None
             }

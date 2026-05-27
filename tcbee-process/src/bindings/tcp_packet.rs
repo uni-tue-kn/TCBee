@@ -3,9 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{
-    bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer,
-};
+use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -39,7 +37,6 @@ impl FromBuffer for TcpPacket {
         } else {
             try_deserialize.unwrap()
         }
-
     }
     const ENTRY_SIZE: usize = 74;
 }
@@ -51,7 +48,7 @@ impl EventIndexer for TcpPacket {
             1 => DataValue::Int(self.ack as i64),
             2 => DataValue::Int(self.window as i64),
             // Only add Flags when true to save space
-            // TODO: 
+            // TODO:
             3 => DataValue::Boolean(true),
             4 => DataValue::Boolean(true),
             5 => DataValue::Boolean(true),
