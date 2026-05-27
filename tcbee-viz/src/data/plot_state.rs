@@ -145,6 +145,12 @@ impl PlotState {
         if self.series.is_empty() {
             return false;
         }
+        let Some((fetch_min, fetch_max)) =
+            fetch_range_for_visible(new_x_min, new_x_max, self.data_x_min, self.data_x_max)
+        else {
+            return false;
+        };
+
         match self.series.first().and_then(|s| s.loaded_range) {
             None => true,
             Some((loaded_min, loaded_max)) => {
@@ -152,8 +158,8 @@ impl PlotState {
                 if loaded_span == 0.0 {
                     return true;
                 }
-                let shift_lo = (loaded_min - new_x_min).abs() / loaded_span;
-                let shift_hi = (loaded_max - new_x_max).abs() / loaded_span;
+                let shift_lo = (loaded_min - fetch_min).abs() / loaded_span;
+                let shift_hi = (loaded_max - fetch_max).abs() / loaded_span;
                 shift_lo > 0.10 || shift_hi > 0.10
             }
         }
@@ -166,10 +172,11 @@ impl PlotState {
         settings: &AppSettings,
         plot_width_px: Option<f32>,
     ) {
-        let span = self.x_max - self.x_min;
-        let margin = span * 0.20;
-        let fetch_min = (self.x_min - margin).max(self.data_x_min);
-        let fetch_max = (self.x_max + margin).min(self.data_x_max);
+        let Some((fetch_min, fetch_max)) =
+            fetch_range_for_visible(self.x_min, self.x_max, self.data_x_min, self.data_x_max)
+        else {
+            return;
+        };
 
         for sd in &mut self.series {
             fetch_range(db, sd, fetch_min, fetch_max, settings, plot_width_px);
@@ -217,11 +224,37 @@ pub fn load_series_window(
     settings: &AppSettings,
     plot_width_px: Option<f32>,
 ) {
-    let span = x_max - x_min;
+    if let Some((fetch_min, fetch_max)) =
+        fetch_range_for_visible(x_min, x_max, sd.global_t_min, sd.global_t_max)
+    {
+        fetch_range(db, sd, fetch_min, fetch_max, settings, plot_width_px);
+    }
+}
+
+fn fetch_range_for_visible(
+    x_min: f64,
+    x_max: f64,
+    data_x_min: f64,
+    data_x_max: f64,
+) -> Option<(f64, f64)> {
+    if !x_min.is_finite()
+        || !x_max.is_finite()
+        || !data_x_min.is_finite()
+        || !data_x_max.is_finite()
+    {
+        return None;
+    }
+
+    let visible_min = x_min.min(x_max);
+    let visible_max = x_min.max(x_max);
+    let data_min = data_x_min.min(data_x_max);
+    let data_max = data_x_min.max(data_x_max);
+    let span = (visible_max - visible_min).abs();
     let margin = span * 0.20;
-    let fetch_min = (x_min - margin).max(sd.global_t_min);
-    let fetch_max = (x_max + margin).min(sd.global_t_max);
-    fetch_range(db, sd, fetch_min, fetch_max, settings, plot_width_px);
+
+    let fetch_min = (visible_min - margin).max(data_min);
+    let fetch_max = (visible_max + margin).min(data_max);
+    (fetch_min <= fetch_max).then_some((fetch_min, fetch_max))
 }
 
 /// Fetch a specific range from the DB and store into `sd.points` / `sd.string_points`.

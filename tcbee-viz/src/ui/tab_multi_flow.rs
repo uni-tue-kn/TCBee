@@ -5,7 +5,9 @@ use ts_storage::Flow;
 use crate::{
     backend::db::DbBackend,
     data::{
-        plot_state::PlotState, preprocessing::remove_leading_outliers, series_data::SeriesData,
+        plot_state::PlotState,
+        preprocessing::{generate_colors, remove_leading_outliers},
+        series_data::SeriesData,
     },
     settings::AppSettings,
     ui::{
@@ -21,6 +23,9 @@ use crate::{
 };
 
 const OUTLIER_TOOLTIP: &str = "Automatically removes only leading points whose values are far outside the following steady-state data, so large initial CWND or ssthresh values do not distort auto-fit.";
+const MULTI_PLOT_PADDING_X: f64 = 0.02;
+const MULTI_PLOT_PADDING_Y: f64 = 0.06;
+const MULTI_SPLIT_LABEL_SPACE: f32 = 52.0;
 type PlotDataBounds = ((f64, f64), (f64, f64));
 
 pub struct TabMultiFlow {
@@ -84,6 +89,8 @@ impl TabMultiFlow {
             return;
         }
 
+        apply_unified_multi_flow_colors(&mut self.state_a, &mut self.state_b);
+
         egui::SidePanel::left("multi_flow_sidebar")
             .resizable(true)
             .min_width(240.0)
@@ -109,6 +116,7 @@ impl TabMultiFlow {
             .frame(egui::Frame::new().fill(theme::panel_bg(settings.dark_mode)))
             .show_inside(ui, |ui| {
                 ui.add_space(4.0);
+                apply_unified_multi_flow_colors(&mut self.state_a, &mut self.state_b);
                 self.show_plot_area(ui, db, settings);
             });
     }
@@ -273,10 +281,10 @@ impl TabMultiFlow {
         let string_markers_b = string_marker_display(&self.state_b.series, "B:");
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
         let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) =
-            merged_display_bounds(&display_a, &display_b).unwrap_or((
+            pad_plot_bounds(merged_display_bounds(&display_a, &display_b).unwrap_or((
                 selected_x_bounds(&self.state_a, &self.state_b),
                 merged_y_bounds(&self.state_a, &self.state_b),
-            ));
+            )));
 
         let mut reload_a = false;
         let mut reload_b = false;
@@ -385,7 +393,7 @@ impl TabMultiFlow {
         self.apply_manual_x = false;
         let fit = std::mem::take(&mut self.needs_fit);
 
-        let half_height = split_plot_height_with_footer(ui.available_height(), 2);
+        let half_height = ((ui.available_height() - MULTI_SPLIT_LABEL_SPACE) / 2.0).max(80.0);
         let display_a = series_display(&self.state_a.series, "", self.remove_outliers);
         let display_b = series_display(&self.state_b.series, "", self.remove_outliers);
         let label_a = self.state_a.flow_label.clone();
@@ -396,6 +404,9 @@ impl TabMultiFlow {
             display_bounds(&display_a).unwrap_or(((fit_x_min, fit_x_max), self.state_a.y_bounds()));
         let (_, (fit_y_b_min, fit_y_b_max)) =
             display_bounds(&display_b).unwrap_or(((fit_x_min, fit_x_max), self.state_b.y_bounds()));
+        let ((fit_x_min, fit_x_max), (fit_y_a_min, fit_y_a_max)) =
+            pad_plot_bounds(((fit_x_min, fit_x_max), (fit_y_a_min, fit_y_a_max)));
+        let (fit_y_b_min, fit_y_b_max) = pad_y_bounds((fit_y_b_min, fit_y_b_max));
 
         let mut reload_a = false;
         let mut reload_b = false;
@@ -536,7 +547,7 @@ impl TabMultiFlow {
 
         let plot_height = split_plot_height_with_footer(ui.available_height(), display.len());
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
-        let (fit_x_min, fit_x_max) = selected_x_bounds(&self.state_a, &self.state_b);
+        let (fit_x_min, fit_x_max) = pad_x_bounds(selected_x_bounds(&self.state_a, &self.state_b));
 
         let mut reload_a = false;
         let mut reload_b = false;
@@ -568,9 +579,10 @@ impl TabMultiFlow {
                     .height(plot_height)
                     .show(ui, |plot_ui| {
                         if fit {
+                            let (y_min, y_max) = pad_y_bounds((item.y_min, item.y_max));
                             plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                [fit_x_min, item.y_min],
-                                [fit_x_max, item.y_max],
+                                [fit_x_min, y_min],
+                                [fit_x_max, y_max],
                             ));
                         } else {
                             if apply_x {
@@ -652,6 +664,18 @@ fn merged_x_origin(state_a: &PlotState, state_b: &PlotState) -> f64 {
         (Some(_), None) => state_a.data_x_min,
         (None, Some(_)) => state_b.data_x_min,
         (None, None) => 0.0,
+    }
+}
+
+fn apply_unified_multi_flow_colors(state_a: &mut PlotState, state_b: &mut PlotState) {
+    let colors = generate_colors(state_a.series.len() + state_b.series.len());
+    for (series, color) in state_a
+        .series
+        .iter_mut()
+        .chain(state_b.series.iter_mut())
+        .zip(colors)
+    {
+        series.color = color;
     }
 }
 
@@ -794,6 +818,33 @@ fn merge_bounds(bounds_iter: impl Iterator<Item = PlotDataBounds>) -> Option<Plo
             )),
         },
     )
+}
+
+fn pad_plot_bounds(bounds: PlotDataBounds) -> PlotDataBounds {
+    let (x_bounds, y_bounds) = bounds;
+    (pad_x_bounds(x_bounds), pad_y_bounds(y_bounds))
+}
+
+fn pad_x_bounds(bounds: (f64, f64)) -> (f64, f64) {
+    pad_axis_bounds(bounds, MULTI_PLOT_PADDING_X, 1.0)
+}
+
+fn pad_y_bounds(bounds: (f64, f64)) -> (f64, f64) {
+    pad_axis_bounds(bounds, MULTI_PLOT_PADDING_Y, 1.0)
+}
+
+fn pad_axis_bounds((min, max): (f64, f64), fraction: f64, fallback_span: f64) -> (f64, f64) {
+    if !min.is_finite() || !max.is_finite() {
+        return (min, max);
+    }
+
+    let span = (max - min).abs();
+    let pad = if span > 0.0 {
+        span * fraction
+    } else {
+        fallback_span * fraction
+    };
+    (min - pad, max + pad)
 }
 
 fn points_bounds(pts: &[[f64; 2]]) -> Option<PlotDataBounds> {
