@@ -12,6 +12,7 @@ aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
 memoffset = "0.9.1"
 
+
 [build-dependencies]
 which = { workspace = true }
 

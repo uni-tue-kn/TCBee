@@ -1,6 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use arrayref::array_ref;
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
@@ -168,8 +167,8 @@ impl EventIndexer for sock_trace_entry {
             // TODO: check offsets
             let bytes = self.addr_v4.to_be_bytes();
 
-            let mut srcbytes = array_ref![bytes, 0, 4].clone();
-            let mut dstbytes = array_ref![bytes, 4, 4].clone();
+            let mut srcbytes: [u8; 4] = bytes[0..4].try_into().unwrap();
+            let mut dstbytes: [u8; 4] = bytes[4..8].try_into().unwrap();
             //srcbytes.reverse();
 
             srcbytes.reverse();

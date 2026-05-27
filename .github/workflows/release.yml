@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            musl-tools cmake \
+            llvm clang \
+            libelf-dev libclang-dev \
+            pkg-config \
+            fontconfig libfontconfig1-dev \
+            libgl-dev libegl-dev \
+            zip
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install Rust Nightly
+        run: rustup toolchain install nightly --component rust-src
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker
+
+      - name: Build tcbee-record (static)
+        run: |
+          cd tcbee-record
+          cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Build tcbee-process (static, bundled)
+        run: |
+          cd tcbee-process
+          cargo build --release --target x86_64-unknown-linux-musl \
+            --features ts_storage/bundled
+
+      - name: Build tcbee-viz
+        run: |
+          cd tcbee-viz
+          cargo build --release --features ts_storage/bundled
+
+      - name: Build tcbee-live
+        run: |
+          cd tcbee-live
+          cargo build --release
+
+      - name: Package release zip
+        run: |
+          mkdir -p release
+          cp tcbee-record/target/x86_64-unknown-linux-musl/release/tcbee-record release/
+          cp tcbee-process/target/x86_64-unknown-linux-musl/release/tcbee-process release/
+          cp tcbee-viz/target/release/tcbee-viz release/
+          cp tcbee-live/target/release/tcbee-live release/
+          cp tcbee release/
+          cp LICENSE release/
+          cp NOTICES release/
+          chmod +x release/tcbee
+          zip -j "tcbee-${{ github.ref_name }}-linux-x86_64.zip" release/*
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "TCBee ${{ github.ref_name }}" \
+            --generate-notes \
+            "tcbee-${{ github.ref_name }}-linux-x86_64.zip"

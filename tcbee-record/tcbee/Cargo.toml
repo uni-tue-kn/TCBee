@@ -16,11 +16,9 @@ libc = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time","fs","io-util"] }
 tokio-util = "0.7.12"
-tokio-scope = "0.0.0"
 thiserror = "2.0.4"
 serde = "1.0.217"
 ratatui = "0.29.0"
-color-eyre = "0.6.3"
 crossterm = "0.28.1"
 argparse = "0.2.2"
 glob = "0.3.2"

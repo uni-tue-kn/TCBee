@@ -39,7 +39,7 @@ Add `ts_storage` as a dependency in your `Cargo.toml`:
 ts_storage = { path = "../ts-storage" }
 ```
 
-Both SQLite and DuckDB backends are compiled by default. Both database drivers are bundled, so no system libraries are required.
+Both SQLite and DuckDB backends are compiled by default. SQLite is bundled. DuckDB requires a system installation of `libduckdb` — download the matching version from the [DuckDB releases page](https://github.com/duckdb/duckdb/releases).
 
 ## Opening a Database
 
