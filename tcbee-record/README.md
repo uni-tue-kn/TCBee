@@ -31,10 +31,3 @@ CC=${ARCH}-linux-musl-gcc cargo build --package tcpprobe --release \
 ```
 The cross-compiled program `target/${ARCH}-unknown-linux-musl/release/tcpprobe` can be
 copied to a Linux server or VM and run there.
-
-
-## TODO
-- Refactor tcbee-common code
-- Add IP/Port filter
-- Add Tracepoint Config loader to enable/disable tracepoints
-- Clear /tmp/ files before/after running!
