@@ -71,4 +71,5 @@ pub const INSERT_TIME_SERIES_DATA: &str = "INSERT INTO time_series_data (time_se
 // -------- DELETE queries
 pub const DELETE_FLOW_BY_TUPLE: &str = "DELETE FROM flows WHERE src = ? AND dst = ? AND sport = ? AND dport = ? AND l4proto = ?;";
 pub const DELETE_FLOW_ATTRIBUTE_BY_NAME: &str = "DELETE FROM flow_attributes WHERE flow_id = ? AND name = ?;";
+pub const DELETE_TIME_SERIES_DATA_BY_SERIES: &str = "DELETE FROM time_series_data WHERE time_series_id = ?;";
 pub const DELETE_TIME_SERIES_BY_NAME: &str = "DELETE FROM time_series WHERE flow_id = ? AND name = ?;";
