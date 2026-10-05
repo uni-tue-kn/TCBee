@@ -3,6 +3,9 @@ mod flow_tracker;
 mod ip;
 mod reader;
 
+#[cfg(test)]
+mod fixtures;
+
 mod bindings {
     pub mod bbr;
     pub mod ctypes;

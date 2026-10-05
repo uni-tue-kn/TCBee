@@ -7,6 +7,7 @@ use crate::{bindings::event_indexer::EventIndexer, db_writer::DBOperation, reade
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct Tcp4Packet {
     pub time: u64,
     pub saddr: u32,

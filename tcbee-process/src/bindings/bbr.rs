@@ -7,6 +7,7 @@ use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, re
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct BbrEvent {
     // Shared ID
     pub time: u64,

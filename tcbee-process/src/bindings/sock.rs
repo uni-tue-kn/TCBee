@@ -10,6 +10,7 @@ use crate::{
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default, Deserialize)]
+#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct sock_trace_entry {
     pub time: u64,
     pub addr_v4: u64,

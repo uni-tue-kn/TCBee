@@ -5,6 +5,7 @@ use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, re
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct Tcp6Packet {
     pub time: u64,
     pub saddr: [u8; 16usize],

@@ -15,8 +15,8 @@ If a session died, resume from the first unchecked package; `git log` shows what
 
 | WP | State |
 | --- | --- |
-| WP0 fixtures | not started |
-| WP1 ts-storage core | not started |
+| WP0 fixtures | done, reviewed, committed |
+| WP1 ts-storage core | implementing (agent running) |
 | WP2 bindings macro + decoder | not started |
 | WP3 SQLite engine | not started |
 | WP4 DuckDB engine | not started |
@@ -29,6 +29,8 @@ If a session died, resume from the first unchecked package; `git log` shows what
 Log (newest last):
 
 - 2026-10-05: branch created.
+- 2026-10-05: a real trace was recorded (`~/tcbee-traces/tcbee_2026-10-05T18-16-22`, 110 MB, no bbr, no tcp6); WP0 fixtures use its first 2000 records per file plus generated bbr/cwnd/tcp6. WP9 can use it as the benchmark input.
+- 2026-10-05: WP0 done, correctness and style review fixed.
 
 Decisions made by the maintainer:
 

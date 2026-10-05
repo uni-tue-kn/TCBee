@@ -10,6 +10,7 @@ use crate::{
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct TcpProbe {
     pub time: u64,
     pub saddr: [u8; 28usize],
