@@ -60,8 +60,8 @@ pub fn ip_to_filter_addr(ip: IpAddr) -> [u8; 16] {
     addr
 }
 
-/// Largest ring buffer the kernel accepts is just below 2 GiB, use the largest power of two
-const MAX_RINGBUF_SIZE: u64 = 1 << 30;
+/// max_entries is a u32 and has to be a power of two, so 2 GiB is the largest size
+const MAX_RINGBUF_SIZE: u64 = 1 << 31;
 const PAGE_SIZE: u64 = 4096;
 
 fn parse_size(arg: &str) -> anyhow::Result<u64> {
@@ -99,7 +99,7 @@ pub fn parse_ringbuf_sizes(arg: &str) -> anyhow::Result<Vec<(&'static str, u32)>
         for (name, group) in RINGBUFS {
             let selected = match selector {
                 None => true,
-                Some(sel) => sel == group || sel.eq_ignore_ascii_case(name),
+                Some(sel) => sel.eq_ignore_ascii_case(group) || sel.eq_ignore_ascii_case(name),
             };
             if selected {
                 matched = true;
@@ -294,7 +294,8 @@ mod tests {
         assert!(parse_ringbuf_sizes("").unwrap().is_empty());
         assert_eq!(parse_ringbuf_sizes("1").unwrap()[0].1, 4096);
         assert!(parse_ringbuf_sizes("0").is_err());
-        assert!(parse_ringbuf_sizes("2G").is_err());
+        assert_eq!(parse_ringbuf_sizes("TCP4=2G").unwrap()[0].1, 1 << 31);
+        assert!(parse_ringbuf_sizes("3G").is_err());
         assert!(parse_ringbuf_sizes("foo=1M").is_err());
         assert!(parse_ringbuf_sizes("tcp4=1X").is_err());
     }
