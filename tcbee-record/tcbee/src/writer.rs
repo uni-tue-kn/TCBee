@@ -250,6 +250,8 @@ where
         job.borrow_mut().count_bytes();
         Ok(())
     })();
+    // A callback can fail after earlier records in the same consume batch were written.
+    job.borrow_mut().count_bytes();
     drop(rb);
 
     let mut job = job.borrow_mut();
