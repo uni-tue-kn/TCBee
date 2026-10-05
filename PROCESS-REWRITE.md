@@ -17,7 +17,7 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | --- | --- |
 | WP0 fixtures | done, reviewed, committed |
 | WP1 ts-storage core | done, reviewed, committed |
-| WP2 bindings macro + decoder | implemented, in review (not committed) |
+| WP2 bindings macro + decoder | done, reviewed, committed |
 | WP3 SQLite engine | implementing (agent running) |
 | WP4 DuckDB engine | implementing (agent running) |
 | WP5 contract tests | not started |
@@ -33,6 +33,7 @@ Log (newest last):
 - 2026-10-05: WP0 done, correctness and style review fixed.
 - 2026-10-05: WP1 written (v2 types, schema renderer, features); WP2 started in parallel.
 - 2026-10-05: WP1 reviewed and committed. WP2 written and in review; WP3 and WP4 started in parallel (separate files). No InfluxDB work (out of scope, A7).
+- 2026-10-05: WP2 reviewed and committed. Waiting on WP3 and WP4.
 
 Decisions made by the maintainer:
 
