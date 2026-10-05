@@ -23,8 +23,8 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP5 contract tests | done, reviewed, committed |
 | WP6 pipeline | done, reviewed, committed |
 | WP7 viz migration | done, reviewed, committed (GUI never run by an agent) |
-| WP8 cleanup, docs, build time | implementing (agent running) |
-| WP9 benchmarks | not started |
+| WP8 cleanup, docs, build time | done, reviewed, committed (workspace, CI never ran) |
+| WP9 benchmarks | running (agent) |
 
 Log (newest last):
 
@@ -41,6 +41,7 @@ Log (newest last):
 - 2026-10-05: WP5 committed (90 contract tests on both engines). WP6 committed after review fixes (row counting checked against records, abort checks every 4096 records, failure-path tests); WP7 running. Legacy `ts-storage/tests/duckdb.rs` fails on re-runs when `db_duck_test.duck` is left over; it is deleted in WP8.
 - 2026-10-05: WP7 written, uncommitted in `tcbee-viz`. Both review agents died on a usage limit and were relaunched. Next after WP7: WP8, WP9.
 - 2026-10-05: WP7 reviewed (real tcbee-process output opened through the viz data layer on both engines: no panics, bindings correct); committed after review fixes. Deferred, to go into CLAUDE.md open work in WP8: SenderLimitation inputs (tcp_probe SND_* vs sock advmss) are zipped by index although their timestamps differ; `preprocessing.rs` `time_granularity_ms` is treated as ms->s although timestamps are ns; NaN in derived float series plots as NaN; flow ids differ between runs (thread order), by design.
+- 2026-10-05: WP8 committed (old API deleted and `src/v2` flattened, cargo workspace with one `target/`, `workspace-hack` crate plus a dev build-override keep `libduckdb-sys` compiled once across `-p` selections, engine features forwarded, docs, CI matrix). `CLAUDE.md` open work updated. WP9 running.
 
 Decisions made by the maintainer:
 
