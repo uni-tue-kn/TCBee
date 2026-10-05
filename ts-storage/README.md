@@ -62,7 +62,7 @@ The SQLite and DuckDB C libraries come from the system unless `bundled` is on:
 
 ## Building without compiling DuckDB
 
-DuckDB takes long to compile. Use `--no-default-features --features sqlite` to leave it out, and see the root README, [Building without waiting for DuckDB](../README.md#building-without-waiting-for-duckdb), for sharing one build between the crates and for linking a system libduckdb.
+DuckDB takes long to compile. Use `--no-default-features --features sqlite` to leave it out, and see the [tcbee-process README](../tcbee-process/README.md#building) for sharing one build between the crates and for linking a system libduckdb.
 
 ## Reading
 

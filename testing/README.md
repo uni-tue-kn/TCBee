@@ -13,6 +13,8 @@ TCBeeHost ──100 Mbps── s1 ──10 Mbps── s2 ──100 Mbps── Re
 
 ## Prerequisites
 
+Python 3, Mininet, Open vSwitch and iperf3, and root privileges for Mininet and eBPF.
+
 ### Arch Linux
 ```bash
 sudo pacman -S mininet openvswitch iperf3
@@ -21,7 +23,7 @@ sudo systemctl start ovsdb-server ovs-vswitchd
 
 ### Debian / Ubuntu
 ```bash
-sudo apt install mininet iperf3
+sudo apt install mininet openvswitch-switch iperf3 python3
 ```
 
 ## Build
