@@ -26,6 +26,8 @@ pub const MAX_FLOWS: u32 = 100;
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
 pub const ETHERTYPE_IPV6: u16 = 0x86DD;
 pub const TCP_PROTOCOL: u8 = 0x06;
+// Fragment offset bits of iphdr.frag_off
+pub const IP_OFFSET_MASK: u16 = 0x1FFF;
 
 pub const AF_INET6: u16 = 10;
 

@@ -16,7 +16,7 @@ use tcbee_common::{
 
 use crate::{
     config::{
-        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, TC4_BUF_SIZE,
+        ETHERTYPE_IPV4, ETHERTYPE_IPV6, ETH_HDR_LEN, IP6_HDR_LEN, IP_HDR_LEN, IP_OFFSET_MASK, TC4_BUF_SIZE,
         TC6_BUF_SIZE, TCP_PROTOCOL,
     },
     counters::{count_attempt, submit},
@@ -77,7 +77,9 @@ fn trace_packet(
     if ethertype == ETHERTYPE_IPV4 {
         // If packet is too short, will throw error and stop classifier
         let ip4_hdr = ctx.load::<iphdr>(ETH_HDR_LEN).map_err(|_| TC_ACT_OK)?;
-        if ip4_hdr.protocol != TCP_PROTOCOL {
+        // Non-first fragments carry no TCP header
+        if ip4_hdr.protocol != TCP_PROTOCOL || u16::from_be(ip4_hdr.frag_off) & IP_OFFSET_MASK != 0
+        {
             return Ok(TC_ACT_OK);
         }
         let ip_hdr_len = ((ip4_hdr.ihl() as usize) << 2).max(IP_HDR_LEN);
