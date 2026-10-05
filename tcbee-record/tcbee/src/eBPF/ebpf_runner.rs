@@ -244,35 +244,39 @@ impl EbpfRunner {
 
         // TODO: I feel that the dir should be passed to the writer, and the Tracers should just add the filename
 
+        // Keep the object and the writer in self right away, so that stop() detaches the
+        // programs before draining the writers if starting fails below
+        let ebpf = self.ebpf.insert(ebpf);
+
         // This is the backend writer thread that reads and writes data to files
-        let mut writer =
-            Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone());
+        let writer = self.writer.insert(
+            Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone()),
+        );
+        self.started = Some(Instant::now());
         let mut watcher_config = self.config.watcher_config();
 
         // Tracing for packet headers via TC and XDP
         if self.config.headers {
-            let created_clsact = TCTracer::spawn(
-                &mut ebpf,
+            TCTracer::spawn(
+                ebpf,
                 self.config.iface.clone(),
                 self.config.dir.clone(),
-                &mut writer,
+                writer,
+                &mut self.clsact_iface,
             )?;
-            if created_clsact {
-                self.clsact_iface = Some(self.config.iface.clone());
-            }
 
             watcher_config.graphs.packets = true;
         }
 
         // Tracing kernel metrics via FEntry probe
         if self.config.kernel {
-            KernelTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
+            KernelTracer::spawn(ebpf, self.config.dir.clone(), writer)?;
 
             watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
-            CwndTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
+            CwndTracer::spawn(ebpf, self.config.dir.clone(), writer)?;
 
             watcher_config.graphs.kernel = true;
         }
@@ -280,33 +284,33 @@ impl EbpfRunner {
         // Tracing kernel tracepoints
         if self.config.tracepoints {
             TracepointTracer::spawn::<tcp_probe_entry>(
-                &mut ebpf,
+                ebpf,
                 RB_TCP_PROBE,
                 self.config.dir.clone(),
-                &mut writer,
+                writer,
             )?;
 
             TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
-                &mut ebpf,
+                ebpf,
                 RB_RETRANSMIT_SYNACK,
                 self.config.dir.clone(),
-                &mut writer,
+                writer,
             )?;
 
             TracepointTracer::spawn::<tcp_bad_csum_entry>(
-                &mut ebpf,
+                ebpf,
                 RB_BAD_CSUM,
                 self.config.dir.clone(),
-                &mut writer,
+                writer,
             )?;
 
             watcher_config.graphs.tracepoints = true;
         }
 
         if self.config.algorithms {
-            CubicTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
+            CubicTracer::spawn(ebpf, self.config.dir.clone(), writer)?;
             watcher_config.graphs.cubic = true;
-            match BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer) {
+            match BBRTracer::spawn(ebpf, self.config.dir.clone(), writer) {
                 Ok(()) => watcher_config.graphs.bbr = true,
                 Err(err) => error!(
                     "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
@@ -320,10 +324,10 @@ impl EbpfRunner {
 
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
-        let stats = Arc::new(Stats::new(&mut ebpf)?);
+        let stats = Arc::new(Stats::new(ebpf)?);
         self.stats = Some(stats.clone());
         let mut watcher = EBPFWatcher::new(
-            &mut ebpf,
+            ebpf,
             stats,
             self.config.update_period,
             self.stop_token.clone(),
@@ -336,11 +340,6 @@ impl EbpfRunner {
         }));
 
         info!("Finished starting TUI!");
-
-        // Store to ensure that it is not dropped after this function finishes!
-        self.ebpf = Some(ebpf);
-        self.writer = Some(writer);
-        self.started = Some(Instant::now());
 
         Ok(())
     }

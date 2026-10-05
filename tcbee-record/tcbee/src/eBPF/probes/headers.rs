@@ -51,13 +51,17 @@ impl TCTracer {
         interface: String,
         dir: String,
         writer: &mut Writer,
-    ) -> Result<bool, Box<dyn Error>> {
+        created_clsact: &mut Option<String>,
+    ) -> Result<(), Box<dyn Error>> {
         let name = "tc_ingress_packet_tracer";
 
         // aya attaches with tcx from kernel 6.6 on. Older kernels need the clsact qdisc,
         // adding it fails if it already exists. In that case it is not ours to remove.
-        // If adding fails for any other reason, attaching fails below.
-        let created_clsact = !uses_tcx() && tc::qdisc_add_clsact(&interface).is_ok();
+        // If adding fails for any other reason, attaching fails below. The interface is
+        // stored before attaching so the qdisc is also removed if attaching fails.
+        if !uses_tcx() && tc::qdisc_add_clsact(&interface).is_ok() {
+            *created_clsact = Some(interface.clone());
+        }
 
         // Attach eBPF TC to Egress
         let tracer: &mut SchedClassifier = ebpf
@@ -145,6 +149,6 @@ impl TCTracer {
             prepend_string(tcp6_packet_trace::OUT_FILE.to_string(), &dir),
         )?;
 
-        Ok(created_clsact)
+        Ok(())
     }
 }
