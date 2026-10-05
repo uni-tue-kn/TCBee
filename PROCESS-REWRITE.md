@@ -21,7 +21,7 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP3 SQLite engine | done, reviewed, committed |
 | WP4 DuckDB engine | done, reviewed, committed |
 | WP5 contract tests | done, reviewed, committed |
-| WP6 pipeline | implemented, in review (not committed) |
+| WP6 pipeline | done, reviewed, committed |
 | WP7 viz migration | implementing (agent running) |
 | WP8 cleanup, docs | not started |
 | WP9 benchmarks | not started |
@@ -38,7 +38,7 @@ Log (newest last):
 - 2026-10-05: WP3 and WP4 committed; WP5 and WP6 started in parallel.
 - 2026-10-05: a 294 MB trace (`~/tcbee-traces/tcbee_2026-10-05T18-52-18`: cubic 8.6 MB, recv_sock 104, send_sock 67, tcp4 23+15, tcp_probe 76; no bbr/tcp6) is the WP9 benchmark input. It is cubic-only, so compare with the A1 numbers by file size, not record mix.
 - 2026-10-05: WP6 first run (release, SQLite only, 16 cores): 110 MB trace 3.4 s / 76 MB RSS / 91 MiB output; 294 MB trace 5.2 s (1.9 s after last worker) / 124 MB RSS / 247 MiB output. WP5 found one engine difference: SQLite drops the sign of -0.0, DuckDB keeps it (accepted, documented by an ignored test).
-- 2026-10-05: WP5 committed (90 contract tests on both engines). WP6 review fixes in progress; WP7 started. Legacy `ts-storage/tests/duckdb.rs` fails on re-runs when `db_duck_test.duck` is left over; it is deleted in WP8.
+- 2026-10-05: WP5 committed (90 contract tests on both engines). WP6 committed after review fixes (row counting checked against records, abort checks every 4096 records, failure-path tests); WP7 running. Legacy `ts-storage/tests/duckdb.rs` fails on re-runs when `db_duck_test.duck` is left over; it is deleted in WP8.
 
 Decisions made by the maintainer:
 
