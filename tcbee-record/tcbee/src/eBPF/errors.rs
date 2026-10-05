@@ -7,7 +7,7 @@ pub enum EBPFRunnerError {
         name: String,
         source: libbpf_rs::Error,
     },
-    #[error("Could not open ring buffer '{name}': {source}")]
+    #[error("Could not get a handle to map '{name}': {source}")]
     MapError {
         name: String,
         source: libbpf_rs::Error,
