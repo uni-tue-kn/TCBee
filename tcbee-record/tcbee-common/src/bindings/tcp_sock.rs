@@ -3,16 +3,6 @@
 // All gaps are filled with _pad_* byte arrays to preserve exact kernel field offsets
 // (verified with `pahole` against the running kernel's BTF).
 
-#[cfg(feature = "user")]
-use serde::{Deserialize, Serialize};
-
-#[cfg(feature = "ebpf")]
-use crate::kread::read_kernel;
-#[cfg(feature = "ebpf")]
-use aya_ebpf::helpers::generated::bpf_ktime_get_ns;
-#[cfg(feature = "ebpf")]
-use kernel_read_derive::KernelRead;
-
 // ---- in6_addr (used inside sock_common) ------------------------------------
 
 #[repr(C)]
@@ -178,78 +168,6 @@ pub struct sk_buff {
 
 // ---- Trace entry types (output ring-buffer structs) -----------------------
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "ebpf", derive(KernelRead))]
-#[cfg_attr(feature = "ebpf", kernel_read(ctx(sk: *const sock, tcp: *const tcp_sock), default_src = "tcp"))]
-pub struct cwnd_trace_entry {
-    // Stream info
-    pub time: u64,
-    pub addr_v4: u64,
-    pub src_v6: [u8; 16usize],
-    pub dst_v6: [u8; 16usize],
-    pub sport: u16,
-    pub dport: u16,
-    pub family: u16,
-    // Data
-    pub snd_cwnd: u32,
-}
+pub use crate::records::cwnd_trace_entry;
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "ebpf", derive(KernelRead))]
-#[cfg_attr(feature = "ebpf", kernel_read(ctx(sk: *const sock, tcp: *const tcp_sock), default_src = "tcp"))]
-pub struct sock_trace_entry {
-    pub time: u64,
-    pub addr_v4: u64,
-    pub src_v6: [u8; 16usize],
-    pub dst_v6: [u8; 16usize],
-    pub sport: u16,
-    pub dport: u16,
-    pub family: u16,
-    // SOCK Stats
-    #[cfg_attr(feature = "ebpf", kr(src = "sk", path = "sk_pacing_rate"))]
-    pub pacing_rate: u64,
-    #[cfg_attr(feature = "ebpf", kr(src = "sk", path = "sk_max_pacing_rate"))]
-    pub max_pacing_rate: u64,
-    // INET_CONN Stats
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "inet_conn.icsk_backoff"))]
-    pub backoff: u8,
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "inet_conn.icsk_rto"))]
-    pub rto: u32,
-    // INET_CONN -> icsk_ack
-    #[cfg_attr(feature = "ebpf", kr(expr = "0"))]
-    pub ato: u32,
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "inet_conn.icsk_ack.rcv_mss"))]
-    pub rcv_mss: u16,
-    // TCP_SOCK Stats
-    pub snd_cwnd: u32,
-    pub bytes_acked: u64,
-    pub snd_ssthresh: u32,
-    pub total_retrans: u32,
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "keepalive_probes"))]
-    pub probes: u8,
-    pub lost: u32,
-    pub sacked_out: u32,
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "retrans_out"))]
-    pub retrans: u32,
-    pub rcv_ssthresh: u32,
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "rttvar_us"))]
-    pub rttvar: u32,
-    pub advmss: u16,
-    pub reordering: u32,
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "rcv_rtt_est.rtt_us"))]
-    pub rcv_rtt: u32,
-    #[cfg_attr(feature = "ebpf", kr(src = "tcp", path = "rcvq_space.space"))]
-    pub rcv_space: u32,
-    pub bytes_received: u64,
-    pub segs_out: u32,
-    pub segs_in: u32,
-    // TCP_SOCK -> tcp_options_received
-    #[cfg_attr(feature = "ebpf", kr(expr = "0"))]
-    pub snd_wscale: u16,
-    #[cfg_attr(feature = "ebpf", kr(expr = "0"))]
-    pub rcv_wscale: u16,
-}
+pub use crate::records::sock_trace_entry;

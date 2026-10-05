@@ -17,3 +17,6 @@ kernel-read-derive = { path = "../kernel-read-derive" }
 
 [lib]
 path = "src/lib.rs"
+
+[build-dependencies]
+bindgen = { version = "0.73", default-features = false, features = ["runtime"] }

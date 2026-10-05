@@ -3,19 +3,6 @@
 // Only fields read by the eBPF probe are named; bitfield regions are collapsed
 // to opaque padding since we do not access individual bits.
 
-#[cfg(feature = "user")]
-use serde::{Deserialize, Serialize};
-
-#[cfg(feature = "ebpf")]
-use crate::kread::read_kernel;
-#[cfg(feature = "ebpf")]
-use aya_ebpf::helpers::generated::bpf_ktime_get_ns;
-#[cfg(feature = "ebpf")]
-use kernel_read_derive::KernelRead;
-
-#[cfg(feature = "ebpf")]
-use crate::bindings::tcp_sock::sock;
-
 // ---- minmax (used inside bbr) -----------------------------------------------
 
 #[repr(C)]
@@ -65,34 +52,4 @@ pub struct bbr {
     pub full_bw: u32,               // 80..84
 }
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "user", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "ebpf", derive(KernelRead))]
-#[cfg_attr(feature = "ebpf", kernel_read(ctx(sk: *const sock, bbr: *const bbr), default_src = "bbr"))]
-pub struct bbr_trace_entry {
-    // Shared ID
-    pub time: u64,
-    pub addr_v4: u64,
-    pub src_v6: [u8; 16usize],
-    pub dst_v6: [u8; 16usize],
-    pub sport: u16,
-    pub dport: u16,
-    pub family: u16,
-    // General
-    pub min_rtt_us: u32,
-    pub min_rtt_stamp: u32,
-    pub probe_rtt_done_stamp: u32,
-    //pub bw: minmax_trace,
-    pub rtt_cnt: u32,
-    pub next_rtt_delivered: u32,
-    pub cycle_mstamp: u64,
-    //pub bitfield1: u32,
-    pub lt_bw: u32,
-    pub lt_last_delivered: u32,
-    pub lt_last_stamp: u32,
-    pub lt_last_lost: u32,
-    // pub bitfield2: u32,
-    pub prior_cwnd: u32,
-    pub full_bw: u32,
-}
+pub use crate::records::bbr_trace_entry;
