@@ -165,12 +165,13 @@ pub struct tcp_sock {
 }
 
 // ---- sk_buff (size: 232) ---------------------------------------------------
-// Only data_len @ 116 is accessed.
+// Only len @ 112 is accessed.
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct sk_buff {
-    pub _pad_0: [u8; 116],   //   0..116
+    pub _pad_0: [u8; 112],   //   0..112
+    pub len: u32,            // 112..116
     pub data_len: u32,       // 116..120
     pub _pad_120: [u8; 112], // 120..232
 }

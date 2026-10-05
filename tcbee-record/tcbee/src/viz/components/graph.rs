@@ -84,11 +84,11 @@ impl Graph {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("{}", RateWatcher::<u32>::format_rate(ymax / 2.0, y_suffix)),
+                format!("{}", RateWatcher::format_rate(ymax / 2.0, y_suffix)),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("{}", RateWatcher::<u32>::format_rate(ymax, y_suffix)),
+                format!("{}", RateWatcher::format_rate(ymax, y_suffix)),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         ];

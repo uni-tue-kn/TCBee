@@ -61,7 +61,7 @@ impl Status {
                     .border_style(block_style)
                     .title("Event Rate"),
             ),
-            Paragraph::new(RateWatcher::<u64>::format_sum(files_size, "Byte"))
+            Paragraph::new(RateWatcher::format_sum(files_size, "Byte"))
                 .style(value_style)
                 .block(
                     Block::bordered()

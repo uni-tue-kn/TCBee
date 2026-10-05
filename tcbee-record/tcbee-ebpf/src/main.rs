@@ -1,5 +1,7 @@
 #![no_std]
 #![no_main]
+#![allow(internal_features)]
+#![feature(core_intrinsics)]
 
 // TC, Tracepoint probes and counters
 mod probes {

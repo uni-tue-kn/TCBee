@@ -1,6 +1,7 @@
 use std::{
     fs::File,
     io::{self, BufWriter, Write},
+    sync::Arc,
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -9,13 +10,17 @@ use anyhow::anyhow;
 use serde::Serialize;
 
 use crate::{
+    stats::{Snapshot, Stats},
     eBPF::{ebpf_runner::prepend_string, ebpf_runner_config::EbpfWatcherConfig},
     viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
 };
 
-use aya::{
-    maps::{PerCpuArray, PerCpuHashMap},
-    Ebpf,
+use aya::{maps::PerCpuHashMap, Ebpf};
+use tcbee_common::stats::{
+    slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND,
+    RB_RETRANSMIT_SYNACK, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, SLOT_TCP_BYTES_RECEIVED, SLOT_TCP_BYTES_SENT,
+    STAT_ATTEMPTED, STAT_DROPPED, STAT_HANDLED,
 };
 use log::error;
 use ratatui::{
@@ -38,17 +43,19 @@ use super::{
 };
 
 pub struct EBPFWatcher {
-    events_drops: RateWatcher<u32>,
-    events_handled: RateWatcher<u32>,
-    ingress_counter: RateWatcher<u32>,
-    egress_counter: RateWatcher<u32>,
-    tcp_sock_send: RateWatcher<u32>,
-    tcp_sock_recv: RateWatcher<u32>,
-    tcp_bytes_recv: RateWatcher<u32>,
-    tcp_bytes_sent: RateWatcher<u32>,
-    cubic_events: RateWatcher<u32>,
-    bbr_events: RateWatcher<u32>,
-    tracepoint_events: RateWatcher<u32>,
+    stats: Arc<Stats>,
+    snapshot: Snapshot,
+    events_drops: RateWatcher,
+    events_handled: RateWatcher,
+    ingress_counter: RateWatcher,
+    egress_counter: RateWatcher,
+    tcp_sock_send: RateWatcher,
+    tcp_sock_recv: RateWatcher,
+    tcp_bytes_recv: RateWatcher,
+    tcp_bytes_sent: RateWatcher,
+    cubic_events: RateWatcher,
+    bbr_events: RateWatcher,
+    tracepoint_events: RateWatcher,
     flow_tracker: FlowTracker,
     update_period: u128,
     token: CancellationToken,
@@ -58,127 +65,46 @@ pub struct EBPFWatcher {
 
 #[derive(Serialize)]
 pub struct Metrics {
-    handled: u32,
-    dropped: u32,
-    ingress: u32,
-    egress: u32,
-    ingress_calls: u32,
-    egress_calls: u32,
-    tcp_bytes_sent: u32,
-    tcp_bytes_received: u32,
+    handled: u64,
+    dropped: u64,
+    ingress: u64,
+    egress: u64,
+    ingress_calls: u64,
+    egress_calls: u64,
+    tcp_bytes_sent: u64,
+    tcp_bytes_received: u64,
 }
 //TODO: Monitor packet rate vs TCP packet rate?
 impl EBPFWatcher {
     pub fn new(
         ebpf: &mut Ebpf,
+        stats: Arc<Stats>,
         update_period: u128,
         token: CancellationToken,
         config: EbpfWatcherConfig,
         do_tui: bool,
     ) -> anyhow::Result<EBPFWatcher> {
-        // Track rate of passed maps
-        // TODO: This really should be moved to some sort of loop and dict approach
-        let events_drops = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("EVENTS_DROPPED")
-                    .ok_or_else(|| anyhow!("Could not find EVENTS_DROPPED map!"))?,
-            )?,
-            "Events/s".to_string(),
-            0,
-            "Event Drops".to_string(),
-        );
-        let events_handled = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("EVENTS_HANDLED")
-                    .ok_or_else(|| anyhow!("Could not find EVENTS_HANDLED map!"))?,
-            )?,
-            "Events/s".to_string(),
-            0,
-            "Event Handled".to_string(),
-        );
-        let ingress_counter = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("INGRESS_EVENTS")
-                    .ok_or_else(|| anyhow!("Could not find INGRESS_EVENTS map!"))?,
-            )?,
-            "pps".to_string(),
-            0,
-            "Ingress Packets".to_string(),
-        );
-        let egress_counter = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("EGRESS_EVENTS")
-                    .ok_or_else(|| anyhow!("Could not find EGRESS_EVENTS map!"))?,
-            )?,
-            "pps".to_string(),
-            0,
-            "Egress Packets".to_string(),
-        );
-        let tcp_sock_send = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("SEND_TCP_SOCK")
-                    .ok_or_else(|| anyhow!("Could not find SEND_TCP_SOCK map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "TCP Sendmsg".to_string(),
-        );
-        let tcp_sock_recv = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("RECV_TCP_SOCK")
-                    .ok_or_else(|| anyhow!("Could not find RECV_TCP_SOCK map!"))?,
-            )?,
-            "Bytes/s".to_string(),
-            0,
-            "TCP Recvmsg".to_string(),
-        );
-        let tcp_bytes_recv = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("RECEIVED_TCP_BYTES")
-                    .ok_or_else(|| anyhow!("Could not find RECEIVED_TCP_BYTES map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "TCP Bytes Received".to_string(),
-        );
-        let tcp_bytes_sent = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("SENT_TCP_BYTES")
-                    .ok_or_else(|| anyhow!("Could not find SENT_TCP_BYTES map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "TCP Bytes Sent".to_string(),
-        );
+        let all = |stat: u32| (0..RB_COUNT).map(|rb| slot(rb, stat)).collect::<Vec<u32>>();
+        let attempts = |rbs: &[u32]| {
+            rbs.iter()
+                .map(|rb| slot(*rb, STAT_ATTEMPTED))
+                .collect::<Vec<u32>>()
+        };
 
-        let cubic_events = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("CUBIC_EVENTS_COUNTER")
-                    .ok_or_else(|| anyhow!("Could not find CUBIC_EVENTS_COUNTER map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "Cubic Events".to_string(),
-        );
-
-        let bbr_events = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("BBR_EVENTS_COUNTER")
-                    .ok_or_else(|| anyhow!("Could not find BBR_EVENTS_COUNTER map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "BBR Events".to_string(),
-        );
-
-        let tracepoint_events = RateWatcher::<u32>::new(
-            PerCpuArray::try_from(
-                ebpf.take_map("TRACEPOINT_EVENTS")
-                    .ok_or_else(|| anyhow!("Could not find TRACEPOINT_EVENTS map!"))?,
-            )?,
-            "Calls/s".to_string(),
-            0,
-            "Tracepoint Events".to_string(),
+        let events_drops = RateWatcher::new(all(STAT_DROPPED), "Events/s");
+        let events_handled = RateWatcher::new(all(STAT_HANDLED), "Events/s");
+        let ingress_counter =
+            RateWatcher::new(attempts(&[RB_TCP4_INGRESS, RB_TCP6_INGRESS]), "pps");
+        let egress_counter = RateWatcher::new(attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]), "pps");
+        let tcp_sock_send = RateWatcher::new(attempts(&[RB_SOCK_SEND, RB_CWND_SEND]), "Calls/s");
+        let tcp_sock_recv = RateWatcher::new(attempts(&[RB_SOCK_RECV, RB_CWND_RECV]), "Calls/s");
+        let tcp_bytes_recv = RateWatcher::new(vec![SLOT_TCP_BYTES_RECEIVED], "Bytes/s");
+        let tcp_bytes_sent = RateWatcher::new(vec![SLOT_TCP_BYTES_SENT], "Bytes/s");
+        let cubic_events = RateWatcher::new(attempts(&[RB_CUBIC]), "Calls/s");
+        let bbr_events = RateWatcher::new(attempts(&[RB_BBR]), "Calls/s");
+        let tracepoint_events = RateWatcher::new(
+            attempts(&[RB_TCP_PROBE, RB_RETRANSMIT_SYNACK, RB_BAD_CSUM]),
+            "Calls/s",
         );
 
         let flow_tracker = FlowTracker::new(PerCpuHashMap::try_from(
@@ -196,6 +122,8 @@ impl EBPFWatcher {
         };
 
         Ok(EBPFWatcher {
+            stats,
+            snapshot: Snapshot::default(),
             events_drops,
             events_handled,
             ingress_counter,
@@ -215,6 +143,13 @@ impl EBPFWatcher {
         })
     }
 
+    fn update_snapshot(&mut self) {
+        match self.stats.snapshot() {
+            Ok(snapshot) => self.snapshot = snapshot,
+            Err(err) => error!("Failed to read event counters: {}", err),
+        }
+    }
+
     pub fn run(&mut self) {
         if self.terminal.is_some() {
             self.run_tui();
@@ -231,12 +166,14 @@ impl EBPFWatcher {
         while !self.token.is_cancelled() {
             let start_elapsed = application_start.elapsed();
             let loop_elapsed = start_elapsed - last_loop;
+            self.update_snapshot();
+            let snap = &self.snapshot;
 
             // Get current counter values
-            let dropped = self.events_drops.get_rate_string(loop_elapsed);
-            let handled = self.events_handled.get_rate_string(loop_elapsed);
-            let ingress = self.ingress_counter.get_rate_string(loop_elapsed);
-            let egress = self.egress_counter.get_rate_string(loop_elapsed);
+            let dropped = self.events_drops.get_rate_string(snap, loop_elapsed);
+            let handled = self.events_handled.get_rate_string(snap, loop_elapsed);
+            let ingress = self.ingress_counter.get_rate_string(snap, loop_elapsed);
+            let egress = self.egress_counter.get_rate_string(snap, loop_elapsed);
 
             // Time elapsed display string
             let time_string = format!(
@@ -248,7 +185,7 @@ impl EBPFWatcher {
             let to_display = format!(
                 // \r returns cursor to beginning of line, effectively overwriting the last line
                 "\r| {} time elapsed | {} handled | {} dropped | {} events/s | {} drops/s | {} ingress packets/s | {} egress packets/s | ",
-                time_string,self.events_handled.get_counter_sum(), self.events_drops.get_counter_sum(), handled, dropped,ingress,egress
+                time_string, snap.handled(), snap.dropped(), handled, dropped, ingress, egress
             );
 
             print!("{to_display}");
@@ -383,6 +320,9 @@ impl EBPFWatcher {
             let start_elapsed = application_start.elapsed();
             let loop_elapsed = start_elapsed - last_loop;
 
+            self.update_snapshot();
+            let snap = &self.snapshot;
+
             // Update tracker of alll flows internal list and then print it
             self.flow_tracker.read_flows();
             // Update size of scrollbar
@@ -404,7 +344,7 @@ impl EBPFWatcher {
 
             // Track file size and rate
             let files_size = file_tracker.get_file_size();
-            let file_rate = RateWatcher::<u64>::format_rate(
+            let file_rate = RateWatcher::format_rate(
                 (files_size - last_size) as f64 * (1.0 / loop_elapsed.as_secs_f64()),
                 "Byte/s",
             );
@@ -412,19 +352,19 @@ impl EBPFWatcher {
             // Track changes in rates
             let time_sec = start_elapsed.as_secs_f64();
 
-            let handled_rate = self.events_handled.get_rate(loop_elapsed);
-            let dropped_rate = self.events_drops.get_rate(loop_elapsed);
+            let handled_rate = self.events_handled.get_rate(snap, loop_elapsed);
+            let dropped_rate = self.events_drops.get_rate(snap, loop_elapsed);
             graph_events.add_val(0, (time_sec, handled_rate));
             graph_events.add_val(1, (time_sec, dropped_rate));
 
-            graph_packets.add_val(0, (time_sec, self.ingress_counter.get_rate(loop_elapsed)));
-            graph_packets.add_val(1, (time_sec, self.egress_counter.get_rate(loop_elapsed)));
+            graph_packets.add_val(0, (time_sec, self.ingress_counter.get_rate(snap, loop_elapsed)));
+            graph_packets.add_val(1, (time_sec, self.egress_counter.get_rate(snap, loop_elapsed)));
 
-            graph_calls.add_val(0, (time_sec, self.tcp_sock_recv.get_rate(loop_elapsed)));
-            graph_calls.add_val(1, (time_sec, self.tcp_sock_send.get_rate(loop_elapsed)));
-            graph_cubic.add_val(0, (time_sec, self.cubic_events.get_rate(loop_elapsed)));
-            graph_bbr.add_val(0, (time_sec, self.bbr_events.get_rate(loop_elapsed)));
-            graph_tracepoints.add_val(0, (time_sec, self.tracepoint_events.get_rate(loop_elapsed)));
+            graph_calls.add_val(0, (time_sec, self.tcp_sock_recv.get_rate(snap, loop_elapsed)));
+            graph_calls.add_val(1, (time_sec, self.tcp_sock_send.get_rate(snap, loop_elapsed)));
+            graph_cubic.add_val(0, (time_sec, self.cubic_events.get_rate(snap, loop_elapsed)));
+            graph_bbr.add_val(0, (time_sec, self.bbr_events.get_rate(snap, loop_elapsed)));
+            graph_tracepoints.add_val(0, (time_sec, self.tracepoint_events.get_rate(snap, loop_elapsed)));
 
             // Time elapsed
             let time_string = format!(
@@ -434,7 +374,7 @@ impl EBPFWatcher {
             );
 
             let event_rate =
-                RateWatcher::<u32>::format_rate(handled_rate + dropped_rate, " Events/s");
+                RateWatcher::format_rate(handled_rate + dropped_rate, " Events/s");
 
             // Tooltips
             let window_label = self
@@ -544,14 +484,14 @@ impl EBPFWatcher {
                 for (i, block) in status
                     .get_blocks(
                         time_string,
-                        self.events_handled.get_counter_sum_string(),
-                        self.events_drops.get_counter_sum_string(),
-                        self.events_drops.get_counter_sum() > 0,
+                        self.events_handled.get_counter_sum_string(snap),
+                        self.events_drops.get_counter_sum_string(snap),
+                        snap.dropped() > 0,
                         event_rate,
                         files_size,
                         file_rate,
-                        self.tcp_bytes_recv.get_counter_sum_string(),
-                        self.tcp_bytes_sent.get_counter_sum_string(),
+                        self.tcp_bytes_recv.get_counter_sum_string(snap),
+                        self.tcp_bytes_sent.get_counter_sum_string(snap),
                         Color::Reset,
                     )
                     .into_iter()
@@ -728,14 +668,14 @@ impl EBPFWatcher {
         // Store metrics if needed
         if self.config.metrics {
             let metrics = Metrics {
-                handled: self.events_handled.get_counter_sum(),
-                dropped: self.events_drops.get_counter_sum(),
-                ingress: self.ingress_counter.get_counter_sum(),
-                egress: self.egress_counter.get_counter_sum(),
-                ingress_calls: self.tcp_sock_recv.get_counter_sum(),
-                egress_calls: self.tcp_sock_send.get_counter_sum(),
-                tcp_bytes_sent: self.tcp_bytes_sent.get_counter_sum(),
-                tcp_bytes_received: self.tcp_bytes_recv.get_counter_sum(),
+                handled: self.events_handled.get_counter_sum(&self.snapshot),
+                dropped: self.events_drops.get_counter_sum(&self.snapshot),
+                ingress: self.ingress_counter.get_counter_sum(&self.snapshot),
+                egress: self.egress_counter.get_counter_sum(&self.snapshot),
+                ingress_calls: self.tcp_sock_recv.get_counter_sum(&self.snapshot),
+                egress_calls: self.tcp_sock_send.get_counter_sum(&self.snapshot),
+                tcp_bytes_sent: self.tcp_bytes_sent.get_counter_sum(&self.snapshot),
+                tcp_bytes_received: self.tcp_bytes_recv.get_counter_sum(&self.snapshot),
             };
 
             let Ok(outfile) =

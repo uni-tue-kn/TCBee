@@ -1,6 +1,7 @@
 // Crate components
 mod config;
 mod eBPF;
+mod stats;
 mod viz;
 mod writer;
 use std::net::IpAddr;

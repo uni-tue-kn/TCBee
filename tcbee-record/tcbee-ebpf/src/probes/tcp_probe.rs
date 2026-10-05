@@ -5,60 +5,64 @@ use aya_ebpf::{
 // Central buffer size config
 use crate::{
     config::{AF_INET6, TCPPROBE_BUF_SIZE},
-    counters::try_count_tracpoint,
+    counters::{count_attempt, count_error, submit},
     filter::{filter_needs_tuple, filter_ports_match, filter_tuple_match},
     flow_tracker::try_flow_tracker,
 };
 
 // Kernel tracepoint data structs
-use tcbee_common::bindings::{
-    flow::IpTuple,
-    tcp_probe::{tcp_probe_entry, trace_event_raw_tcp_probe},
+use tcbee_common::{
+    bindings::{
+        flow::IpTuple,
+        tcp_probe::{tcp_probe_entry, trace_event_raw_tcp_probe},
+    },
+    stats::RB_TCP_PROBE,
 };
-
-// Counters for performance metrics
-use crate::counters::{try_dropped_counter, try_handled_counter};
 
 // Ring buffer for trasnmitting data to user space
 #[map(name = "TCP_PROBE_QUEUE")]
-static mut TCP_PROBE_QUEUE: RingBuf = RingBuf::with_byte_size(TCPPROBE_BUF_SIZE, 0);
+static TCP_PROBE_QUEUE: RingBuf = RingBuf::with_byte_size(TCPPROBE_BUF_SIZE, 0);
 
 #[inline(always)]
 pub fn try_tcp_probe(ctx: TracePointContext) -> Result<u32, u32> {
-    unsafe {
-        // Parse event data to struct
-        let event: trace_event_raw_tcp_probe = ctx
-            .read_at::<trace_event_raw_tcp_probe>(0)
-            .map_err(|e| e as u32)?;
+    // Parse event data to struct
+    let Ok(event) = (unsafe { ctx.read_at::<trace_event_raw_tcp_probe>(0) }) else {
+        // The filter cannot be evaluated without the event, count it as an error
+        count_attempt(RB_TCP_PROBE);
+        count_error(RB_TCP_PROBE);
+        return Ok(0);
+    };
 
-        if !filter_ports_match(event.sport, event.dport) {
-            return Ok(0);
-        }
+    if !filter_ports_match(event.sport, event.dport) {
+        return Ok(0);
+    }
 
-        let mut src_ip = [0u8; 16];
-        let mut dst_ip = [0u8; 16];
-        if event.family == AF_INET6 {
-            src_ip.copy_from_slice(&event.saddr[8..24]);
-            dst_ip.copy_from_slice(&event.daddr[8..24]);
-        } else {
-            src_ip[..4].copy_from_slice(&event.saddr[4..8]);
-            dst_ip[..4].copy_from_slice(&event.daddr[4..8]);
-        }
-        let tuple = IpTuple {
-            src_ip,
-            dst_ip,
-            sport: event.sport,
-            dport: event.dport,
-            protocol: 6,
-        };
-        if filter_needs_tuple() && !filter_tuple_match(&tuple) {
-            return Ok(0);
-        }
-        let _ = try_flow_tracker(tuple);
+    let mut src_ip = [0u8; 16];
+    let mut dst_ip = [0u8; 16];
+    if event.family == AF_INET6 {
+        src_ip.copy_from_slice(&event.saddr[8..24]);
+        dst_ip.copy_from_slice(&event.daddr[8..24]);
+    } else {
+        src_ip[..4].copy_from_slice(&event.saddr[4..8]);
+        dst_ip[..4].copy_from_slice(&event.daddr[4..8]);
+    }
+    let tuple = IpTuple {
+        src_ip,
+        dst_ip,
+        sport: event.sport,
+        dport: event.dport,
+        protocol: 6,
+    };
+    if filter_needs_tuple() && !filter_tuple_match(&tuple) {
+        return Ok(0);
+    }
 
-        // Create queue entry
-        let queue_entry = tcp_probe_entry {
-            time: bpf_ktime_get_ns(),
+    count_attempt(RB_TCP_PROBE);
+    submit(
+        &TCP_PROBE_QUEUE,
+        RB_TCP_PROBE,
+        tcp_probe_entry {
+            time: unsafe { bpf_ktime_get_ns() },
             saddr: event.saddr,
             daddr: event.daddr,
             sport: event.sport,
@@ -74,24 +78,10 @@ pub fn try_tcp_probe(ctx: TracePointContext) -> Result<u32, u32> {
             srtt: event.srtt,
             rcv_wnd: event.rcv_wnd,
             sock_cookie: event.sock_cookie,
-        };
+        },
+    );
 
-        // Prepare ringbuf entry
-        let reserved = TCP_PROBE_QUEUE.reserve::<tcp_probe_entry>(0);
-
-        // Check if space left for entry
-        if let Some(mut entry) = reserved {
-            // Enough space, write and track handled events
-            entry.write(queue_entry);
-            entry.submit(1);
-            let _ = try_handled_counter();
-        } else {
-            // Not enough space, drop event
-            let _ = try_dropped_counter();
-        }
-    }
-
-    let _ = try_count_tracpoint();
+    let _ = try_flow_tracker(tuple);
 
     Ok(0)
 }

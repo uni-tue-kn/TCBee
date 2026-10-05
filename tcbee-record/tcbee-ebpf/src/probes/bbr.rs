@@ -1,35 +1,36 @@
 use core::ptr::addr_of;
 
-use aya_ebpf::{
-    helpers::{bpf_probe_read_kernel, generated::bpf_ktime_get_ns},
-    macros::map,
-    maps::RingBuf,
-    programs::{FEntryContext, ProbeContext},
-};
-use tcbee_common::bindings::{
-    bbr::{bbr, bbr_trace_entry},
-    flow::IpTuple,
-    tcp_sock::{inet_connection_sock, sock},
+use aya_ebpf::{helpers::bpf_probe_read_kernel, macros::map, maps::RingBuf, programs::ProbeContext};
+use tcbee_common::{
+    bindings::{
+        bbr::{bbr, bbr_trace_entry},
+        tcp_sock::{inet_connection_sock, sock},
+    },
+    stats::RB_BBR,
 };
 
 use crate::{
-    config::{AF_INET6, BBR_BUF_SIZE},
-    counters::{try_count_bbr_event, try_dropped_counter, try_handled_counter},
+    config::BBR_BUF_SIZE,
+    counters::{count_attempt, count_error, submit},
     filter::{filter_needs_tuple, filter_ports_match, filter_tuple_match},
     flow_tracker::try_flow_tracker,
     helpers::kernel_read_tuple_from_sk,
 };
 
 #[map(name = "BBR_EVENTS")]
-static mut BBR_EVENTS: RingBuf = RingBuf::with_byte_size(BBR_BUF_SIZE as u32, 0);
+static BBR_EVENTS: RingBuf = RingBuf::with_byte_size(BBR_BUF_SIZE, 0);
 
 #[inline(always)]
 pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
-    let sk_ptr: *const sock = ctx.arg(0).ok_or(0u32)?;
-
-    if sk_ptr.is_null() {
-        return Ok(0);
-    }
+    let sk_ptr: *const sock = match ctx.arg(0) {
+        Some(ptr) if !(ptr as *const sock).is_null() => ptr,
+        _ => {
+            // The filter cannot be evaluated without the socket, count it as an error
+            count_attempt(RB_BBR);
+            count_error(RB_BBR);
+            return Ok(0);
+        }
+    };
 
     // Congestion algorithm ptr is stored in inet_csk field
     let inet_csk_ptr: *const inet_connection_sock = sk_ptr as *const inet_connection_sock;
@@ -38,11 +39,14 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
         ca_priv_ptr as *const bbr
     };
 
-    let ports: u32 = unsafe {
+    let Ok(ports) = (unsafe {
         bpf_probe_read_kernel(addr_of!(
             (*sk_ptr).__sk_common.__bindgen_anon_3.skc_portpair
         ))
-        .map_err(|_| 0u32)?
+    }) else {
+        count_attempt(RB_BBR);
+        count_error(RB_BBR);
+        return Ok(0);
     };
 
     let dport = ((ports & 0xFFFF) as u16).swap_bytes();
@@ -50,32 +54,19 @@ pub fn bbr_handle(ctx: ProbeContext) -> Result<u32, u32> {
     if !filter_ports_match(sport, dport) {
         return Ok(0);
     }
-    if filter_needs_tuple() {
-        let tuple = unsafe { kernel_read_tuple_from_sk(sk_ptr, sport, dport) };
-        if !filter_tuple_match(&tuple) {
-            return Ok(0);
-        }
-    }
-
-    unsafe {
-        // Copies fields with same name from bbr_ptr
-        let bbr_entry = bbr_trace_entry::read_from(sk_ptr, bbr_ptr)?;
-        let reserved = BBR_EVENTS.reserve::<bbr_trace_entry>(0);
-
-        // Check if space left for entry
-        if let Some(mut entry) = reserved {
-            // Enough space, write and track handled events
-            entry.write(bbr_entry);
-            entry.submit(1);
-            let _ = try_handled_counter();
-        } else {
-            let _ = try_dropped_counter();
-        }
-
-        let _ = try_count_bbr_event();
-    }
-
     let tuple = unsafe { kernel_read_tuple_from_sk(sk_ptr, sport, dport) };
+    if filter_needs_tuple() && !filter_tuple_match(&tuple) {
+        return Ok(0);
+    }
+
+    count_attempt(RB_BBR);
+
+    // Copies fields with same name from bbr_ptr
+    match unsafe { bbr_trace_entry::read_from(sk_ptr, bbr_ptr) } {
+        Ok(entry) => submit(&BBR_EVENTS, RB_BBR, entry),
+        Err(_) => count_error(RB_BBR),
+    }
+
     let _ = try_flow_tracker(tuple);
 
     Ok(0)

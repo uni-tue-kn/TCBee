@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, sync::Arc};
 
 use aya::{maps::HashMap, Ebpf, EbpfLoader};
 use log::{debug, error, info, warn};
@@ -21,6 +21,7 @@ use crate::{
         kernel::KernelTracer,
         tracepoints::TracepointTracer,
     },
+    stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
     writer::Writer,
 };
@@ -211,8 +212,10 @@ impl EbpfRunner {
 
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
+        let stats = Arc::new(Stats::new(&mut ebpf)?);
         let mut watcher = EBPFWatcher::new(
             &mut ebpf,
+            stats,
             self.config.update_period,
             self.stop_token.clone(),
             watcher_config,
