@@ -1,2 +1,2 @@
 #!/bin/bash
-cargo run --release --config 'target."cfg(all())".runner="sudo -E"'  -- lo --headers
+cargo run --release --config 'target."cfg(all())".runner="sudo -E"'  -- --headers lo
