@@ -46,6 +46,8 @@ fn main() {
 
     let mut builder = bindgen::Builder::default()
         .header(RECORDS_H)
+        // Lay the records out like the eBPF compiler does, independent of the host
+        .clang_arg("--target=bpfel")
         .use_core()
         .ctypes_prefix("::core::ffi")
         .derive_debug(true)
