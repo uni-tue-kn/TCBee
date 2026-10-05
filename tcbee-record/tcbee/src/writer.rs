@@ -56,7 +56,7 @@ pub struct Writer {
     poll_mode: PollMode,
     running: Arc<AtomicBool>,
     bytes_written: Arc<AtomicU64>,
-    handles: Vec<(WriterReport, JoinHandle<Result<u64, JobError>>)>,
+    handles: Vec<(WriterReport, JoinHandle<JobResult>)>,
     /// CPU IDs to pin writer threads to, assigned round-robin.
     /// Requires `isolcpus=<ids>` in the kernel boot parameters for full isolation.
     cpu_pool: Vec<usize>,
@@ -161,8 +161,10 @@ impl Writer {
             .drain(..)
             .map(|(mut report, handle)| {
                 match handle.join() {
-                    Ok(Ok(records)) => report.records = records,
-                    Ok(Err(err)) => report.error = Some(err.to_string()),
+                    Ok((records, result)) => {
+                        report.records = records;
+                        report.error = result.err().map(|err| err.to_string());
+                    }
                     Err(_) => report.error = Some(WriterError::WorkerPanicked.to_string()),
                 }
                 report
@@ -196,7 +198,7 @@ fn job_loop<T>(
     cpu: Option<usize>,
     poll_mode: PollMode,
     ready: mpsc::SyncSender<Result<(), libbpf_rs::Error>>,
-) -> Result<u64, JobError>
+) -> JobResult
 where
     T: Serialize + Copy + Send + 'static,
 {
@@ -220,7 +222,7 @@ where
         }
         Err(err) => {
             let _ = ready.send(Err(err));
-            return job.borrow_mut().flush().map(|_| 0);
+            return (0, job.borrow_mut().flush());
         }
     };
 
@@ -264,8 +266,12 @@ where
         );
     }
 
-    result.and(flushed).map(|_| job.records)
+    // The records written before an error are in the file and still count
+    (job.records, result.and(flushed))
 }
+
+/// Records a writer thread wrote, and the error that stopped it, if any
+type JobResult = (u64, Result<(), JobError>);
 
 /// Turns the return value of `ring_buffer__consume`/`ring_buffer__poll` into the number
 /// of records read or the error that stopped the callback
