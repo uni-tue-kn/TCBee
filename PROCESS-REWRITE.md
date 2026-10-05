@@ -18,8 +18,8 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP0 fixtures | done, reviewed, committed |
 | WP1 ts-storage core | done, reviewed, committed |
 | WP2 bindings macro + decoder | done, reviewed, committed |
-| WP3 SQLite engine | implementing (agent running) |
-| WP4 DuckDB engine | implementing (agent running) |
+| WP3 SQLite engine | implemented, in review (not committed) |
+| WP4 DuckDB engine | implemented, in review (not committed) |
 | WP5 contract tests | not started |
 | WP6 pipeline | not started |
 | WP7 viz migration | not started |
@@ -34,6 +34,7 @@ Log (newest last):
 - 2026-10-05: WP1 written (v2 types, schema renderer, features); WP2 started in parallel.
 - 2026-10-05: WP1 reviewed and committed. WP2 written and in review; WP3 and WP4 started in parallel (separate files). No InfluxDB work (out of scope, A7).
 - 2026-10-05: WP2 reviewed and committed. Waiting on WP3 and WP4.
+- 2026-10-05: WP3 and WP4 written and under review. WP4 measured cached appender 34 M values/s vs 14.5 M per-batch, so writers keep one cached appender per table (uses one `unsafe` lifetime transmute). WP3 deleted the old SQLite backend (those deletions landed in the WP2 commit by accident). Known inconsistency to settle in review: SQLite `replace_derived` keeps the series id, DuckDB assigns a new one.
 
 Decisions made by the maintainer:
 
