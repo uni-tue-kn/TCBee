@@ -16,7 +16,15 @@ use tcbee_trace::TCBeeTrace;
 use log::info;
 
 // Async Libraries
-use tokio::{runtime::Builder, signal::ctrl_c};
+use std::time::Duration;
+use tokio::{
+    runtime::Builder,
+    signal::{
+        ctrl_c,
+        unix::{signal, SignalKind},
+    },
+    time::sleep,
+};
 use tokio_util::sync::CancellationToken;
 
 // Commandline arguments
@@ -65,6 +73,7 @@ fn main() -> anyhow::Result<()> {
     let mut trace_cwnd: bool = false;
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
+    let mut duration: f64 = 0.0;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -157,6 +166,11 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Write per ring buffer event counters, records written and per program recursion misses to metrics.json in the recording directory after shutdown.",
         );
+        argparser.refer(&mut duration).add_option(
+            &["--duration"],
+            Store,
+            "Stop recording after this many seconds. Use 0 to record until stopped. Default is 0.",
+        );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
             StoreTrue,
@@ -177,6 +191,10 @@ fn main() -> anyhow::Result<()> {
         src_ips: parse_ip_csv(&src_ips, "source IP address")?,
         dst_ips: parse_ip_csv(&dst_ips, "destination IP address")?,
     };
+
+    if !(duration >= 0.0 && duration.is_finite()) {
+        return Err(anyhow!("--duration must be a non-negative number of seconds"));
+    }
 
     if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd && !trace_algorithms {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
@@ -231,14 +249,30 @@ fn main() -> anyhow::Result<()> {
             Err(err)
         } else {
             // Runner was created and correctly initialized
-            // If quiet mode: wait for ctrl+c to cancel
-            // If TUI is used: TUI will cancel the token so wait for that
-            if quiet {
-                let _ = ctrl_c().await;
-                token.cancel();
-            } else {
-                token.cancelled().await;
+            // Stop on ctrl+c (quiet mode only, the TUI handles keys itself), SIGTERM,
+            // after --duration or when the TUI cancels the token
+            let mut sigterm = signal(SignalKind::terminate())?;
+            let timeout = async {
+                if duration > 0.0 {
+                    sleep(Duration::from_secs_f64(duration)).await
+                } else {
+                    std::future::pending().await
+                }
+            };
+            let interrupt = async {
+                if quiet {
+                    let _ = ctrl_c().await;
+                } else {
+                    std::future::pending().await
+                }
+            };
+            tokio::select! {
+                _ = token.cancelled() => {}
+                _ = sigterm.recv() => {}
+                _ = timeout => {}
+                _ = interrupt => {}
             }
+            token.cancel();
 
             info!("Stopping eBPF runner and threads!");
 
