@@ -22,7 +22,7 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP4 DuckDB engine | done, reviewed, committed |
 | WP5 contract tests | done, reviewed, committed |
 | WP6 pipeline | done, reviewed, committed |
-| WP7 viz migration | implemented (uncommitted in tcbee-viz); review pending |
+| WP7 viz migration | done, reviewed, committed (GUI never run by an agent) |
 | WP8 cleanup, docs | not started |
 | WP9 benchmarks | not started |
 
@@ -40,7 +40,7 @@ Log (newest last):
 - 2026-10-05: WP6 first run (release, SQLite only, 16 cores): 110 MB trace 3.4 s / 76 MB RSS / 91 MiB output; 294 MB trace 5.2 s (1.9 s after last worker) / 124 MB RSS / 247 MiB output. WP5 found one engine difference: SQLite drops the sign of -0.0, DuckDB keeps it (accepted, documented by an ignored test).
 - 2026-10-05: WP5 committed (90 contract tests on both engines). WP6 committed after review fixes (row counting checked against records, abort checks every 4096 records, failure-path tests); WP7 running. Legacy `ts-storage/tests/duckdb.rs` fails on re-runs when `db_duck_test.duck` is left over; it is deleted in WP8.
 - 2026-10-05: WP7 written, uncommitted in `tcbee-viz`. Both review agents died on a usage limit and were relaunched. Next after WP7: WP8, WP9.
-- 2026-10-05: WP7 reviewed (real tcbee-process output opened through the viz data layer on both engines: no panics, bindings correct); review fixes in progress. Deferred, to go into CLAUDE.md open work in WP8: SenderLimitation inputs (tcp_probe SND_* vs sock advmss) are zipped by index although their timestamps differ; `preprocessing.rs` `time_granularity_ms` is treated as ms->s although timestamps are ns; NaN in derived float series plots as NaN; flow ids differ between runs (thread order), by design.
+- 2026-10-05: WP7 reviewed (real tcbee-process output opened through the viz data layer on both engines: no panics, bindings correct); committed after review fixes. Deferred, to go into CLAUDE.md open work in WP8: SenderLimitation inputs (tcp_probe SND_* vs sock advmss) are zipped by index although their timestamps differ; `preprocessing.rs` `time_granularity_ms` is treated as ms->s although timestamps are ns; NaN in derived float series plots as NaN; flow ids differ between runs (thread order), by design.
 
 Decisions made by the maintainer:
 
