@@ -96,7 +96,11 @@ def rebuild():
     if packages:
         flags = [flag for p in packages for flag in ("-p", p)]
         builds.append((", ".join(packages), ["cargo", "build", "--release", *flags], REPO_ROOT))
+    # run.py re-runs itself under sudo; build as the invoking user so target/ stays owned by them
+    user = os.environ.get("SUDO_USER")
+    as_user = ["sudo", "-u", user, "-E"] if os.geteuid() == 0 and user else []
     for name, cmd, cwd in builds:
+        cmd = as_user + cmd
         print(f"\nBuilding {name}...")
         result = subprocess.run(cmd, cwd=cwd)
         if result.returncode != 0:
