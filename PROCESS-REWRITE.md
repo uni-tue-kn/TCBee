@@ -20,8 +20,8 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP2 bindings macro + decoder | done, reviewed, committed |
 | WP3 SQLite engine | done, reviewed, committed |
 | WP4 DuckDB engine | done, reviewed, committed |
-| WP5 contract tests | implementing (agent running) |
-| WP6 pipeline | implementing (agent running) |
+| WP5 contract tests | implemented, review fixes in progress (not committed) |
+| WP6 pipeline | implemented, in review (not committed) |
 | WP7 viz migration | not started |
 | WP8 cleanup, docs | not started |
 | WP9 benchmarks | not started |
@@ -37,6 +37,7 @@ Log (newest last):
 - 2026-10-05: WP3 and WP4 written and under review. WP4 measured cached appender 34 M values/s vs 14.5 M per-batch, so writers keep one cached appender per table (uses one `unsafe` lifetime transmute). WP3 deleted the old SQLite backend (those deletions landed in the WP2 commit by accident). Review settled the inconsistency: both engines keep the series id on `replace_derived`, ids start at 1, a missing series is `NotFound`, NaN in event f64 columns is rejected by `EventBatch::validate`. Shared helpers live in `v2/{time,catalog,sql}.rs`.
 - 2026-10-05: WP3 and WP4 committed; WP5 and WP6 started in parallel.
 - 2026-10-05: a 294 MB trace (`~/tcbee-traces/tcbee_2026-10-05T18-52-18`: cubic 8.6 MB, recv_sock 104, send_sock 67, tcp4 23+15, tcp_probe 76; no bbr/tcp6) is the WP9 benchmark input. It is cubic-only, so compare with the A1 numbers by file size, not record mix.
+- 2026-10-05: WP6 first run (release, SQLite only, 16 cores): 110 MB trace 3.4 s / 76 MB RSS / 91 MiB output; 294 MB trace 5.2 s (1.9 s after last worker) / 124 MB RSS / 247 MiB output. WP5 found one engine difference: SQLite drops the sign of -0.0, DuckDB keeps it (accepted, documented by an ignored test).
 
 Decisions made by the maintainer:
 
