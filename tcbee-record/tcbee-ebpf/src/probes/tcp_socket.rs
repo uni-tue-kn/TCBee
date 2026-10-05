@@ -100,7 +100,12 @@ pub fn try_sock_sendmsg_cwnd_only(ctx: FEntryContext) -> Result<u32, u32> {
 
 #[inline(always)]
 pub fn try_sock_sendmsg(ctx: FEntryContext) -> Result<u32, u32> {
-    trace_sock(&ctx, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, SLOT_TCP_BYTES_SENT)
+    trace_sock(
+        &ctx,
+        &TCP_SEND_SOCK_EVENTS,
+        RB_SOCK_SEND,
+        SLOT_TCP_BYTES_SENT,
+    )
 }
 
 #[inline(always)]

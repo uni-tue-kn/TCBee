@@ -3,7 +3,7 @@ use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
 use std::error::Error;
 use tcbee_common::{bindings::cubic::cubic_trace_entry, prog_bindings::TraceProbe};
 
-use tcbee_common::stats::{RB_CUBIC};
+use tcbee_common::stats::RB_CUBIC;
 
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
@@ -21,7 +21,8 @@ impl CubicTracer {
             .program_mut("cubic_cong_control")
             .ok_or(EBPFRunnerError::InvalidProgramError {
                 name: "cubic_cong_control".to_string(),
-            })?.try_into()?;
+            })?
+            .try_into()?;
         sendmsg.load("cubictcp_cong_avoid", &btf)?;
         sendmsg.attach()?;
 
@@ -30,7 +31,8 @@ impl CubicTracer {
             .program_mut("cubic_cwnd_event")
             .ok_or(EBPFRunnerError::InvalidProgramError {
                 name: "cubic_cwnd_event".to_string(),
-            })?.try_into()?;
+            })?
+            .try_into()?;
         recvmsg.load("cubictcp_cwnd_event", &btf)?;
         recvmsg.attach()?;
 

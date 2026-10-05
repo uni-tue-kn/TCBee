@@ -2,7 +2,7 @@ use aya::{maps::RingBuf, programs::KProbe, Ebpf};
 use std::error::Error;
 use tcbee_common::{bindings::bbr::bbr_trace_entry, prog_bindings::TraceProbe};
 
-use tcbee_common::stats::{RB_BBR};
+use tcbee_common::stats::RB_BBR;
 
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
@@ -18,17 +18,18 @@ impl BBRTracer {
             .program_mut("bbr_cong_control")
             .ok_or(EBPFRunnerError::InvalidProgramError {
                 name: "bbr_cong_control".to_string(),
-            })?.try_into()?;
+            })?
+            .try_into()?;
         update_hook.load()?;
         update_hook.attach("bbr_main", 0)?;
 
         // For Congestion Event
-        let congestion_hook: &mut KProbe =
-            ebpf
+        let congestion_hook: &mut KProbe = ebpf
             .program_mut("bbr_cwnd_event")
             .ok_or(EBPFRunnerError::InvalidProgramError {
                 name: "bbr_cwnd_event".to_string(),
-            })?.try_into()?;
+            })?
+            .try_into()?;
         congestion_hook.load()?;
         congestion_hook.attach("bbr_cwnd_event", 0)?;
 

@@ -34,8 +34,14 @@ pub fn remove_clsact(interface: &str) {
         .status();
     match result {
         Ok(status) if status.success() => info!("Removed clsact qdisc from {}", interface),
-        Ok(status) => warn!("Removing clsact qdisc from {} failed: {}", interface, status),
-        Err(err) => warn!("Could not run tc to remove clsact qdisc from {}: {}", interface, err),
+        Ok(status) => warn!(
+            "Removing clsact qdisc from {} failed: {}",
+            interface, status
+        ),
+        Err(err) => warn!(
+            "Could not run tc to remove clsact qdisc from {}: {}",
+            interface, err
+        ),
     }
 }
 
@@ -97,7 +103,6 @@ impl TCTracer {
 
         let name = "tc_egress_packet_tracer";
 
-
         // Attach eBPF TC to Egress
         let tracer: &mut SchedClassifier = ebpf
             .program_mut(name)
@@ -143,4 +148,3 @@ impl TCTracer {
         Ok(created_clsact)
     }
 }
-

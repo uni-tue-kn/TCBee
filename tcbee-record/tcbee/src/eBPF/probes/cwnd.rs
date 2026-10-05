@@ -22,7 +22,8 @@ impl CwndTracer {
             .program_mut("cwnd_sock_sendmsg")
             .ok_or(EBPFRunnerError::InvalidProgramError {
                 name: "cwnd_sock_sendmsg".to_string(),
-            })?.try_into()?;
+            })?
+            .try_into()?;
         sendmsg.load("__tcp_transmit_skb", &btf)?;
         sendmsg.attach()?;
 
@@ -31,7 +32,8 @@ impl CwndTracer {
             .program_mut("cwnd_sock_recvmsg")
             .ok_or(EBPFRunnerError::InvalidProgramError {
                 name: "cwnd_sock_recvmsg".to_string(),
-            })?.try_into()?;
+            })?
+            .try_into()?;
         recvmsg.load("tcp_rcv_established", &btf)?;
         recvmsg.attach()?;
 

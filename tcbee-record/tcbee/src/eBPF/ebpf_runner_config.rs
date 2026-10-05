@@ -120,7 +120,11 @@ pub fn parse_ringbuf_sizes(arg: &str) -> anyhow::Result<Vec<(&'static str, u32)>
     };
 
     // Apply the size for all buffers first so that groups override it
-    let items: Vec<&str> = arg.split(',').map(str::trim).filter(|i| !i.is_empty()).collect();
+    let items: Vec<&str> = arg
+        .split(',')
+        .map(str::trim)
+        .filter(|i| !i.is_empty())
+        .collect();
     for item in items.iter().filter(|i| !i.contains('=')) {
         set(None, parse_size(item)?)?;
     }

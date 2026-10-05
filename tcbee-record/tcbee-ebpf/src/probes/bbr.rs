@@ -1,6 +1,8 @@
 use core::ptr::addr_of;
 
-use aya_ebpf::{helpers::bpf_probe_read_kernel, macros::map, maps::RingBuf, programs::ProbeContext};
+use aya_ebpf::{
+    helpers::bpf_probe_read_kernel, macros::map, maps::RingBuf, programs::ProbeContext,
+};
 use tcbee_common::{
     bindings::{
         bbr::{bbr, bbr_trace_entry},

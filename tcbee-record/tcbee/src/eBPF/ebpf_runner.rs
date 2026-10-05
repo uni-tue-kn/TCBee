@@ -171,7 +171,12 @@ impl EbpfRunner {
         }
     }
 
-    fn write_metrics(&self, duration_s: f64, reports: &[WriterReport], programs: Vec<ProgramStats>) {
+    fn write_metrics(
+        &self,
+        duration_s: f64,
+        reports: &[WriterReport],
+        programs: Vec<ProgramStats>,
+    ) {
         let Some(stats) = &self.stats else {
             return;
         };
@@ -225,17 +230,15 @@ impl EbpfRunner {
         for (name, size) in &self.config.ringbuf_sizes {
             loader.map_max_entries(name, *size);
         }
-        let mut ebpf = loader
-            .load(aya::include_bytes_aligned!(concat!(
-                env!("OUT_DIR"),
-                "/tcbee"
-            )))?;
+        let mut ebpf = loader.load(aya::include_bytes_aligned!(concat!(
+            env!("OUT_DIR"),
+            "/tcbee"
+        )))?;
         self.configure_filter(&mut ebpf)?;
         self.ringbuf_sizes = ringbuf_sizes(&ebpf);
         for ((name, _), size) in RINGBUFS.iter().zip(&self.ringbuf_sizes) {
             debug!("Ring buffer {} has {:?} bytes", name, size);
         }
-
 
         info!("Starting eBPF probes!");
 

@@ -307,9 +307,10 @@ impl MmapBackedFile {
     fn reserve(&mut self, len: usize) -> io::Result<&mut [u8]> {
         self.ensure_capacity(len)?;
         let start = self.position;
-        let map = self.map.as_mut().ok_or_else(|| {
-            io::Error::new(ErrorKind::BrokenPipe, "memory-mapped writer closed")
-        })?;
+        let map = self
+            .map
+            .as_mut()
+            .ok_or_else(|| io::Error::new(ErrorKind::BrokenPipe, "memory-mapped writer closed"))?;
         self.position += len;
         Ok(&mut map[start..start + len])
     }
@@ -417,8 +418,8 @@ where
             let size = match self.record_size {
                 Some(size) => size,
                 None => {
-                    let size = bincode::serialized_size(&value).map_err(JobError::Serialize)?
-                        as usize;
+                    let size =
+                        bincode::serialized_size(&value).map_err(JobError::Serialize)? as usize;
                     self.record_size = Some(size);
                     size
                 }

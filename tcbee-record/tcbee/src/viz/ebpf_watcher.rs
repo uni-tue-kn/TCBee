@@ -8,18 +8,12 @@ use std::{
 use anyhow::anyhow;
 
 use crate::{
-    stats::{Snapshot, Stats},
     eBPF::ebpf_runner_config::EbpfWatcherConfig,
+    stats::{Snapshot, Stats},
     viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
 };
 
 use aya::{maps::PerCpuHashMap, Ebpf};
-use tcbee_common::stats::{
-    slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND,
-    RB_RETRANSMIT_SYNACK, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, SLOT_TCP_BYTES_RECEIVED, SLOT_TCP_BYTES_SENT,
-    STAT_ATTEMPTED, STAT_DROPPED, STAT_HANDLED,
-};
 use log::error;
 use ratatui::{
     crossterm::{
@@ -32,6 +26,12 @@ use ratatui::{
         Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState,
     },
     DefaultTerminal,
+};
+use tcbee_common::stats::{
+    slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND,
+    RB_RETRANSMIT_SYNACK, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, SLOT_TCP_BYTES_RECEIVED, SLOT_TCP_BYTES_SENT,
+    STAT_ATTEMPTED, STAT_DROPPED, STAT_HANDLED,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -344,14 +344,35 @@ impl EBPFWatcher {
             graph_events.add_val(0, (time_sec, handled_rate));
             graph_events.add_val(1, (time_sec, dropped_rate));
 
-            graph_packets.add_val(0, (time_sec, self.ingress_counter.get_rate(snap, loop_elapsed)));
-            graph_packets.add_val(1, (time_sec, self.egress_counter.get_rate(snap, loop_elapsed)));
+            graph_packets.add_val(
+                0,
+                (time_sec, self.ingress_counter.get_rate(snap, loop_elapsed)),
+            );
+            graph_packets.add_val(
+                1,
+                (time_sec, self.egress_counter.get_rate(snap, loop_elapsed)),
+            );
 
-            graph_calls.add_val(0, (time_sec, self.tcp_sock_recv.get_rate(snap, loop_elapsed)));
-            graph_calls.add_val(1, (time_sec, self.tcp_sock_send.get_rate(snap, loop_elapsed)));
-            graph_cubic.add_val(0, (time_sec, self.cubic_events.get_rate(snap, loop_elapsed)));
+            graph_calls.add_val(
+                0,
+                (time_sec, self.tcp_sock_recv.get_rate(snap, loop_elapsed)),
+            );
+            graph_calls.add_val(
+                1,
+                (time_sec, self.tcp_sock_send.get_rate(snap, loop_elapsed)),
+            );
+            graph_cubic.add_val(
+                0,
+                (time_sec, self.cubic_events.get_rate(snap, loop_elapsed)),
+            );
             graph_bbr.add_val(0, (time_sec, self.bbr_events.get_rate(snap, loop_elapsed)));
-            graph_tracepoints.add_val(0, (time_sec, self.tracepoint_events.get_rate(snap, loop_elapsed)));
+            graph_tracepoints.add_val(
+                0,
+                (
+                    time_sec,
+                    self.tracepoint_events.get_rate(snap, loop_elapsed),
+                ),
+            );
 
             // Time elapsed
             let time_string = format!(
@@ -360,8 +381,7 @@ impl EBPFWatcher {
                 start_elapsed.subsec_millis()
             );
 
-            let event_rate =
-                RateWatcher::format_rate(handled_rate + dropped_rate, " Events/s");
+            let event_rate = RateWatcher::format_rate(handled_rate + dropped_rate, " Events/s");
 
             // Tooltips
             let window_label = self

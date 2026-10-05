@@ -215,7 +215,10 @@ fn main() -> anyhow::Result<()> {
 
     let ringbuf_sizes = parse_ringbuf_sizes(&ringbuf_size)?;
     let writer_cpus: Vec<usize> = parse_csv(&writer_cpus, "CPU id")?;
-    if let Some(cpu) = writer_cpus.iter().find(|cpu| **cpu >= libc::CPU_SETSIZE as usize) {
+    if let Some(cpu) = writer_cpus
+        .iter()
+        .find(|cpu| **cpu >= libc::CPU_SETSIZE as usize)
+    {
         return Err(anyhow!("Invalid writer CPU id {}", cpu));
     }
     let poll_mode = match poll.as_str() {
@@ -225,7 +228,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     if !(duration >= 0.0 && duration.is_finite()) {
-        return Err(anyhow!("--duration must be a non-negative number of seconds"));
+        return Err(anyhow!(
+            "--duration must be a non-negative number of seconds"
+        ));
     }
 
     if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd && !trace_algorithms {
