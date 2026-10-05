@@ -3,7 +3,7 @@
  * STATS counters, same slot layout as tcbee-common/src/stats.rs.
  *
  * A probe invocation that passes the filter calls count_attempt() once and then exactly
- * one of submit() (handled or dropped) or count_error(), so
+ * one of reserve() failing (dropped), commit() (handled) or count_error(), so
  * attempted == handled + dropped + error holds per ring buffer. Filtered out events
  * touch no counter.
  */
@@ -52,30 +52,54 @@ static __always_inline void add_stat(__u32 slot, __u64 value)
 		__sync_fetch_and_add(counter, value);
 }
 
+static __always_inline void count(__u32 rb, __u32 stat)
+{
+	add_stat(rb * STATS_PER_RB + stat, 1);
+}
+
 static __always_inline void count_attempt(__u32 rb)
 {
-	add_stat(rb * STATS_PER_RB + STAT_ATTEMPTED, 1);
+	count(rb, STAT_ATTEMPTED);
 }
 
 static __always_inline void count_error(__u32 rb)
 {
-	add_stat(rb * STATS_PER_RB + STAT_ERROR, 1);
+	count(rb, STAT_ERROR);
 }
 
-/* Copy a record into the ring buffer and count it as handled, or as dropped if full */
-static __always_inline void submit_record(void *ringbuf, __u32 rb, const void *rec, __u64 size)
+/*
+ * Records are written in place: reserve a slot, fill it, commit it. A full ring buffer
+ * counts the event as dropped. The slot is zeroed first, so padding bytes and fields a
+ * probe does not set are deterministic. Nothing between reserve and commit can fail, so
+ * a reserved record is never discarded.
+ */
+static __always_inline void *reserve_record(void *ringbuf, __u32 rb, __u64 size)
 {
-	void *slot = bpf_ringbuf_reserve(ringbuf, size, 0);
+	void *rec = bpf_ringbuf_reserve(ringbuf, size, 0);
 
-	if (!slot) {
-		add_stat(rb * STATS_PER_RB + STAT_DROPPED, 1);
-		return;
-	}
-	__builtin_memcpy(slot, rec, size);
-	bpf_ringbuf_submit(slot, RB_SUBMIT_FLAGS);
-	add_stat(rb * STATS_PER_RB + STAT_HANDLED, 1);
+	if (!rec)
+		count(rb, STAT_DROPPED);
+	return rec;
 }
 
-#define submit(ringbuf, rb, rec) submit_record(ringbuf, rb, rec, sizeof(*(rec)))
+/* Hand a reserved record to userspace and count it as handled */
+static __always_inline void commit(void *rec, __u32 rb)
+{
+	bpf_ringbuf_submit(rec, RB_SUBMIT_FLAGS);
+	count(rb, STAT_HANDLED);
+}
+
+/*
+ * rec = reserve(ringbuf, rb, rec): reserves and zeroes sizeof(*rec) bytes, NULL if the
+ * ring buffer is full. Zeroing through the typed pointer lets clang use 8 byte stores
+ * (every record starts with a u64), a void pointer would make it store byte by byte.
+ */
+#define reserve(ringbuf, rb, rec)                                                          \
+	({                                                                                 \
+		typeof(rec) __rec = reserve_record(ringbuf, rb, sizeof(*(rec)));           \
+		if (__rec)                                                                 \
+			__builtin_memset(__rec, 0, sizeof(*__rec));                        \
+		__rec;                                                                     \
+	})
 
 #endif /* __TCBEE_COUNTERS_H */

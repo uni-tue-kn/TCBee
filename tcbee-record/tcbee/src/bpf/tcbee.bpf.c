@@ -34,99 +34,126 @@ static __always_inline void tuple_set_v4(__u8 *dst, const __u8 *src)
 SEC("tracepoint/tcp/tcp_probe")
 int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 {
-	struct tcp_probe_entry rec = {};
+	/* sockaddr_in or sockaddr_in6 */
+	__u8 saddr[28] __attribute__((aligned(8))), daddr[28] __attribute__((aligned(8)));
+	struct tcp_probe_entry *rec;
+	__u16 sport, dport, family;
 	struct ip_tuple t;
 
-	/* saddr and daddr hold a sockaddr_in or sockaddr_in6 */
-	if (BPF_CORE_READ_INTO(&rec.saddr, ctx, saddr) ||
-	    BPF_CORE_READ_INTO(&rec.daddr, ctx, daddr)) {
+	if (BPF_CORE_READ_INTO(&saddr, ctx, saddr) || BPF_CORE_READ_INTO(&daddr, ctx, daddr)) {
 		/* The filter cannot be evaluated without the event, count it as an error */
 		count_attempt(RB_TCP_PROBE);
 		count_error(RB_TCP_PROBE);
 		return 0;
 	}
-	rec.sport = ctx->sport;
-	rec.dport = ctx->dport;
-	rec.family = ctx->family;
+	sport = ctx->sport;
+	dport = ctx->dport;
+	family = ctx->family;
 
-	if (!filter_ports_match(rec.sport, rec.dport))
+	if (!filter_ports_match(sport, dport))
 		return 0;
 
-	__builtin_memset(&t, 0, sizeof(t));
-	if (rec.family == AF_INET6) {
-		/* sin6_addr is at offset 8 */
-		__builtin_memcpy(t.src_ip, &rec.saddr[8], 16);
-		__builtin_memcpy(t.dst_ip, &rec.daddr[8], 16);
-	} else {
-		/* sin_addr is at offset 4 */
-		tuple_set_v4(t.src_ip, &rec.saddr[4]);
-		tuple_set_v4(t.dst_ip, &rec.daddr[4]);
+	if (filter_needs_tuple() || FLOW_TRACKING) {
+		__builtin_memset(&t, 0, sizeof(t));
+		if (family == AF_INET6) {
+			/* sin6_addr is at offset 8 */
+			__builtin_memcpy(t.src_ip, &saddr[8], 16);
+			__builtin_memcpy(t.dst_ip, &daddr[8], 16);
+		} else {
+			/* sin_addr is at offset 4 */
+			tuple_set_v4(t.src_ip, &saddr[4]);
+			tuple_set_v4(t.dst_ip, &daddr[4]);
+		}
+		t.sport = sport;
+		t.dport = dport;
+		t.protocol = IPPROTO_TCP;
+		if (filter_needs_tuple() && !filter_tuple_match(&t))
+			return 0;
 	}
-	t.sport = rec.sport;
-	t.dport = rec.dport;
-	t.protocol = IPPROTO_TCP;
-	if (filter_needs_tuple() && !filter_tuple_match(&t))
-		return 0;
 
 	count_attempt(RB_TCP_PROBE);
-	rec.time = bpf_ktime_get_ns();
-	rec.mark = ctx->mark;
-	rec.data_len = ctx->data_len;
-	rec.snd_nxt = ctx->snd_nxt;
-	rec.snd_una = ctx->snd_una;
-	rec.snd_cwnd = ctx->snd_cwnd;
-	rec.ssthresh = ctx->ssthresh;
-	rec.snd_wnd = ctx->snd_wnd;
-	rec.srtt = ctx->srtt;
-	rec.rcv_wnd = ctx->rcv_wnd;
-	rec.sock_cookie = ctx->sock_cookie;
-	submit(&TCP_PROBE_QUEUE, RB_TCP_PROBE, &rec);
+	rec = reserve(&TCP_PROBE_QUEUE, RB_TCP_PROBE, rec);
+	if (rec) {
+		rec->time = bpf_ktime_get_ns();
+		__builtin_memcpy(rec->saddr, saddr, sizeof(saddr));
+		__builtin_memcpy(rec->daddr, daddr, sizeof(daddr));
+		rec->sport = sport;
+		rec->dport = dport;
+		rec->family = family;
+		rec->mark = ctx->mark;
+		rec->data_len = ctx->data_len;
+		rec->snd_nxt = ctx->snd_nxt;
+		rec->snd_una = ctx->snd_una;
+		rec->snd_cwnd = ctx->snd_cwnd;
+		rec->ssthresh = ctx->ssthresh;
+		rec->snd_wnd = ctx->snd_wnd;
+		rec->srtt = ctx->srtt;
+		rec->rcv_wnd = ctx->rcv_wnd;
+		rec->sock_cookie = ctx->sock_cookie;
+		commit(rec, RB_TCP_PROBE);
+	}
 
-	flow_track(&t);
+	if (FLOW_TRACKING)
+		flow_track(&t);
 	return 0;
 }
 
 SEC("tracepoint/tcp/tcp_retransmit_synack")
 int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 {
-	struct tcp_retransmit_synack_entry rec = {};
+	__u8 saddr[4] __attribute__((aligned(4))), daddr[4] __attribute__((aligned(4)));
+	__u8 saddr_v6[16] __attribute__((aligned(8))), daddr_v6[16] __attribute__((aligned(8)));
+	struct tcp_retransmit_synack_entry *rec;
+	__u16 sport, dport, family;
 	struct ip_tuple t;
 
-	if (BPF_CORE_READ_INTO(&rec.saddr, ctx, saddr) ||
-	    BPF_CORE_READ_INTO(&rec.daddr, ctx, daddr) ||
-	    BPF_CORE_READ_INTO(&rec.saddr_v6, ctx, saddr_v6) ||
-	    BPF_CORE_READ_INTO(&rec.daddr_v6, ctx, daddr_v6)) {
+	if (BPF_CORE_READ_INTO(&saddr, ctx, saddr) || BPF_CORE_READ_INTO(&daddr, ctx, daddr) ||
+	    BPF_CORE_READ_INTO(&saddr_v6, ctx, saddr_v6) ||
+	    BPF_CORE_READ_INTO(&daddr_v6, ctx, daddr_v6)) {
 		/* The filter cannot be evaluated without the event, count it as an error */
 		count_attempt(RB_RETRANSMIT_SYNACK);
 		count_error(RB_RETRANSMIT_SYNACK);
 		return 0;
 	}
-	rec.sport = ctx->sport;
-	rec.dport = ctx->dport;
-	rec.family = ctx->family;
+	sport = ctx->sport;
+	dport = ctx->dport;
+	family = ctx->family;
 
-	if (!filter_ports_match(rec.sport, rec.dport))
+	if (!filter_ports_match(sport, dport))
 		return 0;
 
-	__builtin_memset(&t, 0, sizeof(t));
-	if (rec.family == AF_INET6) {
-		__builtin_memcpy(t.src_ip, rec.saddr_v6, 16);
-		__builtin_memcpy(t.dst_ip, rec.daddr_v6, 16);
-	} else {
-		tuple_set_v4(t.src_ip, rec.saddr);
-		tuple_set_v4(t.dst_ip, rec.daddr);
+	if (filter_needs_tuple() || FLOW_TRACKING) {
+		__builtin_memset(&t, 0, sizeof(t));
+		if (family == AF_INET6) {
+			__builtin_memcpy(t.src_ip, saddr_v6, 16);
+			__builtin_memcpy(t.dst_ip, daddr_v6, 16);
+		} else {
+			tuple_set_v4(t.src_ip, saddr);
+			tuple_set_v4(t.dst_ip, daddr);
+		}
+		t.sport = sport;
+		t.dport = dport;
+		t.protocol = IPPROTO_TCP;
+		if (filter_needs_tuple() && !filter_tuple_match(&t))
+			return 0;
 	}
-	t.sport = rec.sport;
-	t.dport = rec.dport;
-	t.protocol = IPPROTO_TCP;
-	if (filter_needs_tuple() && !filter_tuple_match(&t))
-		return 0;
 
 	count_attempt(RB_RETRANSMIT_SYNACK);
-	rec.time = bpf_ktime_get_ns();
-	submit(&TCP_RETRANSMIT_SYNACK_QUEUE, RB_RETRANSMIT_SYNACK, &rec);
+	rec = reserve(&TCP_RETRANSMIT_SYNACK_QUEUE, RB_RETRANSMIT_SYNACK, rec);
+	if (rec) {
+		rec->time = bpf_ktime_get_ns();
+		rec->sport = sport;
+		rec->dport = dport;
+		rec->family = family;
+		__builtin_memcpy(rec->saddr, saddr, sizeof(saddr));
+		__builtin_memcpy(rec->daddr, daddr, sizeof(daddr));
+		__builtin_memcpy(rec->saddr_v6, saddr_v6, sizeof(saddr_v6));
+		__builtin_memcpy(rec->daddr_v6, daddr_v6, sizeof(daddr_v6));
+		commit(rec, RB_RETRANSMIT_SYNACK);
+	}
 
-	flow_track(&t);
+	if (FLOW_TRACKING)
+		flow_track(&t);
 	return 0;
 }
 
@@ -134,8 +161,8 @@ int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 SEC("tracepoint/tcp/tcp_bad_csum")
 int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 {
-	struct tcp_bad_csum_entry rec = {};
-	__u8 saddr[28], daddr[28];
+	__u8 saddr[28] __attribute__((aligned(8))), daddr[28] __attribute__((aligned(8)));
+	struct tcp_bad_csum_entry *rec;
 	__u16 sport, dport, family;
 	struct ip_tuple t;
 	bool is_ipv4;
@@ -172,15 +199,17 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 			return 0;
 	}
 
-	/* The record only holds IPv4 addresses, leave them zero for IPv6 */
-	if (is_ipv4) {
-		__builtin_memcpy(rec.saddr, &saddr[4], 4);
-		__builtin_memcpy(rec.daddr, &daddr[4], 4);
-	}
-
 	count_attempt(RB_BAD_CSUM);
-	rec.time = bpf_ktime_get_ns();
-	submit(&TCP_BAD_CSUM_QUEUE, RB_BAD_CSUM, &rec);
+	rec = reserve(&TCP_BAD_CSUM_QUEUE, RB_BAD_CSUM, rec);
+	if (rec) {
+		rec->time = bpf_ktime_get_ns();
+		/* The record only holds IPv4 addresses, leave them zero for IPv6 */
+		if (is_ipv4) {
+			__builtin_memcpy(rec->saddr, &saddr[4], 4);
+			__builtin_memcpy(rec->daddr, &daddr[4], 4);
+		}
+		commit(rec, RB_BAD_CSUM);
+	}
 	return 0;
 }
 
@@ -239,6 +268,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 					__u32 rb6_id)
 {
 	struct tc_tcp_hdr tcp;
+	__u16 sport, dport;
 	struct ip_tuple t;
 	__be16 proto;
 
@@ -249,7 +279,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 	t.protocol = IPPROTO_TCP;
 
 	if (proto == bpf_htons(ETH_P_IP)) {
-		struct tcp4_packet_trace rec = {};
+		struct tcp4_packet_trace *rec;
 		struct tc_ipv4_hdr ip;
 		__u32 ip_hlen;
 
@@ -264,29 +294,34 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN + ip_hlen, &tcp, sizeof(tcp)))
 			return TC_ACT_UNSPEC;
 
-		rec.saddr = bpf_ntohl(ip.saddr);
-		rec.daddr = bpf_ntohl(ip.daddr);
-		rec.sport = bpf_ntohs(tcp.source);
-		rec.dport = bpf_ntohs(tcp.dest);
+		sport = bpf_ntohs(tcp.source);
+		dport = bpf_ntohs(tcp.dest);
 		__builtin_memcpy(t.src_ip, &ip.saddr, 4);
 		__builtin_memcpy(t.dst_ip, &ip.daddr, 4);
-		t.sport = rec.sport;
-		t.dport = rec.dport;
-		if (!filter_ports_match(rec.sport, rec.dport) ||
+		t.sport = sport;
+		t.dport = dport;
+		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
 
 		count_attempt(rb4_id);
-		rec.time = bpf_ktime_get_ns();
-		rec.seq = bpf_ntohl(tcp.seq);
-		rec.ack = bpf_ntohl(tcp.ack_seq);
-		rec.window = bpf_ntohs(tcp.window);
-		rec.flags = tcp.flags;
-		submit(rb4, rb4_id, &rec);
+		rec = reserve(rb4, rb4_id, rec);
+		if (rec) {
+			rec->time = bpf_ktime_get_ns();
+			rec->saddr = bpf_ntohl(ip.saddr);
+			rec->daddr = bpf_ntohl(ip.daddr);
+			rec->sport = sport;
+			rec->dport = dport;
+			rec->seq = bpf_ntohl(tcp.seq);
+			rec->ack = bpf_ntohl(tcp.ack_seq);
+			rec->window = bpf_ntohs(tcp.window);
+			rec->flags = tcp.flags;
+			commit(rec, rb4_id);
+		}
 
 		flow_track(&t);
 	} else if (proto == bpf_htons(ETH_P_IPV6)) {
-		struct tcp6_packet_trace rec = {};
+		struct tcp6_packet_trace *rec;
 		struct tc_ipv6_hdr ip6;
 
 		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN, &ip6, sizeof(ip6)))
@@ -296,25 +331,30 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN + sizeof(ip6), &tcp, sizeof(tcp)))
 			return TC_ACT_UNSPEC;
 
-		rec.sport = bpf_ntohs(tcp.source);
-		rec.dport = bpf_ntohs(tcp.dest);
+		sport = bpf_ntohs(tcp.source);
+		dport = bpf_ntohs(tcp.dest);
 		__builtin_memcpy(t.src_ip, ip6.saddr, 16);
 		__builtin_memcpy(t.dst_ip, ip6.daddr, 16);
-		t.sport = rec.sport;
-		t.dport = rec.dport;
-		if (!filter_ports_match(rec.sport, rec.dport) ||
+		t.sport = sport;
+		t.dport = dport;
+		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
 
 		count_attempt(rb6_id);
-		rec.time = bpf_ktime_get_ns();
-		__builtin_memcpy(rec.saddr_v6, ip6.saddr, 16);
-		__builtin_memcpy(rec.daddr_v6, ip6.daddr, 16);
-		rec.seq = bpf_ntohl(tcp.seq);
-		rec.ack = bpf_ntohl(tcp.ack_seq);
-		rec.window = bpf_ntohs(tcp.window);
-		rec.flags = tcp.flags;
-		submit(rb6, rb6_id, &rec);
+		rec = reserve(rb6, rb6_id, rec);
+		if (rec) {
+			rec->time = bpf_ktime_get_ns();
+			__builtin_memcpy(rec->saddr_v6, ip6.saddr, 16);
+			__builtin_memcpy(rec->daddr_v6, ip6.daddr, 16);
+			rec->sport = sport;
+			rec->dport = dport;
+			rec->seq = bpf_ntohl(tcp.seq);
+			rec->ack = bpf_ntohl(tcp.ack_seq);
+			rec->window = bpf_ntohs(tcp.window);
+			rec->flags = tcp.flags;
+			commit(rec, rb6_id);
+		}
 
 		flow_track(&t);
 	}
@@ -352,7 +392,7 @@ int tc_egress_packet_tracer(struct __sk_buff *skb)
 
 static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 {
-	struct cwnd_trace_entry rec = {};
+	struct cwnd_trace_entry *rec;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
 
@@ -364,10 +404,10 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(rb);
-	} else {
-		fill_header(&rec, sk, sport, dport);
-		rec.snd_cwnd = tp->snd_cwnd;
-		submit(ringbuf, rb, &rec);
+	} else if ((rec = reserve(ringbuf, rb, rec))) {
+		fill_header(rec, sk, sport, dport);
+		rec->snd_cwnd = tp->snd_cwnd;
+		commit(rec, rb);
 	}
 
 	flow_track_sk(sk, sport, dport);
@@ -377,7 +417,7 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbuf,
 				      __u32 rb, __u32 bytes_slot)
 {
-	struct sock_trace_entry rec = {};
+	struct sock_trace_entry *rec;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
 
@@ -391,38 +431,38 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(rb);
-	} else {
-		fill_header(&rec, sk, sport, dport);
+	} else if ((rec = reserve(ringbuf, rb, rec))) {
+		fill_header(rec, sk, sport, dport);
 		/* struct sock */
-		rec.pacing_rate = sk->sk_pacing_rate;
-		rec.max_pacing_rate = sk->sk_max_pacing_rate;
+		rec->pacing_rate = sk->sk_pacing_rate;
+		rec->max_pacing_rate = sk->sk_max_pacing_rate;
 		/* struct inet_connection_sock */
-		rec.backoff = tp->inet_conn.icsk_backoff;
-		rec.rto = tp->inet_conn.icsk_rto;
-		rec.ato = 0;
-		rec.rcv_mss = tp->inet_conn.icsk_ack.rcv_mss;
+		rec->backoff = tp->inet_conn.icsk_backoff;
+		rec->rto = tp->inet_conn.icsk_rto;
+		rec->ato = 0;
+		rec->rcv_mss = tp->inet_conn.icsk_ack.rcv_mss;
 		/* struct tcp_sock */
-		rec.snd_cwnd = tp->snd_cwnd;
-		rec.bytes_acked = tp->bytes_acked;
-		rec.snd_ssthresh = tp->snd_ssthresh;
-		rec.total_retrans = tp->total_retrans;
-		rec.probes = tp->keepalive_probes;
-		rec.lost = tp->lost;
-		rec.sacked_out = tp->sacked_out;
-		rec.retrans = tp->retrans_out;
-		rec.rcv_ssthresh = tp->rcv_ssthresh;
-		rec.rttvar = tp->rttvar_us;
-		rec.advmss = tp->advmss;
-		rec.reordering = tp->reordering;
-		rec.rcv_rtt = tp->rcv_rtt_est.rtt_us;
-		rec.rcv_space = tp->rcvq_space.space;
-		rec.bytes_received = tp->bytes_received;
-		rec.segs_out = tp->segs_out;
-		rec.segs_in = tp->segs_in;
+		rec->snd_cwnd = tp->snd_cwnd;
+		rec->bytes_acked = tp->bytes_acked;
+		rec->snd_ssthresh = tp->snd_ssthresh;
+		rec->total_retrans = tp->total_retrans;
+		rec->probes = tp->keepalive_probes;
+		rec->lost = tp->lost;
+		rec->sacked_out = tp->sacked_out;
+		rec->retrans = tp->retrans_out;
+		rec->rcv_ssthresh = tp->rcv_ssthresh;
+		rec->rttvar = tp->rttvar_us;
+		rec->advmss = tp->advmss;
+		rec->reordering = tp->reordering;
+		rec->rcv_rtt = tp->rcv_rtt_est.rtt_us;
+		rec->rcv_space = tp->rcvq_space.space;
+		rec->bytes_received = tp->bytes_received;
+		rec->segs_out = tp->segs_out;
+		rec->segs_in = tp->segs_in;
 		/* struct tcp_options_received, not read yet */
-		rec.snd_wscale = 0;
-		rec.rcv_wscale = 0;
-		submit(ringbuf, rb, &rec);
+		rec->snd_wscale = 0;
+		rec->rcv_wscale = 0;
+		commit(rec, rb);
 	}
 
 	flow_track_sk(sk, sport, dport);
@@ -459,7 +499,7 @@ int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
 
 static __always_inline int trace_cubic(struct sock *sk)
 {
-	struct cubic_trace_entry rec = {};
+	struct cubic_trace_entry *rec;
 	struct bictcp___tcbee *ca;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
@@ -472,24 +512,24 @@ static __always_inline int trace_cubic(struct sock *sk)
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(RB_CUBIC);
-	} else {
+	} else if ((rec = reserve(&CUBIC_EVENTS, RB_CUBIC, rec))) {
 		ca = tcp_ca(tp);
-		fill_header(&rec, sk, sport, dport);
-		rec.cnt = ca->cnt;
-		rec.last_max_cwnd = ca->last_max_cwnd;
-		rec.last_cwnd = ca->last_cwnd;
-		rec.last_time = ca->last_time;
-		rec.bic_origin_point = ca->bic_origin_point;
-		rec.bic_K = ca->bic_K;
-		rec.delay_min = ca->delay_min;
-		rec.epoch_start = ca->epoch_start;
-		rec.ack_cnt = ca->ack_cnt;
-		rec.tcp_cwnd = ca->tcp_cwnd;
-		rec.round_start = ca->round_start;
-		rec.end_seq = ca->end_seq;
-		rec.last_ack = ca->last_ack;
-		rec.curr_rtt = ca->curr_rtt;
-		submit(&CUBIC_EVENTS, RB_CUBIC, &rec);
+		fill_header(rec, sk, sport, dport);
+		rec->cnt = ca->cnt;
+		rec->last_max_cwnd = ca->last_max_cwnd;
+		rec->last_cwnd = ca->last_cwnd;
+		rec->last_time = ca->last_time;
+		rec->bic_origin_point = ca->bic_origin_point;
+		rec->bic_K = ca->bic_K;
+		rec->delay_min = ca->delay_min;
+		rec->epoch_start = ca->epoch_start;
+		rec->ack_cnt = ca->ack_cnt;
+		rec->tcp_cwnd = ca->tcp_cwnd;
+		rec->round_start = ca->round_start;
+		rec->end_seq = ca->end_seq;
+		rec->last_ack = ca->last_ack;
+		rec->curr_rtt = ca->curr_rtt;
+		commit(rec, RB_CUBIC);
 	}
 
 	flow_track_sk(sk, sport, dport);
@@ -519,7 +559,7 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
  */
 static __always_inline int trace_bbr(struct sock *sk)
 {
-	struct bbr_trace_entry rec = {};
+	struct bbr_trace_entry *rec;
 	struct bbr___tcbee *bbr;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
@@ -538,27 +578,27 @@ static __always_inline int trace_bbr(struct sock *sk)
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(RB_BBR);
-	} else {
+	} else if ((rec = reserve(&BBR_EVENTS, RB_BBR, rec))) {
 		bbr = tcp_ca(tp);
-		fill_header(&rec, sk, sport, dport);
-		rec.min_rtt_us = bbr->min_rtt_us;
-		rec.min_rtt_stamp = bbr->min_rtt_stamp;
-		rec.probe_rtt_done_stamp = bbr->probe_rtt_done_stamp;
-		rec.rtt_cnt = bbr->rtt_cnt;
-		rec.next_rtt_delivered = bbr->next_rtt_delivered;
-		rec.cycle_mstamp = bbr->cycle_mstamp;
+		fill_header(rec, sk, sport, dport);
+		rec->min_rtt_us = bbr->min_rtt_us;
+		rec->min_rtt_stamp = bbr->min_rtt_stamp;
+		rec->probe_rtt_done_stamp = bbr->probe_rtt_done_stamp;
+		rec->rtt_cnt = bbr->rtt_cnt;
+		rec->next_rtt_delivered = bbr->next_rtt_delivered;
+		rec->cycle_mstamp = bbr->cycle_mstamp;
 		/* Long-term bandwidth sampling only exists in BBRv1, 0 for BBRv3 and others */
 		if (bpf_core_field_exists(bbr->lt_bw))
-			rec.lt_bw = bbr->lt_bw;
+			rec->lt_bw = bbr->lt_bw;
 		if (bpf_core_field_exists(bbr->lt_last_delivered))
-			rec.lt_last_delivered = bbr->lt_last_delivered;
+			rec->lt_last_delivered = bbr->lt_last_delivered;
 		if (bpf_core_field_exists(bbr->lt_last_stamp))
-			rec.lt_last_stamp = bbr->lt_last_stamp;
+			rec->lt_last_stamp = bbr->lt_last_stamp;
 		if (bpf_core_field_exists(bbr->lt_last_lost))
-			rec.lt_last_lost = bbr->lt_last_lost;
-		rec.prior_cwnd = bbr->prior_cwnd;
-		rec.full_bw = bbr->full_bw;
-		submit(&BBR_EVENTS, RB_BBR, &rec);
+			rec->lt_last_lost = bbr->lt_last_lost;
+		rec->prior_cwnd = bbr->prior_cwnd;
+		rec->full_bw = bbr->full_bw;
+		commit(rec, RB_BBR);
 	}
 
 	flow_track_sk(sk, sport, dport);
