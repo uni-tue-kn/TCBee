@@ -22,10 +22,7 @@ use log::info;
 use std::time::Duration;
 use tokio::{
     runtime::Builder,
-    signal::{
-        ctrl_c,
-        unix::{signal, SignalKind},
-    },
+    signal::unix::{signal, SignalKind},
     time::sleep,
 };
 use tokio_util::sync::CancellationToken;
@@ -227,11 +224,8 @@ fn main() -> anyhow::Result<()> {
         other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
     };
 
-    if !(duration >= 0.0 && duration.is_finite()) {
-        return Err(anyhow!(
-            "--duration must be a non-negative number of seconds"
-        ));
-    }
+    let duration = Duration::try_from_secs_f64(duration)
+        .map_err(|_| anyhow!("--duration must be a non-negative number of seconds"))?;
 
     if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd && !trace_algorithms {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
@@ -280,6 +274,11 @@ fn main() -> anyhow::Result<()> {
         .build()?;
 
     runtime.block_on(async {
+        // Install the handlers before starting so that a signal during startup still
+        // stops the recorder cleanly instead of killing it
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+
         let starting_result = runner.run().await;
 
         if let Err(err) = starting_result {
@@ -289,28 +288,20 @@ fn main() -> anyhow::Result<()> {
             Err(err)
         } else {
             // Runner was created and correctly initialized
-            // Stop on ctrl+c (quiet mode only, the TUI handles keys itself), SIGTERM,
+            // Stop on SIGINT (ctrl+c in quiet mode, the TUI handles keys itself), SIGTERM,
             // after --duration or when the TUI cancels the token
-            let mut sigterm = signal(SignalKind::terminate())?;
             let timeout = async {
-                if duration > 0.0 {
-                    sleep(Duration::from_secs_f64(duration)).await
-                } else {
+                if duration.is_zero() {
                     std::future::pending().await
-                }
-            };
-            let interrupt = async {
-                if quiet {
-                    let _ = ctrl_c().await;
                 } else {
-                    std::future::pending().await
+                    sleep(duration).await
                 }
             };
             tokio::select! {
                 _ = token.cancelled() => {}
                 _ = sigterm.recv() => {}
+                _ = sigint.recv() => {}
                 _ = timeout => {}
-                _ = interrupt => {}
             }
             token.cancel();
 
