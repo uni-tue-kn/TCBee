@@ -1,5 +1,4 @@
 //! Schema v2 storage API. Lives next to the old `TSDBInterface` until its callers have moved.
-//! The traits and types are defined here; no engine implements them yet.
 
 use std::fs::File;
 use std::io::Read;
@@ -9,9 +8,14 @@ use crate::{DataPoint, Flow};
 
 pub mod batch;
 pub mod catalog;
+#[cfg(feature = "duckdb")]
+pub mod duckdb;
 pub mod error;
 pub mod schema;
 pub mod sql;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+pub mod time;
 #[cfg(test)]
 pub(crate) mod testutil;
 
@@ -52,17 +56,25 @@ pub struct CreateOptions {
 }
 
 /// Creates a database file. Sessions write to `<path>.partial` and rename it to `path` in
-/// `finish`; dropping a session without `finish` deletes the partial file. Currently only
-/// checks that the engine is enabled; no engine is implemented yet.
+/// `finish`; dropping a session without `finish` deletes the partial file.
 pub fn create(
     engine: Engine,
-    _path: &Path,
-    _opts: CreateOptions,
+    path: &Path,
+    opts: CreateOptions,
 ) -> Result<Box<dyn IngestSession>, StoreError> {
     if !engine.is_enabled() {
         return Err(StoreError::EngineDisabled(engine));
     }
-    todo!("no storage engine is implemented yet")
+    match engine {
+        #[cfg(feature = "sqlite")]
+        Engine::Sqlite => sqlite::create(path, opts),
+        #[cfg(not(feature = "sqlite"))]
+        Engine::Sqlite => unreachable!("checked by is_enabled"),
+        #[cfg(feature = "duckdb")]
+        Engine::DuckDb => duckdb::create(path, opts),
+        #[cfg(not(feature = "duckdb"))]
+        Engine::DuckDb => unreachable!("checked by is_enabled"),
+    }
 }
 
 pub trait IngestSession: Send + Sync {
@@ -95,14 +107,22 @@ pub fn detect_engine(path: &Path) -> Result<Engine, StoreError> {
     }
 }
 
-/// Detects the engine and opens the file. Will also check `meta.schema_version == 2`
-/// (not implemented yet).
+/// Detects the engine, opens the file and checks `meta.schema_version == 2`.
 pub fn open(path: &Path) -> Result<Box<dyn Store>, StoreError> {
     let engine = detect_engine(path)?;
     if !engine.is_enabled() {
         return Err(StoreError::EngineDisabled(engine));
     }
-    todo!("no storage engine is implemented yet")
+    match engine {
+        #[cfg(feature = "sqlite")]
+        Engine::Sqlite => sqlite::open(path),
+        #[cfg(not(feature = "sqlite"))]
+        Engine::Sqlite => unreachable!("checked by is_enabled"),
+        #[cfg(feature = "duckdb")]
+        Engine::DuckDb => duckdb::open(path),
+        #[cfg(not(feature = "duckdb"))]
+        Engine::DuckDb => unreachable!("checked by is_enabled"),
+    }
 }
 
 /// No `Send` bound: the visualizer is single-threaded.

@@ -2,14 +2,10 @@
 use crate::duckdb::DuckDBTSDB;
 #[cfg(feature = "legacy")]
 use crate::error::TSDBError;
-#[cfg(feature = "legacy")]
-use crate::sqlite::SQLiteTSDB;
 use std::net::IpAddr;
 use std::cmp::Eq;
 use std::hash::Hash;
 
-#[cfg(feature = "legacy")]
-pub mod sqlite;
 pub mod v2;
 #[cfg(feature = "legacy")]
 pub mod duckdb;
@@ -271,7 +267,7 @@ pub fn database_factory(
     backend: DBBackend,
 ) -> Result<Box<dyn TSDBInterface + Send>, TSDBError> {
     match backend {
-        DBBackend::SQLite(path) => Ok(Box::new(SQLiteTSDB::new(path)?)),
+        DBBackend::SQLite(_) => Err(TSDBError::SqliteUnsupported),
         DBBackend::DuckDB(path) => Ok(Box::new(DuckDBTSDB::new(path)?)),
     }
 }

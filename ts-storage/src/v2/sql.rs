@@ -1,7 +1,7 @@
 //! Portable (SQLite and DuckDB) statements. Identifiers come from static schema definitions and
 //! are always quoted; values are always `?` parameters.
 
-use super::schema::{quote_ident, ColType};
+use super::schema::{quote_ident, ColType, EventTable};
 
 /// Column list of `series`, in `insert_series` parameter order.
 pub const SERIES_COLUMNS: &str = r#""id", "flow_id", "kind", "source", "dir", "name", "value_type", "tbl", "col", "n", "t_min", "t_max", "v_min", "v_max""#;
@@ -85,7 +85,32 @@ pub fn select_series_by_id() -> String {
 }
 
 pub const DELETE_SERIES: &str = r#"DELETE FROM "series" WHERE "id" = ?"#;
-pub const MAX_SERIES_ID: &str = r#"SELECT MAX("id") FROM "series""#;
+/// Id of the next series: ids start at 1 and a new one is the maximum plus one.
+pub const NEXT_SERIES_ID: &str = r#"SELECT COALESCE(MAX("id"), 0) + 1 FROM "series""#;
+
+/// Parameters: flow_id, name. Is there already a derived series of that name in the flow?
+pub const DERIVED_NAME_TAKEN: &str = r#"SELECT EXISTS (SELECT 1 FROM "series" WHERE "flow_id" = ? AND "source" = 'derived' AND "dir" = 0 AND "name" = ?)"#;
+
+/// SQLite only: does the file have a `meta` table?
+pub const SQLITE_HAS_META: &str =
+    r#"SELECT EXISTS (SELECT 1 FROM "sqlite_master" WHERE "type" = 'table' AND "name" = 'meta')"#;
+
+/// Parameters, in order: `flow_id, dir, ts, seq`, then one per table column.
+pub fn insert_events(table: &EventTable) -> String {
+    let mut cols = vec![
+        r#""flow_id""#.to_string(),
+        r#""dir""#.into(),
+        r#""ts""#.into(),
+        r#""seq""#.into(),
+    ];
+    cols.extend(table.columns.iter().map(|c| quote_ident(c.name)));
+    format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        quote_ident(&table.table_name()),
+        cols.join(", "),
+        vec!["?"; cols.len()].join(", ")
+    )
+}
 
 /// Parameters: n, t_min, t_max, v_min, v_max, id.
 pub const UPDATE_SERIES_STATS: &str = r#"UPDATE "series" SET "n" = ?, "t_min" = ?, "t_max" = ?, "v_min" = ?, "v_max" = ? WHERE "id" = ?"#;
@@ -108,6 +133,15 @@ mod tests {
         assert_eq!(
             all_points_query("ev_sock", "a\"b"),
             r#"SELECT "ts", "a""b" FROM "ev_sock" WHERE "flow_id" = ? AND "dir" = ? ORDER BY "ts", "seq""#
+        );
+    }
+
+    #[test]
+    fn insert_events_text() {
+        use crate::v2::testutil::ALPHA;
+        assert_eq!(
+            insert_events(&ALPHA),
+            r#"INSERT INTO "ev_alpha" ("flow_id", "dir", "ts", "seq", "b", "w") VALUES (?, ?, ?, ?, ?, ?)"#
         );
     }
 

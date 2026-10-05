@@ -171,6 +171,13 @@ impl EventBatch {
         &self.cols
     }
 
+    /// Splits the batch into `(flow_id, dir, ts, seq, columns)` without copying, for engines that
+    /// hand the `Vec`s to a bulk-load API.
+    #[allow(clippy::type_complexity)]
+    pub fn into_parts(self) -> (Vec<i64>, Vec<u8>, Vec<i64>, Vec<i64>, Vec<ColumnData>) {
+        (self.flow_id, self.dir, self.ts, self.seq, self.cols)
+    }
+
     /// Approximate payload size in bytes, for back-pressure decisions.
     pub fn approx_bytes(&self) -> usize {
         self.flow_id.len() * 8
@@ -184,7 +191,8 @@ impl EventBatch {
                 .sum::<usize>()
     }
 
-    /// Checks that all columns have the header's length and the types match the table.
+    /// Checks that all columns have the header's length, the types match the table and no `f64`
+    /// value is NaN (all engines reject it, so they behave the same).
     pub fn validate(&self) -> Result<(), StoreError> {
         let n = self.len();
         if self.flow_id.len() != n || self.dir.len() != n || self.seq.len() != n {
@@ -209,6 +217,12 @@ impl EventBatch {
                     self.table.source,
                     data.col_type(),
                     def.ty
+                )));
+            }
+            if matches!(data, ColumnData::F64(v) if v.iter().any(|x| x.is_nan())) {
+                return Err(StoreError::TypeMismatch(format!(
+                    "column {} of {} contains NaN (not storable: SQLite turns it into NULL)",
+                    def.name, self.table.source
                 )));
             }
             if data.len() != n {
@@ -259,6 +273,22 @@ mod tests {
     fn wrong_accessor_panics() {
         let mut b = EventBatch::new(&ZETA, 1);
         b.u32(0);
+    }
+
+    #[test]
+    fn nan_is_rejected() {
+        let mut b = EventBatch::new(&ZETA, 2);
+        push_row(&mut b, 1);
+        assert!(b.validate().is_ok());
+        b.push_header(1, Dir::Send, 2, 1);
+        b.u64(0).push(1);
+        b.i64(1).push(1);
+        b.f64(2).push(f64::NAN);
+        b.text(3).push(String::new());
+        assert!(matches!(b.validate(), Err(StoreError::TypeMismatch(m)) if m.contains("NaN")));
+        // Infinities are fine.
+        b.f64(2)[1] = f64::INFINITY;
+        assert!(b.validate().is_ok());
     }
 
     #[test]

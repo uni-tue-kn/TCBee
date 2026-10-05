@@ -7,25 +7,20 @@ license = "MIT"
 [features]
 default = ["sqlite", "duckdb", "legacy"]
 # Engines of the schema v2 API. Build with --no-default-features --features sqlite to skip DuckDB
-# (which takes very long to build). `sqlite` will gain a `rusqlite` dependency; that cannot happen
-# while the old `sqlite` crate is linked, because both link libsqlite3.
-sqlite = []
+# (which takes very long to build).
+sqlite = ["dep:rusqlite"]
 duckdb = ["dep:duckdb"]
-# The old TSDBInterface API (needs both the old `sqlite` crate and `duckdb`). Temporary.
-legacy = ["dep:sqlite", "dep:duckdb", "dep:ouroboros"]
+# The old TSDBInterface API (DuckDB only; its SQLite backend was removed). Temporary.
+legacy = ["dep:duckdb", "dep:ouroboros"]
 # Bundled C libraries, for whichever engines are enabled.
-bundled = ["duckdb?/bundled"]
+bundled = ["duckdb?/bundled", "rusqlite?/bundled"]
 
 [dependencies]
 duckdb = { version = "1.3.2", features = ["appender-arrow"], optional = true }
 ouroboros = { version = "0.18.5", optional = true }
-sqlite = { version = "0.36.1", optional = true }
+rusqlite = { version = "0.37", optional = true }
 thiserror = "1.0.60"
 
 [[test]]
 name = "duckdb"
-required-features = ["legacy"]
-
-[[test]]
-name = "sqlite"
 required-features = ["legacy"]

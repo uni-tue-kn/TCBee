@@ -3,10 +3,10 @@ use thiserror::Error;
 /// Errors of the schema v2 storage API.
 #[derive(Error, Debug)]
 pub enum StoreError {
-    /// An error reported by the SQLite engine. Boxed because the `rusqlite` dependency cannot
-    /// be added while the old `sqlite` crate is linked (both link libsqlite3).
+    /// An error reported by the SQLite engine.
+    #[cfg(feature = "sqlite")]
     #[error("SQLite error: {0}")]
-    Sqlite(Box<dyn std::error::Error + Send + Sync>),
+    Sqlite(#[from] rusqlite::Error),
     #[cfg(feature = "duckdb")]
     #[error("DuckDB error: {0}")]
     DuckDb(#[from] duckdb::Error),
@@ -19,8 +19,16 @@ pub enum StoreError {
     UnsupportedSchema { found: Option<String> },
     #[error("only derived series can be modified or deleted")]
     NotDerived,
+    /// A value does not fit the schema or the series it is written to.
     #[error("type mismatch: {0}")]
     TypeMismatch(String),
+    /// A series (or other row) that has to exist does not.
+    #[error("not found: {0}")]
+    NotFound(String),
+    /// The file holds a value no writer of this crate produces (unknown kind, dir or type code,
+    /// unparsable address).
+    #[error("corrupt database: {0}")]
+    Corrupt(String),
     #[error("database file already exists: {0}")]
     Exists(String),
     #[error("file is neither a SQLite nor a DuckDB database")]
@@ -29,4 +37,12 @@ pub enum StoreError {
     EngineDisabled(super::Engine),
     #[error("the writer thread is gone")]
     WriterGone,
+}
+
+#[cfg(feature = "sqlite")]
+impl From<rusqlite::types::FromSqlError> for StoreError {
+    /// A stored value that cannot be read as the requested type.
+    fn from(e: rusqlite::types::FromSqlError) -> StoreError {
+        StoreError::Sqlite(e.into())
+    }
 }

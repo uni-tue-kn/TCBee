@@ -26,8 +26,8 @@ pub enum TSDBError {
     ReadTSIDError,
     #[error("The queried TimeSeries does not have any values!")]
     TimeSeriesNoValue,
-    #[error("SQLite error: {0}")]
-    SqliteError(#[from] sqlite::Error),
+    #[error("The old SQLite backend was removed; use the schema v2 API or DuckDB")]
+    SqliteUnsupported,
     #[error("DuckDB error: {0}")]
     DuckDBError(#[from] duckdb::Error),
 }
