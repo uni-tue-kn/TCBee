@@ -9,7 +9,9 @@ use std::net::IpAddr;
 
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
-use eBPF::ebpf_runner_config::{ip_to_filter_addr, EbpfRunnerConfig, FilterConfig};
+use eBPF::ebpf_runner_config::{
+    ip_to_filter_addr, parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig,
+};
 use tcbee_trace::TCBeeTrace;
 
 // Error handling
@@ -74,6 +76,7 @@ fn main() -> anyhow::Result<()> {
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
     let mut duration: f64 = 0.0;
+    let mut ringbuf_size: String = String::new();
 
     {
         let mut argparser = ArgumentParser::new();
@@ -171,6 +174,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "Stop recording after this many seconds. Use 0 to record until stopped. Default is 0.",
         );
+        argparser.refer(&mut ringbuf_size).add_option(
+            &["--ringbuf-size"],
+            Store,
+            "Ring buffer size in bytes (K, M, G suffixes), rounded up to a power of two. Either one size for all buffers, per group as tcp4=256M,sock=1G, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr.",
+        );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
             StoreTrue,
@@ -191,6 +199,8 @@ fn main() -> anyhow::Result<()> {
         src_ips: parse_ip_csv(&src_ips, "source IP address")?,
         dst_ips: parse_ip_csv(&dst_ips, "destination IP address")?,
     };
+
+    let ringbuf_sizes = parse_ringbuf_sizes(&ringbuf_size)?;
 
     if !(duration >= 0.0 && duration.is_finite()) {
         return Err(anyhow!("--duration must be a non-negative number of seconds"));
@@ -227,6 +237,7 @@ fn main() -> anyhow::Result<()> {
         .cwnd(trace_cwnd)
         .metrics(metrics)
         .algorithms(trace_algorithms)
+        .ringbuf_sizes(ringbuf_sizes)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints

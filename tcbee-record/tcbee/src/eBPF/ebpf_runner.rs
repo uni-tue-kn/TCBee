@@ -13,7 +13,7 @@ use tcbee_common::{
         tcp_retransmit_synack::tcp_retransmit_synack_entry,
     },
     filter::FilterIp,
-    stats::{RB_BAD_CSUM, RB_RETRANSMIT_SYNACK, RB_TCP_PROBE},
+    stats::{RB_BAD_CSUM, RB_RETRANSMIT_SYNACK, RB_TCP_PROBE, RINGBUFS},
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -209,17 +209,25 @@ impl EbpfRunner {
         let filter_mode = self.config.filter.mode();
         let filter_rules = self.config.filter.rule_flags();
         let flow_tracking = self.config.do_tui as u8;
-        let mut ebpf = EbpfLoader::new()
+        let mut loader = EbpfLoader::new();
+        loader
             .override_global("FILTER_PORT", &self.config.filter.single_port, true)
             .override_global("FILTER_MODE", &filter_mode, true)
             .override_global("FILTER_RULE_FLAGS", &filter_rules, true)
-            .override_global("FLOW_TRACKING", &flow_tracking, true)
+            .override_global("FLOW_TRACKING", &flow_tracking, true);
+        for (name, size) in &self.config.ringbuf_sizes {
+            loader.map_max_entries(name, *size);
+        }
+        let mut ebpf = loader
             .load(aya::include_bytes_aligned!(concat!(
                 env!("OUT_DIR"),
                 "/tcbee"
             )))?;
         self.configure_filter(&mut ebpf)?;
         self.ringbuf_sizes = ringbuf_sizes(&ebpf);
+        for ((name, _), size) in RINGBUFS.iter().zip(&self.ringbuf_sizes) {
+            debug!("Ring buffer {} has {:?} bytes", name, size);
+        }
 
 
         info!("Starting eBPF probes!");
