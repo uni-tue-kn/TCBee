@@ -1,7 +1,7 @@
-use ts_storage::TimeSeries;
+use ts_storage::{SeriesInfo, ValueKind};
 
 use crate::{
-    backend::db::{format_flow, DbBackend},
+    backend::db::{flow_x_bounds, format_flow, DbBackend},
     data::{
         preprocessing::{compute_sample_interval, compute_skip_step, downsample, generate_colors},
         series_data::SeriesData,
@@ -14,8 +14,8 @@ pub struct PlotState {
     pub flow_id: Option<i64>,
     pub selected_series_ids: Vec<i64>,
     pub series: Vec<SeriesData>,
-    /// Available series metadata + point count for the currently selected flow.
-    pub available_series: Vec<(TimeSeries, i64)>,
+    /// Catalog rows (with point counts) of the currently selected flow.
+    pub available_series: Vec<SeriesInfo>,
     /// Current visible X bounds (mirrors egui_plot's view).
     pub x_min: f64,
     pub x_max: f64,
@@ -67,17 +67,11 @@ impl PlotState {
         self.data_x_max = 1.0;
 
         if let Some(flow) = db.get_flow_by_id(flow_id) {
-            self.flow_label = format_flow(&flow);
-            self.available_series = db
-                .list_series_for_flow(&flow)
-                .into_iter()
-                .map(|ts| {
-                    let count = db.get_point_count(ts.id);
-                    (ts, count)
-                })
-                .collect();
+            self.flow_label = format_flow(flow);
+            // Counts and bounds come from the catalog rows.
+            self.available_series = db.list_series_for_flow(flow_id);
         }
-        if let Some((t_min, t_max)) = db.get_flow_x_bounds(flow_id) {
+        if let Some((t_min, t_max)) = flow_x_bounds(&self.available_series) {
             self.data_x_min = t_min;
             self.data_x_max = t_max;
             self.x_min = t_min;
@@ -101,18 +95,8 @@ impl PlotState {
             let colors = generate_colors(color_idx + 1);
             let color = *colors.last().unwrap_or(&egui::Color32::WHITE);
 
-            if let Some(ts) = db.get_series_by_id(series_id) {
-                let (y_min, y_max) = db.get_series_y_bounds(&[series_id]).unwrap_or((0.0, 1.0));
-                let mut sd = SeriesData::new(
-                    ts.name.clone(),
-                    series_id,
-                    ts.ts_type.clone(),
-                    self.data_x_min,
-                    self.data_x_max,
-                    y_min,
-                    y_max,
-                    color,
-                );
+            if let Some(info) = self.available_series.iter().find(|s| s.id == series_id) {
+                let mut sd = SeriesData::from_info(info, self.data_x_min, self.data_x_max, color);
                 let x_min = self.x_min;
                 let x_max = self.x_max;
                 load_series_window(db, &mut sd, x_min, x_max, settings, None);
@@ -274,14 +258,14 @@ pub fn fetch_range(
         settings.adaptive_downsample,
         settings.pointseries_threshold,
     );
-    if sd.is_string_type() {
+    let Some(info) = &sd.info else { return };
+    if sd.val_type == ValueKind::String {
         sd.string_points =
-            db.load_range_strings_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
-    } else if sd.is_boolean_type() {
-        sd.points =
-            db.load_range_bool_events_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
+            db.load_range_strings_sampled(info, fetch_min, fetch_max, sample_interval);
+    } else if sd.val_type == ValueKind::Bool {
+        sd.points = db.load_range_bool_events_sampled(info, fetch_min, fetch_max, sample_interval);
     } else {
-        let raw = db.load_range_sampled(sd.series_id, fetch_min, fetch_max, sample_interval);
+        let raw = db.load_range_sampled(info, fetch_min, fetch_max, sample_interval);
         let step = compute_skip_step(raw.len(), settings.skip_every_nth);
         sd.points = downsample(raw, step);
     }

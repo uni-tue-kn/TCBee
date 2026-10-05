@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main"]
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   record:
     runs-on: ubuntu-latest
@@ -16,6 +19,11 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: tcbee-record
+
     - name: Install Dependencies
       run: |
         sudo apt update
@@ -23,6 +31,71 @@ jobs:
 
     - name: TCBee-Record Build
       run: cd tcbee-record && cargo build --release
+
+  # tcbee-process, tcbee-viz and ts-storage form the cargo workspace in the repository root.
+  # Every leg builds the engines it names and no others, and runs the tests of all three crates,
+  # including the ones that only exist when an engine is disabled.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            features: ""
+            download_duckdb: "1"
+            min_disabled_tests: 0
+          - name: sqlite-only
+            features: "--no-default-features --features sqlite"
+            download_duckdb: ""
+            min_disabled_tests: 3
+          - name: duckdb-only
+            features: "--no-default-features --features duckdb"
+            download_duckdb: "1"
+            min_disabled_tests: 2
+
+    env:
+      PACKAGES: -p ts_storage -p tcbee-process -p tcbee-viz
+      # Test names of the engine-disabled tests of the three crates
+      DISABLED_TESTS: engine_disabled disabled_engine_message engine_not_built_in
+      # With 1, the duckdb legs link the official libduckdb of the version the duckdb crate wants
+      # instead of compiling DuckDB (about ten minutes). The sqlite-only leg does not use DuckDB.
+      DUCKDB_DOWNLOAD_LIB: ${{ matrix.download_duckdb }}
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    # One cache per leg, so the feature sets do not overwrite each other. The action adds the
+    # toolchain version and the hash of Cargo.lock to the key.
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: test-${{ matrix.name }}
+
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y libsqlite3-dev pkg-config fontconfig libfontconfig1-dev libgl-dev libegl-dev
+
+    - name: Test
+      run: cargo test $PACKAGES ${{ matrix.features }}
+
+    - name: Check that the engine-disabled tests ran
+      if: matrix.min_disabled_tests != 0
+      run: |
+        cargo test $PACKAGES ${{ matrix.features }} -- $DISABLED_TESTS | tee disabled.txt
+        passed=$(grep -c '^test .* ok$' disabled.txt || true)
+        echo "engine-disabled tests passed: $passed"
+        test "$passed" -ge ${{ matrix.min_disabled_tests }}
+
+    - name: A SQLite-only build must not contain DuckDB
+      if: matrix.name == 'sqlite-only'
+      run: |
+        cargo tree $PACKAGES ${{ matrix.features }} -e all > tree.txt
+        if grep -i duckdb tree.txt; then echo "DuckDB is in the dependency tree"; exit 1; fi
 
   build:
     runs-on: ubuntu-latest
@@ -37,17 +110,25 @@ jobs:
     - name: Install Rust Nightly
       run: rustup toolchain install nightly --component rust-src
 
+    - name: Cache cargo (workspace)
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: release-bundled
+
+    - name: Cache cargo (tcbee-live)
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: tcbee-live
+
     - name: Install Dependencies
       run: |
         sudo apt update
         sudo apt install -y llvm clang libelf-dev libclang-dev pkg-config cmake fontconfig libfontconfig1-dev libgl-dev libegl-dev
         cargo install bpf-linker
 
-    - name: TCBee-Process Build
-      run: cd tcbee-process && cargo build --release --features ts_storage/bundled
-
-    - name: TCBee-Viz Build
-      run: cd tcbee-viz && cargo build --release --features ts_storage/bundled
+    # One cargo call: libduckdb-sys and libsqlite3-sys are compiled once for both tools
+    - name: TCBee-Process and TCBee-Viz Build (SQLite and DuckDB bundled)
+      run: cargo build --release -p tcbee-process -p tcbee-viz --features bundled
 
     - name: TCBee-Live Build
       run: cd tcbee-live && cargo build --release

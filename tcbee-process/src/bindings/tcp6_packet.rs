@@ -1,10 +1,14 @@
 use serde::Deserialize;
-use ts_storage::{DataValue, IpTuple};
+use ts_storage::IpTuple;
 
-use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer};
+use crate::{
+    event::event_schema,
+    ip::{flow_tuple, ip_addr_from_16_bytes},
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct Tcp6Packet {
     pub time: u64,
     pub saddr: [u8; 16usize],
@@ -18,69 +22,21 @@ pub struct Tcp6Packet {
     pub div: [u8; 4usize],
 }
 
-impl FromBuffer for Tcp6Packet {
-    fn from_buffer(buf: &Vec<u8>) -> Self {
-        let try_deserialize = bincode::deserialize::<'_, Tcp6Packet>(buf);
-
-        if try_deserialize.is_err() {
-            Tcp6Packet::default()
-        } else {
-            try_deserialize.unwrap()
+event_schema! {
+    Tcp6Packet => "tcp6", 59 {
+        seq => "SEQ_NUM": U32,
+        ack => "ACK_NUM": U32,
+        window => "WINDOW": U16,
+        flags => "FLAGS": U8,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            flow_tuple(
+                ip_addr_from_16_bytes(self.saddr),
+                ip_addr_from_16_bytes(self.daddr),
+                self.sport,
+                self.dport,
+            )
         }
-    }
-    const ENTRY_SIZE: usize = 59;
-}
-
-impl EventIndexer for Tcp6Packet {
-    fn get_field(&self, index: usize) -> DataValue {
-        match index {
-            0 => DataValue::Int(self.seq as i64),
-            1 => DataValue::Int(self.ack as i64),
-            2 => DataValue::Int(self.window as i64),
-            3 => DataValue::Int(self.flags as i64),
-            _ => panic!("Tried to access out of bounds index!"),
-        }
-    }
-    fn get_default_field(&self, index: usize) -> DataValue {
-        match index {
-            0 => DataValue::Int(0),
-            1 => DataValue::Int(0),
-            2 => DataValue::Int(0),
-            3 => DataValue::Int(0),
-            _ => panic!("Tried to access out of bounds index!"), // TODO: better error handling
-        }
-    }
-    fn get_field_name(&self, index: usize) -> &str {
-        match index {
-            0 => "SEQ_NUM",
-            1 => "ACK_NUM",
-            2 => "WINDOW",
-            3 => "FLAGS",
-            _ => panic!("Tried to access out of bounds index!"), // TODO: better error handling
-        }
-    }
-    fn get_ip_tuple(&self) -> IpTuple {
-        let src = ip_addr_from_16_bytes(self.saddr);
-        let dst = ip_addr_from_16_bytes(self.daddr);
-
-        IpTuple {
-            src,
-            dst,
-            sport: self.sport as i64,
-            dport: self.dport as i64,
-            l4proto: 6,
-        }
-    }
-    fn get_max_index(&self) -> usize {
-        3
-    }
-    fn get_timestamp(&self) -> f64 {
-        self.time as f64
-    }
-    fn check_divider(&self) -> bool {
-        self.div == 0xFFFFFFFFu32.to_be_bytes()
-    }
-    fn get_struct_length(&self) -> usize {
-        64
     }
 }

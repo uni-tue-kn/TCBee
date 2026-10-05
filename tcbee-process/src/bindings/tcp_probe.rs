@@ -1,15 +1,16 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use serde::Deserialize;
-use ts_storage::{DataValue, IpTuple};
+use ts_storage::IpTuple;
 
 use crate::{
-    bindings::event_indexer::EventIndexer, flow_tracker::AF_INET, ip::ip_addr_from_16_bytes,
-    reader::FromBuffer, shorten_to_ipv4, shorten_to_ipv6,
+    event::event_schema,
+    ip::{flow_tuple, ip_addr_from_16_bytes, shorten_to_ipv4, shorten_to_ipv6, AF_INET},
 };
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct TcpProbe {
     pub time: u64,
     pub saddr: [u8; 28usize],
@@ -30,95 +31,33 @@ pub struct TcpProbe {
     pub div: [u8; 4usize],
 }
 
-impl FromBuffer for TcpProbe {
-    fn from_buffer(buf: &Vec<u8>) -> Self {
-        let try_deserialize = bincode::deserialize::<'_, TcpProbe>(buf);
-
-        if try_deserialize.is_err() {
-            TcpProbe::default()
-        } else {
-            try_deserialize.unwrap()
+event_schema! {
+    TcpProbe => "tcp_probe", 116 {
+        mark => "MARK": U32,
+        data_len => "DATA_LEN": U16,
+        snd_nxt => "SND_NXT": U32,
+        snd_una => "SND_UNA": U32,
+        snd_cwnd => "SND_CWND": U32,
+        ssthresh => "SSTRESH": U32,
+        snd_wnd => "SND_WND": U32,
+        srtt => "SRTT": U32,
+        rcv_wnd => "RCV_WND": U32,
+        sock_cookie => "SOCK_COOKIE": U64,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let (src, dst) = if self.family == AF_INET {
+                (
+                    IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.saddr))),
+                    IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.daddr))),
+                )
+            } else {
+                (
+                    ip_addr_from_16_bytes(shorten_to_ipv6(self.saddr)),
+                    ip_addr_from_16_bytes(shorten_to_ipv6(self.daddr)),
+                )
+            };
+            flow_tuple(src, dst, self.sport, self.dport)
         }
-    }
-    const ENTRY_SIZE: usize = 116;
-}
-
-impl EventIndexer for TcpProbe {
-    fn get_field(&self, index: usize) -> DataValue {
-        match index {
-            0 => DataValue::Int(self.mark as i64),
-            1 => DataValue::Int(self.data_len as i64),
-            2 => DataValue::Int(self.snd_nxt as i64),
-            3 => DataValue::Int(self.snd_una as i64),
-            4 => DataValue::Int(self.snd_cwnd as i64),
-            5 => DataValue::Int(self.ssthresh as i64),
-            6 => DataValue::Int(self.snd_wnd as i64),
-            7 => DataValue::Int(self.srtt as i64),
-            8 => DataValue::Int(self.rcv_wnd as i64),
-            9 => DataValue::Int(self.sock_cookie as i64),
-            _ => panic!("Tried to access out of bounds index!"), // TODO: better error handling
-        }
-    }
-    fn get_default_field(&self, index: usize) -> DataValue {
-        match index {
-            0 => DataValue::Int(0),
-            1 => DataValue::Int(0),
-            2 => DataValue::Int(0),
-            3 => DataValue::Int(0),
-            4 => DataValue::Int(0),
-            5 => DataValue::Int(0),
-            6 => DataValue::Int(0),
-            7 => DataValue::Int(0),
-            8 => DataValue::Int(0),
-            9 => DataValue::Int(0),
-            _ => panic!("Tried to access out of bounds index!"), // TODO: better error handling
-        }
-    }
-    fn get_field_name(&self, index: usize) -> &str {
-        match index {
-            0 => "MARK",
-            1 => "DATA_LEN",
-            2 => "SND_NXT",
-            3 => "SND_UNA",
-            4 => "SND_CWND",
-            5 => "SSTRESH",
-            6 => "SND_WND",
-            7 => "SRTT",
-            8 => "RCV_WND",
-            9 => "SOCK_COOKIE",
-            _ => panic!("Tried to access out of bounds index!"), // TODO: better error handling
-        }
-    }
-    fn get_ip_tuple(&self) -> IpTuple {
-        let src: IpAddr;
-        let dst: IpAddr;
-
-        if self.family == AF_INET {
-            //IPv4
-            src = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.saddr)));
-            dst = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.daddr)));
-        } else {
-            src = ip_addr_from_16_bytes(shorten_to_ipv6(self.saddr));
-            dst = ip_addr_from_16_bytes(shorten_to_ipv6(self.daddr));
-        }
-        IpTuple {
-            src: src,
-            dst: dst,
-            sport: self.sport as i64,
-            dport: self.dport as i64,
-            l4proto: 6,
-        }
-    }
-    fn get_max_index(&self) -> usize {
-        9
-    }
-    fn get_timestamp(&self) -> f64 {
-        self.time as f64
-    }
-    fn check_divider(&self) -> bool {
-        self.div == 0xFFFFFFFFu32.to_be_bytes()
-    }
-    fn get_struct_length(&self) -> usize {
-        116
     }
 }

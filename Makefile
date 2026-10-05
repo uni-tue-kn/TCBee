@@ -1,9 +1,14 @@
 # Directory to output binaries to
 INSTALL_DIR := install
-# Available tcbee parts for clean all
-TCBEE_PARTS := tcbee-record/ tcbee-process/ tcbee-viz/ tcbee-live/
+# Extra cargo flags for tcbee-process and tcbee-viz, for example
+#   make process viz CARGO_FLAGS="--features bundled"
+#   make process viz CARGO_FLAGS="--no-default-features --features sqlite"
+# Use the same flags for both, so the dependencies (DuckDB!) are built only once.
+CARGO_FLAGS ?=
+# Available tcbee parts for clean all. tcbee-process and tcbee-viz share the workspace in ./
+TCBEE_PARTS := . tcbee-record/ tcbee-live/
 # Binaries to copy for install
-BINARIES := tcbee-record/target/release/tcbee-record tcbee-process/target/release/tcbee-process tcbee-viz/target/release/tcbee-viz tcbee-live/target/release/tcbee-live
+BINARIES := tcbee-record/target/release/tcbee-record target/release/tcbee-process target/release/tcbee-viz tcbee-live/target/release/tcbee-live
 
 # Default target: build all projects and install them
 .PHONY: all
@@ -18,13 +23,13 @@ record:
 .PHONY: process
 process:
 	@echo "Building tcbee-process ..."
-	cd tcbee-process && cargo build --release && cd ..
+	cargo build --release -p tcbee-process $(CARGO_FLAGS)
 	$(MAKE) install
 
 .PHONY: viz
 viz:
 	@echo "Building tcbee-viz ..."
-	cd tcbee-viz && cargo build --release && cd ..
+	cargo build --release -p tcbee-viz $(CARGO_FLAGS)
 	$(MAKE) install
 
 .PHONY: live

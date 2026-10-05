@@ -1,0 +1,26 @@
+# Workspace of the host-side tools: one target/ and one Cargo.lock, so shared dependencies
+# (DuckDB, SQLite, egui) are compiled once. tcbee-record and tcbee-live are separate workspaces.
+[workspace]
+resolver = "2"
+members = ["ts-storage", "tcbee-process", "tcbee-viz", "duckdb-cache"]
+exclude = ["tcbee-record", "tcbee-live"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+ts_storage = { path = "ts-storage", default-features = false }
+tcbee-trace = { path = "tcbee-record/tcbee-trace" }
+duckdb-cache = { path = "duckdb-cache" }
+tempfile = "3"
+anyhow = "1"
+log = "0.4.22"
+env_logger = "0.11.6"
+
+# Build scripts and proc macros get the same debuginfo as normal code. Cargo builds a crate such as
+# serde once for both uses or twice, depending on which packages are selected with -p, and with
+# different profiles the build hash of libduckdb-sys (and so its C++ compile with `bundled`) would
+# depend on that selection. The release profile needs no such setting.
+[profile.dev.build-override]
+debug = true

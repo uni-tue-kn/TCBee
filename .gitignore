@@ -1,1 +1,8 @@
 install/
+/target/
+
+# working notes, kept local
+/PROCESS-REWRITE.md
+/PROCESS-INFLUXDB.md
+/RECORD-REWRITE.md
+/EVALUATION.md

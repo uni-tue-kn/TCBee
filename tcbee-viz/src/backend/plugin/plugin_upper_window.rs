@@ -1,4 +1,4 @@
-use ts_storage::DataValue;
+use ts_storage::{DataValue, ValueKind};
 
 use crate::data::series_data::SeriesData;
 
@@ -34,12 +34,12 @@ impl Plugin for UpperWindowPlugin {
         let snd_una = input.first().ok_or("Missing SND_UNA series")?;
         let snd_wnd = input.get(1).ok_or("Missing SND_WND series")?;
 
-        if !snd_una.val_type.type_equal(&snd_wnd.val_type) {
+        if snd_una.val_type != snd_wnd.val_type {
             return Err("SND_UNA and SND_WND have mismatched types".to_string());
         }
 
-        let ts_type = snd_una.val_type.type_to_int();
-        if ts_type > 1 {
+        let kind = snd_una.val_type;
+        if !matches!(kind, ValueKind::Int | ValueKind::Float) {
             return Err("SND_UNA/SND_WND must be Int or Float".to_string());
         }
 
@@ -48,8 +48,8 @@ impl Plugin for UpperWindowPlugin {
         let mut y_max = f64::MIN;
 
         for ((t_una, v_una), (_, v_wnd)) in snd_una.raw_data.iter().zip(snd_wnd.raw_data.iter()) {
-            let sum = match ts_type {
-                0 => {
+            let sum = match kind {
+                ValueKind::Int => {
                     let DataValue::Int(a) = v_una else { continue };
                     let DataValue::Int(b) = v_wnd else { continue };
                     let s = a + b;
@@ -83,7 +83,7 @@ impl Plugin for UpperWindowPlugin {
             })
             .collect();
 
-        let val_type = snd_una.val_type.clone();
+        let val_type = snd_una.val_type;
         let mut out = SeriesData::new(
             "UPPER_WND".to_string(),
             -1,

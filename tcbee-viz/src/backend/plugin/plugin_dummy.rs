@@ -1,5 +1,5 @@
 use rand::{distr::Uniform, prelude::Distribution, rng};
-use ts_storage::DataValue;
+use ts_storage::{DataValue, ValueKind};
 
 use crate::data::series_data::SeriesData;
 
@@ -57,7 +57,7 @@ impl Plugin for DummyPlugin {
         let mut out = SeriesData::new(
             "tst_rndm".to_string(),
             -1,
-            DataValue::Float(0.0),
+            ValueKind::Float,
             first.global_t_min,
             first.global_t_max,
             30.0,

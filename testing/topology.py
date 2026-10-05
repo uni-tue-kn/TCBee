@@ -41,8 +41,9 @@ PORT2 = 5002         # used only for the second stream in --double mode
 
 _LIVE_BASE    = Path(__file__).parent.parent / "tcbee-live"   / "target"
 _RECORD_BASE  = Path(__file__).parent.parent / "tcbee-record" / "target"
-_PROCESS_BASE = Path(__file__).parent.parent / "tcbee-process" / "target"
-_VIZ_BASE     = Path(__file__).parent.parent / "tcbee-viz" / "target"
+# tcbee-process and tcbee-viz are members of the cargo workspace in the repository root
+_PROCESS_BASE = Path(__file__).parent.parent / "target"
+_VIZ_BASE     = Path(__file__).parent.parent / "target"
 
 LIVE_BINARY = (
     _LIVE_BASE / "release" / "tcbee-live"
@@ -89,9 +90,9 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
     if tool in ("record", "full") and not RECORD_BINARY.exists():
         sys.exit(f"Error: tcbee-record binary not found.\nBuild: cd tcbee-record && cargo build --release")
     if tool == "full" and not PROCESS_BINARY.exists():
-        sys.exit(f"Error: tcbee-process binary not found.\nBuild: cd tcbee-process && cargo build --release")
+        sys.exit(f"Error: tcbee-process binary not found.\nBuild: cargo build --release -p tcbee-process (in the repository root)")
     if tool == "full" and not VIZ_BINARY.exists():
-        sys.exit(f"Error: tcbee-viz binary not found.\nBuild: cd tcbee-viz && cargo build --release")
+        sys.exit(f"Error: tcbee-viz binary not found.\nBuild: cargo build --release -p tcbee-viz (in the repository root)")
 
     display = os.environ.get("DISPLAY", ":0")
 
@@ -186,10 +187,8 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
             info("*** Stopping topology before processing trace data...\n")
             net.stop()
 
-            duckdb = Path(DUCKDB_PATH)
-            duckdb.unlink(missing_ok=True)
-
-            process_cmd = [str(PROCESS_BINARY), "--duckdb"]
+            # -f replaces the database of an earlier run
+            process_cmd = [str(PROCESS_BINARY), "--duckdb", "-o", DUCKDB_PATH, "--force"]
             info(f"*** Processing latest recording: {' '.join(process_cmd)}\n")
             result = subprocess.run(process_cmd)
             if result.returncode != 0:

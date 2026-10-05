@@ -140,11 +140,10 @@ impl TcbeeApp {
                         .set_status(format!("Connected: {}", path.to_string_lossy()));
                 }
                 Err(e) => {
-                    app.tab_home.set_status(format!(
-                        "Error opening {}: {}",
-                        path.to_string_lossy(),
-                        e
-                    ));
+                    app.tab_home.set_error(
+                        format!("Error opening {}: {}", path.to_string_lossy(), e.summary),
+                        e.details,
+                    );
                 }
             }
         }
