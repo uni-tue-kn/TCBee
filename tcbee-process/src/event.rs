@@ -133,7 +133,7 @@ pub(crate) use col_name;
 ///
 /// ```ignore
 /// event_schema! {
-///     TcpProbe => "tcp_probe" {
+///     TcpProbe => "tcp_probe", 116 {
 ///         mark => "MARK": U32,
 ///         ssthresh => "SSTRESH": U32,
 ///     }
@@ -141,12 +141,13 @@ pub(crate) use col_name;
 /// }
 /// ```
 ///
-/// The struct needs the fields `time` (u64, ns) and `div` (`[u8; 4]`), a `Deserialize` impl, and a
-/// `FromBuffer` impl (its `ENTRY_SIZE` is reused until WP6 removes the old reader). The block
-/// after the columns holds the hand-written `flow_key`.
+/// The struct needs the fields `time` (u64, ns) and `div` (`[u8; 4]`) and a `Deserialize` impl.
+/// The number after the source is the record size in the trace file (the bincode encoding; the
+/// binding tests check it against the fixtures). The block after the columns holds the
+/// hand-written `flow_key`.
 macro_rules! event_schema {
     (
-        $ty:ty => $source:literal {
+        $ty:ty => $source:literal, $size:literal {
             $( $field:ident $(=> $col:literal)? : $ct:ident ),+ $(,)?
         }
         { $($extra:tt)* }
@@ -161,10 +162,13 @@ macro_rules! event_schema {
                     } ),+
                 ],
             };
-            const ENTRY_SIZE: usize = <$ty as $crate::reader::FromBuffer>::ENTRY_SIZE;
+            const ENTRY_SIZE: usize = $size;
 
             fn decode(buf: &[u8]) -> Result<Self, $crate::event::DecodeError> {
-                $crate::event::decode_bincode::<$ty>(buf, <Self as $crate::event::Event>::ENTRY_SIZE)
+                $crate::event::decode_bincode::<$ty>(
+                    buf,
+                    <Self as $crate::event::Event>::ENTRY_SIZE,
+                )
             }
             fn ts_ns(&self) -> i64 {
                 self.time as i64

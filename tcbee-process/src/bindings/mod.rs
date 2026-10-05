@@ -4,11 +4,9 @@ pub mod bbr;
 pub mod ctypes;
 pub mod cubic;
 pub mod cwnd;
-pub mod event_indexer;
 pub mod sock;
 pub mod tcp4_packet;
 pub mod tcp6_packet;
-pub mod tcp_packet;
 pub mod tcp_probe;
 
 use tcbee_trace::TraceFile;
@@ -25,10 +23,8 @@ use tcp4_packet::Tcp4Packet;
 use tcp6_packet::Tcp6Packet;
 use tcp_probe::TcpProbe;
 
-// WP6: remove the dead_code allows on the items below.
 /// How one trace file is decoded and where its rows go.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct Binding {
     pub dir: Dir,
     pub table: &'static EventTable,
@@ -36,7 +32,6 @@ pub struct Binding {
     pub decode: DecodeFn,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn binding_of<E: Event>(dir: Dir) -> Binding {
     Binding {
         dir,
@@ -47,8 +42,7 @@ fn binding_of<E: Event>(dir: Dir) -> Binding {
 }
 
 /// The binding of a trace file, or `None` for files that are skipped (no binding exists).
-/// `dir` comes from the file, not from the record (PROCESS-REWRITE.md A2).
-#[cfg_attr(not(test), allow(dead_code))]
+/// `dir` comes from the file, not from the record.
 pub fn binding(file: TraceFile) -> Option<Binding> {
     Some(match file {
         TraceFile::SendSock => binding_of::<sock_trace_entry>(Dir::Send),
@@ -66,8 +60,7 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
     })
 }
 
-/// Every event table, in the order of the sources of PROCESS-REWRITE.md A2.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Every event table: sock, tcp_probe, cwnd, cubic, bbr, tcp4, tcp6.
 pub fn event_tables() -> [&'static EventTable; 7] {
     [
         sock_trace_entry::TABLE,

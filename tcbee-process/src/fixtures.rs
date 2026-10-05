@@ -18,7 +18,7 @@ mod generate {
     use crate::bindings::{
         bbr::BbrEvent, cwnd::cwnd_trace_entry, sock::sock_trace_entry, tcp6_packet::Tcp6Packet,
     };
-    use crate::reader::FromBuffer;
+    use crate::event::Event;
 
     const DIV: [u8; 4] = 0xFFFF_FFFFu32.to_be_bytes();
     const T0: u64 = 1_000_000_000_000;
@@ -51,7 +51,7 @@ mod generate {
         T0 + pair * 1_000_000
     }
 
-    fn write<T: Serialize + FromBuffer>(dir: &Path, name: &str, recs: impl Iterator<Item = T>) {
+    fn write<T: Serialize + Event>(dir: &Path, name: &str, recs: impl Iterator<Item = T>) {
         let mut out = Vec::new();
         for r in recs {
             let b = bincode::serialize(&r).unwrap();
@@ -149,11 +149,10 @@ mod checks {
     use tcbee_trace::{TCBeeTrace, TraceFile};
 
     use crate::bindings::{
-        bbr::BbrEvent, cubic::CubicEvent, cwnd::cwnd_trace_entry, event_indexer::EventIndexer,
-        sock::sock_trace_entry, tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet,
-        tcp_probe::TcpProbe,
+        bbr::BbrEvent, cubic::CubicEvent, cwnd::cwnd_trace_entry, sock::sock_trace_entry,
+        tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet, tcp_probe::TcpProbe,
     };
-    use crate::reader::FromBuffer;
+    use crate::event::Event;
 
     fn dir(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -162,20 +161,20 @@ mod checks {
     }
 
     /// Decode every whole record of a fixture file and check its divider.
-    fn load<T: FromBuffer + EventIndexer>(d: &str, file: &str) -> Vec<T> {
+    fn load<T: Event>(d: &str, file: &str) -> Vec<T> {
         let bytes = fs::read(dir(d).join(file)).unwrap();
         assert_eq!(bytes.len() % T::ENTRY_SIZE, 0, "{file}");
         bytes
             .chunks(T::ENTRY_SIZE)
             .map(|c| {
-                let r = T::from_buffer(&c.to_vec());
+                let r = T::decode(c).unwrap();
                 assert!(r.check_divider(), "{file}: bad divider");
                 r
             })
             .collect()
     }
 
-    fn check<T: FromBuffer + EventIndexer>(file: &str, records: usize) -> Vec<T> {
+    fn check<T: Event>(file: &str, records: usize) -> Vec<T> {
         let recs = load::<T>("tcbee_small", file);
         assert_eq!(recs.len(), records, "{file}");
         recs
@@ -217,11 +216,11 @@ mod checks {
         let flow0: Vec<u64> = cw.iter().step_by(2).map(|r| r.time).collect();
         assert!(flow0.windows(2).any(|w| w[0] == w[1]));
         assert!(flow0.windows(2).all(|w| w[0] <= w[1]));
-        assert_eq!(cw[0].get_ip_tuple().src.to_string(), "10.0.0.1");
-        assert_eq!(cw[0].get_ip_tuple().dst.to_string(), "10.0.0.2");
+        assert_eq!(cw[0].flow_key().src.to_string(), "10.0.0.1");
+        assert_eq!(cw[0].flow_key().dst.to_string(), "10.0.0.2");
 
         let t6 = check::<Tcp6Packet>("tcp6_send.tcp", 500);
-        assert_eq!(t6[0].get_ip_tuple().src.to_string(), "2001:db8::1");
+        assert_eq!(t6[0].flow_key().src.to_string(), "2001:db8::1");
         assert_eq!(t6[1].sport, 40001);
         let bbr = check::<BbrEvent>("bbr.tcp", 500);
         assert_eq!(bbr[0].cycle_mstamp, u64::MAX);
@@ -242,7 +241,7 @@ mod checks {
 
     fn load_bytes(b: &[u8]) -> usize {
         b.chunks(sock_trace_entry::ENTRY_SIZE)
-            .map(|c| sock_trace_entry::from_buffer(&c.to_vec()))
+            .map(|c| sock_trace_entry::decode(c).unwrap())
             .inspect(|r| assert!(r.check_divider()))
             .count()
     }

@@ -1,8 +1,8 @@
 //! Reads records of one trace file in 4 MiB chunks and decodes them.
 //!
-//! Detecting a truncated tail is the job of the unit planner (WP6): `decode_range` only reads the
-//! records it is asked for, and a range that reaches past the end of the file is an I/O error
-//! with the offset of the missing record.
+//! Detecting a truncated tail is the job of the unit planner in `pipeline.rs`: `decode_range`
+//! only reads the records it is asked for, and a range that reaches past the end of the file is
+//! an I/O error with the offset of the missing record.
 
 use std::{fmt, fs::File, io, ops::Range, os::unix::fs::FileExt};
 

@@ -1,5 +1,4 @@
-//! Schema, `push_row` and decode tests for every binding. Expected values are literals; the
-//! comparisons with the old `EventIndexer` (marked `WP6: delete`) go away with it.
+//! Schema, `push_row` and decode tests for every binding. Expected values are literals.
 
 use std::{fs, net::IpAddr, path::PathBuf};
 
@@ -7,9 +6,7 @@ use tcbee_trace::TraceFile;
 use ts_storage::{ColType, ColumnData, Dir, EventBatch, IpTuple};
 
 use super::*;
-use crate::bindings::event_indexer::EventIndexer;
 use crate::event::Event;
-use crate::reader::FromBuffer;
 
 const MAX: i128 = u64::MAX as i128;
 
@@ -99,34 +96,6 @@ fn check<E: Event + Default>(x: &Expect) {
     }
 }
 
-// WP6: delete (compares with the old EventIndexer, which goes away).
-/// Names, values, timestamp and flow key of every fixture record equal the old indexer's.
-fn old_parity<E: Event + EventIndexer + FromBuffer>(x: &Expect) {
-    assert_eq!(<E as FromBuffer>::ENTRY_SIZE, x.entry_size);
-    let old_max =
-        <E as EventIndexer>::get_max_index(&<E as FromBuffer>::from_buffer(&vec![0; x.entry_size]));
-    assert_eq!(old_max + 1, E::TABLE.columns.len());
-    let bytes = fs::read(fixture(x.file)).unwrap();
-    let mut batch = EventBatch::new(E::TABLE, x.records);
-    for (i, rec) in bytes.chunks(x.entry_size).enumerate() {
-        let e = E::decode(rec).unwrap();
-        let old = <E as FromBuffer>::from_buffer(&rec.to_vec());
-        assert_eq!(e.ts_ns() as f64, old.get_timestamp());
-        assert_eq!(e.flow_key(), old.get_ip_tuple(), "record {i}");
-        batch.push_header(0, Dir::None, e.ts_ns(), i as i64);
-        e.push_row(&mut batch);
-        for (c, def) in E::TABLE.columns.iter().enumerate() {
-            assert_eq!(def.name, old.get_field_name(c));
-            match old.get_field(c) {
-                ts_storage::DataValue::Int(v) => {
-                    assert_eq!(cell(&batch, c, i) as i64, v, "{} record {i}", def.name)
-                }
-                other => panic!("old binding returned {other:?}"),
-            }
-        }
-    }
-}
-
 const SOCK_COLS: &str = "pacing_rate:U64 max_pacing_rate:U64 backoff:U8 rto:U32 ato:U32 \
     rcv_mss:U16 snd_cwnd:U32 bytes_acked:U64 snd_ssthresh:U32 total_retrans:U32 probes:U8 \
     lost:U32 sacked_out:U32 retrans:U32 rcv_ssthresh:U32 rttvar:U32 advmss:U16 reordering:U32 \
@@ -149,7 +118,6 @@ fn sock_send() {
         ],
     };
     check::<sock_trace_entry>(&x);
-    old_parity::<sock_trace_entry>(&x); // WP6: delete
 }
 
 #[test]
@@ -168,7 +136,6 @@ fn sock_recv() {
         ],
     };
     check::<sock_trace_entry>(&x);
-    old_parity::<sock_trace_entry>(&x); // WP6: delete
 }
 
 #[test]
@@ -188,7 +155,6 @@ fn tcp_probe() {
         ],
     };
     check::<TcpProbe>(&x);
-    old_parity::<TcpProbe>(&x); // WP6: delete
 }
 
 #[test]
@@ -208,7 +174,6 @@ fn cubic() {
         ],
     };
     check::<CubicEvent>(&x);
-    old_parity::<CubicEvent>(&x); // WP6: delete
 }
 
 #[test]
@@ -226,7 +191,6 @@ fn bbr() {
         row0: &[300, 1000, 2000, 0, 0, MAX, 5000, 0, 4000, 0, 20, 90000],
     };
     check::<BbrEvent>(&x);
-    old_parity::<BbrEvent>(&x); // WP6: delete
 }
 
 #[test]
@@ -242,7 +206,6 @@ fn cwnd() {
         row0: &[10],
     };
     check::<cwnd_trace_entry>(&x);
-    old_parity::<cwnd_trace_entry>(&x); // WP6: delete
 }
 
 const PKT_COLS: &str = "SEQ_NUM:U32 ACK_NUM:U32 WINDOW:U16 FLAGS:U8";
@@ -260,7 +223,6 @@ fn tcp4_send() {
         row0: &[3795926499, 0, 64240, 2],
     };
     check::<Tcp4Packet>(&x);
-    old_parity::<Tcp4Packet>(&x); // WP6: delete
 }
 
 #[test]
@@ -276,7 +238,6 @@ fn tcp4_receive() {
         row0: &[478884330, 3795926500, 42600, 18],
     };
     check::<Tcp4Packet>(&x);
-    old_parity::<Tcp4Packet>(&x); // WP6: delete
 }
 
 #[test]
@@ -292,7 +253,6 @@ fn tcp6_send() {
         row0: &[5000, 0, 1000, 16],
     };
     check::<Tcp6Packet>(&x);
-    old_parity::<Tcp6Packet>(&x); // WP6: delete
 }
 
 #[test]
@@ -308,15 +268,132 @@ fn tcp6_receive() {
         row0: &[5000, 0, 1000, 16],
     };
     check::<Tcp6Packet>(&x);
-    old_parity::<Tcp6Packet>(&x); // WP6: delete
 }
 
-// WP6: delete. When this goes, keep the branch coverage: the fixtures only cover the common v4
-// branches, so port the crafted records below to literal expected tuples first.
-/// `flow_key` takes a different branch per binding (family vs `addr_v4 != 0`, ...). Compare with
-/// the old `get_ip_tuple` on crafted records.
+/// Expected `flow_key` (as "src>dst") for crafted records, in the loop order of the test below:
+/// family 0, 2, 10; `addr_v4` zero, then 10.0.0.1 -> 10.0.0.2 packed as the kernel does; address
+/// pairs (2001:db8::1, 2001:db8::2), (v4-mapped 10.0.0.9, 2001:db8::2), (zeros). The fixtures only
+/// cover the common IPv4 branches; this covers the rest. The tables differ per binding on
+/// purpose (sock and cwnd test `family == AF_INET`, cubic and bbr test `addr_v4 != 0`, tcp_probe
+/// reads the 28 byte kernel structs), so family 10 with a non-zero `addr_v4` is v6 for sock and
+/// v4 for cubic.
+const EXPECT_SOCK: &[&str] = &[
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "0.0.0.0>0.0.0.0",
+    "0.0.0.0>0.0.0.0",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+];
+
+const EXPECT_CWND: &[&str] = &[
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "0.0.0.0>0.0.0.0",
+    "0.0.0.0>0.0.0.0",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+];
+
+const EXPECT_CUBIC: &[&str] = &[
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+];
+
+const EXPECT_BBR: &[&str] = &[
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+];
+
+const EXPECT_PROBE: &[&str] = &[
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "10.0.0.1>10.0.0.2",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+];
+
+const EXPECT_TCP6: &[&str] = &[
+    "2001:db8::1>2001:db8::2",
+    "10.0.0.9>2001:db8::2",
+    "0.0.0.0>0.0.0.0",
+];
+
+fn k(t: IpTuple) -> String {
+    format!("{}>{}", t.src, t.dst)
+}
+
 #[test]
-fn flow_key_branches_match_the_old_code() {
+fn flow_key_branches() {
     let v6a = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
     let v6b = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
     let mapped = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 10, 0, 0, 9];
@@ -324,130 +401,81 @@ fn flow_key_branches_match_the_old_code() {
     let v4 =
         (u32::from_le_bytes([10, 0, 0, 1]) as u64) << 32 | u32::from_le_bytes([10, 0, 0, 2]) as u64;
 
-    let mut expected_some_v6 = 0;
+    let (mut sock, mut cwnd, mut cubic, mut bbr, mut probe, mut tcp6) =
+        (vec![], vec![], vec![], vec![], vec![], vec![]);
     for family in [0u16, 2, 10] {
         for addr_v4 in [0u64, v4] {
             for (s, d) in [(v6a, v6b), (mapped, v6b), ([0; 16], [0; 16])] {
-                let sock = sock_trace_entry {
+                sock.push(k(Event::flow_key(&sock_trace_entry {
                     family,
                     addr_v4,
                     src_v6: s,
                     dst_v6: d,
-                    sport: 1,
-                    dport: 2,
                     ..Default::default()
-                };
-                assert_eq!(Event::flow_key(&sock), sock.get_ip_tuple());
-                let cw = cwnd_trace_entry {
+                })));
+                cwnd.push(k(Event::flow_key(&cwnd_trace_entry {
                     family,
                     addr_v4,
                     src_v6: s,
                     dst_v6: d,
-                    sport: 1,
-                    dport: 2,
                     ..Default::default()
-                };
-                assert_eq!(Event::flow_key(&cw), cw.get_ip_tuple());
-                let cu = CubicEvent {
+                })));
+                cubic.push(k(Event::flow_key(&CubicEvent {
                     family,
                     addr_v4,
                     src_v6: s,
                     dst_v6: d,
-                    sport: 1,
-                    dport: 2,
                     ..Default::default()
-                };
-                assert_eq!(Event::flow_key(&cu), cu.get_ip_tuple());
-                let bb = BbrEvent {
+                })));
+                bbr.push(k(Event::flow_key(&BbrEvent {
                     family,
                     addr_v4,
                     src_v6: s,
                     dst_v6: d,
-                    sport: 1,
-                    dport: 2,
                     ..Default::default()
-                };
-                assert_eq!(Event::flow_key(&bb), bb.get_ip_tuple());
+                })));
                 let mut a28 = [0u8; 28];
                 let mut b28 = [0u8; 28];
                 a28[4..8].copy_from_slice(&[10, 0, 0, 1]);
                 b28[4..8].copy_from_slice(&[10, 0, 0, 2]);
                 a28[8..24].copy_from_slice(&s);
                 b28[8..24].copy_from_slice(&d);
-                let pr = TcpProbe {
+                probe.push(k(Event::flow_key(&TcpProbe {
                     family,
                     saddr: a28,
                     daddr: b28,
-                    sport: 1,
-                    dport: 2,
                     ..Default::default()
-                };
-                assert_eq!(Event::flow_key(&pr), pr.get_ip_tuple());
-                let t6 = Tcp6Packet {
-                    saddr: s,
-                    daddr: d,
-                    sport: 1,
-                    dport: 2,
-                    ..Default::default()
-                };
-                assert_eq!(Event::flow_key(&t6), t6.get_ip_tuple());
-                if matches!(Event::flow_key(&sock).src, IpAddr::V6(_)) {
-                    expected_some_v6 += 1;
+                })));
+                if family == 0 && addr_v4 == 0 {
+                    tcp6.push(k(Event::flow_key(&Tcp6Packet {
+                        saddr: s,
+                        daddr: d,
+                        ..Default::default()
+                    })));
                 }
             }
         }
     }
-    assert!(expected_some_v6 > 0);
+    assert_eq!(sock, EXPECT_SOCK);
+    assert_eq!(cwnd, EXPECT_CWND);
+    assert_eq!(cubic, EXPECT_CUBIC);
+    assert_eq!(bbr, EXPECT_BBR);
+    assert_eq!(probe, EXPECT_PROBE);
+    assert_eq!(tcp6, EXPECT_TCP6);
 
-    // The branches differ between bindings, and that is kept: family 10 with a non-zero
-    // addr_v4 is v6 for sock but v4 for cubic.
-    let sock = sock_trace_entry {
-        family: 10,
-        addr_v4: v4,
-        src_v6: v6a,
-        dst_v6: v6b,
-        ..Default::default()
-    };
-    let cubic = CubicEvent {
-        family: 10,
-        addr_v4: v4,
-        src_v6: v6a,
-        dst_v6: v6b,
-        ..Default::default()
-    };
-    assert_eq!(
-        Event::flow_key(&sock).src,
-        "2001:db8::1".parse::<IpAddr>().unwrap()
-    );
-    assert_eq!(
-        Event::flow_key(&cubic).src,
-        "10.0.0.1".parse::<IpAddr>().unwrap()
-    );
-    // v4-mapped tcp6 addresses become v4 tuples.
-    let t6 = Tcp6Packet {
-        saddr: mapped,
-        daddr: mapped,
-        ..Default::default()
-    };
-    assert_eq!(
-        Event::flow_key(&t6).src,
-        "10.0.0.9".parse::<IpAddr>().unwrap()
-    );
-    // tcp4 reads the u32 as is (host order).
+    // tcp4 reads the u32 as is (host order), ports as read, l4proto 6.
     let t4 = Tcp4Packet {
         saddr: 0x0A00_0001,
         daddr: 0x0A00_0002,
+        sport: 7,
+        dport: 9,
         ..Default::default()
     };
-    assert_eq!(
-        Event::flow_key(&t4).src,
-        "10.0.0.1".parse::<IpAddr>().unwrap()
-    );
-    assert_eq!(Event::flow_key(&t4).l4proto, 6);
+    assert_eq!(Event::flow_key(&t4), tuple("10.0.0.1", "10.0.0.2", 7, 9));
 }
 
 #[test]
-fn file_table_matches_a2() {
+fn file_table_maps_every_trace_file() {
     let want = [
         (TraceFile::SendSock, "sock", Dir::Send),
         (TraceFile::RecvSock, "sock", Dir::Recv),

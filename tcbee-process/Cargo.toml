@@ -5,11 +5,9 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-ts_storage = { path = "../ts-storage"}
+ts_storage = { path = "../ts-storage", default-features = false }
 tcbee-trace = { path = "../tcbee-record/tcbee-trace" }
 #tcbee-common = { path = "../tcbee/tcbee-common" }
-tokio = { version = "1.43.0", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time", "io-util","fs"] }
-tokio-util = "0.7.13"
 log = "0.4.22"
 #sqlx = {version = "0.8.3", features = ["sqlite", "runtime-tokio"] }
 serde = { version = "1.0.217", features = ["serde_derive"] }
@@ -17,8 +15,20 @@ indicatif = "0.17.11"
 env_logger = "0.11.6"
 bincode = "1.3.3"
 argparse = "0.2.2"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
+# Storage engines, forwarded to ts_storage. A build without `duckdb` never compiles libduckdb-sys
+# (cargo build --no-default-features --features sqlite). An engine that is not built in is
+# rejected at argument parsing.
+default = ["sqlite", "duckdb"]
+sqlite = ["ts_storage/sqlite"]
+duckdb = ["ts_storage/duckdb"]
+# Bundled C libraries of the enabled engines.
+bundled = ["ts_storage/bundled"]
 # Dev only: derives Serialize on the bindings and enables the fixture generator test
 # (cargo test --features fixture-gen regenerate_fixtures).
 fixture-gen = []
