@@ -36,6 +36,7 @@ Log (newest last):
 - 2026-10-05: WP2 reviewed and committed. Waiting on WP3 and WP4.
 - 2026-10-05: WP3 and WP4 written and under review. WP4 measured cached appender 34 M values/s vs 14.5 M per-batch, so writers keep one cached appender per table (uses one `unsafe` lifetime transmute). WP3 deleted the old SQLite backend (those deletions landed in the WP2 commit by accident). Review settled the inconsistency: both engines keep the series id on `replace_derived`, ids start at 1, a missing series is `NotFound`, NaN in event f64 columns is rejected by `EventBatch::validate`. Shared helpers live in `v2/{time,catalog,sql}.rs`.
 - 2026-10-05: WP3 and WP4 committed; WP5 and WP6 started in parallel.
+- 2026-10-05: a 294 MB trace (`~/tcbee-traces/tcbee_2026-10-05T18-52-18`: cubic 8.6 MB, recv_sock 104, send_sock 67, tcp4 23+15, tcp_probe 76; no bbr/tcp6) is the WP9 benchmark input. It is cubic-only, so compare with the A1 numbers by file size, not record mix.
 
 Decisions made by the maintainer:
 
