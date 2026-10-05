@@ -22,7 +22,7 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP4 DuckDB engine | done, reviewed, committed |
 | WP5 contract tests | done, reviewed, committed |
 | WP6 pipeline | done, reviewed, committed |
-| WP7 viz migration | implementing (agent running) |
+| WP7 viz migration | implemented (uncommitted in tcbee-viz); review pending |
 | WP8 cleanup, docs | not started |
 | WP9 benchmarks | not started |
 
@@ -717,3 +717,4 @@ Candidate tunings, in order: batch size, `--threads` default, DuckDB cached appe
   the old API. WP3 must remove the old `sqlite` crate and the old SQLite backend; until WP6/WP7
   move the callers, `database_factory(Sqlite)` returns an error on this branch and the old
   tools only work with DuckDB. `legacy` is deleted in WP8.
+- 2026-10-05: WP7 written, uncommitted in `tcbee-viz`. Both review agents died on a usage limit and were relaunched. Next after WP7: WP8, WP9.
