@@ -29,11 +29,12 @@ impl FileTracker {
         FileTracker { files: files }
     }
     pub fn get_file_size(&self) -> u64 {
-        // Get sum of file sizes
+        // Get sum of file sizes. The writer preallocates sparse files, so count the
+        // allocated blocks instead of the file length.
         let mut sum: u64 = 0;
         for f in self.files.iter() {
             if let Ok(meta) = f.metadata() {
-                sum = sum + meta.st_size();
+                sum = sum + meta.st_blocks() * 512;
             } else {
                 error!("Could not get metadata of file {:?}", f);
             }

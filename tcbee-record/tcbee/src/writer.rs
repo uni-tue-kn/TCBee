@@ -1,7 +1,7 @@
 use std::{
     fmt,
     fs::{File, OpenOptions},
-    io::{self, ErrorKind, Write},
+    io::{self, ErrorKind},
     mem,
     path::{Path, PathBuf},
     sync::{
@@ -187,6 +187,7 @@ fn job_loop(
 }
 
 const MIN_MMAP_GROWTH: usize = 64 * 1024;
+const MAX_MMAP_GROWTH: usize = 1 << 30;
 
 struct MmapBackedFile {
     file: File,
@@ -242,18 +243,13 @@ impl MmapBackedFile {
             return Ok(());
         }
 
-        let mut new_capacity = self.capacity;
-        let growth = self.growth.max(MIN_MMAP_GROWTH);
-        while required > new_capacity {
-            new_capacity = new_capacity
-                .checked_add(growth)
-                .ok_or_else(|| io::Error::new(ErrorKind::Other, "file size overflow"))?;
-        }
+        // Grow geometrically so that remapping stays rare at high record rates
+        let step = self.capacity.clamp(self.growth, MAX_MMAP_GROWTH);
+        let new_capacity = required
+            .max(self.capacity.saturating_add(step))
+            .next_multiple_of(self.growth);
 
-        if let Some(map) = self.map.as_mut() {
-            map.flush_async_range(0, self.position)?;
-        }
-
+        // Unmapping a shared mapping keeps the written pages in the page cache
         drop(self.map.take());
 
         self.file.set_len(new_capacity as u64)?;
@@ -264,46 +260,23 @@ impl MmapBackedFile {
         Ok(())
     }
 
+    /// Returns the next `len` bytes of the file for writing
+    fn reserve(&mut self, len: usize) -> io::Result<&mut [u8]> {
+        self.ensure_capacity(len)?;
+        let start = self.position;
+        let map = self.map.as_mut().ok_or_else(|| {
+            io::Error::new(ErrorKind::BrokenPipe, "memory-mapped writer closed")
+        })?;
+        self.position += len;
+        Ok(&mut map[start..start + len])
+    }
+
     fn finish(mut self) -> io::Result<()> {
-        if let Some(mut map) = self.map.take() {
+        if let Some(map) = self.map.take() {
             map.flush_range(0, self.position)?;
         }
         self.file.set_len(self.position as u64)?;
         self.file.sync_all()?;
-        Ok(())
-    }
-}
-
-impl Write for MmapBackedFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        self.ensure_capacity(buf.len())?;
-
-        let start = self.position;
-        let end = start
-            .checked_add(buf.len())
-            .ok_or_else(|| io::Error::new(ErrorKind::Other, "file size overflow"))?;
-
-        match self.map.as_mut() {
-            Some(map) => {
-                map[start..end].copy_from_slice(buf);
-                self.position = end;
-                Ok(buf.len())
-            }
-            None => Err(io::Error::new(
-                ErrorKind::BrokenPipe,
-                "memory-mapped writer closed",
-            )),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if let Some(map) = self.map.as_ref() {
-            map.flush_async_range(0, self.position)?;
-        }
         Ok(())
     }
 }
@@ -340,6 +313,7 @@ where
     map: RingBuf<MapData>,
     sink: Option<MmapBackedFile>,
     file_path: PathBuf,
+    record_size: Option<usize>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -368,6 +342,7 @@ where
             map,
             sink: Some(sink),
             file_path,
+            record_size: None,
             _marker: std::marker::PhantomData,
         })
     }
@@ -389,11 +364,29 @@ where
         };
 
         while let Some(entry) = self.map.next() {
-            let value = unsafe { *(entry.as_ptr() as *const T) };
+            if entry.len() < mem::size_of::<T>() {
+                return Err(JobError::ShortRecord(entry.len()));
+            }
+            let value = unsafe { std::ptr::read_unaligned(entry.as_ptr() as *const T) };
             drop(entry);
 
-            bincode::serialize_into(&mut *sink, &value).map_err(JobError::Serialize)?;
-            sink.write_all(&RECORD_DELIMITER).map_err(JobError::Io)?;
+            // All record types have a fixed size, so it is computed only once
+            let size = match self.record_size {
+                Some(size) => size,
+                None => {
+                    let size = bincode::serialized_size(&value).map_err(JobError::Serialize)?
+                        as usize;
+                    self.record_size = Some(size);
+                    size
+                }
+            };
+
+            let buf = sink
+                .reserve(size + RECORD_DELIMITER.len())
+                .map_err(JobError::Io)?;
+            let (record, delimiter) = buf.split_at_mut(size);
+            bincode::serialize_into(record, &value).map_err(JobError::Serialize)?;
+            delimiter.copy_from_slice(&RECORD_DELIMITER);
 
             reads += 1;
         }
@@ -455,6 +448,7 @@ impl From<io::Error> for WriterError {
 enum JobError {
     Io(io::Error),
     Serialize(Box<BincodeErrorKind>),
+    ShortRecord(usize),
 }
 
 impl fmt::Display for JobError {
@@ -462,6 +456,7 @@ impl fmt::Display for JobError {
         match self {
             JobError::Io(err) => write!(f, "I/O error: {}", err),
             JobError::Serialize(err) => write!(f, "serialization error: {}", err),
+            JobError::ShortRecord(len) => write!(f, "ring buffer record of only {} bytes", len),
         }
     }
 }
@@ -471,6 +466,7 @@ impl std::error::Error for JobError {
         match self {
             JobError::Io(err) => Some(err),
             JobError::Serialize(err) => Some(err),
+            JobError::ShortRecord(_) => None,
         }
     }
 }

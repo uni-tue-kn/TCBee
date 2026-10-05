@@ -332,7 +332,7 @@ impl EBPFWatcher {
             // Track file size and rate
             let files_size = file_tracker.get_file_size();
             let file_rate = RateWatcher::format_rate(
-                (files_size - last_size) as f64 * (1.0 / loop_elapsed.as_secs_f64()),
+                files_size.saturating_sub(last_size) as f64 * (1.0 / loop_elapsed.as_secs_f64()),
                 "Byte/s",
             );
 
