@@ -2,19 +2,20 @@
 name = "tcbee-viz"
 version = "0.1.0"
 authors = ["ScatteredDrifter","MoritzFlu"]
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
 eframe = "0.31"
 egui = "0.31"
 egui_plot = "0.31"
 rand = "0.9.0"
-ts_storage = { path = "../ts-storage", default-features = false }
+ts_storage.workspace = true
 rfd = "0.15.0"
+workspace-hack.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 [features]
 # Storage engines, forwarded to ts_storage. Without `duckdb`, libduckdb-sys is never compiled

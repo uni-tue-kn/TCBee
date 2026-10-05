@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn insert_events_text() {
-        use crate::v2::testutil::ALPHA;
+        use crate::testutil::ALPHA;
         assert_eq!(
             insert_events(&ALPHA),
             r#"INSERT INTO "ev_alpha" ("flow_id", "dir", "ts", "seq", "b", "w") VALUES (?, ?, ?, ?, ?, ?)"#

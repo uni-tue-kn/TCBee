@@ -1,9 +1,7 @@
 use std::cell::{OnceCell, RefCell};
 use std::path::PathBuf;
 
-use ts_storage::{
-    open_store, DataPoint, DataValue, Engine, Flow, SeriesInfo, SeriesKind, Store, StoreError,
-};
+use ts_storage::{DataPoint, DataValue, Engine, Flow, SeriesInfo, SeriesKind, Store, StoreError};
 
 use crate::{backend::binding::series_label, data::series_data::SeriesData};
 
@@ -55,7 +53,7 @@ pub struct DbBackend {
 
 impl DbBackend {
     pub fn open(path: PathBuf) -> Result<Self, String> {
-        let store = open_store(&path).map_err(|e| describe_open_error(&e))?;
+        let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e))?;
         Ok(Self {
             store: Some(store),
             ..Self::default()
@@ -316,8 +314,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::Path;
     use ts_storage::{
-        create_store, Catalog, ColType, Column, CreateOptions, Dir, EventBatch, EventTable,
-        IpTuple, StatsAccumulator, ValueKind,
+        Catalog, ColType, Column, CreateOptions, Dir, EventBatch, EventTable, IpTuple,
+        StatsAccumulator, ValueKind,
     };
 
     const fn col(name: &'static str, ty: ColType) -> Column {
@@ -364,7 +362,7 @@ mod tests {
     /// One flow with the inputs of every plugin. tcp4 and sock exist as send and recv copies
     /// with different values; the recv copies must never be picked.
     fn build(engine: Engine, path: &Path) {
-        let s = create_store(engine, path, CreateOptions::default()).unwrap();
+        let s = ts_storage::create(engine, path, CreateOptions::default()).unwrap();
         s.create_tables(&[&PROBE, &SOCK, &TCP4]).unwrap();
         let mut acc = StatsAccumulator::new();
         let mut w = s.writer().unwrap();

@@ -1,273 +1,116 @@
-#[cfg(feature = "legacy")]
-use crate::duckdb::DuckDBTSDB;
-#[cfg(feature = "legacy")]
-use crate::error::TSDBError;
-use std::net::IpAddr;
-use std::cmp::Eq;
-use std::hash::Hash;
+//! Storage layer of TCBee: reads and writes TCBee flow databases on SQLite or DuckDB behind one API.
+//!
+//! [`create`] starts writing a database, [`open`] reads one; the engine of an existing file is
+//! detected from its header. The cargo features `sqlite` and `duckdb` select the engines.
 
-pub mod v2;
-#[cfg(feature = "legacy")]
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
+pub mod batch;
+pub mod catalog;
+#[cfg(feature = "duckdb")]
 pub mod duckdb;
-#[cfg(feature = "legacy")]
 pub mod error;
+pub mod model;
+pub mod schema;
+pub mod sql;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+pub mod store;
+#[cfg(test)]
+pub(crate) mod testutil;
+pub mod time;
 
-// Schema v2 API under names that do not clash with the old one.
-pub use v2::{
-    create as create_store, detect_engine, open as open_store, BatchWriter, Catalog, ColType,
-    Column, ColumnData, CreateOptions, Dialect, Dir, Engine, EventBatch, EventTable,
-    IngestSession, SeriesInfo, SeriesKind, StatsAccumulator, Store, StoreError, Table, ValueKind,
-    SCHEMA_VERSION,
+pub use batch::{ColumnData, EventBatch};
+pub use catalog::{Catalog, SeriesInfo, StatsAccumulator};
+pub use error::StoreError;
+pub use model::{DataPoint, DataValue, Flow, IpTuple};
+pub use schema::{
+    ColType, Column, Dialect, Dir, EventTable, SeriesKind, Table, ValueKind, SCHEMA_VERSION,
 };
+pub use store::{BatchWriter, CreateOptions, Engine, IngestSession, Store};
 
-#[derive(Hash, Eq, PartialEq, Debug, Clone)]
-pub struct IpTuple {
-    pub src: IpAddr,
-    pub dst: IpAddr,
-    pub sport: i64,
-    pub dport: i64,
-    // Should always be 6 since tool focuses on TCP
-    pub l4proto: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct TSBounds {
-    pub xmax: f64,
-    pub xmin: f64,
-    pub ymax: Option<DataValue>,
-    pub ymin: Option<DataValue>,
-}
-
-#[derive(Debug)]
-pub struct Flow {
-    pub id: i64,
-    pub tuple: IpTuple,
-}
-
-impl Flow {
-    pub fn new(id: i64, tuple: IpTuple) -> Flow {
-        Flow { id, tuple }
+/// Creates a database file. Sessions write to `<path>.partial` and rename it to `path` in
+/// `finish`; dropping a session without `finish` deletes the partial file.
+pub fn create(
+    engine: Engine,
+    path: &Path,
+    opts: CreateOptions,
+) -> Result<Box<dyn IngestSession>, StoreError> {
+    match engine {
+        #[cfg(feature = "sqlite")]
+        Engine::Sqlite => sqlite::create(path, opts),
+        #[cfg(feature = "duckdb")]
+        Engine::DuckDb => duckdb::create(path, opts),
+        #[allow(unreachable_patterns)] // every engine is built in
+        _ => Err(StoreError::EngineDisabled(engine)),
     }
 }
 
-#[derive(Debug)]
-pub struct FlowAttribute {
-    pub name: String,
-    pub value: DataValue,
+const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+
+/// Reads the first 16 bytes of the file and recognizes SQLite ("SQLite format 3\0") and DuckDB
+/// ("DUCK" at offset 8).
+pub fn detect_engine(path: &Path) -> Result<Engine, StoreError> {
+    let mut header = Vec::with_capacity(16);
+    File::open(path)?.take(16).read_to_end(&mut header)?;
+    if header == SQLITE_MAGIC.as_slice() {
+        Ok(Engine::Sqlite)
+    } else if header.get(8..12) == Some(&b"DUCK"[..]) {
+        Ok(Engine::DuckDb)
+    } else {
+        Err(StoreError::UnknownEngine)
+    }
 }
 
-#[derive(Debug, Clone)]
-pub enum DataValue {
-    Int(i64),
-    Float(f64),
-    Boolean(bool),
-    String(String),
+/// Detects the engine, opens the file and checks `meta.schema_version == 2`.
+pub fn open(path: &Path) -> Result<Box<dyn Store>, StoreError> {
+    let engine = detect_engine(path)?;
+    match engine {
+        #[cfg(feature = "sqlite")]
+        Engine::Sqlite => sqlite::open(path),
+        #[cfg(feature = "duckdb")]
+        Engine::DuckDb => duckdb::open(path),
+        #[allow(unreachable_patterns)] // every engine is built in
+        _ => Err(StoreError::EngineDisabled(engine)),
+    }
 }
 
-impl DataValue {
-    pub(crate) const INT: i16 = 0;
-    pub(crate) const FLOAT: i16 = 1;
-    pub(crate) const BOOLEAN: i16 = 2;
-    pub(crate) const STRING: i16 = 3;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
 
-    #[cfg(feature = "legacy")]
-    pub fn type_from_int(val: i16) -> Result<Self, TSDBError> {
-        match val {
-            DataValue::INT => Ok(DataValue::Int(0)),
-            DataValue::FLOAT => Ok(DataValue::Float(0.0)),
-            DataValue::BOOLEAN => Ok(DataValue::Boolean(false)),
-            DataValue::STRING => Ok(DataValue::String("".to_string())),
-            _ => Err(TSDBError::UnknownDataType { val }),
+    fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("ts_storage_{}_{}", std::process::id(), name));
+        File::create(&p).unwrap().write_all(bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn engine_detection() {
+        let mut sqlite = SQLITE_MAGIC.to_vec();
+        sqlite.extend([0u8; 100]);
+        let mut duck = vec![0u8; 8];
+        duck.extend(b"DUCK");
+        duck.extend([1u8; 20]);
+
+        let a = tmp("sqlite", &sqlite);
+        let b = tmp("duck", &duck);
+        let c = tmp("junk", b"hello world, not a db at all");
+        let d = tmp("empty", b"");
+        assert_eq!(detect_engine(&a).unwrap(), Engine::Sqlite);
+        assert_eq!(detect_engine(&b).unwrap(), Engine::DuckDb);
+        assert!(matches!(detect_engine(&c), Err(StoreError::UnknownEngine)));
+        assert!(matches!(detect_engine(&d), Err(StoreError::UnknownEngine)));
+        assert!(matches!(
+            detect_engine(Path::new("/nonexistent/ts_storage")),
+            Err(StoreError::Io(_))
+        ));
+        assert_eq!(Engine::Sqlite.is_enabled(), cfg!(feature = "sqlite"));
+        for p in [a, b, c, d] {
+            let _ = std::fs::remove_file(p);
         }
-    }
-
-    pub fn type_to_int(&self) -> i16 {
-        match self {
-            DataValue::Int(_) => DataValue::INT,
-            DataValue::Float(_) => DataValue::FLOAT,
-            DataValue::Boolean(_) => DataValue::BOOLEAN,
-            DataValue::String(_) => DataValue::STRING,
-        }
-    }
-
-    pub fn as_string(&self) -> String {
-        match self {
-            DataValue::Int(val) => val.to_string(),
-            DataValue::Float(val) => val.to_string(),
-            DataValue::Boolean(val) => if *val { "1".to_string() } else { "0".to_string() },
-            DataValue::String(val) => val.clone(),
-        }
-    }
-
-    pub fn as_float(&self) -> Option<f64> {
-        if let DataValue::Float(val) = self { Some(*val) } else { None }
-    }
-
-    pub fn as_int(&self) -> Option<i64> {
-        if let DataValue::Int(val) = self { Some(*val) } else { None }
-    }
-
-    pub fn type_equal(&self, other: &DataValue) -> bool {
-        self.type_to_int() == other.type_to_int()
-    }
-
-    pub fn type_as_string(&self) -> String {
-        match self {
-            DataValue::Int(_) => "Integer".to_string(),
-            DataValue::Float(_) => "Float".to_string(),
-            DataValue::Boolean(_) => "Boolean".to_string(),
-            DataValue::String(_) => "String".to_string(),
-        }
-    }
-
-    // SQLite-specific: maps the DataValue type to the corresponding column name
-    #[cfg(feature = "legacy")]
-    pub(crate) fn column_name(&self) -> Result<&str, TSDBError> {
-        match self.type_to_int() {
-            DataValue::INT => Ok("value_integer"),
-            DataValue::FLOAT => Ok("value_float"),
-            DataValue::BOOLEAN => Ok("value_boolean"),
-            DataValue::STRING => Ok("value_text"),
-            _ => Err(TSDBError::UnknownDataType { val: self.type_to_int() }),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DataPoint {
-    pub timestamp: f64,
-    pub value: DataValue,
-}
-
-#[derive(Debug, Clone)]
-pub struct TimeSeries {
-    pub id: i64,
-    pub ts_type: DataValue,
-    pub flow_id: i64,
-    pub name: String,
-}
-
-impl TimeSeries {
-    pub fn new(id: i64, ts_type: DataValue, flow_id: i64, name: &str) -> TimeSeries {
-        TimeSeries { id, ts_type, flow_id, name: name.to_string() }
-    }
-}
-
-#[derive(Debug)]
-pub enum Condition {
-    Greater(DataValue),
-    Less(DataValue),
-    Equal(DataValue),
-    GreaterEqual(DataValue),
-    LessEqual(DataValue),
-}
-
-impl ToString for Condition {
-    fn to_string(&self) -> String {
-        let op = match self {
-            Condition::Greater(_) => "> ",
-            Condition::Less(_) => "< ",
-            Condition::Equal(_) => "= ",
-            Condition::GreaterEqual(_) => ">= ",
-            Condition::LessEqual(_) => "<= ",
-        };
-
-        let val = match self {
-            Condition::Greater(v)
-            | Condition::Less(v)
-            | Condition::Equal(v)
-            | Condition::GreaterEqual(v)
-            | Condition::LessEqual(v) => v,
-        };
-
-        format!("{}{}", op, val.as_string())
-    }
-}
-
-#[cfg(feature = "legacy")]
-pub trait TSDBInterface {
-    // --- FLOW CREATION AND MANAGEMENT
-    fn create_flow(&self, tuple: &IpTuple) -> Result<Flow, TSDBError>;
-    fn delete_flow(&self, flow: &Flow) -> Result<bool, TSDBError>;
-    fn list_flows(&self) -> Result<Box<dyn Iterator<Item = Flow> + '_>, TSDBError>;
-    fn get_flow(&self, tuple: &IpTuple) -> Result<Option<Flow>, TSDBError>;
-    fn get_flow_by_id(&self, id: i64) -> Result<Option<Flow>, TSDBError>;
-
-    // --- FLOW ATTRIBUTE CREATION AND MANAGEMENT
-    fn get_flow_attribute(&self, flow: &Flow, name: &str) -> Result<FlowAttribute, TSDBError>;
-    fn list_flow_attributes(
-        &self,
-        flow: &Flow,
-    ) -> Result<Box<dyn Iterator<Item = FlowAttribute> + '_>, TSDBError>;
-    fn add_flow_attribute(
-        &self,
-        flow: &Flow,
-        attribute: &FlowAttribute,
-    ) -> Result<bool, TSDBError>;
-    fn set_flow_attribute(
-        &self,
-        flow: &Flow,
-        attribute: &FlowAttribute,
-    ) -> Result<bool, TSDBError>;
-    fn delete_flow_attribute(&self, flow: &Flow, name: &str) -> Result<bool, TSDBError>;
-    fn get_flow_attribute_by_id(&self, id: i64) -> Result<Option<FlowAttribute>, TSDBError>;
-
-    // --- TIME SERIES CREATION AND MANAGEMENT
-    fn create_time_series(
-        &self,
-        flow: &Flow,
-        name: &str,
-        ts_type: DataValue,
-    ) -> Result<TimeSeries, TSDBError>;
-    fn delete_time_series(
-        &self,
-        flow: &Flow,
-        series: &TimeSeries,
-    ) -> Result<bool, TSDBError>;
-    fn list_time_series(
-        &self,
-        flow: &Flow,
-    ) -> Result<Box<dyn Iterator<Item = TimeSeries> + '_>, TSDBError>;
-    fn get_time_series_by_id(&self, id: i64) -> Result<Option<TimeSeries>, TSDBError>;
-    fn get_time_series_bounds(&self, series: &TimeSeries) -> Result<TSBounds, TSDBError>;
-    fn get_flow_bounds(&self, flow: &Flow) -> Result<TSBounds, TSDBError>;
-
-    // --- DATA PER TIME SERIES CREATION AND MANAGEMENT
-    fn get_data_points(
-        &self,
-        series: &TimeSeries,
-    ) -> Result<Box<dyn Iterator<Item = DataPoint> + '_>, TSDBError>;
-    fn get_data_points_in_range(
-        &self,
-        series: &TimeSeries,
-        t_start: f64,
-        t_end: f64,
-    ) -> Result<Box<dyn Iterator<Item = DataPoint> + '_>, TSDBError>;
-    fn insert_data_point(
-        &self,
-        series: &TimeSeries,
-        point: &DataPoint,
-    ) -> Result<bool, TSDBError>;
-    fn insert_multiple_points(
-        &self,
-        series: &TimeSeries,
-        points: &[DataPoint],
-    ) -> Result<bool, TSDBError>;
-    fn get_data_points_count(&self, series: &TimeSeries) -> Result<i64, TSDBError>;
-}
-
-#[cfg(feature = "legacy")]
-pub enum DBBackend {
-    SQLite(String),
-    DuckDB(String),
-}
-
-#[cfg(feature = "legacy")]
-pub fn database_factory(
-    backend: DBBackend,
-) -> Result<Box<dyn TSDBInterface + Send>, TSDBError> {
-    match backend {
-        DBBackend::SQLite(_) => Err(TSDBError::SqliteUnsupported),
-        DBBackend::DuckDB(path) => Ok(Box::new(DuckDBTSDB::new(path)?)),
     }
 }

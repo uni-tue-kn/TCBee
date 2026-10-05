@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 use ts_storage::{
-    create_store, Catalog, ColType, Column, CreateOptions, DataPoint, DataValue, Dir, Engine,
-    EventBatch, EventTable, Flow, IpTuple, SeriesInfo, StatsAccumulator, Store, StoreError,
+    Catalog, ColType, Column, CreateOptions, DataPoint, DataValue, Dir, Engine, EventBatch,
+    EventTable, Flow, IpTuple, SeriesInfo, StatsAccumulator, Store, StoreError,
 };
 
 const fn col(name: &'static str, ty: ColType) -> Column {
@@ -233,7 +233,7 @@ pub fn build(
     batches: Vec<EventBatch>,
     flows: Vec<Flow>,
 ) -> Result<(), StoreError> {
-    let s = create_store(engine, path, CreateOptions::default())?;
+    let s = ts_storage::create(engine, path, CreateOptions::default())?;
     s.create_tables(tables)?;
     let mut acc = StatsAccumulator::new();
     let mut w = s.writer()?;
@@ -263,7 +263,7 @@ pub fn build_all(
 pub fn open_all(engine: Engine, rows: &[AllRow]) -> (Env, Box<dyn Store>) {
     let env = Env::new();
     build_all(engine, &env.path, rows, vec![flow(1, 1), flow(2, 2)]).unwrap();
-    let st = ts_storage::open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     (env, st)
 }
 
@@ -379,7 +379,7 @@ INSERT INTO time_series_data (time_series_id, timestamp, value, type)
     VALUES (1, 1.0, union_value(inum := 10), 0);
 ";
 
-/// Creates a database file with the schema of the old code (before schema v2), with the engine's
+/// Creates a database file in the old schema, with the engine's
 /// raw driver.
 pub fn make_v1(engine: Engine, path: &Path) {
     match engine {

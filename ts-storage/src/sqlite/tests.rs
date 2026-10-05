@@ -1,7 +1,7 @@
 use super::*;
-use crate::v2::catalog::StatsAccumulator;
-use crate::v2::testutil::{flow, pts, zeta_batch, TmpDb, ZetaRow, ALPHA, ZETA};
-use crate::v2::CreateOptions;
+use crate::catalog::StatsAccumulator;
+use crate::testutil::{flow, pts, zeta_batch, TmpDb, ZetaRow, ALPHA, ZETA};
+use crate::CreateOptions;
 use std::time::Duration;
 
 fn one_row(ts: i64) -> EventBatch {
@@ -78,7 +78,7 @@ fn sample_db() -> (TmpDb, Box<dyn Store>) {
         vec![flow(1, 1000), flow(2, 2000)],
     )
     .unwrap();
-    let st = crate::v2::open(db.path()).unwrap();
+    let st = crate::open(db.path()).unwrap();
     (db, st)
 }
 
@@ -190,7 +190,7 @@ fn existing_output_needs_force() {
     assert_eq!(std::fs::read(db.path()).unwrap(), b"precious");
     assert!(db.suffixed("-wal").exists());
     finish_empty(s).unwrap();
-    assert!(crate::v2::open(db.path()).is_ok());
+    assert!(crate::open(db.path()).is_ok());
     for suffix in ["-journal", "-wal", "-shm"] {
         assert!(!db.suffixed(suffix).exists(), "{suffix}");
     }
@@ -257,7 +257,7 @@ fn open_checks_schema_version() {
         .execute_batch("CREATE TABLE flows (id INTEGER)")
         .unwrap();
     assert!(matches!(
-        crate::v2::open(db.path()),
+        crate::open(db.path()),
         Err(StoreError::UnsupportedSchema { found: None })
     ));
     let c = conn(&db);
@@ -266,13 +266,13 @@ fn open_checks_schema_version() {
     )
     .unwrap();
     drop(c);
-    match crate::v2::open(db.path()) {
+    match crate::open(db.path()) {
         Err(StoreError::UnsupportedSchema { found }) => assert_eq!(found.as_deref(), Some("1")),
         other => panic!("{:?}", other.err()),
     }
     conn(&db).execute_batch("DELETE FROM meta").unwrap();
     assert!(matches!(
-        crate::v2::open(db.path()),
+        crate::open(db.path()),
         Err(StoreError::UnsupportedSchema { found: None })
     ));
 }
@@ -286,7 +286,7 @@ fn corrupt_catalog_is_reported() {
             "UPDATE series SET dir = 7 WHERE id = 1; UPDATE flows SET src = 'bogus' WHERE id = 2",
         )
         .unwrap();
-    let st = crate::v2::open(db.path()).unwrap();
+    let st = crate::open(db.path()).unwrap();
     assert!(matches!(st.series(1), Err(StoreError::Corrupt(m)) if m.contains("dir")));
     assert!(matches!(st.flow(2), Err(StoreError::Corrupt(m)) if m.contains("bogus")));
     assert!(st.flow(1).is_ok());
@@ -308,7 +308,7 @@ fn derived_ids_start_at_one() {
     let db = TmpDb::new();
     let s = create(db.path(), CreateOptions::default()).unwrap();
     finish_empty(s).unwrap();
-    let st = crate::v2::open(db.path()).unwrap();
+    let st = crate::open(db.path()).unwrap();
     let a = st.create_derived(1, "a", ValueKind::Int, &[]).unwrap();
     let b = st.create_derived(1, "b", ValueKind::Int, &[]).unwrap();
     assert_eq!((a.id, b.id), (1, 2));

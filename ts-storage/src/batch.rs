@@ -242,7 +242,7 @@ impl EventBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::testutil::ZETA;
+    use crate::testutil::ZETA;
 
     fn push_row(b: &mut EventBatch, ts: i64) {
         b.push_header(1, Dir::Send, ts, 0);

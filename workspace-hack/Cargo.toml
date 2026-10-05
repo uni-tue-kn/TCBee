@@ -1,0 +1,16 @@
+[package]
+name = "workspace-hack"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Pins build-dependency features, see the comment below"
+
+# serde_derive (a build dependency of libduckdb-sys) and the egui proc macros share `syn`. Without
+# this crate, `syn` gets more features in a build that includes tcbee-viz than in one that only
+# selects ts_storage or tcbee-process, and the changed hash recompiles libduckdb-sys (with the
+# `bundled` feature: all of DuckDB). Keep this list equal to the `syn` 3.x features in
+# `cargo tree -p tcbee-viz -e features -i syn@3`. (A build dependency: with resolver 2 the host
+# graph of proc macros and build scripts has its own feature set.)
+[build-dependencies]
+syn = { version = "3", features = ["full", "extra-traits", "fold", "visit", "visit-mut"] }

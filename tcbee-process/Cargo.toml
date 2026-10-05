@@ -1,24 +1,25 @@
 [package]
 name = "tcbee-process"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
-ts_storage = { path = "../ts-storage", default-features = false }
-tcbee-trace = { path = "../tcbee-record/tcbee-trace" }
+ts_storage.workspace = true
+tcbee-trace.workspace = true
 #tcbee-common = { path = "../tcbee/tcbee-common" }
-log = "0.4.22"
+log.workspace = true
 #sqlx = {version = "0.8.3", features = ["sqlite", "runtime-tokio"] }
 serde = { version = "1.0.217", features = ["serde_derive"] }
 indicatif = "0.17.11"
-env_logger = "0.11.6"
+env_logger.workspace = true
 bincode = "1.3.3"
 argparse = "0.2.2"
-anyhow = "1"
+anyhow.workspace = true
+workspace-hack.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 [features]
 # Storage engines, forwarded to ts_storage. A build without `duckdb` never compiles libduckdb-sys

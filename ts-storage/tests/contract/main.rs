@@ -1,9 +1,9 @@
-//! Contract tests of the schema v2 storage API (PROCESS-REWRITE.md, WP5).
+//! Contract tests of the storage API, run on every enabled engine.
 //!
 //! Every function in `cases.rs` takes an `Engine` and runs against a temp file through the public
-//! API only (`create_store`, `open_store`, `Store`, ...). The macros below instantiate each case
+//! API only (`create`, `open`, `Store`, ...). The macros below instantiate each case
 //! once per enabled engine. `equivalence.rs` runs one script on both engines and compares
-//! everything observable through `Store`. Engine specific code (schema v1 files with the raw
+//! everything observable through `Store`. Engine specific code (old-schema files with the raw
 //! drivers, disabled engines) lives in `fixture.rs` and at the end of `cases.rs`.
 
 #![cfg(any(feature = "sqlite", feature = "duckdb"))]

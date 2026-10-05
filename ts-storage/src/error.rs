@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Errors of the schema v2 storage API.
+/// Errors of the storage API.
 #[derive(Error, Debug)]
 pub enum StoreError {
     /// An error reported by the SQLite engine.

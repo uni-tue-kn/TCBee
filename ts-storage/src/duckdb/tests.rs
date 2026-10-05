@@ -1,7 +1,7 @@
 use super::*;
-use crate::v2::catalog::StatsAccumulator;
-use crate::v2::testutil::{alpha_batch, flow, pts, zeta_batch, TmpDb, ALPHA, DEMO, ZETA};
-use crate::v2::{create as create_store, open as open_store};
+use crate::catalog::StatsAccumulator;
+use crate::testutil::{alpha_batch, flow, pts, zeta_batch, TmpDb, ALPHA, DEMO, ZETA};
+use crate::{create, open};
 use std::collections::HashMap;
 
 /// `ev_alpha` as `create_table_sql` renders it, plus a CHECK that rejects `w = 13`.
@@ -180,7 +180,7 @@ fn close_surfaces_flush_error() {
 #[test]
 fn writer_rejects_bad_batches_and_ignores_empty_ones() {
     let db = TmpDb::new();
-    let s = create_store(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
+    let s = create(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
     s.create_tables(&[&DEMO]).unwrap();
     let mut w = s.writer().unwrap();
     // The table of this batch was never created.
@@ -206,7 +206,7 @@ fn writer_rejects_bad_batches_and_ignores_empty_ones() {
 #[test]
 fn finish_with_a_live_writer_fails_and_removes_the_partial_file() {
     let db = TmpDb::new();
-    let s = create_store(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
+    let s = create(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
     s.create_tables(&[&ZETA]).unwrap();
     let w = s.writer().unwrap();
     assert!(s.finish(Catalog::default()).is_err());
@@ -214,7 +214,7 @@ fn finish_with_a_live_writer_fails_and_removes_the_partial_file() {
     drop(w);
 
     // Closed or dropped writers do not count.
-    let s = create_store(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
+    let s = create(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
     s.writer().unwrap().close().unwrap();
     drop(s.writer().unwrap());
     s.finish(Catalog::default()).unwrap();
@@ -227,7 +227,7 @@ fn finish_with_a_live_writer_fails_and_removes_the_partial_file() {
 /// flow 2 (recv), written by two writer threads.
 fn sample_db() -> (TmpDb, Box<dyn Store>) {
     let db = TmpDb::new();
-    let s = create_store(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
+    let s = create(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
     s.create_tables(&[&ZETA, &ALPHA]).unwrap();
     let accs: Vec<StatsAccumulator> = std::thread::scope(|sc| {
         let hs = [
@@ -270,7 +270,7 @@ fn sample_db() -> (TmpDb, Box<dyn Store>) {
         meta: vec![("writer".into(), "test".into())],
     })
     .unwrap();
-    let st = open_store(db.path()).unwrap();
+    let st = open(db.path()).unwrap();
     (db, st)
 }
 
@@ -317,7 +317,7 @@ fn open_rejects_other_schemas() {
         .execute_batch("CREATE TABLE ts (x INT)")
         .unwrap();
     assert!(matches!(
-        open_store(db.path()),
+        open(db.path()),
         Err(StoreError::UnsupportedSchema { found: None })
     ));
     drop(db);
@@ -330,7 +330,7 @@ fn open_rejects_other_schemas() {
              INSERT INTO meta VALUES ('schema_version', '9')",
         )
         .unwrap();
-    match open_store(db.path()) {
+    match open(db.path()) {
         Err(StoreError::UnsupportedSchema { found }) => assert_eq!(found.as_deref(), Some("9")),
         other => panic!("{:?}", other.err()),
     }
@@ -341,13 +341,13 @@ fn stale_wal_next_to_a_missing_file_is_removed() {
     let db = TmpDb::new();
     let wal = db.suffixed(".wal");
     std::fs::write(&wal, b"not a wal").unwrap();
-    let s = create_store(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
+    let s = create(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
     assert!(!wal.exists(), "removed at create");
     // One that appears during the session is removed before the rename.
     std::fs::write(&wal, b"not a wal").unwrap();
     s.finish(Catalog::default()).unwrap();
     assert!(!wal.exists(), "removed at finish");
-    assert!(open_store(db.path()).is_ok());
+    assert!(open(db.path()).is_ok());
 }
 
 // ---- derived series ---------------------------------------------------------------------------

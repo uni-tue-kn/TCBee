@@ -364,7 +364,7 @@ impl DerivedStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::testutil::{ALPHA, ZETA};
+    use crate::testutil::{ALPHA, ZETA};
 
     type RowA = (i64, Dir, i64, u64, i64, f64);
 

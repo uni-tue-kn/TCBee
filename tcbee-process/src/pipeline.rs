@@ -22,8 +22,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use tcbee_trace::TCBeeTrace;
 use ts_storage::{
-    create_store, BatchWriter, Catalog, CreateOptions, Dir, EventBatch, IngestSession,
-    StatsAccumulator,
+    BatchWriter, Catalog, CreateOptions, Dir, EventBatch, IngestSession, StatsAccumulator,
 };
 
 use crate::{
@@ -453,7 +452,7 @@ pub fn run(args: &Args) -> Result<Summary> {
 
     // Fails early, before any work, if the output exists and `force` is not set. Dropping the
     // session on any later error removes the partial output.
-    let session = create_store(
+    let session = ts_storage::create(
         args.engine,
         &args.output,
         CreateOptions { force: args.force },

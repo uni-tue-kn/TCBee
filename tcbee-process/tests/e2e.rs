@@ -8,7 +8,7 @@ use std::{
 };
 
 use tcbee_process::{run, Args, Engine, Summary, UNIT_RECORDS};
-use ts_storage::{open_store, SeriesKind, Store};
+use ts_storage::{SeriesKind, Store};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -160,7 +160,7 @@ fn small_fixture_series_cover_every_record() {
     for (engine, ext) in engines() {
         let tmp = tempfile::tempdir().unwrap();
         let (out, summary) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
-        let store = open_store(&out).unwrap();
+        let store = ts_storage::open(&out).unwrap();
         assert_eq!(store.engine(), engine);
 
         // (source.column, dir) -> rows per flow
@@ -201,7 +201,7 @@ fn send_and_receive_sock_are_separate_series() {
     for (engine, ext) in engines() {
         let tmp = tempfile::tempdir().unwrap();
         let (out, _) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
-        let store = open_store(&out).unwrap();
+        let store = ts_storage::open(&out).unwrap();
         let mut found = false;
         for f in store.flows().unwrap() {
             let cwnd: Vec<_> = store
@@ -238,7 +238,7 @@ fn engines_and_thread_counts_agree_point_by_point() {
         for threads in [Some(1), Some(4)] {
             let tmp = tempfile::tempdir().unwrap();
             let (out, _) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), threads);
-            let store = open_store(&out).unwrap();
+            let store = ts_storage::open(&out).unwrap();
             dumps.push((format!("{engine:?} {threads:?}"), dump(&*store)));
         }
     }
@@ -262,7 +262,7 @@ fn u64_max_is_saturated_and_stats_describe_read_values() {
     for (engine, ext) in engines() {
         let tmp = tempfile::tempdir().unwrap();
         let (out, _) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
-        let store = open_store(&out).unwrap();
+        let store = ts_storage::open(&out).unwrap();
         let saturated = store.flows().unwrap().iter().any(|f| {
             store.series(f.id).unwrap().iter().any(|s| {
                 s.source == "sock"
@@ -286,7 +286,7 @@ fn truncated_tail_is_a_warning() {
             "{:?}",
             summary.warnings
         );
-        let store = open_store(&out).unwrap();
+        let store = ts_storage::open(&out).unwrap();
         let points: usize = dump(&*store).series.values().map(|s| s.points.len()).sum();
         assert_eq!(points, 10 * 25);
     }
@@ -430,7 +430,7 @@ fn existing_output_without_force_fails_untouched_and_force_replaces() {
         let mut args = Args::new(fixture("tcbee_small"), &out, engine);
         args.force = true;
         run(args).unwrap();
-        assert_eq!(open_store(&out).unwrap().engine(), engine);
+        assert_eq!(ts_storage::open(&out).unwrap().engine(), engine);
     }
 }
 
@@ -502,7 +502,7 @@ fn file_larger_than_one_unit_keeps_record_order() {
             (total as u64, total as u64)
         );
 
-        let store = open_store(&out).unwrap();
+        let store = ts_storage::open(&out).unwrap();
         let flows = store.flows().unwrap();
         assert_eq!(flows.len(), 1);
         let series = store.series(flows[0].id).unwrap();

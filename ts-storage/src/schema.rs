@@ -1,4 +1,4 @@
-//! Schema of the v2 database as plain Rust data, plus the DDL renderer for both engines.
+//! Schema of the TCBee flow database as plain Rust data, plus the DDL renderer for both engines.
 
 use super::error::StoreError;
 
@@ -379,7 +379,7 @@ pub fn create_derived_index_sql(d: Dialect) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::testutil::DEMO;
+    use crate::testutil::DEMO;
 
     #[test]
     fn ddl_duckdb() {

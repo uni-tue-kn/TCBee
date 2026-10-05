@@ -1,4 +1,4 @@
-//! SQLite engine of the schema v2 API, on `rusqlite`.
+//! SQLite engine of the storage API, on `rusqlite`.
 //!
 //! Ingest: one writer thread owns the only `Connection` while the file is written. Batches reach
 //! it through a bounded channel; `create_tables` and `finish` are control messages. The thread

@@ -3,9 +3,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use ts_storage::{
-    open_store, DataValue, Dir, Engine, SeriesInfo, SeriesKind, Store, StoreError, ValueKind,
-};
+use ts_storage::{DataValue, Dir, Engine, SeriesInfo, SeriesKind, Store, StoreError, ValueKind};
 
 use crate::fixture::*;
 
@@ -262,7 +260,7 @@ fn derived_ops(st: &dyn Store, log: &mut Log) {
 fn script(engine: Engine, path: &Path) -> String {
     let mut log = Log::default();
     ingest(engine, path, &mut log);
-    let st = open_store(path).unwrap();
+    let st = ts_storage::open(path).unwrap();
     log.line("dump after ingest");
     log.dump(&*st);
     derived_ops(&*st, &mut log);
@@ -270,7 +268,7 @@ fn script(engine: Engine, path: &Path) -> String {
     log.dump(&*st);
     // A fresh handle sees the same.
     drop(st);
-    let st = open_store(path).unwrap();
+    let st = ts_storage::open(path).unwrap();
     log.line("dump after reopen");
     log.dump(&*st);
     log.0
@@ -322,7 +320,7 @@ fn negative_zero_is_preserved_by_both_engines() {
             ..row(1, Dir::Send, 1, 0)
         }];
         build_all(engine, &env.path, &rows, vec![flow(1, 1)]).unwrap();
-        let st = open_store(&env.path).unwrap();
+        let st = ts_storage::open(&env.path).unwrap();
         let ev = find(&*st, 1, "all", Dir::Send, "f");
         let d = st
             .create_derived(1, "d", ValueKind::Float, &[dp(1.0, DataValue::Float(-0.0))])

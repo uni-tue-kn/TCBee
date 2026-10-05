@@ -1,8 +1,8 @@
 //! The contract: one function per case, each taking the engine to run on.
 
 use ts_storage::{
-    create_store, detect_engine, open_store, Catalog, ColType, CreateOptions, DataValue, Dir,
-    Engine, IpTuple, SeriesInfo, SeriesKind, StatsAccumulator, Store, StoreError, ValueKind,
+    detect_engine, Catalog, ColType, CreateOptions, DataValue, Dir, Engine, IpTuple, SeriesInfo,
+    SeriesKind, StatsAccumulator, Store, StoreError, ValueKind,
 };
 
 use crate::fixture::*;
@@ -146,7 +146,7 @@ pub fn ranges_with_non_finite_bounds(engine: Engine) {
 
 /// Opens a session with tables `ALL` and `OTHER`.
 fn session_with_tables(engine: Engine, env: &Env) -> Box<dyn ts_storage::IngestSession> {
-    let session = create_store(engine, &env.path, CreateOptions::default()).unwrap();
+    let session = ts_storage::create(engine, &env.path, CreateOptions::default()).unwrap();
     session.create_tables(&[&ALL, &OTHER]).unwrap();
     session
 }
@@ -207,7 +207,7 @@ pub fn several_batches_and_writers(engine: Engine) {
     accs.into_iter().for_each(|a| acc.merge(a));
     finish_with(session, (1..=THREADS).map(|f| flow(f, f)).collect(), acc);
 
-    let st = open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     for f in 1..=THREADS {
         let a = find(&*st, f, "all", Dir::Send, "w32");
         assert_eq!(a.n, 300);
@@ -256,7 +256,7 @@ pub fn two_writers_append_to_one_table_and_flow(engine: Engine) {
     accs.into_iter().for_each(|a| acc.merge(a));
     finish_with(session, vec![flow(1, 1)], acc);
 
-    let st = open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     let s = find(&*st, 1, "all", Dir::Send, "w32");
     assert_eq!(s.n, i64::from(ROWS));
     // Ordered by (ts, seq): exactly the row index order.
@@ -304,7 +304,7 @@ fn catalog_db(engine: Engine) -> (Env, Box<dyn Store>) {
         vec![flow(1, 1000), flow_v6_to_v4(2, 2000), flow(3, 3000)],
     )
     .unwrap();
-    let st = open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     (env, st)
 }
 
@@ -530,7 +530,7 @@ pub fn derived_survives_reopen(engine: Engine) {
         })
         .collect();
     drop(st);
-    let st = open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     for (s, p) in before {
         assert_eq!(st.series_by_id(s.id).unwrap().unwrap(), s);
         assert_eq!(debug_points(&*st, &s, None), p);
@@ -791,7 +791,7 @@ pub fn nan_in_an_event_column_is_rejected(engine: Engine) {
     w.write(ok).unwrap();
     w.close().unwrap();
     finish_with(session, vec![flow(1, 1)], acc);
-    let st = open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     let f = find(&*st, 1, "all", Dir::Send, "f");
     assert_eq!(f.n, 1);
     assert_eq!(
@@ -818,7 +818,7 @@ pub fn abandoned_session_leaves_nothing(engine: Engine) {
     }
     assert_nothing_left(&env);
     // The same right after creation.
-    drop(create_store(engine, &env.path, CreateOptions::default()).unwrap());
+    drop(ts_storage::create(engine, &env.path, CreateOptions::default()).unwrap());
     assert_nothing_left(&env);
 }
 
@@ -837,7 +837,7 @@ pub fn finished_file_has_no_sidecars(engine: Engine) {
     let env = Env::new();
     build_all(engine, &env.path, &extreme_rows(1), vec![flow(1, 1)]).unwrap();
     assert_eq!(env.files(), ["trace.db"]);
-    drop(open_store(&env.path).unwrap());
+    drop(ts_storage::open(&env.path).unwrap());
     assert_eq!(env.files(), ["trace.db"]);
 }
 
@@ -847,7 +847,7 @@ fn build_one_row(engine: Engine, env: &Env) {
 }
 
 fn one_row_value(env: &Env) -> Vec<i64> {
-    let st = open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     ints(&*st, &find(&*st, 1, "all", Dir::Send, "w32"), None)
 }
 
@@ -855,7 +855,7 @@ pub fn existing_file_needs_force(engine: Engine) {
     let env = Env::new();
     build_one_row(engine, &env);
     assert_err!(
-        create_store(engine, &env.path, CreateOptions::default()),
+        ts_storage::create(engine, &env.path, CreateOptions::default()),
         StoreError::Exists(_)
     );
     assert_eq!(one_row_value(&env), [1]);
@@ -865,7 +865,7 @@ pub fn existing_file_needs_force(engine: Engine) {
 pub fn force_keeps_the_old_file_until_finish(engine: Engine) {
     let env = Env::new();
     build_one_row(engine, &env);
-    drop(create_store(engine, &env.path, CreateOptions { force: true }).unwrap());
+    drop(ts_storage::create(engine, &env.path, CreateOptions { force: true }).unwrap());
     assert_eq!(one_row_value(&env), [1]);
     assert_eq!(env.files(), ["trace.db"]);
 }
@@ -873,10 +873,10 @@ pub fn force_keeps_the_old_file_until_finish(engine: Engine) {
 pub fn force_replaces_the_file_on_finish(engine: Engine) {
     let env = Env::new();
     build_one_row(engine, &env);
-    let s = create_store(engine, &env.path, CreateOptions { force: true }).unwrap();
+    let s = ts_storage::create(engine, &env.path, CreateOptions { force: true }).unwrap();
     s.create_tables(&[&ALL]).unwrap();
     s.finish(Catalog::default()).unwrap();
-    let st = open_store(&env.path).unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
     assert!(st.flows().unwrap().is_empty());
     assert_eq!(env.files(), ["trace.db"]);
 }
@@ -885,7 +885,7 @@ pub fn schema_v1_file_is_unsupported(engine: Engine) {
     let env = Env::new();
     make_v1(engine, &env.path);
     assert_err!(
-        open_store(&env.path),
+        ts_storage::open(&env.path),
         StoreError::UnsupportedSchema { found: None }
     );
 }
@@ -902,10 +902,10 @@ pub fn non_database_files_are_unknown() {
         ("zeros", &[0u8; 4096][..]),
     ] {
         let p = env.write_file(name, bytes);
-        assert_err!(open_store(&p), StoreError::UnknownEngine);
+        assert_err!(ts_storage::open(&p), StoreError::UnknownEngine);
     }
     // A missing file is an I/O error, not an unknown engine.
-    assert_err!(open_store(&env.file("missing")), StoreError::Io(_));
+    assert_err!(ts_storage::open(&env.file("missing")), StoreError::Io(_));
 }
 
 /// A file of an engine this build does not have; only its header is looked at.
@@ -919,9 +919,9 @@ pub fn file_of_a_disabled_engine(engine: Engine) {
     };
     bytes.extend([0u8; 4096]);
     let p = env.write_file("disabled.db", &bytes);
-    assert_err!(open_store(&p), StoreError::EngineDisabled(e) if e == engine);
+    assert_err!(ts_storage::open(&p), StoreError::EngineDisabled(e) if e == engine);
     assert_err!(
-        create_store(engine, &env.file("new.db"), CreateOptions::default()),
+        ts_storage::create(engine, &env.file("new.db"), CreateOptions::default()),
         StoreError::EngineDisabled(e) if e == engine
     );
 }

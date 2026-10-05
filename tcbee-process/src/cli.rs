@@ -45,7 +45,8 @@ pub fn parse_args(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> 
         let mut p = ArgumentParser::new();
         p.set_description(
             "Converts a TCBee recording into a SQLite or DuckDB database. The engine follows \
-             -q/-d, or else the extension of the output file (.sqlite/.db, .duck/.duckdb).",
+             -q/-d, or else the extension of the output file (.sqlite/.db, .duck/.duckdb). \
+             Exit status: 0 success, 1 processing failed, 2 wrong arguments.",
         );
         p.refer(&mut source).add_option(
             &["-s", "--source"],

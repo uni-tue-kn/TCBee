@@ -51,7 +51,7 @@ impl TmpDb {
     pub fn new() -> TmpDb {
         static N: AtomicU32 = AtomicU32::new(0);
         TmpDb(std::env::temp_dir().join(format!(
-            "ts_storage_v2_{}_{}.db",
+            "ts_storage_{}_{}.db",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         )))

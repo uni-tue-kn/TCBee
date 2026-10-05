@@ -7,8 +7,8 @@
 //! created and flushed per batch 1.37 s (14.5 M values/s), i.e. per-batch is 2.3x slower.
 
 use super::*;
-use crate::v2::schema::Column;
-use crate::v2::testutil::TmpDb;
+use crate::schema::Column;
+use crate::testutil::TmpDb;
 use std::time::{Duration, Instant};
 
 static COLS: [Column; 6] = [

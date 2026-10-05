@@ -9,9 +9,9 @@ use ::duckdb::arrow::array::{
 use ::duckdb::arrow::datatypes::{DataType, Field, Schema};
 use ::duckdb::arrow::record_batch::RecordBatch;
 
-use crate::v2::batch::{ColumnData, EventBatch};
-use crate::v2::error::StoreError;
-use crate::v2::schema::ColType;
+use crate::batch::{ColumnData, EventBatch};
+use crate::error::StoreError;
+use crate::schema::ColType;
 
 fn arrow_type(ty: ColType) -> DataType {
     match ty {
