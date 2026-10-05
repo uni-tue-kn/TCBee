@@ -185,9 +185,10 @@ fn write_catalog(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError>
 }
 
 fn insert_flows(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> {
-    let mut st = conn.prepare(sql::INSERT_FLOW)?;
+    // An appender is much faster than one INSERT statement per row (about 0.5 ms each).
+    let mut app = conn.appender("flows")?;
     for f in &catalog.flows {
-        st.execute(params![
+        app.append_row(params![
             f.id,
             f.tuple.src.to_string(),
             f.tuple.dst.to_string(),
@@ -196,14 +197,16 @@ fn insert_flows(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> 
             f.tuple.l4proto
         ])?;
     }
+    app.flush()?;
     Ok(())
 }
 
 fn insert_series(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> {
-    let mut st = conn.prepare(&sql::insert_series())?;
+    let mut app = conn.appender("series")?;
     for s in &catalog.series {
-        insert_series_row(&mut st, s)?;
+        append_series_row(&mut app, s)?;
     }
+    app.flush()?;
     Ok(())
 }
 
@@ -222,6 +225,28 @@ fn insert_meta(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> {
 fn insert_series_row(stmt: &mut Statement, s: &SeriesInfo) -> Result<(), StoreError> {
     let r = SeriesRow::from(s);
     stmt.execute(params![
+        r.id,
+        r.flow_id,
+        r.kind,
+        r.source,
+        r.dir,
+        r.name,
+        r.value_type,
+        r.tbl,
+        r.col,
+        r.n,
+        r.t_min,
+        r.t_max,
+        r.v_min,
+        r.v_max
+    ])?;
+    Ok(())
+}
+
+/// Binds the 14 columns of `series` from `s` and appends it.
+fn append_series_row(stmt: &mut duckdb::Appender, s: &SeriesInfo) -> Result<(), StoreError> {
+    let r = SeriesRow::from(s);
+    stmt.append_row(params![
         r.id,
         r.flow_id,
         r.kind,
