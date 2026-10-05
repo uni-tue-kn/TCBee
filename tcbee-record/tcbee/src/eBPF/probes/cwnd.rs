@@ -18,12 +18,20 @@ impl CwndTracer {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
         // Outgoing TCP
-        let sendmsg: &mut FEntry = ebpf.program_mut("cwnd_sock_sendmsg").unwrap().try_into()?;
+        let sendmsg: &mut FEntry = ebpf
+            .program_mut("cwnd_sock_sendmsg")
+            .ok_or(EBPFRunnerError::InvalidProgramError {
+                name: "cwnd_sock_sendmsg".to_string(),
+            })?.try_into()?;
         sendmsg.load("__tcp_transmit_skb", &btf)?;
         sendmsg.attach()?;
 
         // Incoming TCP
-        let recvmsg: &mut FEntry = ebpf.program_mut("cwnd_sock_recvmsg").unwrap().try_into()?;
+        let recvmsg: &mut FEntry = ebpf
+            .program_mut("cwnd_sock_recvmsg")
+            .ok_or(EBPFRunnerError::InvalidProgramError {
+                name: "cwnd_sock_recvmsg".to_string(),
+            })?.try_into()?;
         recvmsg.load("tcp_rcv_established", &btf)?;
         recvmsg.attach()?;
 

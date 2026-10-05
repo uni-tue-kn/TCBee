@@ -303,13 +303,13 @@ impl EbpfRunner {
         if self.config.algorithms {
             CubicTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer)?;
             watcher_config.graphs.cubic = true;
-            if let Err(err) = BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer) {
-                error!(
+            match BBRTracer::spawn(&mut ebpf, self.config.dir.clone(), &mut writer) {
+                Ok(()) => watcher_config.graphs.bbr = true,
+                Err(err) => error!(
                     "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
                     err
-                );
-            };
-            watcher_config.graphs.bbr = true;
+                ),
+            }
         }
 
         // TODO: should be true by default in get_watcher_config()

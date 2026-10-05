@@ -14,13 +14,21 @@ pub struct BBRTracer {}
 impl BBRTracer {
     pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
         // For Algo Update
-        let update_hook: &mut KProbe = ebpf.program_mut("bbr_cong_control").unwrap().try_into()?;
+        let update_hook: &mut KProbe = ebpf
+            .program_mut("bbr_cong_control")
+            .ok_or(EBPFRunnerError::InvalidProgramError {
+                name: "bbr_cong_control".to_string(),
+            })?.try_into()?;
         update_hook.load()?;
         update_hook.attach("bbr_main", 0)?;
 
         // For Congestion Event
         let congestion_hook: &mut KProbe =
-            ebpf.program_mut("bbr_cwnd_event").unwrap().try_into()?;
+            ebpf
+            .program_mut("bbr_cwnd_event")
+            .ok_or(EBPFRunnerError::InvalidProgramError {
+                name: "bbr_cwnd_event".to_string(),
+            })?.try_into()?;
         congestion_hook.load()?;
         congestion_hook.attach("bbr_cwnd_event", 0)?;
 

@@ -17,12 +17,20 @@ impl CubicTracer {
         let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
 
         // For Algo Update
-        let sendmsg: &mut FEntry = ebpf.program_mut("cubic_cong_control").unwrap().try_into()?;
+        let sendmsg: &mut FEntry = ebpf
+            .program_mut("cubic_cong_control")
+            .ok_or(EBPFRunnerError::InvalidProgramError {
+                name: "cubic_cong_control".to_string(),
+            })?.try_into()?;
         sendmsg.load("cubictcp_cong_avoid", &btf)?;
         sendmsg.attach()?;
 
         // For Congestion Event
-        let recvmsg: &mut FEntry = ebpf.program_mut("cubic_cwnd_event").unwrap().try_into()?;
+        let recvmsg: &mut FEntry = ebpf
+            .program_mut("cubic_cwnd_event")
+            .ok_or(EBPFRunnerError::InvalidProgramError {
+                name: "cubic_cwnd_event".to_string(),
+            })?.try_into()?;
         recvmsg.load("cubictcp_cwnd_event", &btf)?;
         recvmsg.attach()?;
 
