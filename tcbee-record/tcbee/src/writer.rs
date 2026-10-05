@@ -6,7 +6,7 @@ use std::{
     os::fd::{AsRawFd, RawFd},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread::{self, JoinHandle},
@@ -53,6 +53,7 @@ const WAIT_TIMEOUT_MS: i32 = 100;
 pub struct Writer {
     poll_mode: PollMode,
     running: Arc<AtomicBool>,
+    bytes_written: Arc<AtomicU64>,
     handles: Vec<(WriterReport, JoinHandle<Result<u64, JobError>>)>,
     /// CPU IDs to pin writer threads to, assigned round-robin.
     /// Requires `isolcpus=<ids>` in the kernel boot parameters for full isolation.
@@ -65,6 +66,7 @@ impl Writer {
         Writer {
             poll_mode,
             running: Arc::new(AtomicBool::new(true)),
+            bytes_written: Arc::new(AtomicU64::new(0)),
             handles: Vec::new(),
             cpu_pool: Vec::new(),
             next_cpu: 0,
@@ -79,6 +81,11 @@ impl Writer {
         self
     }
 
+    /// Bytes written to all trace files so far
+    pub fn bytes_written(&self) -> Arc<AtomicU64> {
+        self.bytes_written.clone()
+    }
+
     /// Register a ring buffer map. Spawns a dedicated worker thread immediately.
     /// `rb` is the ring buffer index from `tcbee_common::stats`.
     pub fn register<T>(
@@ -90,7 +97,7 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
-        let job = MapWriterJob::<T>::new(map, file_path.into())?;
+        let job = MapWriterJob::<T>::new(map, file_path.into(), self.bytes_written.clone())?;
         let running = self.running.clone();
 
         let cpu = if self.cpu_pool.is_empty() {
@@ -229,6 +236,24 @@ fn wait_readable(fd: RawFd) {
     unsafe { libc::poll(&mut pollfd, 1, WAIT_TIMEOUT_MS) };
 }
 
+/// Allocates the blocks of a file range. Without this, a full disk is only noticed when a
+/// write into the mapping faults, and the kernel kills the process with SIGBUS.
+fn allocate(file: &File, offset: usize, len: usize) -> io::Result<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    let ret = unsafe { libc::fallocate(file.as_raw_fd(), 0, offset as i64, len as i64) };
+    if ret == 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+        // Not every file system supports it, fall back to a sparse file
+        Some(libc::EOPNOTSUPP) => Ok(()),
+        _ => Err(err),
+    }
+}
+
 const MIN_MMAP_GROWTH: usize = 64 * 1024;
 const MAX_MMAP_GROWTH: usize = 1 << 30;
 
@@ -260,6 +285,7 @@ impl MmapBackedFile {
         if capacity as u64 != metadata.len() {
             file.set_len(capacity as u64)?;
         }
+        allocate(&file, existing_len, capacity - existing_len)?;
 
         let map = unsafe { MmapMut::map_mut(&file)? };
 
@@ -291,6 +317,8 @@ impl MmapBackedFile {
         let new_capacity = required
             .max(self.capacity.saturating_add(step))
             .next_multiple_of(self.growth);
+
+        allocate(&self.file, self.capacity, new_capacity - self.capacity)?;
 
         // Unmapping a shared mapping keeps the written pages in the page cache
         drop(self.map.take());
@@ -351,6 +379,7 @@ where
     T: Serialize + Copy + Send + 'static,
 {
     map: RingBuf<MapData>,
+    bytes_written: Arc<AtomicU64>,
     sink: Option<MmapBackedFile>,
     file_path: PathBuf,
     record_size: Option<usize>,
@@ -361,7 +390,11 @@ impl<T> MapWriterJob<T>
 where
     T: Serialize + Copy + Send + 'static,
 {
-    fn new(map: RingBuf<MapData>, file_path: PathBuf) -> Result<Self, WriterError> {
+    fn new(
+        map: RingBuf<MapData>,
+        file_path: PathBuf,
+        bytes_written: Arc<AtomicU64>,
+    ) -> Result<Self, WriterError> {
         let entry_size = std::mem::size_of::<T>().max(1);
         let chunk_bytes = entry_size
             .checked_mul(WRITER_BUFFER_SIZE)
@@ -380,6 +413,7 @@ where
 
         Ok(Self {
             map,
+            bytes_written,
             sink: Some(sink),
             file_path,
             record_size: None,
@@ -437,6 +471,10 @@ where
 
         if reads > 0 {
             trace!("Wrote {} records to {}", reads, self.file_path.display());
+            if let Some(size) = self.record_size {
+                let bytes = reads * (size + RECORD_DELIMITER.len()) as u64;
+                self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
+            }
         }
 
         Ok(reads)

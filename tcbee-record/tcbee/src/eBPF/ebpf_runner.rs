@@ -326,9 +326,11 @@ impl EbpfRunner {
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(ebpf)?);
         self.stats = Some(stats.clone());
+        let bytes_written = writer.bytes_written();
         let mut watcher = EBPFWatcher::new(
             ebpf,
             stats,
+            bytes_written,
             self.config.update_period,
             self.stop_token.clone(),
             watcher_config,

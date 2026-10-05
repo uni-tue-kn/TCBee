@@ -1,6 +1,9 @@
 use std::{
     io::{self, Write},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -35,14 +38,12 @@ use tcbee_common::stats::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    components::{graph::Graph, status::Status},
-    file_tracker::FileTracker,
-};
+use super::components::{graph::Graph, status::Status};
 
 pub struct EBPFWatcher {
     stats: Arc<Stats>,
     snapshot: Snapshot,
+    bytes_written: Arc<AtomicU64>,
     events_drops: RateWatcher,
     events_handled: RateWatcher,
     ingress_counter: RateWatcher,
@@ -66,6 +67,7 @@ impl EBPFWatcher {
     pub fn new(
         ebpf: &mut Ebpf,
         stats: Arc<Stats>,
+        bytes_written: Arc<AtomicU64>,
         update_period: u128,
         token: CancellationToken,
         config: EbpfWatcherConfig,
@@ -111,6 +113,7 @@ impl EBPFWatcher {
         Ok(EBPFWatcher {
             stats,
             snapshot: Snapshot::default(),
+            bytes_written,
             events_drops,
             events_handled,
             ingress_counter,
@@ -271,8 +274,6 @@ impl EBPFWatcher {
         let mut scroll_index: usize = 0;
         let mut num_flows: usize;
 
-        let file_tracker = FileTracker::new(&self.config.dir);
-
         #[derive(Clone, Copy)]
         enum ViewLayout {
             PacketsOnly,
@@ -330,7 +331,7 @@ impl EBPFWatcher {
             let mut flows_state = TableState::new().with_offset(scroll_index);
 
             // Track file size and rate
-            let files_size = file_tracker.get_file_size();
+            let files_size = self.bytes_written.load(Ordering::Relaxed);
             let file_rate = RateWatcher::format_rate(
                 files_size.saturating_sub(last_size) as f64 * (1.0 / loop_elapsed.as_secs_f64()),
                 "Byte/s",
