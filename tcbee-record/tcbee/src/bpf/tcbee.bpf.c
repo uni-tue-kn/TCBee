@@ -332,3 +332,119 @@ int tc_egress_packet_tracer(struct __sk_buff *skb)
 	return trace_packet(skb, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS, &TCP6_PACKETS_EGRESS,
 			    RB_TCP6_EGRESS);
 }
+
+/* ---- Socket state (-k) and cwnd only (-w) ---------------------------------------- */
+
+/*
+ * Ports of a socket for the filter. If they cannot be read the filter cannot be
+ * evaluated, which is counted as an error. Returns false if the event is done.
+ */
+static __always_inline bool sock_ports_filter(struct sock *sk, __u32 rb, __u16 *sport,
+					      __u16 *dport)
+{
+	if (sk_ports(sk, sport, dport)) {
+		count_attempt(rb);
+		count_error(rb);
+		return false;
+	}
+	return filter_sock(sk, *sport, *dport);
+}
+
+static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
+{
+	struct tcp_sock *tp = (struct tcp_sock *)sk;
+	struct cwnd_trace_entry rec = {};
+	__u16 sport, dport;
+
+	if (!sock_ports_filter(sk, rb, &sport, &dport))
+		return 0;
+	count_attempt(rb);
+
+	if (fill_header(&rec, sk)) {
+		count_error(rb);
+	} else {
+		rec.snd_cwnd = BPF_CORE_READ(tp, snd_cwnd);
+		submit(ringbuf, rb, &rec);
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbuf,
+				      __u32 rb, __u32 bytes_slot)
+{
+	struct tcp_sock *tp = (struct tcp_sock *)sk;
+	struct sock_trace_entry rec = {};
+	__u16 sport, dport;
+
+	if (!sock_ports_filter(sk, rb, &sport, &dport))
+		return 0;
+	count_attempt(rb);
+
+	add_stat(bytes_slot, BPF_CORE_READ(skb, len));
+
+	if (fill_header(&rec, sk)) {
+		count_error(rb);
+	} else {
+		/* struct sock */
+		rec.pacing_rate = BPF_CORE_READ(sk, sk_pacing_rate);
+		rec.max_pacing_rate = BPF_CORE_READ(sk, sk_max_pacing_rate);
+		/* struct inet_connection_sock */
+		rec.backoff = BPF_CORE_READ(tp, inet_conn.icsk_backoff);
+		rec.rto = BPF_CORE_READ(tp, inet_conn.icsk_rto);
+		rec.ato = 0;
+		rec.rcv_mss = BPF_CORE_READ(tp, inet_conn.icsk_ack.rcv_mss);
+		/* struct tcp_sock */
+		rec.snd_cwnd = BPF_CORE_READ(tp, snd_cwnd);
+		rec.bytes_acked = BPF_CORE_READ(tp, bytes_acked);
+		rec.snd_ssthresh = BPF_CORE_READ(tp, snd_ssthresh);
+		rec.total_retrans = BPF_CORE_READ(tp, total_retrans);
+		rec.probes = BPF_CORE_READ(tp, keepalive_probes);
+		rec.lost = BPF_CORE_READ(tp, lost);
+		rec.sacked_out = BPF_CORE_READ(tp, sacked_out);
+		rec.retrans = BPF_CORE_READ(tp, retrans_out);
+		rec.rcv_ssthresh = BPF_CORE_READ(tp, rcv_ssthresh);
+		rec.rttvar = BPF_CORE_READ(tp, rttvar_us);
+		rec.advmss = BPF_CORE_READ(tp, advmss);
+		rec.reordering = BPF_CORE_READ(tp, reordering);
+		rec.rcv_rtt = BPF_CORE_READ(tp, rcv_rtt_est.rtt_us);
+		rec.rcv_space = BPF_CORE_READ(tp, rcvq_space.space);
+		rec.bytes_received = BPF_CORE_READ(tp, bytes_received);
+		rec.segs_out = BPF_CORE_READ(tp, segs_out);
+		rec.segs_in = BPF_CORE_READ(tp, segs_in);
+		/* struct tcp_options_received, not read yet */
+		rec.snd_wscale = 0;
+		rec.rcv_wscale = 0;
+		submit(ringbuf, rb, &rec);
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+SEC("fentry/__tcp_transmit_skb")
+int BPF_PROG(sock_sendmsg, struct sock *sk, struct sk_buff *skb)
+{
+	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, SLOT_TCP_BYTES_SENT);
+}
+
+/* Only triggers in established state */
+SEC("fentry/tcp_rcv_established")
+int BPF_PROG(sock_recvmsg, struct sock *sk, struct sk_buff *skb)
+{
+	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SLOT_TCP_BYTES_RECEIVED);
+}
+
+/* Lighter variants of the above that only record the cwnd */
+SEC("fentry/__tcp_transmit_skb")
+int BPF_PROG(cwnd_sock_sendmsg, struct sock *sk)
+{
+	return trace_cwnd(sk, &TCP_SEND_CWND_EVENTS, RB_CWND_SEND);
+}
+
+SEC("fentry/tcp_rcv_established")
+int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
+{
+	return trace_cwnd(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
+}
