@@ -1,13 +1,28 @@
+#[cfg(feature = "legacy")]
 use crate::duckdb::DuckDBTSDB;
+#[cfg(feature = "legacy")]
 use crate::error::TSDBError;
+#[cfg(feature = "legacy")]
 use crate::sqlite::SQLiteTSDB;
 use std::net::IpAddr;
 use std::cmp::Eq;
 use std::hash::Hash;
 
+#[cfg(feature = "legacy")]
 pub mod sqlite;
+pub mod v2;
+#[cfg(feature = "legacy")]
 pub mod duckdb;
+#[cfg(feature = "legacy")]
 pub mod error;
+
+// Schema v2 API under names that do not clash with the old one.
+pub use v2::{
+    create as create_store, detect_engine, open as open_store, BatchWriter, Catalog, ColType,
+    Column, ColumnData, CreateOptions, Dialect, Dir, Engine, EventBatch, EventTable,
+    IngestSession, SeriesInfo, SeriesKind, StatsAccumulator, Store, StoreError, Table, ValueKind,
+    SCHEMA_VERSION,
+};
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct IpTuple {
@@ -59,6 +74,7 @@ impl DataValue {
     pub(crate) const BOOLEAN: i16 = 2;
     pub(crate) const STRING: i16 = 3;
 
+    #[cfg(feature = "legacy")]
     pub fn type_from_int(val: i16) -> Result<Self, TSDBError> {
         match val {
             DataValue::INT => Ok(DataValue::Int(0)),
@@ -109,6 +125,7 @@ impl DataValue {
     }
 
     // SQLite-specific: maps the DataValue type to the corresponding column name
+    #[cfg(feature = "legacy")]
     pub(crate) fn column_name(&self) -> Result<&str, TSDBError> {
         match self.type_to_int() {
             DataValue::INT => Ok("value_integer"),
@@ -171,6 +188,7 @@ impl ToString for Condition {
     }
 }
 
+#[cfg(feature = "legacy")]
 pub trait TSDBInterface {
     // --- FLOW CREATION AND MANAGEMENT
     fn create_flow(&self, tuple: &IpTuple) -> Result<Flow, TSDBError>;
@@ -242,11 +260,13 @@ pub trait TSDBInterface {
     fn get_data_points_count(&self, series: &TimeSeries) -> Result<i64, TSDBError>;
 }
 
+#[cfg(feature = "legacy")]
 pub enum DBBackend {
     SQLite(String),
     DuckDB(String),
 }
 
+#[cfg(feature = "legacy")]
 pub fn database_factory(
     backend: DBBackend,
 ) -> Result<Box<dyn TSDBInterface + Send>, TSDBError> {
