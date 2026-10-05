@@ -23,7 +23,7 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP5 contract tests | done, reviewed, committed |
 | WP6 pipeline | done, reviewed, committed |
 | WP7 viz migration | done, reviewed, committed (GUI never run by an agent) |
-| WP8 cleanup, docs | not started |
+| WP8 cleanup, docs, build time | implementing (agent running) |
 | WP9 benchmarks | not started |
 
 Log (newest last):
