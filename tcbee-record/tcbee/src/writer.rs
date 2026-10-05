@@ -415,6 +415,62 @@ impl Drop for Writer {
     }
 }
 
+/// The file format of a record is its bincode 1 encoding: the fields of the `#[repr(C)]`
+/// struct back to back in little endian, without padding. On a little endian host that
+/// is the record's memory with the padding cut out, so it can be copied as a few byte
+/// ranges instead of serializing field by field.
+struct PackedLayout {
+    /// (offset, length) ranges of the record, in file order
+    runs: Vec<(usize, usize)>,
+}
+
+impl PackedLayout {
+    /// Derives the ranges from bincode itself: a value whose byte `i` is `i` serializes to
+    /// the source offset of every output byte. A second pattern checks that the output is
+    /// a plain copy of the input bytes. None if that does not hold for `T` (or `T` is too
+    /// large to number its bytes), the caller then uses bincode.
+    ///
+    /// `T` must be plain old data, valid for any bit pattern, like all record types.
+    fn of<T: Serialize + Copy>() -> Option<Self> {
+        let size = mem::size_of::<T>();
+        if size == 0 || size > usize::from(u8::MAX) + 1 {
+            return None;
+        }
+        let encode = |pattern: &dyn Fn(usize) -> u8| -> Option<Vec<u8>> {
+            let bytes: Vec<u8> = (0..size).map(pattern).collect();
+            let value = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const T) };
+            bincode::serialize(&value).ok()
+        };
+        let offsets = encode(&|i| i as u8)?;
+        let check = encode(&|i| !(i as u8))?;
+        if offsets.len() != check.len()
+            || offsets.iter().zip(&check).any(|(&off, &byte)| byte != !off)
+        {
+            return None;
+        }
+
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for off in offsets.iter().map(|&off| usize::from(off)) {
+            match runs.last_mut() {
+                Some((start, len)) if *start + *len == off => *len += 1,
+                _ => runs.push((off, 1)),
+            }
+        }
+        Some(Self { runs })
+    }
+
+    /// Writes the file bytes of one record. `entry` is at least `size_of::<T>()` long and
+    /// `out` has the record's encoded size.
+    #[inline]
+    fn write(&self, entry: &[u8], out: &mut [u8]) {
+        let mut pos = 0;
+        for &(off, len) in &self.runs {
+            out[pos..pos + len].copy_from_slice(&entry[off..off + len]);
+            pos += len;
+        }
+    }
+}
+
 struct MapWriterJob<T>
 where
     T: Serialize + Copy + Send + 'static,
@@ -422,7 +478,10 @@ where
     bytes_written: Arc<AtomicU64>,
     sink: Option<MmapBackedFile>,
     file_path: PathBuf,
-    record_size: Option<usize>,
+    /// Size of a record in the file without the delimiter
+    record_size: usize,
+    /// How the ring buffer bytes become file bytes, None to serialize with bincode
+    layout: Option<PackedLayout>,
     /// Records written so far
     records: u64,
     /// Records already added to `bytes_written`
@@ -444,6 +503,18 @@ where
             .max(WRITER_BUFFER_SIZE);
 
         let sink = MmapBackedFile::new(&file_path, chunk_bytes)?;
+        // Records are plain old data, all zeros is a valid value
+        let zero: T = unsafe { mem::zeroed() };
+        let record_size = bincode::serialized_size(&zero)
+            .map_err(|err| io::Error::new(ErrorKind::InvalidInput, err))?
+            as usize;
+        let layout = PackedLayout::of::<T>();
+        if layout.is_none() {
+            info!(
+                "No packed layout for {}, serializing with bincode",
+                std::any::type_name::<T>()
+            );
+        }
 
         info!(
             "Registered writer for type {} at {} (entry {} bytes, chunk {} bytes)",
@@ -457,7 +528,8 @@ where
             bytes_written,
             sink: Some(sink),
             file_path,
-            record_size: None,
+            record_size,
+            layout,
             records: 0,
             counted: 0,
             error: None,
@@ -493,23 +565,19 @@ where
         if entry.len() < mem::size_of::<T>() {
             return Err(JobError::ShortRecord(entry.len()));
         }
-        let value = unsafe { std::ptr::read_unaligned(entry.as_ptr() as *const T) };
 
-        // All record types have a fixed size, so it is computed only once
-        let size = match self.record_size {
-            Some(size) => size,
-            None => {
-                let size = bincode::serialized_size(&value).map_err(JobError::Serialize)? as usize;
-                self.record_size = Some(size);
-                size
-            }
-        };
-
+        let size = self.record_size;
         let buf = sink
             .reserve(size + RECORD_DELIMITER.len())
             .map_err(JobError::Io)?;
         let (record, delimiter) = buf.split_at_mut(size);
-        bincode::serialize_into(record, &value).map_err(JobError::Serialize)?;
+        match &self.layout {
+            Some(layout) => layout.write(entry, record),
+            None => {
+                let value = unsafe { std::ptr::read_unaligned(entry.as_ptr() as *const T) };
+                bincode::serialize_into(record, &value).map_err(JobError::Serialize)?;
+            }
+        }
         delimiter.copy_from_slice(&RECORD_DELIMITER);
         Ok(())
     }
@@ -522,10 +590,8 @@ where
         }
         self.counted = self.records;
         trace!("Wrote {} records to {}", new, self.file_path.display());
-        if let Some(size) = self.record_size {
-            let bytes = new * (size + RECORD_DELIMITER.len()) as u64;
-            self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
-        }
+        let bytes = new * (self.record_size + RECORD_DELIMITER.len()) as u64;
+        self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
     }
 
     fn flush(&mut self) -> Result<(), JobError> {
@@ -607,5 +673,70 @@ impl std::error::Error for JobError {
 impl From<io::Error> for JobError {
     fn from(err: io::Error) -> Self {
         JobError::Io(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tcbee_common::records::*;
+
+    use super::*;
+
+    /// xorshift64*, enough to fill records with arbitrary bytes
+    struct Rng(u64);
+
+    impl Rng {
+        fn bytes(&mut self, len: usize) -> Vec<u8> {
+            (0..len)
+                .map(|_| {
+                    self.0 ^= self.0 >> 12;
+                    self.0 ^= self.0 << 25;
+                    self.0 ^= self.0 >> 27;
+                    (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 56) as u8
+                })
+                .collect()
+        }
+    }
+
+    /// The packed copy must produce exactly the bincode encoding the file format is
+    /// defined by, for random field values (and random padding)
+    fn assert_packed_matches_bincode<T: Serialize + Copy>() {
+        let name = std::any::type_name::<T>();
+        let layout = PackedLayout::of::<T>().unwrap_or_else(|| panic!("no layout for {name}"));
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ mem::size_of::<T>() as u64);
+        for _ in 0..1000 {
+            let entry = rng.bytes(mem::size_of::<T>());
+            let value = unsafe { std::ptr::read_unaligned(entry.as_ptr() as *const T) };
+            let expected = bincode::serialize(&value).unwrap();
+            let mut packed = vec![0u8; expected.len()];
+            layout.write(&entry, &mut packed);
+            assert_eq!(packed, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn packed_layout_matches_bincode() {
+        assert_packed_matches_bincode::<tcp4_packet_trace>();
+        assert_packed_matches_bincode::<tcp6_packet_trace>();
+        assert_packed_matches_bincode::<sock_trace_entry>();
+        assert_packed_matches_bincode::<cwnd_trace_entry>();
+        assert_packed_matches_bincode::<cubic_trace_entry>();
+        assert_packed_matches_bincode::<bbr_trace_entry>();
+        assert_packed_matches_bincode::<tcp_probe_entry>();
+        assert_packed_matches_bincode::<tcp_retransmit_synack_entry>();
+        assert_packed_matches_bincode::<tcp_bad_csum_entry>();
+    }
+
+    #[test]
+    fn packed_layout_rejects_non_copies() {
+        // An encoding that is not a plain copy of the record's bytes
+        #[derive(Clone, Copy)]
+        struct Shifted(u32);
+        impl Serialize for Shifted {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_u32(self.0.wrapping_add(1))
+            }
+        }
+        assert!(PackedLayout::of::<Shifted>().is_none());
     }
 }
