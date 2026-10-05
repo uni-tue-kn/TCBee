@@ -7,6 +7,23 @@ on:
     branches: [ "main"]
 
 jobs:
+  record:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y clang libclang-dev libelf-dev zlib1g-dev pkg-config make
+
+    - name: TCBee-Record Build
+      run: cd tcbee-record && cargo build --release
+
   build:
     runs-on: ubuntu-latest
 
@@ -16,6 +33,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    # Only tcbee-live still builds its eBPF programs with aya
     - name: Install Rust Nightly
       run: rustup toolchain install nightly --component rust-src
 
@@ -24,9 +42,6 @@ jobs:
         sudo apt update
         sudo apt install -y llvm clang libelf-dev libclang-dev pkg-config cmake fontconfig libfontconfig1-dev libgl-dev libegl-dev
         cargo install bpf-linker
-
-    - name: TCBee-Record Build
-      run: cd tcbee-record && cargo build --release
 
     - name: TCBee-Process Build
       run: cd tcbee-process && cargo build --release --features ts_storage/bundled
