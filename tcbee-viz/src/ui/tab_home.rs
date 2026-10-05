@@ -12,17 +12,21 @@ pub struct TabHome {
     status: String,
     /// The status is the error of a failed open.
     status_is_error: bool,
+    /// Full text of the error, shown on request below the summary.
+    error_details: Option<String>,
 }
 
 impl TabHome {
     pub fn set_status(&mut self, status: String) {
         self.status = status;
         self.status_is_error = false;
+        self.error_details = None;
     }
 
-    pub fn set_error(&mut self, status: String) {
-        self.status = status;
+    pub fn set_error(&mut self, summary: String, details: Option<String>) {
+        self.status = summary;
         self.status_is_error = true;
+        self.error_details = details;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &mut DbBackend, _settings: &mut AppSettings) {
@@ -77,7 +81,7 @@ impl TabHome {
                                 self.set_status(format!("Connected: {}", path.to_string_lossy()));
                             }
                             Err(e) => {
-                                self.set_error(format!("Error: {}", e));
+                                self.set_error(format!("Error: {}", e.summary), e.details);
                             }
                         }
                     }
@@ -86,6 +90,15 @@ impl TabHome {
                 ui.add_space(8.0);
                 if self.status_is_error {
                     ui.label(RichText::new(&self.status).color(theme::ERROR));
+                    if let Some(details) = &self.error_details {
+                        egui::CollapsingHeader::new("Details")
+                            .id_salt("open_error_details")
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                                    ui.add(egui::Label::new(RichText::new(details).monospace()));
+                                });
+                            });
+                    }
                 } else if db.is_connected() {
                     ui.label(RichText::new(&self.status).color(theme::SUCCESS));
                 } else {

@@ -1,5 +1,5 @@
 use std::cell::{OnceCell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ts_storage::{DataPoint, DataValue, Engine, Flow, SeriesInfo, SeriesKind, Store, StoreError};
 
@@ -29,16 +29,86 @@ pub fn engine_name(engine: Engine) -> &'static str {
 
 /// Error text for the UI. Only a disabled engine gets a message of its own; the other errors
 /// are shown as ts-storage words them (a v1 file already says to reprocess the trace).
-pub fn describe_open_error(e: &StoreError) -> String {
+pub fn describe_open_error(e: &StoreError, path: &Path) -> OpenError {
     match e {
         StoreError::EngineDisabled(engine) => {
             let (name, feature) = engine_info(*engine);
-            format!(
+            OpenError::short(format!(
                 "This file is a {name} database, but this build does not include {name} \
                  support. Rebuild with `--features {feature}`."
-            )
+            ))
         }
-        other => other.to_string(),
+        StoreError::UnsupportedSchema { .. } => OpenError::short(e.to_string()),
+        other => {
+            let full = other.to_string();
+            if full.contains("WAL") && wal_path(path).exists() {
+                let name = file_name(path);
+                return OpenError {
+                    summary: format!(
+                        "Could not open {name}: the {name}.wal next to it cannot be replayed. \
+                         Delete it if it belongs to an older database."
+                    ),
+                    details: Some(full),
+                };
+            }
+            OpenError::from_text(full)
+        }
+    }
+}
+
+/// `x.duck` -> `x.duck.wal`
+fn wal_path(path: &Path) -> PathBuf {
+    let mut wal = path.as_os_str().to_owned();
+    wal.push(".wal");
+    PathBuf::from(wal)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Longest summary line shown to the user; the rest goes into the details.
+const SUMMARY_CHARS: usize = 140;
+
+/// An error of opening a file: one line for the user, the full text on request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenError {
+    pub summary: String,
+    pub details: Option<String>,
+}
+
+impl OpenError {
+    fn short(summary: String) -> Self {
+        Self {
+            summary,
+            details: None,
+        }
+    }
+
+    /// The first line of `full` (cut to `SUMMARY_CHARS`) is the summary. The full text is kept as
+    /// details when it has more than that.
+    fn from_text(full: String) -> Self {
+        let first = full
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
+        let summary = if first.chars().count() > SUMMARY_CHARS {
+            let cut: String = first.chars().take(SUMMARY_CHARS).collect();
+            format!("{}…", cut.trim_end())
+        } else {
+            first.to_string()
+        };
+        let details = (summary != full.trim()).then_some(full);
+        Self { summary, details }
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.summary)
     }
 }
 
@@ -52,8 +122,8 @@ pub struct DbBackend {
 }
 
 impl DbBackend {
-    pub fn open(path: PathBuf) -> Result<Self, String> {
-        let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e))?;
+    pub fn open(path: PathBuf) -> Result<Self, OpenError> {
+        let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e, &path))?;
         Ok(Self {
             store: Some(store),
             ..Self::default()
@@ -690,16 +760,55 @@ mod tests {
         assert!(DbBackend::open(junk).is_err());
         assert!(DbBackend::open(dir.path().join("missing.db")).is_err());
 
-        let msg = describe_open_error(&StoreError::EngineDisabled(Engine::DuckDb));
+        let p = Path::new("x.db");
+        let msg = describe_open_error(&StoreError::EngineDisabled(Engine::DuckDb), p).summary;
         assert_eq!(
             msg,
             "This file is a DuckDB database, but this build does not include DuckDB support. \
              Rebuild with `--features duckdb`."
         );
-        let msg = describe_open_error(&StoreError::EngineDisabled(Engine::Sqlite));
+        let msg = describe_open_error(&StoreError::EngineDisabled(Engine::Sqlite), p).summary;
         assert!(msg.contains("--features sqlite"), "{msg}");
-        let msg = describe_open_error(&StoreError::UnsupportedSchema { found: None });
+        let msg = describe_open_error(&StoreError::UnsupportedSchema { found: None }, p).summary;
         assert!(msg.contains("reprocess the trace"), "{msg}");
+    }
+
+    #[test]
+    fn long_errors_get_a_one_line_summary_and_details() {
+        let full = format!(
+            "DuckDB error: {}\nStack Trace:\n/usr/lib/libduckdb.so+0x56",
+            "x".repeat(400)
+        );
+        let err = OpenError::from_text(full.clone());
+        assert!(!err.summary.contains('\n'));
+        assert!(
+            err.summary.chars().count() <= SUMMARY_CHARS + 1,
+            "{}",
+            err.summary
+        );
+        assert_eq!(err.details.as_deref(), Some(full.as_str()));
+
+        let err = OpenError::from_text("no such file".to_string());
+        assert_eq!(err.summary, "no such file");
+        assert_eq!(err.details, None);
+    }
+
+    #[test]
+    fn stale_wal_is_named_in_the_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("old.duck");
+        let cause = StoreError::Io(std::io::Error::other(
+            "INTERNAL Error: Failure while replaying WAL file \"old.duck.wal\"\nStack Trace:",
+        ));
+
+        let without_wal = describe_open_error(&cause, &db);
+        assert!(!without_wal.summary.contains("Delete it"), "{without_wal}");
+
+        std::fs::write(wal_path(&db), b"x").unwrap();
+        let with_wal = describe_open_error(&cause, &db);
+        assert!(with_wal.summary.contains("Delete it"), "{with_wal}");
+        assert!(with_wal.summary.chars().count() < 160, "{with_wal}");
+        assert!(with_wal.details.unwrap().contains("Stack Trace"));
     }
 
     #[test]
@@ -720,7 +829,10 @@ mod tests {
             bytes.extend([0u8; 64]);
             std::fs::write(&p, bytes).unwrap();
             let err = DbBackend::open(p).err().unwrap();
-            assert!(err.contains("does not include DuckDB support"), "{err}");
+            assert!(
+                err.summary.contains("does not include DuckDB support"),
+                "{err}"
+            );
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -729,7 +841,10 @@ mod tests {
             bytes.extend([0u8; 64]);
             std::fs::write(&p, bytes).unwrap();
             let err = DbBackend::open(p).err().unwrap();
-            assert!(err.contains("does not include SQLite support"), "{err}");
+            assert!(
+                err.summary.contains("does not include SQLite support"),
+                "{err}"
+            );
         }
     }
 }
