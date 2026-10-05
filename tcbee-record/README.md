@@ -26,8 +26,13 @@ cargo run --release --config 'target."cfg(all())".runner="sudo -E"' -- -h eth0 -
 ```
 
 The build script compiles `tcbee/src/bpf/tcbee.bpf.c` with clang against the vendored
-`vmlinux.h` and embeds it through a libbpf-rs skeleton. Kernel struct offsets are relocated
-against the running kernel's BTF at load time (CO-RE), so one binary runs on different kernels.
+`vmlinux.h` and embeds it through a libbpf-rs skeleton. The header contains only the kernel
+declarations this program uses, based on a `bpftool btf dump` of the BTF from
+`7.2.6-arch2-1` on x86_64. The full generated snapshot is retained in git history at
+`62d6a14` (SHA-256: `a6f878f35ad62431d24155959ec44570b7d8c3faab90f5ea796f2b75d5e28dbf`).
+Builds do not need `bpftool` or the build host's kernel BTF. Kernel struct offsets are
+relocated against the running kernel's BTF at load time (CO-RE), so one binary runs on
+different kernels. Update the compact header when the BPF program reads new kernel fields.
 
 By default libbpf is linked statically and libelf and zlib dynamically. Release builds use
 

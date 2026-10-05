@@ -7,6 +7,14 @@ tcbee-process: fully static binary, no runtime system library dependencies.
 tcbee-viz, tcbee-live: dynamically linked; require libGL/libEGL and
   Wayland or X11 libraries from the host system at runtime.
 
+The tcbee-record source includes a compact vmlinux.h derived from Linux kernel
+BTF. It is not covered by this repository's MIT license. The source snapshot
+and its provenance are described in tcbee-record/README.md. The Linux kernel
+is licensed under GPL-2.0-only; its Linux-syscall-note exception applies to
+UAPI headers and should not be assumed for these internal kernel structures.
+Kernel license terms: https://www.kernel.org/doc/html/latest/process/license-rules.html
+GPL-2.0-only license text: LICENSES/GPL-2.0-only.txt
+
 ===============================================================================
 DuckDB
 https://github.com/duckdb/duckdb
