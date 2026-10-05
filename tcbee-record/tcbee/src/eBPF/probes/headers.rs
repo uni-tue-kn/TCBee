@@ -56,13 +56,16 @@ impl TcAttachment {
         };
         if created {
             match clsact(ifindex, libbpf_sys::bpf_tc_hook_destroy) {
-                Ok(()) => info!("Removed clsact qdisc from interface {}", ifindex),
+                Ok(()) => {
+                    info!("Removed clsact qdisc from interface {}", ifindex);
+                    return;
+                }
+                // At least take our programs out of the datapath
                 Err(err) => warn!(
-                    "Removing clsact qdisc from interface {} failed: {}",
+                    "Removing clsact qdisc from interface {} failed, detaching the filters: {}",
                     ifindex, err
                 ),
             }
-            return;
         }
         for mut filter in filters {
             if let Err(err) = filter.detach() {
