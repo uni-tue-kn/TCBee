@@ -209,12 +209,14 @@ impl EbpfRunner {
         let filter_mode = self.config.filter.mode();
         let filter_rules = self.config.filter.rule_flags();
         let flow_tracking = self.config.do_tui as u8;
+        let submit_flags = self.config.poll_mode.submit_flags();
         let mut loader = EbpfLoader::new();
         loader
             .override_global("FILTER_PORT", &self.config.filter.single_port, true)
             .override_global("FILTER_MODE", &filter_mode, true)
             .override_global("FILTER_RULE_FLAGS", &filter_rules, true)
-            .override_global("FLOW_TRACKING", &flow_tracking, true);
+            .override_global("FLOW_TRACKING", &flow_tracking, true)
+            .override_global("RB_SUBMIT_FLAGS", &submit_flags, true);
         for (name, size) in &self.config.ringbuf_sizes {
             loader.map_max_entries(name, *size);
         }
@@ -235,7 +237,7 @@ impl EbpfRunner {
         // TODO: I feel that the dir should be passed to the writer, and the Tracers should just add the filename
 
         // This is the backend writer thread that reads and writes data to files
-        let mut writer = Writer::new();
+        let mut writer = Writer::new(self.config.poll_mode);
         let mut watcher_config = self.config.watcher_config();
 
         // Tracing for packet headers via TC and XDP

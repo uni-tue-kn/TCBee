@@ -13,6 +13,7 @@ use eBPF::ebpf_runner_config::{
     ip_to_filter_addr, parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig,
 };
 use tcbee_trace::TCBeeTrace;
+use writer::PollMode;
 
 // Error handling
 use log::info;
@@ -77,6 +78,7 @@ fn main() -> anyhow::Result<()> {
     let mut metrics: bool = false;
     let mut duration: f64 = 0.0;
     let mut ringbuf_size: String = String::new();
+    let mut poll: String = "busy".to_string();
 
     {
         let mut argparser = ArgumentParser::new();
@@ -174,6 +176,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "Stop recording after this many seconds. Use 0 to record until stopped. Default is 0.",
         );
+        argparser.refer(&mut poll).add_option(
+            &["--poll"],
+            Store,
+            "How writer threads wait for records: 'busy' spins and uses one core per ring buffer, 'wait' blocks until the kernel signals new records. Default is busy.",
+        );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
@@ -201,6 +208,11 @@ fn main() -> anyhow::Result<()> {
     };
 
     let ringbuf_sizes = parse_ringbuf_sizes(&ringbuf_size)?;
+    let poll_mode = match poll.as_str() {
+        "busy" => PollMode::Busy,
+        "wait" => PollMode::Wait,
+        other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
+    };
 
     if !(duration >= 0.0 && duration.is_finite()) {
         return Err(anyhow!("--duration must be a non-negative number of seconds"));
@@ -238,6 +250,7 @@ fn main() -> anyhow::Result<()> {
         .metrics(metrics)
         .algorithms(trace_algorithms)
         .ringbuf_sizes(ringbuf_sizes)
+        .poll_mode(poll_mode)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints

@@ -1,6 +1,8 @@
 use std::net::IpAddr;
 
 use anyhow::anyhow;
+
+use crate::writer::PollMode;
 use tcbee_common::{filter::*, stats::RINGBUFS};
 
 #[derive(Default, Debug, Clone)]
@@ -144,6 +146,7 @@ pub struct EbpfRunnerConfig {
     pub algorithms: bool,
     pub dir: String,
     pub ringbuf_sizes: Vec<(&'static str, u32)>,
+    pub poll_mode: PollMode,
 }
 
 #[derive(Default)]
@@ -231,6 +234,11 @@ impl EbpfRunnerConfig {
 
     pub fn algorithms(mut self, set: bool) -> EbpfRunnerConfig {
         self.algorithms = set;
+        self
+    }
+
+    pub fn poll_mode(mut self, mode: PollMode) -> EbpfRunnerConfig {
+        self.poll_mode = mode;
         self
     }
 

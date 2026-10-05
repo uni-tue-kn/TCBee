@@ -3,6 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, ErrorKind},
     mem,
+    os::fd::{AsRawFd, RawFd},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -26,7 +27,31 @@ const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 /// Each registered ring buffer gets its own dedicated OS thread so that a busy
 /// probe cannot starve others. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so
 /// one thread per buffer is both the safe and the optimal arrangement.
+/// How writer threads wait for new records
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PollMode {
+    /// Spin on the ring buffer. Lowest latency, but every writer thread uses a full core.
+    #[default]
+    Busy,
+    /// Block in poll() until the kernel signals new records.
+    Wait,
+}
+
+impl PollMode {
+    /// Ring buffer submit flags the eBPF programs have to use for this mode
+    pub fn submit_flags(self) -> u64 {
+        match self {
+            PollMode::Busy => aya_obj::generated::BPF_RB_NO_WAKEUP as u64,
+            PollMode::Wait => 0,
+        }
+    }
+}
+
+/// Upper bound for a blocking wait, so that a stop request is noticed
+const WAIT_TIMEOUT_MS: i32 = 100;
+
 pub struct Writer {
+    poll_mode: PollMode,
     running: Arc<AtomicBool>,
     handles: Vec<(WriterReport, JoinHandle<Result<u64, JobError>>)>,
     /// CPU IDs to pin writer threads to, assigned round-robin.
@@ -36,8 +61,9 @@ pub struct Writer {
 }
 
 impl Writer {
-    pub fn new() -> Self {
+    pub fn new(poll_mode: PollMode) -> Self {
         Writer {
+            poll_mode,
             running: Arc::new(AtomicBool::new(true)),
             handles: Vec::new(),
             cpu_pool: Vec::new(),
@@ -87,7 +113,8 @@ impl Writer {
             records: 0,
             error: None,
         };
-        let handle = thread::spawn(move || job_loop(Box::new(job), running, cpu));
+        let poll_mode = self.poll_mode;
+        let handle = thread::spawn(move || job_loop(Box::new(job), running, cpu, poll_mode));
         self.handles.push((report, handle));
 
         Ok(())
@@ -142,6 +169,7 @@ fn job_loop(
     mut job: Box<dyn Job>,
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
+    poll_mode: PollMode,
 ) -> Result<u64, JobError> {
     if let Some(cpu_id) = cpu {
         pin_to_cpu(cpu_id);
@@ -150,8 +178,13 @@ fn job_loop(
     let mut records: u64 = 0;
     let result = (|| {
         while running.load(Ordering::Relaxed) {
-            records += job.poll()?;
-            thread::yield_now();
+            let read = job.poll()?;
+            records += read;
+            match poll_mode {
+                PollMode::Busy => thread::yield_now(),
+                PollMode::Wait if read == 0 => wait_readable(job.fd()),
+                PollMode::Wait => {}
+            }
         }
         // Drain what was submitted before the programs were detached
         loop {
@@ -184,6 +217,16 @@ fn job_loop(
     }
 
     result.and(flushed).map(|_| records)
+}
+
+fn wait_readable(fd: RawFd) {
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // Errors and timeouts only lead to another poll of the ring buffer
+    unsafe { libc::poll(&mut pollfd, 1, WAIT_TIMEOUT_MS) };
 }
 
 const MIN_MMAP_GROWTH: usize = 64 * 1024;
@@ -281,12 +324,6 @@ impl MmapBackedFile {
     }
 }
 
-impl Default for Writer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Drop for Writer {
     fn drop(&mut self) {
         if self.handles.is_empty() {
@@ -301,6 +338,8 @@ impl Drop for Writer {
 
 trait Job: Send {
     fn name(&self) -> &str;
+    /// File descriptor of the ring buffer, readable when records are available
+    fn fd(&self) -> RawFd;
     /// Writes all records that are currently in the ring buffer, returns their count.
     fn poll(&mut self) -> Result<u64, JobError>;
     fn flush(&mut self) -> Result<(), JobError>;
@@ -354,6 +393,10 @@ where
 {
     fn name(&self) -> &str {
         self.file_path.to_str().unwrap_or("<unknown>")
+    }
+
+    fn fd(&self) -> RawFd {
+        self.map.as_raw_fd()
     }
 
     fn poll(&mut self) -> Result<u64, JobError> {

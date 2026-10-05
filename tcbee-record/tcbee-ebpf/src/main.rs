@@ -50,6 +50,10 @@ static mut FILTER_PORT: u16 = 0;
 static mut FILTER_MODE: u32 = tcbee_common::filter::FILTER_MODE_NONE;
 #[no_mangle]
 static mut FILTER_RULE_FLAGS: u32 = 0;
+// Ring buffer submit flags. BPF_RB_NO_WAKEUP while the writers busy-poll, 0 when they
+// block in poll() and need to be woken up.
+#[no_mangle]
+static RB_SUBMIT_FLAGS: u64 = 1;
 // Set to 0 by userspace when the flow list is not displayed
 #[no_mangle]
 static FLOW_TRACKING: u8 = 1;

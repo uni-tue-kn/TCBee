@@ -5,6 +5,8 @@ use tcbee_common::stats::{
     slot, STATS_LEN, STAT_ATTEMPTED, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
 };
 
+use crate::RB_SUBMIT_FLAGS;
+
 // Per ring buffer [attempted, handled, dropped, error] counters, see tcbee_common::stats
 #[map(name = "STATS")]
 static STATS: PerCpuArray<u64> = PerCpuArray::with_max_entries(STATS_LEN, 0);
@@ -37,8 +39,7 @@ pub fn submit<T: 'static>(ringbuf: &RingBuf, rb: u32, value: T) {
     match ringbuf.reserve::<T>(0) {
         Some(mut entry) => {
             entry.write(value);
-            // BPF_RB_NO_WAKEUP: the writer threads busy-poll
-            entry.submit(1);
+            entry.submit(unsafe { core::ptr::read_volatile(&raw const RB_SUBMIT_FLAGS) });
             add_stat(slot(rb, STAT_HANDLED), 1);
         }
         None => add_stat(slot(rb, STAT_DROPPED), 1),
