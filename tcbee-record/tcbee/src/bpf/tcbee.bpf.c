@@ -176,3 +176,159 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 	submit(&TCP_BAD_CSUM_QUEUE, RB_BAD_CSUM, &rec);
 	return 0;
 }
+
+/* ---- TC packet tracer (-h) ------------------------------------------------------- */
+
+/*
+ * Plain wire formats. The vmlinux.h variants carry preserve_access_index, which would
+ * add pointless CO-RE relocations for fixed uapi layouts.
+ */
+struct tc_ipv4_hdr {
+	__u8 version_ihl;
+	__u8 tos;
+	__be16 tot_len;
+	__be16 id;
+	__be16 frag_off;
+	__u8 ttl;
+	__u8 protocol;
+	__sum16 check;
+	__be32 saddr;
+	__be32 daddr;
+};
+
+struct tc_ipv6_hdr {
+	__be32 version_tc_flow;
+	__be16 payload_len;
+	__u8 nexthdr;
+	__u8 hop_limit;
+	__u8 saddr[16];
+	__u8 daddr[16];
+};
+
+struct tc_tcp_hdr {
+	__be16 source;
+	__be16 dest;
+	__be32 seq;
+	__be32 ack_seq;
+	__u8 doff_res;
+	__u8 flags; /* CWR ECE URG ACK PSH RST SYN FIN */
+	__be16 window;
+	__sum16 check;
+	__be16 urg_ptr;
+};
+
+#define TC_ETH_HLEN 14
+#define TC_ETH_PROTO_OFF 12
+_Static_assert(sizeof(struct tc_ipv4_hdr) == 20, "ipv4 header");
+_Static_assert(sizeof(struct tc_ipv6_hdr) == 40, "ipv6 header");
+_Static_assert(sizeof(struct tc_tcp_hdr) == 20, "tcp header");
+
+/*
+ * Every early return happens before the filter, so a packet that passes the filter is
+ * always counted as attempted and then as handled or dropped. IPv6 extension headers
+ * are not parsed, nexthdr must be TCP directly.
+ */
+static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 rb4_id, void *rb6,
+					__u32 rb6_id)
+{
+	struct tc_tcp_hdr tcp;
+	struct ip_tuple t;
+	__be16 proto;
+
+	if (bpf_skb_load_bytes(skb, TC_ETH_PROTO_OFF, &proto, sizeof(proto)))
+		return TC_ACT_UNSPEC;
+
+	__builtin_memset(&t, 0, sizeof(t));
+	t.protocol = IPPROTO_TCP;
+
+	if (proto == bpf_htons(ETH_P_IP)) {
+		struct tcp4_packet_trace rec = {};
+		struct tc_ipv4_hdr ip;
+		__u32 ip_hlen;
+
+		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN, &ip, sizeof(ip)))
+			return TC_ACT_UNSPEC;
+		/* Non-first fragments carry no TCP header */
+		if (ip.protocol != IPPROTO_TCP || (bpf_ntohs(ip.frag_off) & IP_OFFSET))
+			return TC_ACT_UNSPEC;
+		ip_hlen = (ip.version_ihl & 0x0F) << 2;
+		if (ip_hlen < sizeof(ip))
+			ip_hlen = sizeof(ip);
+		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN + ip_hlen, &tcp, sizeof(tcp)))
+			return TC_ACT_UNSPEC;
+
+		rec.saddr = bpf_ntohl(ip.saddr);
+		rec.daddr = bpf_ntohl(ip.daddr);
+		rec.sport = bpf_ntohs(tcp.source);
+		rec.dport = bpf_ntohs(tcp.dest);
+		__builtin_memcpy(t.src_ip, &ip.saddr, 4);
+		__builtin_memcpy(t.dst_ip, &ip.daddr, 4);
+		t.sport = rec.sport;
+		t.dport = rec.dport;
+		if (!filter_ports_match(rec.sport, rec.dport) ||
+		    (filter_needs_tuple() && !filter_tuple_match(&t)))
+			return TC_ACT_UNSPEC;
+
+		count_attempt(rb4_id);
+		rec.time = bpf_ktime_get_ns();
+		rec.seq = bpf_ntohl(tcp.seq);
+		rec.ack = bpf_ntohl(tcp.ack_seq);
+		rec.window = bpf_ntohs(tcp.window);
+		rec.flags = tcp.flags;
+		submit(rb4, rb4_id, &rec);
+
+		flow_track(&t);
+	} else if (proto == bpf_htons(ETH_P_IPV6)) {
+		struct tcp6_packet_trace rec = {};
+		struct tc_ipv6_hdr ip6;
+
+		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN, &ip6, sizeof(ip6)))
+			return TC_ACT_UNSPEC;
+		if (ip6.nexthdr != IPPROTO_TCP)
+			return TC_ACT_UNSPEC;
+		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN + sizeof(ip6), &tcp, sizeof(tcp)))
+			return TC_ACT_UNSPEC;
+
+		rec.sport = bpf_ntohs(tcp.source);
+		rec.dport = bpf_ntohs(tcp.dest);
+		__builtin_memcpy(t.src_ip, ip6.saddr, 16);
+		__builtin_memcpy(t.dst_ip, ip6.daddr, 16);
+		t.sport = rec.sport;
+		t.dport = rec.dport;
+		if (!filter_ports_match(rec.sport, rec.dport) ||
+		    (filter_needs_tuple() && !filter_tuple_match(&t)))
+			return TC_ACT_UNSPEC;
+
+		count_attempt(rb6_id);
+		rec.time = bpf_ktime_get_ns();
+		__builtin_memcpy(rec.saddr_v6, ip6.saddr, 16);
+		__builtin_memcpy(rec.daddr_v6, ip6.daddr, 16);
+		rec.seq = bpf_ntohl(tcp.seq);
+		rec.ack = bpf_ntohl(tcp.ack_seq);
+		rec.window = bpf_ntohs(tcp.window);
+		rec.flags = tcp.flags;
+		submit(rb6, rb6_id, &rec);
+
+		flow_track(&t);
+	}
+
+	/*
+	 * TC_ACT_UNSPEC hands the packet to the next program unchanged. TC_ACT_OK would end
+	 * the chain on tcx and skip programs attached after this one.
+	 */
+	return TC_ACT_UNSPEC;
+}
+
+SEC("tc")
+int tc_ingress_packet_tracer(struct __sk_buff *skb)
+{
+	return trace_packet(skb, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS, &TCP6_PACKETS_INGRESS,
+			    RB_TCP6_INGRESS);
+}
+
+SEC("tc")
+int tc_egress_packet_tracer(struct __sk_buff *skb)
+{
+	return trace_packet(skb, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS, &TCP6_PACKETS_EGRESS,
+			    RB_TCP6_EGRESS);
+}
