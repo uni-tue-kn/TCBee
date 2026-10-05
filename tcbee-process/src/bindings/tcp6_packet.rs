@@ -28,7 +28,7 @@ impl FromBuffer for Tcp6Packet {
             try_deserialize.unwrap()
         }
     }
-    const ENTRY_SIZE: usize = 64;
+    const ENTRY_SIZE: usize = 59;
 }
 
 impl EventIndexer for Tcp6Packet {
