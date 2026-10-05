@@ -6,12 +6,15 @@ use aya_ebpf::{
 use crate::{
     config::{AF_INET, TCP_BAD_CSUM_BUF_SIZE},
     counters::{count_attempt, count_error, submit},
-    filter::filter_ports_match,
+    filter::{filter_needs_tuple, filter_ports_match, filter_tuple_match},
 };
 
 // Kernel tracepoint data structs
 use tcbee_common::{
-    bindings::tcp_bad_csum::{tcp_bad_csum_entry, trace_event_raw_tcp_bad_csum},
+    bindings::{
+        flow::IpTuple,
+        tcp_bad_csum::{tcp_bad_csum_entry, trace_event_raw_tcp_bad_csum},
+    },
     stats::RB_BAD_CSUM,
 };
 
@@ -35,10 +38,34 @@ pub fn try_tcp_bad_csum(ctx: TracePointContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
+    // sin_addr is at offset 4, sin6_addr at offset 8
+    let is_ipv4 = u16::from_ne_bytes([event.saddr[0], event.saddr[1]]) == AF_INET;
+    if filter_needs_tuple() {
+        let mut src_ip = [0u8; 16];
+        let mut dst_ip = [0u8; 16];
+        if is_ipv4 {
+            src_ip[..4].copy_from_slice(&event.saddr[4..8]);
+            dst_ip[..4].copy_from_slice(&event.daddr[4..8]);
+        } else {
+            src_ip.copy_from_slice(&event.saddr[8..24]);
+            dst_ip.copy_from_slice(&event.daddr[8..24]);
+        }
+        let tuple = IpTuple {
+            src_ip,
+            dst_ip,
+            sport,
+            dport,
+            protocol: 6,
+        };
+        if !filter_tuple_match(&tuple) {
+            return Ok(0);
+        }
+    }
+
     // The record only holds IPv4 addresses, leave them zero for IPv6
     let mut saddr = [0u8; 4];
     let mut daddr = [0u8; 4];
-    if u16::from_ne_bytes([event.saddr[0], event.saddr[1]]) == AF_INET {
+    if is_ipv4 {
         saddr.copy_from_slice(&event.saddr[4..8]);
         daddr.copy_from_slice(&event.daddr[4..8]);
     }
