@@ -28,6 +28,11 @@ libbpf-rs = "0.27"
 anyhow = { workspace = true, default-features = true }
 libbpf-cargo = "0.27"
 
+[features]
+# Link libbpf, libelf and zlib statically (built from source), so the binary does not
+# depend on the host's libelf. Used for release builds.
+static = ["libbpf-rs/vendored"]
+
 [[bin]]
 name = "tcbee-record"
 path = "src/main.rs"
