@@ -24,3 +24,6 @@ thiserror = "1.0.60"
 [[test]]
 name = "duckdb"
 required-features = ["legacy"]
+
+[dev-dependencies]
+tempfile = "3"

@@ -129,8 +129,10 @@ pub fn zeta_batch(rows: &[ZetaRow]) -> EventBatch {
 }
 
 /// `(flow_id, ts, seq, b, w)`: one row of the `ALPHA` table (direction none).
+#[cfg(feature = "duckdb")]
 pub type AlphaRow = (i64, i64, i64, bool, u16);
 
+#[cfg(feature = "duckdb")]
 pub fn alpha_batch(rows: &[AlphaRow]) -> EventBatch {
     let mut b = EventBatch::new(&ALPHA, rows.len());
     for (flow, ts, seq, x, w) in rows {

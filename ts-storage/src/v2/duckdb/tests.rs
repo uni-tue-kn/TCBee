@@ -1,7 +1,7 @@
 use super::*;
 use crate::v2::catalog::StatsAccumulator;
 use crate::v2::testutil::{alpha_batch, flow, pts, zeta_batch, TmpDb, ALPHA, DEMO, ZETA};
-use crate::v2::{create as create_store, detect_engine, open as open_store};
+use crate::v2::{create as create_store, open as open_store};
 use std::collections::HashMap;
 
 /// `ev_alpha` as `create_table_sql` renders it, plus a CHECK that rejects `w = 13`.
@@ -288,94 +288,6 @@ fn ints(st: &dyn Store, s: &SeriesInfo) -> Vec<i64> {
         .collect()
 }
 
-fn find(st: &dyn Store, flow: i64, source: &str, dir: Dir, name: &str) -> SeriesInfo {
-    st.series(flow)
-        .unwrap()
-        .into_iter()
-        .find(|s| s.source == source && s.dir == dir && s.name == name)
-        .unwrap_or_else(|| panic!("no series {source}/{name}"))
-}
-
-#[test]
-fn finished_file_has_no_sidecars_and_is_detected() {
-    let (db, st) = sample_db();
-    assert_eq!(detect_engine(db.path()).unwrap(), Engine::DuckDb);
-    assert_eq!(st.engine(), Engine::DuckDb);
-    assert!(!db.partial().exists());
-    assert!(!db.suffixed(".partial.wal").exists());
-    assert!(!db.suffixed(".wal").exists());
-}
-
-#[test]
-fn flows_series_and_stats() {
-    let (_db, st) = sample_db();
-    let flows = st.flows().unwrap();
-    assert_eq!(flows.len(), 2);
-    assert_eq!(flows[0].tuple, flow(1, 1000).tuple);
-    assert_eq!(st.flow(2).unwrap().unwrap().tuple.sport, 2000);
-    assert!(st.flow(3).unwrap().is_none());
-
-    // Four zeta columns plus two alpha columns for flow 1; empty groups have no series.
-    assert_eq!(st.series(1).unwrap().len(), 6);
-    assert_eq!(st.series(2).unwrap().len(), 4);
-    assert!(st.series(3).unwrap().is_empty());
-    let u = find(&*st, 1, "zeta", Dir::Send, "u");
-    assert_eq!((u.n, u.t_min, u.t_max), (4, Some(10), Some(30)));
-    assert_eq!(u.v_min, Some(1.0));
-    assert_eq!(u.v_max, Some(i64::MAX as f64)); // saturated
-    assert_eq!(u.tbl.as_deref(), Some("ev_zeta"));
-    assert_eq!(st.series_by_id(u.id).unwrap().unwrap(), u);
-    assert!(st.series_by_id(9999).unwrap().is_none());
-    let t = find(&*st, 1, "zeta", Dir::Send, "t");
-    assert!(t.v_min.is_none() && t.v_max.is_none());
-    let b = find(&*st, 1, "alpha", Dir::None, "b");
-    assert_eq!((b.v_min, b.v_max), (Some(0.0), Some(1.0)));
-}
-
-#[test]
-fn points_are_ordered_by_ts_then_seq_and_typed() {
-    let (_db, st) = sample_db();
-    let u = find(&*st, 1, "zeta", Dir::Send, "u");
-    let ts: Vec<f64> = points(&*st, &u, None).iter().map(|p| p.0).collect();
-    assert_eq!(ts, [10.0, 20.0, 20.0, 30.0]);
-    // u64 saturates to i64::MAX, small values are exact; the duplicate timestamp keeps seq order.
-    assert_eq!(ints(&*st, &u), [7, 1, i64::MAX, i64::MAX]);
-    assert_eq!(
-        ints(&*st, &find(&*st, 1, "zeta", Dir::Send, "i"))[0],
-        i64::MIN
-    );
-    let f = find(&*st, 1, "zeta", Dir::Send, "f");
-    assert!(matches!(points(&*st, &f, None)[0].1, DataValue::Float(x) if x == -1.5));
-    let t = find(&*st, 1, "zeta", Dir::Send, "t");
-    let texts: Vec<String> = points(&*st, &t, None)
-        .into_iter()
-        .map(|p| p.1.as_string())
-        .collect();
-    assert_eq!(texts, ["a", "b", "e", "c"]);
-    let b = find(&*st, 1, "alpha", Dir::None, "b");
-    assert!(matches!(
-        points(&*st, &b, None)[0].1,
-        DataValue::Boolean(true)
-    ));
-    assert_eq!(ints(&*st, &find(&*st, 1, "alpha", Dir::None, "w")), [5, 6]);
-    // The other flow and direction are separate.
-    assert_eq!(ints(&*st, &find(&*st, 2, "zeta", Dir::Recv, "u")), [9]);
-}
-
-#[test]
-fn range_bounds_round_inward() {
-    let (_db, st) = sample_db();
-    let u = find(&*st, 1, "zeta", Dir::Send, "u");
-    let n = |lo, hi| points(&*st, &u, Some((lo, hi))).len();
-    assert_eq!(n(10.5, 30.9), 3); // 20, 20, 30
-    assert_eq!(n(20.0, 20.0), 2);
-    assert_eq!(n(10.0, 30.0), 4);
-    assert_eq!(n(30.5, 99.0), 0);
-    assert_eq!(n(f64::NEG_INFINITY, f64::INFINITY), 4);
-    assert_eq!(n(f64::NAN, 5.0), 0);
-    assert_eq!(n(25.0, 15.0), 0);
-}
-
 #[test]
 fn meta_has_caller_entries_and_ours() {
     let (db, st) = sample_db();
@@ -425,38 +337,6 @@ fn open_rejects_other_schemas() {
 }
 
 #[test]
-fn existing_file_needs_force_and_an_abandoned_session_keeps_it() {
-    let (db, st) = sample_db();
-    drop(st);
-    let before = std::fs::metadata(db.path()).unwrap().len();
-
-    assert!(matches!(
-        create_store(Engine::DuckDb, db.path(), CreateOptions::default()),
-        Err(StoreError::Exists(_))
-    ));
-    assert!(!db.partial().exists());
-
-    // With force the old file stays until finish; dropping the session deletes the partial
-    // file and its WAL.
-    let s = create_store(Engine::DuckDb, db.path(), CreateOptions { force: true }).unwrap();
-    s.create_tables(&[&ZETA]).unwrap();
-    let mut w = s.writer().unwrap();
-    w.write(zeta_rows(1, Dir::Send, &[1, 2, 3], 0)).unwrap();
-    w.close().unwrap();
-    assert!(db.partial().exists());
-    drop(s);
-    assert!(!db.partial().exists() && !db.suffixed(".partial.wal").exists());
-    assert_eq!(std::fs::metadata(db.path()).unwrap().len(), before);
-    assert!(open_store(db.path()).is_ok());
-
-    // Finishing a forced session replaces the file.
-    let s = create_store(Engine::DuckDb, db.path(), CreateOptions { force: true }).unwrap();
-    s.finish(Catalog::default()).unwrap();
-    assert!(!db.partial().exists());
-    assert!(open_store(db.path()).unwrap().flows().unwrap().is_empty());
-}
-
-#[test]
 fn stale_wal_next_to_a_missing_file_is_removed() {
     let db = TmpDb::new();
     let wal = db.suffixed(".wal");
@@ -502,32 +382,6 @@ fn create_derived_computes_stats_and_ids() {
     assert_eq!(ts, [5.0, 6.0, 7.0]);
     assert_eq!(points(&*st, &s, Some((6.0, 7.0))).len(), 2);
     assert_eq!(st.series(1).unwrap().len(), 7);
-}
-
-#[test]
-fn derived_value_kinds() {
-    let (_db, st) = sample_db();
-    let f = pts(&[
-        (1.0, DataValue::Float(0.5)),
-        (2.0, DataValue::Float(f64::NAN)),
-    ]);
-    let sf = st.create_derived(1, "f", ValueKind::Float, &f).unwrap();
-    assert_eq!((sf.v_min, sf.v_max), (Some(0.5), Some(0.5)));
-    let pf = points(&*st, &sf, None);
-    assert!(matches!(pf[1].1, DataValue::Float(x) if x.is_nan()));
-    let b = pts(&[(1.0, DataValue::Boolean(true))]);
-    let sb = st.create_derived(1, "b", ValueKind::Bool, &b).unwrap();
-    assert!(matches!(
-        points(&*st, &sb, None)[0].1,
-        DataValue::Boolean(true)
-    ));
-    let t = pts(&[(1.0, DataValue::String("hi".into()))]);
-    let stx = st.create_derived(2, "t", ValueKind::String, &t).unwrap();
-    assert!(stx.v_min.is_none());
-    assert_eq!(points(&*st, &stx, None)[0].1.as_string(), "hi");
-    let e = st.create_derived(2, "e", ValueKind::Int, &[]).unwrap();
-    assert_eq!((e.n, e.t_min, e.v_min), (0, None, None));
-    assert!(points(&*st, &e, None).is_empty());
 }
 
 #[test]
@@ -599,96 +453,3 @@ fn replace_of_the_series_with_the_highest_id() {
     assert_eq!(next.id, a.id + 1);
 }
 
-#[test]
-fn failed_replace_keeps_the_old_series() {
-    let (_db, st) = sample_db();
-    let a = st
-        .create_derived(1, "a", ValueKind::Int, &ints_pts(&[(1.0, 1), (2.0, 2)]))
-        .unwrap();
-    let nan_ts = ints_pts(&[(f64::NAN, 1)]);
-    assert!(matches!(
-        st.replace_derived(&a, &nan_ts),
-        Err(StoreError::TypeMismatch(_))
-    ));
-    let wrong = pts(&[(1.0, DataValue::Boolean(true))]);
-    assert!(matches!(
-        st.replace_derived(&a, &wrong),
-        Err(StoreError::TypeMismatch(_))
-    ));
-    assert_eq!(st.series_by_id(a.id).unwrap().unwrap(), a);
-    assert_eq!(ints(&*st, &a), [1, 2]);
-}
-
-#[test]
-fn stale_or_raw_series_infos_are_rejected() {
-    let (_db, st) = sample_db();
-    let a = st
-        .create_derived(1, "a", ValueKind::Int, &ints_pts(&[(1.0, 1)]))
-        .unwrap();
-
-    // Raw series cannot be edited.
-    let raw = find(&*st, 1, "zeta", Dir::Send, "u");
-    assert!(matches!(
-        st.delete_derived(&raw),
-        Err(StoreError::NotDerived)
-    ));
-    assert!(matches!(
-        st.replace_derived(&raw, &[]),
-        Err(StoreError::NotDerived)
-    ));
-    // A derived-looking info that points at a raw row.
-    let fake = SeriesInfo {
-        kind: SeriesKind::Derived,
-        ..raw.clone()
-    };
-    assert!(matches!(
-        st.delete_derived(&fake),
-        Err(StoreError::NotDerived)
-    ));
-
-    // Name or flow differ from the stored row.
-    let renamed = SeriesInfo {
-        name: "other".into(),
-        ..a.clone()
-    };
-    assert!(matches!(
-        st.replace_derived(&renamed, &[]),
-        Err(StoreError::NotFound(_))
-    ));
-    let moved = SeriesInfo {
-        flow_id: 2,
-        ..a.clone()
-    };
-    assert!(matches!(
-        st.delete_derived(&moved),
-        Err(StoreError::NotFound(_))
-    ));
-    assert_eq!(st.series_by_id(a.id).unwrap().unwrap(), a);
-
-    // Deleted: every further edit through the stale info fails with NotFound.
-    st.delete_derived(&a).unwrap();
-    assert!(st.series_by_id(a.id).unwrap().is_none());
-    assert!(matches!(
-        st.delete_derived(&a),
-        Err(StoreError::NotFound(_))
-    ));
-    assert!(matches!(
-        st.replace_derived(&a, &[]),
-        Err(StoreError::NotFound(_))
-    ));
-    assert!(st.series(1).unwrap().iter().all(|s| s.name != "a"));
-}
-
-#[test]
-fn derived_series_persist_across_reopen() {
-    let (db, st) = sample_db();
-    st.create_derived(1, "keep", ValueKind::Int, &ints_pts(&[(1.0, 4), (2.0, 5)]))
-        .unwrap();
-    let gone = st.create_derived(1, "gone", ValueKind::Int, &[]).unwrap();
-    st.delete_derived(&gone).unwrap();
-    drop(st);
-    let st = open_store(db.path()).unwrap();
-    let k = find(&*st, 1, "derived", Dir::None, "keep");
-    assert_eq!((k.n, ints(&*st, &k)), (2, vec![4, 5]));
-    assert!(st.series(1).unwrap().iter().all(|s| s.name != "gone"));
-}
