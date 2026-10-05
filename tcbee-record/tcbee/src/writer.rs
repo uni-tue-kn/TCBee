@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     fmt,
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, ErrorKind},
     mem,
     os::fd::AsRawFd,
@@ -221,8 +221,14 @@ where
             rb
         }
         Err(err) => {
+            let mut job = job.borrow_mut();
+            let flushed = job.flush();
+            // Without a ring buffer there is no trace, so don't leave an empty file
+            if flushed.is_ok() {
+                remove_if_empty(&job.file_path);
+            }
             let _ = ready.send(Err(err));
-            return (0, job.borrow_mut().flush());
+            return (0, flushed);
         }
     };
 
@@ -268,6 +274,16 @@ where
 
     // The records written before an error are in the file and still count
     (job.records, result.and(flushed))
+}
+
+/// Removes a file that has no data. A file that had data before is kept.
+fn remove_if_empty(path: &Path) {
+    let empty = fs::metadata(path).is_ok_and(|metadata| metadata.len() == 0);
+    if empty {
+        if let Err(err) = fs::remove_file(path) {
+            debug!("Could not remove empty file {}: {}", path.display(), err);
+        }
+    }
 }
 
 /// Records a writer thread wrote, and the error that stopped it, if any
@@ -752,6 +768,26 @@ mod tests {
         let written = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(written == expected);
+    }
+
+    /// A file that was opened but never written is removed, one with data is kept
+    #[test]
+    fn unused_file_is_removed() {
+        let path = env::temp_dir().join(format!("tcbee-writer-empty-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        MmapBackedFile::new(&path, 1000).unwrap().finish().unwrap();
+        remove_if_empty(&path);
+        assert!(!path.exists());
+
+        let mut file = MmapBackedFile::new(&path, 1000).unwrap();
+        file.reserve(4).unwrap().copy_from_slice(&RECORD_DELIMITER);
+        file.finish().unwrap();
+        // Opening it again appends, failing then must not delete the data
+        MmapBackedFile::new(&path, 1000).unwrap().finish().unwrap();
+        remove_if_empty(&path);
+        let kept = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(kept, RECORD_DELIMITER);
     }
 
     #[test]
