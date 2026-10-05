@@ -1,6 +1,6 @@
 # `tcbee-process` and `ts-storage` rewrite plan
 
-Status: design reviewed and decided (2026-10-05); implementation not started. Part A is the design and
+Status: design reviewed and decided (2026-10-05); implemented on branch `process-rewrite` (WP0-WP9). Part A is the design and
 the reasons for it, Part B the work packages for implementation agents. Agents implement against
 Part B and treat Part A as the specification; when the code forces a deviation, update this file in
 the same commit.
@@ -24,7 +24,7 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP6 pipeline | done, reviewed, committed |
 | WP7 viz migration | done, reviewed, committed (GUI never run by an agent) |
 | WP8 cleanup, docs, build time | done, reviewed, committed (workspace, CI never ran) |
-| WP9 benchmarks | running (agent) |
+| WP9 benchmarks | done, all ship criteria pass (see A1b) |
 
 Log (newest last):
 
@@ -42,6 +42,7 @@ Log (newest last):
 - 2026-10-05: WP7 written, uncommitted in `tcbee-viz`. Both review agents died on a usage limit and were relaunched. Next after WP7: WP8, WP9.
 - 2026-10-05: WP7 reviewed (real tcbee-process output opened through the viz data layer on both engines: no panics, bindings correct); committed after review fixes. Deferred, to go into CLAUDE.md open work in WP8: SenderLimitation inputs (tcp_probe SND_* vs sock advmss) are zipped by index although their timestamps differ; `preprocessing.rs` `time_granularity_ms` is treated as ms->s although timestamps are ns; NaN in derived float series plots as NaN; flow ids differ between runs (thread order), by design.
 - 2026-10-05: WP8 committed (old API deleted and `src/v2` flattened, cargo workspace with one `target/`, `workspace-hack` crate plus a dev build-override keep `libduckdb-sys` compiled once across `-p` selections, engine features forwarded, docs, CI matrix). `CLAUDE.md` open work updated. WP9 running.
+- 2026-10-05: WP9 done. 294 MB trace: DuckDB 1.5 s / 0.41 GB RSS / 74 MiB, SQLite 5.1 s / 0.14 GB / 247 MiB (index build is 1.9 s of that); range read of a 25k-point series 2-17 ms. First DuckDB run failed the tail criterion (7.2 s, 83 % in the catalog write); fixed by writing flows/series with appenders. DuckDB tail is 10 % (borderline). All work packages are committed; the branch is ready to merge once the open items in `CLAUDE.md` are looked at.
 
 Decisions made by the maintainer:
 
@@ -121,6 +122,68 @@ decode is roughly 30–50 % of the work, so it must not allocate per field. Seve
 
 Reads on DuckDB without any index, 20 M rows: a whole series takes 9 ms, a 10 % time range 3 ms.
 Zonemaps on `ts` are enough; no sort or index is needed at this size.
+
+### A1b. Results after the rewrite
+
+Measured 2026-10-05 at the end of WP9. Machine: AMD Ryzen 7 PRO 6850U (8 cores, 16 threads), 30 GB RAM,
+Linux 7.2.6, output on NVMe (not tmpfs). SQLite 3.53.4 (rusqlite), DuckDB: system `libduckdb.so` 1.4.3
+(the `duckdb` crate is 1.10506.0; release build linked against the system library, no `bundled`).
+One fresh process per run, 3 runs each, peak RSS from `RUSAGE_CHILDREN`. "Tail" is the summary line's
+`finish` (time from the last worker to the finished file; for SQLite this is the index build, 1.9 s of
+it, the catalog insert is 20 ms). Trace 18-52-18: 294 MB, 3.03 M records, 240 flows, 9812 series.
+Page cache: the traces were evicted with `posix_fadvise(DONTNEED)` before one extra run per engine; it
+was not slower (5.07 s SQLite, 1.52 s DuckDB), so the table is not a warm-cache artefact (the trace
+files are read once, sequentially).
+
+| Engine, threads | Wall min / median | Tail (median) | Peak RSS (median / max) | File |
+| --- | --- | --- | --- | --- |
+| SQLite, default (16) | 5.08 / 5.10 s | 1.94 s (38 %) | 141 / 141 MB | 247.1 MiB |
+| SQLite, -t 1 | 5.05 / 5.13 s | 1.91 s | 120 / 121 MB | 245.6 MiB |
+| SQLite, -t 4 | 5.10 / 5.11 s | 1.93 s | 154 / 154 MB | 245.6 MiB |
+| SQLite, -t 16 | 5.10 / 5.12 s | 1.94 s | 141 / 144 MB | 247.1 MiB |
+| DuckDB, default (16) | 1.47 / 1.48 s | 0.15 s (10 %) | 409 / 439 MB | 74.3 MiB |
+| DuckDB, -t 1 | 3.15 / 3.16 s | 0.13 s (4 %) | 234 / 240 MB | 70.3 MiB |
+| DuckDB, -t 4 | 1.31 / 1.33 s | 0.14 s (11 %) | 374 / 412 MB | 70.8 MiB |
+| DuckDB, -t 16 | 1.43 / 1.46 s | 0.15 s (10 %) | 399 / 406 MB | 74.3 MiB |
+
+Trace 18-16-22 (110 MB), default threads: SQLite 1.88 s (tail 0.68 s), 103 MB, 90.9 MiB; DuckDB
+0.83 s (tail 0.10 s, 12 %), 274 MB, 34.5 MiB.
+
+SQLite does not scale with threads: one writer thread owns the connection (a SQLite limit), so the
+inserts plus the 1.9 s index build set the time. DuckDB scales to 4 threads.
+
+Against A1 (old code, 300 MB trace: DuckDB 320 s / 2.5 GB / 2.6 GB, SQLite 88 s / 2.7 GB / 1.8 GB; our
+trace is 294 MB and cubic-heavy, so the comparison is by size):
+
+| Criterion | DuckDB | SQLite |
+| --- | --- | --- |
+| Wall < 20 s | pass (1.5 s) | pass (5.1 s) |
+| Peak RSS < 1 GB | pass (0.41 GB) | pass (0.14 GB) |
+| Tail < 10 % of total | borderline (0.15 s of 1.48 s, 10 %; was 83 % before the fix below) | n/a, reported: 1.9 s index build |
+| Output <= 1/3 of old | pass (74 MiB vs 2.6 GB, 3 %) | pass (247 MiB vs 1.8 GB, 14 %) |
+| Range read of one series < 50 ms | pass | pass |
+
+Read performance (`ts_storage::open` + `for_each_point`, 20 repetitions, median, 294 MB outputs).
+The longest series of this trace have 25 k points:
+
+| Call | SQLite | DuckDB |
+| --- | --- | --- |
+| open | 0.5 ms | 33 ms |
+| `flows()` (240) | 0.12 ms | 0.9 ms |
+| `series(flow)` | 0.13 ms | 1.6 ms |
+| `series` for all 240 flows | 18 ms | 380 ms |
+| sock series, 25 k points, whole | 16.5 ms | 5.2 ms |
+| sock series, 10 % range (first / middle) | 0.23 / 1.2 ms | 1.7 / 2.1 ms |
+| tcp_probe series, 25 k points, whole | 14.1 ms | 5.3 ms |
+| tcp_probe series, 10 % range (first / middle) | 0.22 / 1.1 ms | 1.7 / 2.0 ms |
+
+Cause and the one tuning applied: the first DuckDB measurement was 7.15 s wall with a tail of 5.9 s
+(83 %). Timing inside `finish` showed it was not the CHECKPOINT (0.06 s) but the catalog write:
+`insert_flows`/`insert_series` executed one prepared `INSERT` per row, about 0.5 ms each on DuckDB
+(9812 series = 5.7 s), where SQLite needs 2 us per row. Writing flows and series through an appender
+instead made the catalog write 55 ms and the whole run 1.45 s. The other candidate tunings were not
+needed. DuckDB `series()` for all flows (380 ms) would only matter if the visualizer fetched every
+flow's series at startup; per flow it is 1.6 ms.
 
 ## A2. Data model (schema version 2)
 
