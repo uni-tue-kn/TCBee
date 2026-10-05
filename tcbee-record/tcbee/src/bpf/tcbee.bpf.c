@@ -426,7 +426,8 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 		return 0;
 	count_attempt(rb);
 
-	add_stat(bytes_slot, skb->len);
+	/* Only this program writes the byte counter */
+	add_stat_owned(bytes_slot, skb->len, true);
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
