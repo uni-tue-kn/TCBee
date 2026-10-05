@@ -16,8 +16,8 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP | State |
 | --- | --- |
 | WP0 fixtures | done, reviewed, committed |
-| WP1 ts-storage core | implementing (agent running) |
-| WP2 bindings macro + decoder | not started |
+| WP1 ts-storage core | implemented, in review (not committed) |
+| WP2 bindings macro + decoder | implementing (agent running) |
 | WP3 SQLite engine | not started |
 | WP4 DuckDB engine | not started |
 | WP5 contract tests | not started |
@@ -31,6 +31,7 @@ Log (newest last):
 - 2026-10-05: branch created.
 - 2026-10-05: a real trace was recorded (`~/tcbee-traces/tcbee_2026-10-05T18-16-22`, 110 MB, no bbr, no tcp6); WP0 fixtures use its first 2000 records per file plus generated bbr/cwnd/tcp6. WP9 can use it as the benchmark input.
 - 2026-10-05: WP0 done, correctness and style review fixed.
+- 2026-10-05: WP1 written (v2 types, schema renderer, features); WP2 started in parallel.
 
 Decisions made by the maintainer:
 
@@ -701,3 +702,11 @@ Ship criteria:
 If a criterion is missed, profile (`perf record -g`) and record the cause here before tuning.
 Candidate tunings, in order: batch size, `--threads` default, DuckDB cached appender, SQLite
 `WITHOUT ROWID` or index variants, sort-on-finish for DuckDB.
+
+## Implementation notes (deviations found while implementing)
+
+- `rusqlite` and the old `sqlite` crate cannot be in one dependency graph (both link `sqlite3`).
+  So WP1 adds the `sqlite` feature empty and a temporary `legacy` feature (default on) that gates
+  the old API. WP3 must remove the old `sqlite` crate and the old SQLite backend; until WP6/WP7
+  move the callers, `database_factory(Sqlite)` returns an error on this branch and the old
+  tools only work with DuckDB. `legacy` is deleted in WP8.
