@@ -66,7 +66,7 @@ impl EbpfRunner {
                 .ok_or_else(|| format!("Filter map {} not found", map_name))?,
         )?;
         for port in ports {
-            map.insert(*port, 1, 0)?;
+            map.insert(port, &1, 0)?;
         }
         Ok(())
     }
@@ -81,7 +81,7 @@ impl EbpfRunner {
                 .ok_or_else(|| format!("Filter map {} not found", map_name))?,
         )?;
         for ip in ips {
-            map.insert(FilterIp { addr: *ip }, 1, 0)?;
+            map.insert(&FilterIp { addr: *ip }, &1, 0)?;
         }
         Ok(())
     }
@@ -128,9 +128,9 @@ impl EbpfRunner {
         let filter_mode = self.config.filter.mode();
         let filter_rules = self.config.filter.rule_flags();
         let mut ebpf = EbpfLoader::new()
-            .set_global("FILTER_PORT", &self.config.filter.single_port, true)
-            .set_global("FILTER_MODE", &filter_mode, true)
-            .set_global("FILTER_RULE_FLAGS", &filter_rules, true)
+            .override_global("FILTER_PORT", &self.config.filter.single_port, true)
+            .override_global("FILTER_MODE", &filter_mode, true)
+            .override_global("FILTER_RULE_FLAGS", &filter_rules, true)
             .load(aya::include_bytes_aligned!(concat!(
                 env!("OUT_DIR"),
                 "/tcbee"
