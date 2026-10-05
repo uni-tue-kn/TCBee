@@ -40,18 +40,18 @@ int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 	__u16 sport, dport, family;
 	struct ip_tuple t;
 
+	sport = ctx->sport;
+	dport = ctx->dport;
+	if (!filter_ports_match(sport, dport))
+		return 0;
+
 	if (BPF_CORE_READ_INTO(&saddr, ctx, saddr) || BPF_CORE_READ_INTO(&daddr, ctx, daddr)) {
-		/* The filter cannot be evaluated without the event, count it as an error */
+		/* Cannot fill the record without the addresses */
 		count_attempt(RB_TCP_PROBE);
 		count_error(RB_TCP_PROBE);
 		return 0;
 	}
-	sport = ctx->sport;
-	dport = ctx->dport;
 	family = ctx->family;
-
-	if (!filter_ports_match(sport, dport))
-		return 0;
 
 	if (filter_needs_tuple() || FLOW_TRACKING) {
 		__builtin_memset(&t, 0, sizeof(t));
@@ -107,20 +107,20 @@ int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 	__u16 sport, dport, family;
 	struct ip_tuple t;
 
+	sport = ctx->sport;
+	dport = ctx->dport;
+	if (!filter_ports_match(sport, dport))
+		return 0;
+
 	if (BPF_CORE_READ_INTO(&saddr, ctx, saddr) || BPF_CORE_READ_INTO(&daddr, ctx, daddr) ||
 	    BPF_CORE_READ_INTO(&saddr_v6, ctx, saddr_v6) ||
 	    BPF_CORE_READ_INTO(&daddr_v6, ctx, daddr_v6)) {
-		/* The filter cannot be evaluated without the event, count it as an error */
+		/* Cannot fill the record without the addresses */
 		count_attempt(RB_RETRANSMIT_SYNACK);
 		count_error(RB_RETRANSMIT_SYNACK);
 		return 0;
 	}
-	sport = ctx->sport;
-	dport = ctx->dport;
 	family = ctx->family;
-
-	if (!filter_ports_match(sport, dport))
-		return 0;
 
 	if (filter_needs_tuple() || FLOW_TRACKING) {
 		__builtin_memset(&t, 0, sizeof(t));
