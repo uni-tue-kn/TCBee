@@ -20,8 +20,9 @@ jobs:
           sudo apt-get install -y \
             cmake \
             llvm clang \
-            libelf-dev libclang-dev \
-            pkg-config \
+            libelf-dev libclang-dev zlib1g-dev \
+            pkg-config make \
+            autoconf automake autopoint gettext libtool flex bison gawk \
             fontconfig libfontconfig1-dev \
             libgl-dev libegl-dev \
             zip
@@ -29,16 +30,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Build tcbee-record
+        # Builds libbpf, libelf and zlib from source and links them statically
+        run: |
+          cd tcbee-record
+          cargo build --release --features static
+
+      # Only tcbee-live still builds its eBPF programs with aya
       - name: Install Rust Nightly
         run: rustup toolchain install nightly --component rust-src
 
       - name: Install bpf-linker
         run: cargo install bpf-linker
-
-      - name: Build tcbee-record
-        run: |
-          cd tcbee-record
-          cargo build --release
 
       - name: Build tcbee-process (bundled)
         run: |

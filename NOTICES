@@ -1,8 +1,9 @@
 TCBee release binaries include statically or dynamically linked third-party
 software. The following copyright notices and license terms apply.
 
-tcbee-record, tcbee-process: fully static binaries, no runtime system
-  library dependencies.
+tcbee-record: links libbpf, libelf and zlib statically; only needs the
+  host's C library (glibc) at runtime.
+tcbee-process: fully static binary, no runtime system library dependencies.
 tcbee-viz, tcbee-live: dynamically linked; require libGL/libEGL and
   Wayland or X11 libraries from the host system at runtime.
 
@@ -34,6 +35,32 @@ Licensed under the Unicode License Agreement:
 
 This binary includes data derived from the Unicode Character Database (UCD)
 and the Common Locale Data Repository (CLDR).
+
+===============================================================================
+libbpf
+https://github.com/libbpf/libbpf
+Statically linked in: tcbee-record
+===============================================================================
+Licensed under LGPL-2.1-only OR BSD-2-Clause, used here under BSD-2-Clause.
+
+===============================================================================
+libelf (elfutils)
+https://sourceware.org/elfutils/
+Statically linked in: tcbee-record
+===============================================================================
+Licensed under GPL-2.0-or-later OR LGPL-3.0-or-later, used here under
+LGPL-3.0-or-later. The libelf source is included in the libbpf-sys crate
+referenced in tcbee-record/Cargo.lock; tcbee-record can be rebuilt against
+another libelf by building it without the `static` feature.
+
+===============================================================================
+zlib
+https://zlib.net
+Statically linked in: tcbee-record
+===============================================================================
+Copyright (C) 1995-2022 Jean-loup Gailly and Mark Adler
+
+zlib License: https://zlib.net/zlib_license.html
 
 ===============================================================================
 libloading
