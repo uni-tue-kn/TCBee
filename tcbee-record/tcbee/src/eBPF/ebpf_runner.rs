@@ -26,7 +26,7 @@ use crate::{
         bbr::BBRTracer,
         cubic::CubicTracer,
         cwnd::CwndTracer,
-        headers::TCTracer,
+        headers::{remove_clsact, TCTracer},
         kernel::KernelTracer,
         tracepoints::TracepointTracer,
     },
@@ -48,6 +48,7 @@ pub struct EbpfRunner {
     stats: Option<Arc<Stats>>,
     ringbuf_sizes: Vec<Option<u32>>,
     started: Option<Instant>,
+    clsact_iface: Option<String>,
 }
 
 pub fn prepend_string(filename: String, dir: &str) -> String {
@@ -70,6 +71,7 @@ impl EbpfRunner {
             stats: None,
             ringbuf_sizes: Vec::new(),
             started: None,
+            clsact_iface: None,
         }
     }
 
@@ -132,6 +134,9 @@ impl EbpfRunner {
         // Detach all programs so no new records arrive while draining. Dropping the
         // Ebpf object only closes the maps that were not taken by the writer.
         drop(self.ebpf.take());
+        if let Some(iface) = self.clsact_iface.take() {
+            remove_clsact(&iface);
+        }
 
         // Programs that were already running when they were detached may still submit
         sleep(Duration::from_millis(100)).await;
@@ -243,12 +248,15 @@ impl EbpfRunner {
 
         // Tracing for packet headers via TC and XDP
         if self.config.headers {
-            TCTracer::spawn(
+            let created_clsact = TCTracer::spawn(
                 &mut ebpf,
                 self.config.iface.clone(),
                 self.config.dir.clone(),
                 &mut writer,
             )?;
+            if created_clsact {
+                self.clsact_iface = Some(self.config.iface.clone());
+            }
 
             watcher_config.graphs.packets = true;
         }

@@ -1,8 +1,11 @@
-use std::error::Error;
+use std::{error::Error, process::Command};
+
+use log::{info, warn};
 
 use aya::{
     maps::RingBuf,
     programs::{tc, SchedClassifier, TcAttachType},
+    util::KernelVersion,
     Ebpf,
 };
 use tcbee_common::{
@@ -19,20 +22,36 @@ use crate::{
 
 pub struct TCTracer {}
 
+fn uses_tcx() -> bool {
+    KernelVersion::current().is_ok_and(|version| version >= KernelVersion::new(6, 6, 0))
+}
+
+/// Removes the clsact qdisc added by `TCTracer::spawn`. A leftover clsact qdisc keeps
+/// the TC hooks enabled in the kernel datapath.
+pub fn remove_clsact(interface: &str) {
+    let result = Command::new("tc")
+        .args(["qdisc", "del", "dev", interface, "clsact"])
+        .status();
+    match result {
+        Ok(status) if status.success() => info!("Removed clsact qdisc from {}", interface),
+        Ok(status) => warn!("Removing clsact qdisc from {} failed: {}", interface, status),
+        Err(err) => warn!("Could not run tc to remove clsact qdisc from {}: {}", interface, err),
+    }
+}
+
 impl TCTracer {
     pub fn spawn(
         ebpf: &mut Ebpf,
         interface: String,
         dir: String,
         writer: &mut Writer,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<bool, Box<dyn Error>> {
         let name = "tc_ingress_packet_tracer";
 
-        // Needs to be called before a TC can be attached to a program!
-        // Error supressed because if this fails it may be a false positive "file exists"
-        // The next call will fail either way if this fails due to any other reason!
-        //
-        let _ = tc::qdisc_add_clsact(&interface);
+        // aya attaches with tcx from kernel 6.6 on. Older kernels need the clsact qdisc,
+        // adding it fails if it already exists. In that case it is not ours to remove.
+        // If adding fails for any other reason, attaching fails below.
+        let created_clsact = !uses_tcx() && tc::qdisc_add_clsact(&interface).is_ok();
 
         // Attach eBPF TC to Egress
         let tracer: &mut SchedClassifier = ebpf
@@ -78,11 +97,6 @@ impl TCTracer {
 
         let name = "tc_egress_packet_tracer";
 
-        // Needs to be called before a TC can be attached to a program!
-        // Error supressed because if this fails it may be a false positive "file exists"
-        // The next call will fail either way if this fails due to any other reason!
-        //
-        let _ = tc::qdisc_add_clsact(&interface);
 
         // Attach eBPF TC to Egress
         let tracer: &mut SchedClassifier = ebpf
@@ -126,7 +140,7 @@ impl TCTracer {
             prepend_string(tcp6_packet_trace::OUT_FILE.to_string(), &dir),
         )?;
 
-        Ok(())
+        Ok(created_clsact)
     }
 }
 
