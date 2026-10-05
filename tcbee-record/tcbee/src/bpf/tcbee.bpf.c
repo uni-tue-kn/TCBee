@@ -260,6 +260,29 @@ _Static_assert(sizeof(struct tc_ipv6_hdr) == 40, "ipv6 header");
 _Static_assert(sizeof(struct tc_tcp_hdr) == 20, "tcp header");
 
 /*
+ * Pointer to len bytes at offset off of the packet, like the kernel's
+ * skb_header_pointer(): straight into the linear data if the bytes are there (no helper
+ * call), otherwise copied into buf with bpf_skb_load_bytes(), which also reads paged
+ * data. NULL if the packet is shorter. Both paths yield the same bytes.
+ *
+ * The header structs are 4 byte aligned while the IP header starts at offset 14, so
+ * direct loads can be unaligned. The verifier allows that on architectures with
+ * efficient unaligned access (x86, arm64, ...), which is where this tool runs.
+ */
+static __always_inline void *skb_header(struct __sk_buff *skb, __u32 off, void *buf, __u32 len)
+{
+	void *data = (void *)(long)skb->data;
+	void *data_end = (void *)(long)skb->data_end;
+	void *ptr = data + off;
+
+	if (ptr + len <= data_end)
+		return ptr;
+	if (bpf_skb_load_bytes(skb, off, buf, len))
+		return NULL;
+	return buf;
+}
+
+/*
  * Every early return happens before the filter, so a packet that passes the filter is
  * always counted as attempted and then as handled or dropped. IPv6 extension headers
  * are not parsed, nexthdr must be TCP directly.
@@ -267,37 +290,40 @@ _Static_assert(sizeof(struct tc_tcp_hdr) == 20, "tcp header");
 static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 rb4_id, void *rb6,
 					__u32 rb6_id)
 {
-	struct tc_tcp_hdr tcp;
+	struct tc_tcp_hdr tcp_buf, *tcp;
+	__be16 proto_buf, *proto;
 	__u16 sport, dport;
 	struct ip_tuple t;
-	__be16 proto;
 
-	if (bpf_skb_load_bytes(skb, TC_ETH_PROTO_OFF, &proto, sizeof(proto)))
+	proto = skb_header(skb, TC_ETH_PROTO_OFF, &proto_buf, sizeof(proto_buf));
+	if (!proto)
 		return TC_ACT_UNSPEC;
 
 	__builtin_memset(&t, 0, sizeof(t));
 	t.protocol = IPPROTO_TCP;
 
-	if (proto == bpf_htons(ETH_P_IP)) {
+	if (*proto == bpf_htons(ETH_P_IP)) {
+		struct tc_ipv4_hdr ip_buf, *ip;
 		struct tcp4_packet_trace *rec;
-		struct tc_ipv4_hdr ip;
 		__u32 ip_hlen;
 
-		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN, &ip, sizeof(ip)))
+		ip = skb_header(skb, TC_ETH_HLEN, &ip_buf, sizeof(ip_buf));
+		if (!ip)
 			return TC_ACT_UNSPEC;
 		/* Non-first fragments carry no TCP header */
-		if (ip.protocol != IPPROTO_TCP || (bpf_ntohs(ip.frag_off) & IP_OFFSET))
+		if (ip->protocol != IPPROTO_TCP || (bpf_ntohs(ip->frag_off) & IP_OFFSET))
 			return TC_ACT_UNSPEC;
-		ip_hlen = (ip.version_ihl & 0x0F) << 2;
-		if (ip_hlen < sizeof(ip))
-			ip_hlen = sizeof(ip);
-		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN + ip_hlen, &tcp, sizeof(tcp)))
+		ip_hlen = (ip->version_ihl & 0x0F) << 2;
+		if (ip_hlen < sizeof(*ip))
+			ip_hlen = sizeof(*ip);
+		tcp = skb_header(skb, TC_ETH_HLEN + ip_hlen, &tcp_buf, sizeof(tcp_buf));
+		if (!tcp)
 			return TC_ACT_UNSPEC;
 
-		sport = bpf_ntohs(tcp.source);
-		dport = bpf_ntohs(tcp.dest);
-		__builtin_memcpy(t.src_ip, &ip.saddr, 4);
-		__builtin_memcpy(t.dst_ip, &ip.daddr, 4);
+		sport = bpf_ntohs(tcp->source);
+		dport = bpf_ntohs(tcp->dest);
+		__builtin_memcpy(t.src_ip, &ip->saddr, 4);
+		__builtin_memcpy(t.dst_ip, &ip->daddr, 4);
 		t.sport = sport;
 		t.dport = dport;
 		if (!filter_ports_match(sport, dport) ||
@@ -308,33 +334,35 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		rec = reserve(rb4, rb4_id, rec);
 		if (rec) {
 			rec->time = bpf_ktime_get_ns();
-			rec->saddr = bpf_ntohl(ip.saddr);
-			rec->daddr = bpf_ntohl(ip.daddr);
+			rec->saddr = bpf_ntohl(ip->saddr);
+			rec->daddr = bpf_ntohl(ip->daddr);
 			rec->sport = sport;
 			rec->dport = dport;
-			rec->seq = bpf_ntohl(tcp.seq);
-			rec->ack = bpf_ntohl(tcp.ack_seq);
-			rec->window = bpf_ntohs(tcp.window);
-			rec->flags = tcp.flags;
+			rec->seq = bpf_ntohl(tcp->seq);
+			rec->ack = bpf_ntohl(tcp->ack_seq);
+			rec->window = bpf_ntohs(tcp->window);
+			rec->flags = tcp->flags;
 			commit(rec, rb4_id);
 		}
 
 		flow_track(&t);
-	} else if (proto == bpf_htons(ETH_P_IPV6)) {
+	} else if (*proto == bpf_htons(ETH_P_IPV6)) {
+		struct tc_ipv6_hdr ip6_buf, *ip6;
 		struct tcp6_packet_trace *rec;
-		struct tc_ipv6_hdr ip6;
 
-		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN, &ip6, sizeof(ip6)))
+		ip6 = skb_header(skb, TC_ETH_HLEN, &ip6_buf, sizeof(ip6_buf));
+		if (!ip6)
 			return TC_ACT_UNSPEC;
-		if (ip6.nexthdr != IPPROTO_TCP)
+		if (ip6->nexthdr != IPPROTO_TCP)
 			return TC_ACT_UNSPEC;
-		if (bpf_skb_load_bytes(skb, TC_ETH_HLEN + sizeof(ip6), &tcp, sizeof(tcp)))
+		tcp = skb_header(skb, TC_ETH_HLEN + sizeof(*ip6), &tcp_buf, sizeof(tcp_buf));
+		if (!tcp)
 			return TC_ACT_UNSPEC;
 
-		sport = bpf_ntohs(tcp.source);
-		dport = bpf_ntohs(tcp.dest);
-		__builtin_memcpy(t.src_ip, ip6.saddr, 16);
-		__builtin_memcpy(t.dst_ip, ip6.daddr, 16);
+		sport = bpf_ntohs(tcp->source);
+		dport = bpf_ntohs(tcp->dest);
+		__builtin_memcpy(t.src_ip, ip6->saddr, 16);
+		__builtin_memcpy(t.dst_ip, ip6->daddr, 16);
 		t.sport = sport;
 		t.dport = dport;
 		if (!filter_ports_match(sport, dport) ||
@@ -345,14 +373,14 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		rec = reserve(rb6, rb6_id, rec);
 		if (rec) {
 			rec->time = bpf_ktime_get_ns();
-			__builtin_memcpy(rec->saddr_v6, ip6.saddr, 16);
-			__builtin_memcpy(rec->daddr_v6, ip6.daddr, 16);
+			__builtin_memcpy(rec->saddr_v6, ip6->saddr, 16);
+			__builtin_memcpy(rec->daddr_v6, ip6->daddr, 16);
 			rec->sport = sport;
 			rec->dport = dport;
-			rec->seq = bpf_ntohl(tcp.seq);
-			rec->ack = bpf_ntohl(tcp.ack_seq);
-			rec->window = bpf_ntohs(tcp.window);
-			rec->flags = tcp.flags;
+			rec->seq = bpf_ntohl(tcp->seq);
+			rec->ack = bpf_ntohl(tcp->ack_seq);
+			rec->window = bpf_ntohs(tcp->window);
+			rec->flags = tcp->flags;
 			commit(rec, rb6_id);
 		}
 
