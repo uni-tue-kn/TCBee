@@ -10,5 +10,18 @@ eframe = "0.31"
 egui = "0.31"
 egui_plot = "0.31"
 rand = "0.9.0"
-ts_storage = { path = "../ts-storage"}
+ts_storage = { path = "../ts-storage", default-features = false }
 rfd = "0.15.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+# Storage engines, forwarded to ts_storage. Without `duckdb`, libduckdb-sys is never compiled
+# (`cargo build --no-default-features --features sqlite`). Opening a file of a disabled engine
+# shows an error in the UI.
+default = ["sqlite", "duckdb"]
+sqlite = ["ts_storage/sqlite"]
+duckdb = ["ts_storage/duckdb"]
+# Bundled C libraries of the enabled engines.
+bundled = ["ts_storage/bundled"]

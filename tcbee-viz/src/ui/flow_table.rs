@@ -26,6 +26,7 @@ Use column:value to limit a term:\n\
 Combine terms with spaces, e.g. src:10.0.0.1 dport:443";
 
 /// A filterable table widget for selecting a TCP flow.
+#[derive(Default)]
 pub struct FlowTable {
     pub filter: String,
     pub selected_id: Option<i64>,
@@ -36,16 +37,6 @@ pub struct FlowTable {
 struct FlowStats {
     series_count: usize,
     point_count: i64,
-}
-
-impl Default for FlowTable {
-    fn default() -> Self {
-        Self {
-            filter: String::new(),
-            selected_id: None,
-            stats_cache: HashMap::new(),
-        }
-    }
 }
 
 impl FlowTable {
@@ -263,11 +254,9 @@ impl FlowTable {
 }
 
 fn flow_stats(db: &DbBackend, flow: &Flow) -> FlowStats {
-    let series = db.list_series_for_flow(flow);
-    let point_count = series
-        .iter()
-        .map(|series| db.get_point_count(series.id))
-        .sum();
+    // Catalog rows carry the point counts.
+    let series = db.list_series_for_flow(flow.id);
+    let point_count = series.iter().map(|series| series.n).sum();
     FlowStats {
         series_count: series.len(),
         point_count,

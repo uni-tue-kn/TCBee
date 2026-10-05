@@ -1,16 +1,28 @@
 use egui::RichText;
 use rfd::FileDialog;
 
-use crate::{backend::db::DbBackend, settings::AppSettings, ui::theme};
+use crate::{
+    backend::db::{engine_name, extensions_text, DbBackend, DB_EXTENSIONS},
+    settings::AppSettings,
+    ui::theme,
+};
 
 #[derive(Default)]
 pub struct TabHome {
     status: String,
+    /// The status is the error of a failed open.
+    status_is_error: bool,
 }
 
 impl TabHome {
     pub fn set_status(&mut self, status: String) {
         self.status = status;
+        self.status_is_error = false;
+    }
+
+    pub fn set_error(&mut self, status: String) {
+        self.status = status;
+        self.status_is_error = true;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &mut DbBackend, _settings: &mut AppSettings) {
@@ -55,38 +67,39 @@ impl TabHome {
                     .clicked()
                 {
                     if let Some(path) = FileDialog::new()
-                        .add_filter("Database files", &["sqlite", "duck"])
+                        .add_filter("Database files", DB_EXTENSIONS)
                         .set_directory("~/")
                         .pick_file()
                     {
                         match DbBackend::open(path.clone()) {
                             Ok(new_db) => {
                                 *db = new_db;
-                                self.status =
-                                    format!("Connected: {}", path.to_string_lossy());
+                                self.set_status(format!("Connected: {}", path.to_string_lossy()));
                             }
                             Err(e) => {
-                                self.status = format!("Error: {}", e);
+                                self.set_error(format!("Error: {}", e));
                             }
                         }
                     }
                 }
 
                 ui.add_space(8.0);
-                if db.is_connected() {
-                    ui.label(RichText::new(&self.status).color(theme::SUCCESS));
-                    if let Some(src) = db.source {
-                        ui.label(
-                            RichText::new(format!("Backend: {}", src))
-                                .color(theme::muted_text(dark_mode)),
-                        );
-                    }
-                } else if !self.status.is_empty() {
+                if self.status_is_error {
                     ui.label(RichText::new(&self.status).color(theme::ERROR));
+                } else if db.is_connected() {
+                    ui.label(RichText::new(&self.status).color(theme::SUCCESS));
                 } else {
                     ui.label(
                         RichText::new("No database loaded.").color(theme::muted_text(dark_mode)),
                     );
+                }
+                if db.is_connected() {
+                    if let Some(engine) = db.engine() {
+                        ui.label(
+                            RichText::new(format!("Backend: {}", engine_name(engine)))
+                                .color(theme::muted_text(dark_mode)),
+                        );
+                    }
                 }
 
                 ui.separator();
@@ -121,7 +134,7 @@ impl TabHome {
                 );
                 ui.separator();
                 egui::ScrollArea::vertical().id_salt("home_scroll").show(ui, |ui| {
-                    section(ui, "Home", "The starting screen where you select the database file (.sqlite or .duck) containing recorded TCP flow data. If the button to open a file is not visible, increase the window size.");
+                    section(ui, "Home", &format!("The starting screen where you select the database file ({}, as written by tcbee-process) containing recorded TCP flow data. If the button to open a file is not visible, increase the window size.", extensions_text()));
                     section(ui, "Single Flow", "Visualize metrics for one TCP flow over time. Flows are identified by their IP 5-tuple and sorted by start time. Multiple metrics can be plotted together in one graph or split into separate graphs. The plot tools support zooming, panning, fitting, and manual x-range selection.");
                     section(ui, "Multi Flow", "Compare metrics from two TCP flows side by side. This is useful for analyzing interactions between concurrent flows, such as bandwidth sharing, pacing, or congestion window changes. The interface is similar to Single Flow, but supports selecting two flows and comparing their metrics.");
                     section(ui, "Process", "Calculate derived TCP metrics that are not directly recorded. This is done through plugins, for example modules that compute window-related series. Calculated results can be previewed and stored in the loaded database for later analysis.");

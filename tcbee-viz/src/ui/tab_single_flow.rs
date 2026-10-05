@@ -112,7 +112,7 @@ impl TabSingleFlow {
             // Reserve space for flow table — takes up top half of sidebar
             egui::Frame::NONE.show(ui, |ui| {
                 ui.set_max_height(flow_table_height);
-                if let Some(new_id) = self.flow_table.show(ui, db, &flows) {
+                if let Some(new_id) = self.flow_table.show(ui, db, flows) {
                     self.state.select_flow(db, new_id);
                     self.manual_x_min = self.state.data_x_min;
                     self.manual_x_max = self.state.data_x_max;

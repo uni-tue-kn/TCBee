@@ -5,9 +5,14 @@ use crate::ui::{
 };
 use egui::RichText;
 use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints, Text, VLine};
+use ts_storage::SeriesInfo;
 
 use crate::{
-    backend::{db::DbBackend, plugin::PluginKind},
+    backend::{
+        binding::{resolve_inputs, series_label},
+        db::DbBackend,
+        plugin::PluginKind,
+    },
     data::{preprocessing::generate_colors, series_data::SeriesData},
     settings::AppSettings,
 };
@@ -18,8 +23,12 @@ struct InputBinding {
     selected_series_id: Option<i64>,
 }
 
+#[derive(Default)]
 pub struct TabProcess {
     flow_table: FlowTable,
+    /// Catalog rows of the selected flow, read once per selection and after a save.
+    available: Vec<SeriesInfo>,
+    available_flow: Option<i64>,
     selected_plugin: Option<PluginKind>,
     input_bindings: Vec<InputBinding>,
     /// Input series loaded from the database (raw_data populated).
@@ -30,22 +39,6 @@ pub struct TabProcess {
     save_status: String,
     show_overwrite_confirm: bool,
     overwrite_conflicts: Vec<String>,
-}
-
-impl Default for TabProcess {
-    fn default() -> Self {
-        Self {
-            flow_table: FlowTable::default(),
-            selected_plugin: None,
-            input_bindings: Vec::new(),
-            input_series: Vec::new(),
-            preview_series: Vec::new(),
-            status: String::new(),
-            save_status: String::new(),
-            show_overwrite_confirm: false,
-            overwrite_conflicts: Vec::new(),
-        }
-    }
 }
 
 impl TabProcess {
@@ -124,7 +117,7 @@ impl TabProcess {
             return;
         }
 
-        if self.flow_table.show(ui, db, &flows).is_some() {
+        if self.flow_table.show(ui, db, flows).is_some() {
             self.input_bindings.clear();
             self.input_series.clear();
             self.preview_series.clear();
@@ -135,7 +128,26 @@ impl TabProcess {
         }
     }
 
+    /// Reads the series list again when the selected flow changed or after a save.
+    fn sync_available(&mut self, db: &DbBackend) {
+        let selected = self.flow_table.selected_id;
+        if self.available_flow != selected {
+            self.available = selected.map_or_else(Vec::new, |id| db.list_series_for_flow(id));
+            self.available_flow = selected;
+        }
+    }
+
+    /// The selected flow, if it exists.
+    fn selected_flow(&self, db: &DbBackend) -> Result<i64, String> {
+        match self.flow_table.selected_id {
+            Some(id) if db.flow_exists(id) => Ok(id),
+            Some(_) => Err("flow not found".to_string()),
+            None => Err("no flow selected".to_string()),
+        }
+    }
+
     fn show_plugin_panel(&mut self, ui: &mut egui::Ui, db: &DbBackend) {
+        self.sync_available(db);
         ui.heading("Plugin");
         ui.separator();
 
@@ -167,39 +179,36 @@ impl TabProcess {
             }
 
             if let Some(flow_id) = self.flow_table.selected_id {
-                if let Some(flow) = db.get_flow_by_id(flow_id) {
-                    let available = db.list_series_for_flow(&flow);
-                    self.ensure_input_bindings(&required, &available);
+                Self::ensure_input_bindings(&mut self.input_bindings, &required, &self.available);
 
-                    ui.add_space(6.0);
-                    ui.label(RichText::new("Input mapping").strong());
+                ui.add_space(6.0);
+                ui.label(RichText::new("Input mapping").strong());
 
-                    for binding in &mut self.input_bindings {
-                        let selected_name = binding
-                            .selected_series_id
-                            .and_then(|id| available.iter().find(|s| s.id == id))
-                            .map(|s| s.name.as_str())
-                            .unwrap_or("Select series");
+                for binding in &mut self.input_bindings {
+                    let selected_name = binding
+                        .selected_series_id
+                        .and_then(|id| self.available.iter().find(|s| s.id == id))
+                        .map(series_label)
+                        .unwrap_or_else(|| "Select series".to_string());
 
-                        ui.horizontal(|ui| {
-                            ui.label(&binding.required_name);
-                            egui::ComboBox::from_id_salt(format!(
-                                "process_input_{}_{}",
-                                flow_id, binding.required_name
-                            ))
-                            .selected_text(selected_name)
-                            .width(ui.available_width())
-                            .show_ui(ui, |ui| {
-                                for series in &available {
-                                    ui.selectable_value(
-                                        &mut binding.selected_series_id,
-                                        Some(series.id),
-                                        &series.name,
-                                    );
-                                }
-                            });
+                    ui.horizontal(|ui| {
+                        ui.label(&binding.required_name);
+                        egui::ComboBox::from_id_salt(format!(
+                            "process_input_{}_{}",
+                            flow_id, binding.required_name
+                        ))
+                        .selected_text(selected_name)
+                        .width(ui.available_width())
+                        .show_ui(ui, |ui| {
+                            for series in &self.available {
+                                ui.selectable_value(
+                                    &mut binding.selected_series_id,
+                                    Some(series.id),
+                                    series_label(series),
+                                );
+                            }
                         });
-                    }
+                    });
                 }
             }
         }
@@ -310,22 +319,18 @@ impl TabProcess {
     }
 
     fn run_preview(&mut self, db: &DbBackend) {
-        let (Some(flow_id), Some(plugin_kind)) =
-            (self.flow_table.selected_id, self.selected_plugin)
-        else {
+        let Some(plugin_kind) = self.selected_plugin else {
             return;
         };
+        if let Err(e) = self.selected_flow(db) {
+            self.status = format!("Error: {e}");
+            return;
+        }
+        self.sync_available(db);
 
         let plugin = plugin_kind.create();
         let required = plugin.required_series();
-
-        let Some(flow) = db.get_flow_by_id(flow_id) else {
-            self.status = "Error: flow not found".to_string();
-            return;
-        };
-
-        let available = db.list_series_for_flow(&flow);
-        self.ensure_input_bindings(&required, &available);
+        Self::ensure_input_bindings(&mut self.input_bindings, &required, &self.available);
 
         let mut series_ids = Vec::with_capacity(self.input_bindings.len());
         for binding in &self.input_bindings {
@@ -333,46 +338,19 @@ impl TabProcess {
                 self.status = format!("Error: no series selected for {}", binding.required_name);
                 return;
             };
-            if available.iter().all(|series| series.id != series_id) {
-                self.status = format!(
-                    "Error: selected series for {} is not available in this flow",
-                    binding.required_name
-                );
-                return;
-            }
             series_ids.push(series_id);
         }
 
+        // A failed read stops here: the plugin never runs on missing data and nothing is saved.
         let colors = generate_colors(series_ids.len());
-        let (x_min, x_max) = db.get_flow_x_bounds(flow_id).unwrap_or((0.0, 1.0));
-
         self.input_series.clear();
-        for (i, &sid) in series_ids.iter().enumerate() {
-            let Some(ts) = db.get_series_by_id(sid) else {
-                continue;
-            };
-            let (y_min, y_max) = db.get_series_y_bounds(&[sid]).unwrap_or((0.0, 1.0));
-            let color = colors.get(i).copied().unwrap_or(egui::Color32::WHITE);
-            let mut sd = SeriesData::new(
-                ts.name.clone(),
-                sid,
-                ts.ts_type.clone(),
-                x_min,
-                x_max,
-                y_min,
-                y_max,
-                color,
-            );
-            // Load raw data for plugin computation
-            sd.raw_data = db.load_all(sid);
-            // Also load points for visualisation
-            sd.points = sd
-                .raw_data
-                .iter()
-                .filter_map(|(t, v)| crate::backend::db::datavalue_as_f64(v).map(|f| (*t, f)))
-                .collect();
-            sd.loaded_range = Some((x_min, x_max));
-            self.input_series.push(sd);
+        self.preview_series.clear();
+        match db.load_inputs(&self.available, &series_ids, &colors) {
+            Ok(inputs) => self.input_series = inputs,
+            Err(e) => {
+                self.status = format!("Error: {e}");
+                return;
+            }
         }
 
         match plugin.compute(&self.input_series) {
@@ -386,43 +364,55 @@ impl TabProcess {
         }
     }
 
-    fn ensure_input_bindings(&mut self, required: &[String], available: &[ts_storage::TimeSeries]) {
-        let needs_rebuild = self.input_bindings.len() != required.len()
-            || self
-                .input_bindings
+    /// Resolves the bindings when the plugin changed, and re-resolves selections that are not
+    /// in the (new) flow's series list.
+    fn ensure_input_bindings(
+        bindings: &mut Vec<InputBinding>,
+        required: &[String],
+        available: &[SeriesInfo],
+    ) {
+        let rebuild = bindings.len() != required.len()
+            || bindings
                 .iter()
                 .zip(required)
-                .any(|(binding, required_name)| binding.required_name != *required_name);
-
-        if needs_rebuild {
-            self.input_bindings = required
-                .iter()
-                .map(|name| InputBinding {
-                    required_name: name.clone(),
-                    selected_series_id: best_match_series_id(name, available),
-                })
-                .collect();
+                .any(|(binding, name)| binding.required_name != *name);
+        let stale: Vec<bool> = bindings
+            .iter()
+            .map(|b| {
+                b.selected_series_id
+                    .is_some_and(|id| available.iter().all(|s| s.id != id))
+            })
+            .collect();
+        if !rebuild && !stale.contains(&true) {
             return;
         }
 
-        for binding in &mut self.input_bindings {
-            if binding
-                .selected_series_id
-                .is_some_and(|id| available.iter().all(|series| series.id != id))
-            {
-                binding.selected_series_id =
-                    best_match_series_id(&binding.required_name, available);
+        let resolved = resolve_inputs(required, available);
+        if rebuild {
+            *bindings = required
+                .iter()
+                .zip(resolved)
+                .map(|(name, id)| InputBinding {
+                    required_name: name.clone(),
+                    selected_series_id: id,
+                })
+                .collect();
+        } else {
+            for ((binding, id), stale) in bindings.iter_mut().zip(resolved).zip(stale) {
+                if stale {
+                    binding.selected_series_id = id;
+                }
             }
         }
     }
 
     fn save_results_or_confirm(&mut self, db: &DbBackend) {
-        let Some(flow_id) = self.flow_table.selected_id else {
-            return;
-        };
-        let Some(flow) = db.get_flow_by_id(flow_id) else {
-            self.save_status = "Error: flow not found".to_string();
-            return;
+        let flow_id = match self.selected_flow(db) {
+            Ok(id) => id,
+            Err(e) => {
+                self.save_status = format!("Error: {e}");
+                return;
+            }
         };
 
         let names = self
@@ -430,7 +420,7 @@ impl TabProcess {
             .iter()
             .map(|series| series.name.clone())
             .collect::<Vec<_>>();
-        match db.existing_series_for_flow(&flow, &names) {
+        match db.existing_series_for_flow(flow_id, &names) {
             Ok(existing) if existing.is_empty() => self.save_results(db, false),
             Ok(existing) => {
                 self.overwrite_conflicts = existing.into_iter().map(|series| series.name).collect();
@@ -443,21 +433,21 @@ impl TabProcess {
     }
 
     fn save_results(&mut self, db: &DbBackend, overwrite: bool) {
-        let Some(flow_id) = self.flow_table.selected_id else {
-            return;
-        };
-        let Some(flow) = db.get_flow_by_id(flow_id) else {
-            self.save_status = "Error: flow not found".to_string();
-            return;
+        let flow_id = match self.selected_flow(db) {
+            Ok(id) => id,
+            Err(e) => {
+                self.save_status = format!("Error: {e}");
+                return;
+            }
         };
 
         let mut saved = 0;
         let mut errors = Vec::new();
         for series in &self.preview_series {
             let result = if overwrite {
-                db.replace_series_for_flow(&flow, series)
+                db.replace_series_for_flow(flow_id, series)
             } else {
-                db.create_series_for_flow(&flow, series)
+                db.create_series_for_flow(flow_id, series)
             };
             match result {
                 Ok(()) => saved += 1,
@@ -465,8 +455,10 @@ impl TabProcess {
             }
         }
 
+        // New or changed series: show them in the list and the flow's counts again.
+        self.flow_table.clear_stats_cache();
+        self.available_flow = None;
         self.save_status = if errors.is_empty() {
-            self.flow_table.clear_stats_cache();
             format!("Saved {} series to database.", saved)
         } else {
             format!("Saved {}, errors: {}", saved, errors.join("; "))
@@ -483,13 +475,13 @@ impl TabProcess {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label("The following output series already exist:");
+                ui.label("The following derived series already exist:");
                 ui.add_space(4.0);
                 for name in &self.overwrite_conflicts {
                     ui.label(format!("  • {}", name));
                 }
                 ui.add_space(8.0);
-                ui.label("Overwrite deletes the old series and inserts the new plugin output.");
+                ui.label("Overwrite replaces the old derived series with the new plugin output.");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -502,29 +494,4 @@ impl TabProcess {
                 });
             });
     }
-}
-
-fn best_match_series_id(required_name: &str, available: &[ts_storage::TimeSeries]) -> Option<i64> {
-    available
-        .iter()
-        .find(|series| series.name == required_name)
-        .or_else(|| {
-            available
-                .iter()
-                .find(|series| series.name.eq_ignore_ascii_case(required_name))
-        })
-        .or_else(|| {
-            let required = normalize_series_name(required_name);
-            available
-                .iter()
-                .find(|series| normalize_series_name(&series.name) == required)
-        })
-        .map(|series| series.id)
-}
-
-fn normalize_series_name(name: &str) -> String {
-    name.chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
-        .flat_map(|ch| ch.to_lowercase())
-        .collect()
 }

@@ -1,13 +1,17 @@
 use egui::Color32;
-use ts_storage::DataValue;
+use ts_storage::{DataValue, SeriesInfo, ValueKind};
+
+use crate::backend::binding::series_label;
 
 /// A single time series with its currently-loaded window of data points.
 /// `points` only contains data for the visible time window; the full dataset lives in the DB.
 pub struct SeriesData {
     pub name: String,
     pub series_id: i64,
-    /// Type discriminant (e.g. `DataValue::Float(0.0)`, `DataValue::Int(0)`, …).
-    pub val_type: DataValue,
+    /// Catalog row of a series loaded from the database; `None` for plugin outputs.
+    pub info: Option<SeriesInfo>,
+    /// Kind of the values (`Int`, `Float`, `Bool`, `String`).
+    pub val_type: ValueKind,
     /// (timestamp, value as f64) for the current visible window.
     pub points: Vec<(f64, f64)>,
     /// String-type entries are kept separately and shown as annotations.
@@ -27,10 +31,11 @@ pub struct SeriesData {
 }
 
 impl SeriesData {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         series_id: i64,
-        val_type: DataValue,
+        val_type: ValueKind,
         global_t_min: f64,
         global_t_max: f64,
         global_y_min: f64,
@@ -40,6 +45,7 @@ impl SeriesData {
         Self {
             name,
             series_id,
+            info: None,
             val_type,
             points: Vec::new(),
             string_points: Vec::new(),
@@ -54,11 +60,34 @@ impl SeriesData {
         }
     }
 
+    /// A series of the database, named by its label (`name · source · dir`). The value range
+    /// comes from the catalog.
+    pub fn from_info(
+        info: &SeriesInfo,
+        global_t_min: f64,
+        global_t_max: f64,
+        color: Color32,
+    ) -> Self {
+        let (y_min, y_max) = info.v_min.zip(info.v_max).unwrap_or((0.0, 1.0));
+        let mut sd = Self::new(
+            series_label(info),
+            info.id,
+            info.value_type.value_kind(),
+            global_t_min,
+            global_t_max,
+            y_min,
+            y_max,
+            color,
+        );
+        sd.info = Some(info.clone());
+        sd
+    }
+
     pub fn is_string_type(&self) -> bool {
-        matches!(self.val_type, DataValue::String(_))
+        self.val_type == ValueKind::String
     }
 
     pub fn is_boolean_type(&self) -> bool {
-        matches!(self.val_type, DataValue::Boolean(_))
+        self.val_type == ValueKind::Bool
     }
 }
