@@ -678,6 +678,8 @@ impl From<io::Error> for JobError {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use tcbee_common::records::*;
 
     use super::*;
@@ -725,6 +727,25 @@ mod tests {
         assert_packed_matches_bincode::<tcp_probe_entry>();
         assert_packed_matches_bincode::<tcp_retransmit_synack_entry>();
         assert_packed_matches_bincode::<tcp_bad_csum_entry>();
+    }
+
+    /// Records written across several remaps all end up in the file
+    #[test]
+    fn mmap_file_keeps_all_bytes() {
+        let path = env::temp_dir().join(format!("tcbee-writer-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut file = MmapBackedFile::new(&path, 1000).unwrap();
+        let mut expected = Vec::new();
+        let mut rng = Rng(42);
+        for _ in 0..20_000 {
+            let record = rng.bytes(37);
+            file.reserve(record.len()).unwrap().copy_from_slice(&record);
+            expected.extend_from_slice(&record);
+        }
+        file.finish().unwrap();
+        let written = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(written == expected);
     }
 
     #[test]
