@@ -147,6 +147,7 @@ pub struct EbpfRunnerConfig {
     pub dir: String,
     pub ringbuf_sizes: Vec<(&'static str, u32)>,
     pub poll_mode: PollMode,
+    pub writer_cpus: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -234,6 +235,11 @@ impl EbpfRunnerConfig {
 
     pub fn algorithms(mut self, set: bool) -> EbpfRunnerConfig {
         self.algorithms = set;
+        self
+    }
+
+    pub fn writer_cpus(mut self, cpus: Vec<usize>) -> EbpfRunnerConfig {
+        self.writer_cpus = cpus;
         self
     }
 

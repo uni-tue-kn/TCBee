@@ -237,7 +237,8 @@ impl EbpfRunner {
         // TODO: I feel that the dir should be passed to the writer, and the Tracers should just add the filename
 
         // This is the backend writer thread that reads and writes data to files
-        let mut writer = Writer::new(self.config.poll_mode);
+        let mut writer =
+            Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone());
         let mut watcher_config = self.config.watcher_config();
 
         // Tracing for packet headers via TC and XDP

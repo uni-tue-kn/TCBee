@@ -79,6 +79,7 @@ fn main() -> anyhow::Result<()> {
     let mut duration: f64 = 0.0;
     let mut ringbuf_size: String = String::new();
     let mut poll: String = "busy".to_string();
+    let mut writer_cpus: String = String::new();
 
     {
         let mut argparser = ArgumentParser::new();
@@ -181,6 +182,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "How writer threads wait for records: 'busy' spins and uses one core per ring buffer, 'wait' blocks until the kernel signals new records. Default is busy.",
         );
+        argparser.refer(&mut writer_cpus).add_option(
+            &["--writer-cpus"],
+            Store,
+            "Comma-separated CPU ids to pin the writer threads to, assigned round-robin. One thread runs per ring buffer.",
+        );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
@@ -208,6 +214,10 @@ fn main() -> anyhow::Result<()> {
     };
 
     let ringbuf_sizes = parse_ringbuf_sizes(&ringbuf_size)?;
+    let writer_cpus: Vec<usize> = parse_csv(&writer_cpus, "CPU id")?;
+    if let Some(cpu) = writer_cpus.iter().find(|cpu| **cpu >= libc::CPU_SETSIZE as usize) {
+        return Err(anyhow!("Invalid writer CPU id {}", cpu));
+    }
     let poll_mode = match poll.as_str() {
         "busy" => PollMode::Busy,
         "wait" => PollMode::Wait,
@@ -251,6 +261,7 @@ fn main() -> anyhow::Result<()> {
         .algorithms(trace_algorithms)
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)
+        .writer_cpus(writer_cpus)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints
