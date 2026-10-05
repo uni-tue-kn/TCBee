@@ -499,3 +499,58 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 {
 	return trace_cubic(sk);
 }
+
+/* ---- BBR (-a) ---------------------------------------------------------------------- */
+
+/* tcp_bbr is usually a module, fentry needs it loaded when the object is loaded */
+static __always_inline int trace_bbr(struct sock *sk)
+{
+	struct bbr___tcbee *bbr = inet_csk_ca(sk);
+	struct bbr_trace_entry rec = {};
+	__u16 sport, dport;
+
+	if (!sk) {
+		/* The filter cannot be evaluated without the socket, count it as an error */
+		count_attempt(RB_BBR);
+		count_error(RB_BBR);
+		return 0;
+	}
+	if (!sock_ports_filter(sk, RB_BBR, &sport, &dport))
+		return 0;
+	count_attempt(RB_BBR);
+
+	if (fill_header(&rec, sk)) {
+		count_error(RB_BBR);
+	} else {
+		rec.min_rtt_us = BPF_CORE_READ(bbr, min_rtt_us);
+		rec.min_rtt_stamp = BPF_CORE_READ(bbr, min_rtt_stamp);
+		rec.probe_rtt_done_stamp = BPF_CORE_READ(bbr, probe_rtt_done_stamp);
+		rec.rtt_cnt = BPF_CORE_READ(bbr, rtt_cnt);
+		rec.next_rtt_delivered = BPF_CORE_READ(bbr, next_rtt_delivered);
+		rec.cycle_mstamp = BPF_CORE_READ(bbr, cycle_mstamp);
+		rec.lt_bw = BPF_CORE_READ(bbr, lt_bw);
+		rec.lt_last_delivered = BPF_CORE_READ(bbr, lt_last_delivered);
+		rec.lt_last_stamp = BPF_CORE_READ(bbr, lt_last_stamp);
+		rec.lt_last_lost = BPF_CORE_READ(bbr, lt_last_lost);
+		rec.prior_cwnd = BPF_CORE_READ(bbr, prior_cwnd);
+		rec.full_bw = BPF_CORE_READ(bbr, full_bw);
+		submit(&BBR_EVENTS, RB_BBR, &rec);
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+/* Called on every ACK */
+SEC("fentry/bbr_main")
+int BPF_PROG(bbr_cong_control, struct sock *sk)
+{
+	return trace_bbr(sk);
+}
+
+/* Called on congestion events */
+SEC("fentry/bbr_cwnd_event")
+int BPF_PROG(bbr_cwnd_event, struct sock *sk)
+{
+	return trace_bbr(sk);
+}
