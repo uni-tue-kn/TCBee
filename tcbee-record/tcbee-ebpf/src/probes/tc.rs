@@ -1,5 +1,5 @@
 use aya_ebpf::{
-    bindings::TC_ACT_OK, helpers::generated::bpf_ktime_get_ns, macros::map, maps::RingBuf,
+    bindings::TC_ACT_UNSPEC, helpers::generated::bpf_ktime_get_ns, macros::map, maps::RingBuf,
     programs::TcContext,
 };
 use memoffset::offset_of;
@@ -71,21 +71,21 @@ fn trace_packet(
     // Get ethertype over memory offset, error leads to go to next action and skip processing
     let ethertype = u16::from_be(
         ctx.load(offset_of!(ethhdr, h_proto))
-            .map_err(|_| TC_ACT_OK)?,
+            .map_err(|_| TC_ACT_UNSPEC)?,
     );
 
     if ethertype == ETHERTYPE_IPV4 {
         // If packet is too short, will throw error and stop classifier
-        let ip4_hdr = ctx.load::<iphdr>(ETH_HDR_LEN).map_err(|_| TC_ACT_OK)?;
+        let ip4_hdr = ctx.load::<iphdr>(ETH_HDR_LEN).map_err(|_| TC_ACT_UNSPEC)?;
         // Non-first fragments carry no TCP header
         if ip4_hdr.protocol != TCP_PROTOCOL || u16::from_be(ip4_hdr.frag_off) & IP_OFFSET_MASK != 0
         {
-            return Ok(TC_ACT_OK);
+            return Ok(TC_ACT_UNSPEC);
         }
         let ip_hdr_len = ((ip4_hdr.ihl() as usize) << 2).max(IP_HDR_LEN);
         let tcp_hdr = ctx
             .load::<tcphdr>(ETH_HDR_LEN + ip_hdr_len)
-            .map_err(|_| TC_ACT_OK)?;
+            .map_err(|_| TC_ACT_UNSPEC)?;
 
         let saddr = u32::from_be(ip4_hdr.saddr);
         let daddr = u32::from_be(ip4_hdr.daddr);
@@ -105,7 +105,7 @@ fn trace_packet(
         if !filter_ports_match(sport, dport)
             || (filter_needs_tuple() && !filter_tuple_match(&tuple))
         {
-            return Ok(TC_ACT_OK);
+            return Ok(TC_ACT_UNSPEC);
         }
 
         count_attempt(rb4_id);
@@ -128,13 +128,13 @@ fn trace_packet(
         let _ = try_flow_tracker(tuple);
     } else if ethertype == ETHERTYPE_IPV6 {
         // Extension headers are not parsed, nexthdr must be TCP directly
-        let ip6_hdr = ctx.load::<ipv6hdr>(ETH_HDR_LEN).map_err(|_| TC_ACT_OK)?;
+        let ip6_hdr = ctx.load::<ipv6hdr>(ETH_HDR_LEN).map_err(|_| TC_ACT_UNSPEC)?;
         if ip6_hdr.nexthdr != TCP_PROTOCOL {
-            return Ok(TC_ACT_OK);
+            return Ok(TC_ACT_UNSPEC);
         }
         let tcp_hdr = ctx
             .load::<tcphdr>(ETH_HDR_LEN + IP6_HDR_LEN)
-            .map_err(|_| TC_ACT_OK)?;
+            .map_err(|_| TC_ACT_UNSPEC)?;
 
         let sport = u16::from_be(tcp_hdr.source);
         let dport = u16::from_be(tcp_hdr.dest);
@@ -154,7 +154,7 @@ fn trace_packet(
         if !filter_ports_match(sport, dport)
             || (filter_needs_tuple() && !filter_tuple_match(&tuple))
         {
-            return Ok(TC_ACT_OK);
+            return Ok(TC_ACT_UNSPEC);
         }
 
         count_attempt(rb6_id);
@@ -177,6 +177,7 @@ fn trace_packet(
         let _ = try_flow_tracker(tuple);
     }
 
-    // Always let traffic pass to interface
-    Ok(TC_ACT_OK)
+    // TC_ACT_UNSPEC hands the packet to the next program unchanged. TC_ACT_OK would
+    // end the chain on tcx and skip programs attached after this one.
+    Ok(TC_ACT_UNSPEC)
 }

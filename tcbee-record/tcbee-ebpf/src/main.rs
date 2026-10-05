@@ -26,7 +26,7 @@ pub mod flow_tracker;
 pub mod helpers;
 
 use aya_ebpf::{
-    bindings::TC_ACT_PIPE,
+    bindings::TC_ACT_UNSPEC,
     macros::{classifier, fentry, kprobe, tracepoint},
     programs::{FEntryContext, ProbeContext, TcContext, TracePointContext},
 };
@@ -129,7 +129,7 @@ pub fn cwnd_sock_recvmsg(ctx: FEntryContext) -> u32 {
 pub fn tc_ingress_packet_tracer(ctx: TcContext) -> i32 {
     match tc_ingress_hook(ctx) {
         Ok(ret) => ret,
-        Err(_) => TC_ACT_PIPE,
+        Err(_) => TC_ACT_UNSPEC,
     }
 }
 
@@ -137,7 +137,7 @@ pub fn tc_ingress_packet_tracer(ctx: TcContext) -> i32 {
 pub fn tc_egress_packet_tracer(ctx: TcContext) -> i32 {
     match tc_egress_hook(ctx) {
         Ok(ret) => ret,
-        Err(_) => TC_ACT_PIPE,
+        Err(_) => TC_ACT_UNSPEC,
     }
 }
 
