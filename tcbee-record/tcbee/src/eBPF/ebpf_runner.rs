@@ -387,12 +387,18 @@ impl EbpfRunner {
             CubicTracer::spawn(skel, dir, writer, links)?;
             watcher_config.graphs.cubic = true;
             if bbr {
+                // BBR fails softly, so a program that was attached before the error has
+                // to be detached here. Other groups fail the start, stop() detaches them.
+                let attached = links.len();
                 match BBRTracer::spawn(skel, dir, writer, links) {
                     Ok(()) => watcher_config.graphs.bbr = true,
-                    Err(err) => error!(
-                        "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
-                        err
-                    ),
+                    Err(err) => {
+                        links.truncate(attached);
+                        error!(
+                            "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
+                            err
+                        );
+                    }
                 }
             }
         }
