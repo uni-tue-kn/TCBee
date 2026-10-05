@@ -35,6 +35,7 @@ struct bbr___tcbee {
 	u32 rtt_cnt;
 	u32 next_rtt_delivered;
 	u64 cycle_mstamp;
+	/* BBRv1 only, read behind bpf_core_field_exists() */
 	u32 lt_bw;
 	u32 lt_last_delivered;
 	u32 lt_last_stamp;

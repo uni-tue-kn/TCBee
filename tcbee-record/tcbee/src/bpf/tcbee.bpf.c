@@ -528,10 +528,15 @@ static __always_inline int trace_bbr(struct sock *sk)
 		rec.rtt_cnt = BPF_CORE_READ(bbr, rtt_cnt);
 		rec.next_rtt_delivered = BPF_CORE_READ(bbr, next_rtt_delivered);
 		rec.cycle_mstamp = BPF_CORE_READ(bbr, cycle_mstamp);
-		rec.lt_bw = BPF_CORE_READ(bbr, lt_bw);
-		rec.lt_last_delivered = BPF_CORE_READ(bbr, lt_last_delivered);
-		rec.lt_last_stamp = BPF_CORE_READ(bbr, lt_last_stamp);
-		rec.lt_last_lost = BPF_CORE_READ(bbr, lt_last_lost);
+		/* Long-term bandwidth sampling only exists in BBRv1, 0 for BBRv3 and others */
+		if (bpf_core_field_exists(bbr->lt_bw))
+			rec.lt_bw = BPF_CORE_READ(bbr, lt_bw);
+		if (bpf_core_field_exists(bbr->lt_last_delivered))
+			rec.lt_last_delivered = BPF_CORE_READ(bbr, lt_last_delivered);
+		if (bpf_core_field_exists(bbr->lt_last_stamp))
+			rec.lt_last_stamp = BPF_CORE_READ(bbr, lt_last_stamp);
+		if (bpf_core_field_exists(bbr->lt_last_lost))
+			rec.lt_last_lost = BPF_CORE_READ(bbr, lt_last_lost);
 		rec.prior_cwnd = BPF_CORE_READ(bbr, prior_cwnd);
 		rec.full_bw = BPF_CORE_READ(bbr, full_bw);
 		submit(&BBR_EVENTS, RB_BBR, &rec);
