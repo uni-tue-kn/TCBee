@@ -13,6 +13,7 @@
 #include "counters.h"
 #include "filter.h"
 #include "flow.h"
+#include "cc_structs.h"
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";
 
@@ -447,4 +448,54 @@ SEC("fentry/tcp_rcv_established")
 int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
 {
 	return trace_cwnd(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
+}
+
+/* ---- CUBIC (-a) -------------------------------------------------------------------- */
+
+static __always_inline int trace_cubic(struct sock *sk)
+{
+	struct bictcp___tcbee *ca = inet_csk_ca(sk);
+	struct cubic_trace_entry rec = {};
+	__u16 sport, dport;
+
+	if (!sock_ports_filter(sk, RB_CUBIC, &sport, &dport))
+		return 0;
+	count_attempt(RB_CUBIC);
+
+	if (fill_header(&rec, sk)) {
+		count_error(RB_CUBIC);
+	} else {
+		rec.cnt = BPF_CORE_READ(ca, cnt);
+		rec.last_max_cwnd = BPF_CORE_READ(ca, last_max_cwnd);
+		rec.last_cwnd = BPF_CORE_READ(ca, last_cwnd);
+		rec.last_time = BPF_CORE_READ(ca, last_time);
+		rec.bic_origin_point = BPF_CORE_READ(ca, bic_origin_point);
+		rec.bic_K = BPF_CORE_READ(ca, bic_K);
+		rec.delay_min = BPF_CORE_READ(ca, delay_min);
+		rec.epoch_start = BPF_CORE_READ(ca, epoch_start);
+		rec.ack_cnt = BPF_CORE_READ(ca, ack_cnt);
+		rec.tcp_cwnd = BPF_CORE_READ(ca, tcp_cwnd);
+		rec.round_start = BPF_CORE_READ(ca, round_start);
+		rec.end_seq = BPF_CORE_READ(ca, end_seq);
+		rec.last_ack = BPF_CORE_READ(ca, last_ack);
+		rec.curr_rtt = BPF_CORE_READ(ca, curr_rtt);
+		submit(&CUBIC_EVENTS, RB_CUBIC, &rec);
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+/* Called on every ACK in congestion avoidance */
+SEC("fentry/cubictcp_cong_avoid")
+int BPF_PROG(cubic_cong_control, struct sock *sk)
+{
+	return trace_cubic(sk);
+}
+
+/* Called on congestion events. TODO: probably the wrong hook */
+SEC("fentry/cubictcp_cwnd_event")
+int BPF_PROG(cubic_cwnd_event, struct sock *sk)
+{
+	return trace_cubic(sk);
 }
