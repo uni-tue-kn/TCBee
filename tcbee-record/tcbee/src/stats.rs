@@ -4,7 +4,7 @@ use aya::{
     Ebpf,
 };
 use tcbee_common::stats::{
-    slot, RB_COUNT, STATS_LEN, STAT_ATTEMPTED, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+    slot, RB_COUNT, STATS_LEN, STATS_PER_RB, STAT_ATTEMPTED, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
 };
 
 /// Reads the `STATS` per-CPU counter array of the eBPF programs.
@@ -23,11 +23,17 @@ impl Stats {
     }
 
     /// Sums every counter slot over all CPUs.
+    ///
+    /// Slots are read one by one while the probes keep counting. The attempted counters
+    /// are read last, so a live snapshot never shows more outcomes than attempts.
     pub fn snapshot(&self) -> Result<Snapshot, MapError> {
-        let mut values = Vec::with_capacity(STATS_LEN as usize);
-        for index in 0..STATS_LEN {
+        let mut values = vec![0u64; STATS_LEN as usize];
+        let attempted =
+            |index: &u32| *index < slot(RB_COUNT, 0) && *index % STATS_PER_RB == STAT_ATTEMPTED;
+        let outcomes = (0..STATS_LEN).filter(|i| !attempted(i));
+        for index in outcomes.chain((0..STATS_LEN).filter(attempted)) {
             let per_cpu = self.map.get(&index, 0)?;
-            values.push(per_cpu.iter().copied().fold(0u64, u64::wrapping_add));
+            values[index as usize] = per_cpu.iter().copied().fold(0u64, u64::wrapping_add);
         }
         Ok(Snapshot { values })
     }
