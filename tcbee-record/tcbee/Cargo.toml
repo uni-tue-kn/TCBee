@@ -9,8 +9,6 @@ tcbee-common = { path = "../tcbee-common", features = ["user"]  }
 tcbee-trace = { path = "../tcbee-trace" }
 
 anyhow = { workspace = true, default-features = true }
-aya = { workspace = true }
-aya-obj = { git = "https://github.com/aya-rs/aya", default-features = false }
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
@@ -28,10 +26,7 @@ libbpf-rs = "0.27"
 
 [build-dependencies]
 anyhow = { workspace = true, default-features = true }
-aya-build = { workspace = true }
-cargo_metadata = { workspace = true }
 libbpf-cargo = "0.27"
-tcbee-ebpf = { path = "../tcbee-ebpf" }
 
 [[bin]]
 name = "tcbee-record"

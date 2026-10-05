@@ -1,72 +1,47 @@
 use std::error::Error;
 
-use anyhow::Context;
-use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
-use tcbee_common::{bindings::tcp_sock::cwnd_trace_entry, prog_bindings::TraceInoutProbe};
+use libbpf_rs::Link;
+use tcbee_common::{prog_bindings::TraceInoutProbe, records::cwnd_trace_entry};
 
 use tcbee_common::stats::{RB_CWND_RECV, RB_CWND_SEND};
 
 use crate::{
-    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
+    eBPF::{
+        ebpf_runner::prepend_string,
+        probes::{attach, handle},
+        skel::{OpenTcbeeProgs, TcbeeSkel},
+    },
     writer::Writer,
 };
 
 pub struct CwndTracer {}
 
 impl CwndTracer {
-    pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
-        let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
+    pub fn configure(progs: &mut OpenTcbeeProgs<'_>, enabled: bool) {
+        progs.cwnd_sock_sendmsg.set_autoload(enabled);
+        progs.cwnd_sock_recvmsg.set_autoload(enabled);
+    }
 
-        // Outgoing TCP
-        let sendmsg: &mut FEntry = ebpf
-            .program_mut("cwnd_sock_sendmsg")
-            .ok_or(EBPFRunnerError::InvalidProgramError {
-                name: "cwnd_sock_sendmsg".to_string(),
-            })?
-            .try_into()?;
-        sendmsg.load("__tcp_transmit_skb", &btf)?;
-        sendmsg.attach()?;
+    pub fn spawn(
+        skel: &TcbeeSkel<'_>,
+        dir: &str,
+        writer: &mut Writer,
+        links: &mut Vec<Link>,
+    ) -> Result<(), Box<dyn Error>> {
+        // Outgoing TCP, fentry/__tcp_transmit_skb
+        attach(&skel.progs.cwnd_sock_sendmsg, links)?;
+        // Incoming TCP, fentry/tcp_rcv_established
+        attach(&skel.progs.cwnd_sock_recvmsg, links)?;
 
-        // Incoming TCP
-        let recvmsg: &mut FEntry = ebpf
-            .program_mut("cwnd_sock_recvmsg")
-            .ok_or(EBPFRunnerError::InvalidProgramError {
-                name: "cwnd_sock_recvmsg".to_string(),
-            })?
-            .try_into()?;
-        recvmsg.load("tcp_rcv_established", &btf)?;
-        recvmsg.attach()?;
-
-        // Start SOCK_SEND handling
-        // Get queue from
-        let map =
-            ebpf.take_map("TCP_SEND_CWND_EVENTS")
-                .ok_or(EBPFRunnerError::QueueNotFoundError {
-                    name: "TCP_SEND_CWND_EVENTS".to_string(),
-                    trace: "CWND Tracer tcp_sendmsg".to_string(),
-                })?;
-
-        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<cwnd_trace_entry>(
             RB_CWND_SEND,
-            buff,
-            prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), &dir),
+            handle(&skel.maps.TCP_SEND_CWND_EVENTS)?,
+            prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), dir),
         )?;
-
-        // Start SOCK_RECV handling
-        // Get queue from
-        let map = ebpf.take_map("TCP_RECEIVE_CWND_EVENTS").ok_or(
-            EBPFRunnerError::QueueNotFoundError {
-                name: "TCP_RECEIVE_CWND_EVENTS".to_string(),
-                trace: "CWND Tracer tcp_recvmsg".to_string(),
-            },
-        )?;
-
-        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<cwnd_trace_entry>(
             RB_CWND_RECV,
-            buff,
-            prepend_string(cwnd_trace_entry::IN_FILE.to_string(), &dir),
+            handle(&skel.maps.TCP_RECEIVE_CWND_EVENTS)?,
+            prepend_string(cwnd_trace_entry::IN_FILE.to_string(), dir),
         )?;
 
         Ok(())

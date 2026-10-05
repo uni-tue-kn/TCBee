@@ -1,20 +1,17 @@
 use std::{
     error::Error,
+    mem::MaybeUninit,
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use aya::{maps::HashMap, Ebpf, EbpfLoader};
-use log::{debug, error, info, warn};
-use tcbee_common::{
-    bindings::{
-        tcp_bad_csum::tcp_bad_csum_entry, tcp_probe::tcp_probe_entry,
-        tcp_retransmit_synack::tcp_retransmit_synack_entry,
-    },
-    filter::FilterIp,
-    stats::{RB_BAD_CSUM, RB_RETRANSMIT_SYNACK, RB_TCP_PROBE, RINGBUFS},
+use libbpf_rs::{
+    skel::{OpenSkel, Skel, SkelBuilder},
+    Link, MapCore, MapFlags, MapMut, PrintLevel,
 };
+use log::{debug, error, info, warn};
+use tcbee_common::stats::RINGBUFS;
 use tokio::{
     task::{spawn_blocking, JoinHandle},
     time::sleep,
@@ -22,13 +19,18 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    eBPF::probes::{
-        bbr::BBRTracer,
-        cubic::CubicTracer,
-        cwnd::CwndTracer,
-        headers::{remove_clsact, TCTracer},
-        kernel::KernelTracer,
-        tracepoints::TracepointTracer,
+    eBPF::{
+        host::KernelBtf,
+        probes::{
+            bbr::BBRTracer,
+            cubic::CubicTracer,
+            cwnd::CwndTracer,
+            handle,
+            headers::{uses_tcx, TCTracer, TcAttachment},
+            kernel::KernelTracer,
+            tracepoints::TracepointTracer,
+        },
+        skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
     },
     metrics::{program_stats, ringbuf_sizes, Metrics, ProgramStats},
     stats::Stats,
@@ -36,19 +38,21 @@ use crate::{
     writer::{Writer, WriterReport},
 };
 
-use super::ebpf_runner_config::EbpfRunnerConfig;
+use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig};
 
 // TODO: how to handle multiple tracepoints at the same time?
 pub struct EbpfRunner {
     stop_token: CancellationToken,
     threads: Vec<JoinHandle<()>>,
     config: EbpfRunnerConfig,
-    ebpf: Option<Ebpf>,
+    skel: Option<TcbeeSkel<'static>>,
+    /// Attached fentry and tracepoint programs, dropping a link detaches it
+    links: Vec<Link>,
+    tc: Option<TcAttachment>,
     writer: Option<Writer>,
     stats: Option<Arc<Stats>>,
     ringbuf_sizes: Vec<Option<u32>>,
     started: Option<Instant>,
-    clsact_iface: Option<String>,
 }
 
 pub fn prepend_string(filename: String, dir: &str) -> String {
@@ -56,6 +60,69 @@ pub fn prepend_string(filename: String, dir: &str) -> String {
         .join(&filename)
         .to_string_lossy()
         .into_owned()
+}
+
+/// Last libbpf warnings, shown when loading fails. They name the program, map or the
+/// kernel struct field that could not be relocated.
+static LIBBPF_WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+const LIBBPF_WARNINGS_KEPT: usize = 20;
+
+fn libbpf_log(level: PrintLevel, msg: String) {
+    let msg = msg.trim_end();
+    match level {
+        PrintLevel::Warn => {
+            warn!(target: "libbpf", "{}", msg);
+            if let Ok(mut warnings) = LIBBPF_WARNINGS.lock() {
+                if warnings.len() == LIBBPF_WARNINGS_KEPT {
+                    warnings.remove(0);
+                }
+                warnings.push(msg.to_string());
+            }
+        }
+        PrintLevel::Info => info!(target: "libbpf", "{}", msg),
+        PrintLevel::Debug => debug!(target: "libbpf", "{}", msg),
+    }
+}
+
+/// Opens the skeleton of the C eBPF object.
+///
+/// The skeleton borrows the storage of its object for its whole life. The runner keeps
+/// it until the program ends, so the storage (a pointer) is leaked to get a 'static
+/// skeleton. Dropping the skeleton still closes the object and its programs and maps.
+fn open_skel() -> libbpf_rs::Result<OpenTcbeeSkel<'static>> {
+    let storage = Box::leak(Box::new(MaybeUninit::uninit()));
+    TcbeeSkelBuilder::default().open(storage)
+}
+
+fn insert_filter_keys<'a>(
+    map: &MapMut<'_>,
+    keys: impl IntoIterator<Item = &'a [u8]>,
+) -> libbpf_rs::Result<()> {
+    for key in keys {
+        map.update(key, &[1], MapFlags::ANY)?;
+    }
+    Ok(())
+}
+
+fn configure_filter(skel: &TcbeeSkel<'_>, filter: &FilterConfig) -> libbpf_rs::Result<()> {
+    let maps = &skel.maps;
+    let ports = |ports: &[u16]| ports.iter().map(|p| p.to_ne_bytes()).collect::<Vec<_>>();
+    for (map, ports) in [
+        (&maps.FILTER_ANY_PORTS, ports(&filter.any_ports)),
+        (&maps.FILTER_SRC_PORTS, ports(&filter.src_ports)),
+        (&maps.FILTER_DST_PORTS, ports(&filter.dst_ports)),
+    ] {
+        insert_filter_keys(map, ports.iter().map(|p| p.as_slice()))?;
+    }
+    // The key is struct filter_ip, just the 16 address bytes
+    for (map, ips) in [
+        (&maps.FILTER_ANY_IPS, &filter.any_ips),
+        (&maps.FILTER_SRC_IPS, &filter.src_ips),
+        (&maps.FILTER_DST_IPS, &filter.dst_ips),
+    ] {
+        insert_filter_keys(map, ips.iter().map(|ip| ip.as_slice()))?;
+    }
+    Ok(())
 }
 
 impl EbpfRunner {
@@ -66,53 +133,14 @@ impl EbpfRunner {
             // TODO: new with capacity?
             threads: Vec::new(),
             config,
-            ebpf: None,
+            skel: None,
+            links: Vec::new(),
+            tc: None,
             writer: None,
             stats: None,
             ringbuf_sizes: Vec::new(),
             started: None,
-            clsact_iface: None,
         }
-    }
-
-    fn insert_filter_ports(
-        ebpf: &mut Ebpf,
-        map_name: &str,
-        ports: &[u16],
-    ) -> Result<(), Box<dyn Error>> {
-        let mut map: HashMap<_, u16, u8> = HashMap::try_from(
-            ebpf.map_mut(map_name)
-                .ok_or_else(|| format!("Filter map {} not found", map_name))?,
-        )?;
-        for port in ports {
-            map.insert(port, &1, 0)?;
-        }
-        Ok(())
-    }
-
-    fn insert_filter_ips(
-        ebpf: &mut Ebpf,
-        map_name: &str,
-        ips: &[[u8; 16]],
-    ) -> Result<(), Box<dyn Error>> {
-        let mut map: HashMap<_, FilterIp, u8> = HashMap::try_from(
-            ebpf.map_mut(map_name)
-                .ok_or_else(|| format!("Filter map {} not found", map_name))?,
-        )?;
-        for ip in ips {
-            map.insert(&FilterIp { addr: *ip }, &1, 0)?;
-        }
-        Ok(())
-    }
-
-    fn configure_filter(&self, ebpf: &mut Ebpf) -> Result<(), Box<dyn Error>> {
-        Self::insert_filter_ports(ebpf, "FILTER_ANY_PORTS", &self.config.filter.any_ports)?;
-        Self::insert_filter_ports(ebpf, "FILTER_SRC_PORTS", &self.config.filter.src_ports)?;
-        Self::insert_filter_ports(ebpf, "FILTER_DST_PORTS", &self.config.filter.dst_ports)?;
-        Self::insert_filter_ips(ebpf, "FILTER_ANY_IPS", &self.config.filter.any_ips)?;
-        Self::insert_filter_ips(ebpf, "FILTER_SRC_IPS", &self.config.filter.src_ips)?;
-        Self::insert_filter_ips(ebpf, "FILTER_DST_IPS", &self.config.filter.dst_ips)?;
-        Ok(())
     }
 
     pub async fn stop(mut self) {
@@ -125,18 +153,24 @@ impl EbpfRunner {
         }
 
         // Recursion misses only grow while the programs are attached
-        let programs = self.ebpf.as_ref().map(program_stats).unwrap_or_default();
+        let programs = self
+            .skel
+            .as_ref()
+            .map(|skel| program_stats(skel.object()))
+            .unwrap_or_default();
         let duration_s = self
             .started
             .map(|started| started.elapsed().as_secs_f64())
             .unwrap_or_default();
 
-        // Detach all programs so no new records arrive while draining. Dropping the
-        // Ebpf object only closes the maps that were not taken by the writer.
-        drop(self.ebpf.take());
-        if let Some(iface) = self.clsact_iface.take() {
-            remove_clsact(&iface);
+        // Detach all programs so no new records arrive while draining. The writer, the
+        // stats and the TUI hold their own map handles, so the maps stay open after the
+        // object is closed.
+        self.links.clear();
+        if let Some(tc) = self.tc.take() {
+            tc.detach();
         }
+        drop(self.skel.take());
 
         // Programs that were already running when they were detached may still submit
         sleep(Duration::from_millis(100)).await;
@@ -204,6 +238,7 @@ impl EbpfRunner {
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         env_logger::init();
+        libbpf_rs::set_print(Some((PrintLevel::Debug, libbpf_log)));
 
         // Bump the memlock rlimit. This is needed for older kernels that don't use the
         // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -216,26 +251,62 @@ impl EbpfRunner {
             debug!("remove limit on locked memory failed, ret is: {}", ret);
         }
 
-        let filter_mode = self.config.filter.mode();
-        let filter_rules = self.config.filter.rule_flags();
-        let flow_tracking = self.config.do_tui as u8;
-        let submit_flags = self.config.poll_mode.submit_flags();
-        let mut loader = EbpfLoader::new();
-        loader
-            .override_global("FILTER_PORT", &self.config.filter.single_port, true)
-            .override_global("FILTER_MODE", &filter_mode, true)
-            .override_global("FILTER_RULE_FLAGS", &filter_rules, true)
-            .override_global("FLOW_TRACKING", &flow_tracking, true)
-            .override_global("RB_SUBMIT_FLAGS", &submit_flags, true);
+        let mut open = open_skel()?;
+
+        // Configuration is read-only for the programs, so the verifier sees constants
+        let rodata = open
+            .maps
+            .rodata_data
+            .as_deref_mut()
+            .ok_or("eBPF object has no .rodata section")?;
+        rodata.FILTER_PORT = self.config.filter.single_port;
+        rodata.FILTER_MODE = self.config.filter.mode();
+        rodata.FILTER_RULE_FLAGS = self.config.filter.rule_flags();
+        rodata.FLOW_TRACKING = self.config.do_tui as u8;
+        rodata.RB_SUBMIT_FLAGS = self.config.poll_mode.submit_flags();
+
         for (name, size) in &self.config.ringbuf_sizes {
-            loader.map_max_entries(name, *size);
+            let mut map = open
+                .open_object_mut()
+                .maps_mut()
+                .find(|map| map.name() == *name)
+                .ok_or_else(|| format!("Ring buffer {} not found", name))?;
+            map.set_max_entries(*size)?;
         }
-        let mut ebpf = loader.load(aya::include_bytes_aligned!(concat!(
-            env!("OUT_DIR"),
-            "/tcbee"
-        )))?;
-        self.configure_filter(&mut ebpf)?;
-        self.ringbuf_sizes = ringbuf_sizes(&ebpf);
+
+        // A skeleton loads all programs, the ones of disabled groups must be switched off.
+        // Their attach targets may not even exist on this kernel.
+        let tcx = self.config.headers && uses_tcx();
+        TCTracer::configure(&mut open.progs, self.config.headers, tcx);
+        KernelTracer::configure(&mut open.progs, self.config.kernel);
+        CwndTracer::configure(&mut open.progs, self.config.cwnd);
+        TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
+        let mut btf = KernelBtf::default();
+        CubicTracer::configure(&mut open.progs, self.config.algorithms, &mut btf)?;
+        let bbr = BBRTracer::configure(&mut open.progs, self.config.algorithms, &mut btf);
+        drop(btf);
+
+        if let Ok(mut warnings) = LIBBPF_WARNINGS.lock() {
+            warnings.clear();
+        }
+        // libbpf relocates all kernel struct accesses against the BTF of the running
+        // kernel here. A field that does not exist fails the load instead of reading
+        // garbage.
+        let skel = match open.load() {
+            Ok(skel) => skel,
+            Err(err) => {
+                let warnings = LIBBPF_WARNINGS
+                    .lock()
+                    .map(|warnings| warnings.join("\n"))
+                    .unwrap_or_default();
+                return Err(
+                    format!("Could not load the eBPF programs: {}\n{}", err, warnings).into(),
+                );
+            }
+        };
+        let skel = self.skel.insert(skel);
+        configure_filter(skel, &self.config.filter)?;
+        self.ringbuf_sizes = ringbuf_sizes(skel.object());
         for ((name, _), size) in RINGBUFS.iter().zip(&self.ringbuf_sizes) {
             debug!("Ring buffer {} has {:?} bytes", name, size);
         }
@@ -244,78 +315,55 @@ impl EbpfRunner {
 
         // TODO: I feel that the dir should be passed to the writer, and the Tracers should just add the filename
 
-        // Keep the object and the writer in self right away, so that stop() detaches the
-        // programs before draining the writers if starting fails below
-        let ebpf = self.ebpf.insert(ebpf);
-
-        // This is the backend writer thread that reads and writes data to files
+        // This is the backend writer thread that reads and writes data to files. It is
+        // kept in self right away, so that stop() detaches the programs before draining
+        // the writers if starting fails below.
         let writer = self.writer.insert(
             Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone()),
         );
         self.started = Some(Instant::now());
         let mut watcher_config = self.config.watcher_config();
+        let dir = self.config.dir.as_str();
+        let links = &mut self.links;
 
-        // Tracing for packet headers via TC and XDP
+        // Tracing for packet headers via TC
         if self.config.headers {
-            TCTracer::spawn(
-                ebpf,
-                self.config.iface.clone(),
-                self.config.dir.clone(),
-                writer,
-                &mut self.clsact_iface,
-            )?;
+            TCTracer::spawn(skel, &self.config.iface, dir, writer, tcx, &mut self.tc)?;
 
             watcher_config.graphs.packets = true;
         }
 
         // Tracing kernel metrics via FEntry probe
         if self.config.kernel {
-            KernelTracer::spawn(ebpf, self.config.dir.clone(), writer)?;
+            KernelTracer::spawn(skel, dir, writer, links)?;
 
             watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
-            CwndTracer::spawn(ebpf, self.config.dir.clone(), writer)?;
+            CwndTracer::spawn(skel, dir, writer, links)?;
 
             watcher_config.graphs.kernel = true;
         }
 
         // Tracing kernel tracepoints
         if self.config.tracepoints {
-            TracepointTracer::spawn::<tcp_probe_entry>(
-                ebpf,
-                RB_TCP_PROBE,
-                self.config.dir.clone(),
-                writer,
-            )?;
-
-            TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
-                ebpf,
-                RB_RETRANSMIT_SYNACK,
-                self.config.dir.clone(),
-                writer,
-            )?;
-
-            TracepointTracer::spawn::<tcp_bad_csum_entry>(
-                ebpf,
-                RB_BAD_CSUM,
-                self.config.dir.clone(),
-                writer,
-            )?;
+            TracepointTracer::spawn(skel, dir, writer, links)?;
 
             watcher_config.graphs.tracepoints = true;
         }
 
         if self.config.algorithms {
-            CubicTracer::spawn(ebpf, self.config.dir.clone(), writer)?;
+            CubicTracer::spawn(skel, dir, writer, links)?;
             watcher_config.graphs.cubic = true;
-            match BBRTracer::spawn(ebpf, self.config.dir.clone(), writer) {
-                Ok(()) => watcher_config.graphs.bbr = true,
-                Err(err) => error!(
-                    "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
-                    err
-                ),
+            if bbr {
+                match BBRTracer::spawn(skel, dir, writer, links) {
+                    Ok(()) => watcher_config.graphs.bbr = true,
+                    Err(err) => error!(
+                        "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
+                        err
+                    ),
+                }
             }
         }
 
@@ -324,11 +372,11 @@ impl EbpfRunner {
 
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
-        let stats = Arc::new(Stats::new(ebpf)?);
+        let stats = Arc::new(Stats::new(handle(&skel.maps.STATS)?));
         self.stats = Some(stats.clone());
         let bytes_written = writer.bytes_written();
         let mut watcher = EBPFWatcher::new(
-            ebpf,
+            handle(&skel.maps.FLOWS)?,
             stats,
             bytes_written,
             self.config.update_period,

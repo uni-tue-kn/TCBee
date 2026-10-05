@@ -1,19 +1,21 @@
 use std::{
+    cell::RefCell,
     fmt,
     fs::{File, OpenOptions},
     io::{self, ErrorKind},
     mem,
-    os::fd::{AsRawFd, RawFd},
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
-use aya::maps::{MapData, RingBuf};
 use bincode::ErrorKind as BincodeErrorKind;
+use libbpf_rs::{MapHandle, RingBufferBuilder};
 use log::{debug, error, info, trace};
 use memmap2::MmapMut;
 use serde::Serialize;
@@ -41,14 +43,14 @@ impl PollMode {
     /// Ring buffer submit flags the eBPF programs have to use for this mode
     pub fn submit_flags(self) -> u64 {
         match self {
-            PollMode::Busy => aya_obj::generated::BPF_RB_NO_WAKEUP as u64,
+            PollMode::Busy => libbpf_rs::libbpf_sys::BPF_RB_NO_WAKEUP as u64,
             PollMode::Wait => 0,
         }
     }
 }
 
 /// Upper bound for a blocking wait, so that a stop request is noticed
-const WAIT_TIMEOUT_MS: i32 = 100;
+const WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub struct Writer {
     poll_mode: PollMode,
@@ -87,17 +89,18 @@ impl Writer {
     }
 
     /// Register a ring buffer map. Spawns a dedicated worker thread immediately.
-    /// `rb` is the ring buffer index from `tcbee_common::stats`.
+    /// `rb` is the ring buffer index from `tcbee_common::stats`. The handle keeps the map
+    /// open, so the thread can drain it after the eBPF object is closed.
     pub fn register<T>(
         &mut self,
         rb: u32,
-        map: RingBuf<MapData>,
+        map: MapHandle,
         file_path: impl Into<PathBuf>,
     ) -> Result<(), WriterError>
     where
         T: Serialize + Copy + Send + 'static,
     {
-        let job = MapWriterJob::<T>::new(map, file_path.into(), self.bytes_written.clone())?;
+        let job = MapWriterJob::<T>::new(file_path.into(), self.bytes_written.clone())?;
         let running = self.running.clone();
 
         let cpu = if self.cpu_pool.is_empty() {
@@ -121,10 +124,24 @@ impl Writer {
             error: None,
         };
         let poll_mode = self.poll_mode;
-        let handle = thread::spawn(move || job_loop(Box::new(job), running, cpu, poll_mode));
-        self.handles.push((report, handle));
-
-        Ok(())
+        // The ring buffer is set up inside the thread, which then reports whether that
+        // worked, so a broken map fails here and not only at shutdown
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let handle = thread::spawn(move || job_loop(job, map, running, cpu, poll_mode, ready_tx));
+        match ready_rx.recv() {
+            Ok(Ok(())) => {
+                self.handles.push((report, handle));
+                Ok(())
+            }
+            Ok(Err(err)) => {
+                let _ = handle.join();
+                Err(WriterError::RingBuffer(err))
+            }
+            Err(_) => {
+                let _ = handle.join();
+                Err(WriterError::WorkerPanicked)
+            }
+        }
     }
 
     /// Signal all worker threads to stop, drain their ring buffers, finish the files and
@@ -172,43 +189,67 @@ fn pin_to_cpu(cpu_id: usize) {
     }
 }
 
-fn job_loop(
-    mut job: Box<dyn Job>,
+fn job_loop<T>(
+    job: MapWriterJob<T>,
+    map: MapHandle,
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
     poll_mode: PollMode,
-) -> Result<u64, JobError> {
+    ready: mpsc::SyncSender<Result<(), libbpf_rs::Error>>,
+) -> Result<u64, JobError>
+where
+    T: Serialize + Copy + Send + 'static,
+{
     if let Some(cpu_id) = cpu {
         pin_to_cpu(cpu_id);
     }
 
-    let mut records: u64 = 0;
+    // libbpf calls the callback for every record while consuming the ring buffer. The
+    // loop below needs the job too, so the callback only borrows it.
+    let job = RefCell::new(job);
+    let rb = {
+        let mut builder = RingBufferBuilder::new();
+        builder
+            .add(&map, |data| job.borrow_mut().write(data))
+            .and_then(|builder| mem::take(builder).build())
+    };
+    let rb = match rb {
+        Ok(rb) => {
+            let _ = ready.send(Ok(()));
+            rb
+        }
+        Err(err) => {
+            let _ = ready.send(Err(err));
+            return job.borrow_mut().flush().map(|_| 0);
+        }
+    };
+
     let result = (|| {
         while running.load(Ordering::Relaxed) {
-            let read = job.poll()?;
-            records += read;
             match poll_mode {
-                PollMode::Busy => thread::yield_now(),
-                PollMode::Wait if read == 0 => wait_readable(job.fd()),
-                PollMode::Wait => {}
+                PollMode::Busy => {
+                    check(&job, rb.consume_raw())?;
+                    thread::yield_now();
+                }
+                PollMode::Wait => {
+                    check(&job, rb.poll_raw(WAIT_TIMEOUT))?;
+                }
             }
+            job.borrow_mut().count_bytes();
         }
         // Drain what was submitted before the programs were detached
-        loop {
-            let read = job.poll()?;
-            if read == 0 {
-                break;
-            }
-            records += read;
-        }
+        while check(&job, rb.consume_raw())? > 0 {}
+        job.borrow_mut().count_bytes();
         Ok(())
     })();
+    drop(rb);
 
+    let mut job = job.borrow_mut();
     if let Err(err) = &result {
         error!(
             "Writer job {} failed after {} records: {}. Stopping thread.",
             job.name(),
-            records,
+            job.records,
             err
         );
     }
@@ -223,17 +264,26 @@ fn job_loop(
         );
     }
 
-    result.and(flushed).map(|_| records)
+    result.and(flushed).map(|_| job.records)
 }
 
-fn wait_readable(fd: RawFd) {
-    let mut pollfd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    // Errors and timeouts only lead to another poll of the ring buffer
-    unsafe { libc::poll(&mut pollfd, 1, WAIT_TIMEOUT_MS) };
+/// Turns the return value of `ring_buffer__consume`/`ring_buffer__poll` into the number
+/// of records read or the error that stopped the callback
+fn check<T>(job: &RefCell<MapWriterJob<T>>, ret: i32) -> Result<i32, JobError>
+where
+    T: Serialize + Copy + Send + 'static,
+{
+    if ret >= 0 {
+        return Ok(ret);
+    }
+    if let Some(err) = job.borrow_mut().error.take() {
+        return Err(err);
+    }
+    match -ret {
+        // A signal interrupted the wait, try again
+        libc::EINTR => Ok(0),
+        errno => Err(JobError::Io(io::Error::from_raw_os_error(errno))),
+    }
 }
 
 /// Allocates the blocks of a file range. Without this, a full disk is only noticed when a
@@ -365,24 +415,20 @@ impl Drop for Writer {
     }
 }
 
-trait Job: Send {
-    fn name(&self) -> &str;
-    /// File descriptor of the ring buffer, readable when records are available
-    fn fd(&self) -> RawFd;
-    /// Writes all records that are currently in the ring buffer, returns their count.
-    fn poll(&mut self) -> Result<u64, JobError>;
-    fn flush(&mut self) -> Result<(), JobError>;
-}
-
 struct MapWriterJob<T>
 where
     T: Serialize + Copy + Send + 'static,
 {
-    map: RingBuf<MapData>,
     bytes_written: Arc<AtomicU64>,
     sink: Option<MmapBackedFile>,
     file_path: PathBuf,
     record_size: Option<usize>,
+    /// Records written so far
+    records: u64,
+    /// Records already added to `bytes_written`
+    counted: u64,
+    /// Error that made the callback stop consuming
+    error: Option<JobError>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -390,11 +436,7 @@ impl<T> MapWriterJob<T>
 where
     T: Serialize + Copy + Send + 'static,
 {
-    fn new(
-        map: RingBuf<MapData>,
-        file_path: PathBuf,
-        bytes_written: Arc<AtomicU64>,
-    ) -> Result<Self, WriterError> {
+    fn new(file_path: PathBuf, bytes_written: Arc<AtomicU64>) -> Result<Self, WriterError> {
         let entry_size = std::mem::size_of::<T>().max(1);
         let chunk_bytes = entry_size
             .checked_mul(WRITER_BUFFER_SIZE)
@@ -412,72 +454,78 @@ where
         );
 
         Ok(Self {
-            map,
             bytes_written,
             sink: Some(sink),
             file_path,
             record_size: None,
+            records: 0,
+            counted: 0,
+            error: None,
             _marker: std::marker::PhantomData,
         })
     }
-}
 
-impl<T> Job for MapWriterJob<T>
-where
-    T: Serialize + Copy + Send + 'static,
-{
     fn name(&self) -> &str {
         self.file_path.to_str().unwrap_or("<unknown>")
     }
 
-    fn fd(&self) -> RawFd {
-        self.map.as_raw_fd()
+    /// Ring buffer callback, writes one record. A non-zero return value stops libbpf from
+    /// consuming further records, the error is kept for the writer loop.
+    fn write(&mut self, entry: &[u8]) -> i32 {
+        match self.try_write(entry) {
+            Ok(()) => {
+                self.records += 1;
+                0
+            }
+            Err(err) => {
+                self.error = Some(err);
+                -libc::ECANCELED
+            }
+        }
     }
 
-    fn poll(&mut self) -> Result<u64, JobError> {
-        let mut reads = 0;
+    fn try_write(&mut self, entry: &[u8]) -> Result<(), JobError> {
         let sink = match self.sink.as_mut() {
             Some(sink) => sink,
-            None => return Ok(0),
+            None => return Ok(()),
         };
 
-        while let Some(entry) = self.map.next() {
-            if entry.len() < mem::size_of::<T>() {
-                return Err(JobError::ShortRecord(entry.len()));
-            }
-            let value = unsafe { std::ptr::read_unaligned(entry.as_ptr() as *const T) };
-            drop(entry);
-
-            // All record types have a fixed size, so it is computed only once
-            let size = match self.record_size {
-                Some(size) => size,
-                None => {
-                    let size =
-                        bincode::serialized_size(&value).map_err(JobError::Serialize)? as usize;
-                    self.record_size = Some(size);
-                    size
-                }
-            };
-
-            let buf = sink
-                .reserve(size + RECORD_DELIMITER.len())
-                .map_err(JobError::Io)?;
-            let (record, delimiter) = buf.split_at_mut(size);
-            bincode::serialize_into(record, &value).map_err(JobError::Serialize)?;
-            delimiter.copy_from_slice(&RECORD_DELIMITER);
-
-            reads += 1;
+        if entry.len() < mem::size_of::<T>() {
+            return Err(JobError::ShortRecord(entry.len()));
         }
+        let value = unsafe { std::ptr::read_unaligned(entry.as_ptr() as *const T) };
 
-        if reads > 0 {
-            trace!("Wrote {} records to {}", reads, self.file_path.display());
-            if let Some(size) = self.record_size {
-                let bytes = reads * (size + RECORD_DELIMITER.len()) as u64;
-                self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
+        // All record types have a fixed size, so it is computed only once
+        let size = match self.record_size {
+            Some(size) => size,
+            None => {
+                let size = bincode::serialized_size(&value).map_err(JobError::Serialize)? as usize;
+                self.record_size = Some(size);
+                size
             }
-        }
+        };
 
-        Ok(reads)
+        let buf = sink
+            .reserve(size + RECORD_DELIMITER.len())
+            .map_err(JobError::Io)?;
+        let (record, delimiter) = buf.split_at_mut(size);
+        bincode::serialize_into(record, &value).map_err(JobError::Serialize)?;
+        delimiter.copy_from_slice(&RECORD_DELIMITER);
+        Ok(())
+    }
+
+    /// Adds the records written since the last call to `bytes_written`
+    fn count_bytes(&mut self) {
+        let new = self.records - self.counted;
+        if new == 0 {
+            return;
+        }
+        self.counted = self.records;
+        trace!("Wrote {} records to {}", new, self.file_path.display());
+        if let Some(size) = self.record_size {
+            let bytes = new * (size + RECORD_DELIMITER.len()) as u64;
+            self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
+        }
     }
 
     fn flush(&mut self) -> Result<(), JobError> {
@@ -499,6 +547,7 @@ pub struct WriterReport {
 #[derive(Debug)]
 pub enum WriterError {
     Io(io::Error),
+    RingBuffer(libbpf_rs::Error),
     WorkerPanicked,
 }
 
@@ -506,6 +555,7 @@ impl fmt::Display for WriterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WriterError::Io(err) => write!(f, "I/O error: {}", err),
+            WriterError::RingBuffer(err) => write!(f, "ring buffer error: {}", err),
             WriterError::WorkerPanicked => write!(f, "writer worker thread panicked"),
         }
     }
@@ -515,7 +565,8 @@ impl std::error::Error for WriterError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             WriterError::Io(err) => Some(err),
-            _ => None,
+            WriterError::RingBuffer(err) => Some(err),
+            WriterError::WorkerPanicked => None,
         }
     }
 }

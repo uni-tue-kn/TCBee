@@ -1,50 +1,77 @@
 use std::error::Error;
 
-use aya::{maps::RingBuf, programs::TracePoint, Ebpf};
+use libbpf_rs::{Link, MapMut, ProgramMut};
 use serde::Serialize;
-use tcbee_common::prog_bindings::TracePointProbe;
+use tcbee_common::{
+    prog_bindings::TracePointProbe,
+    records::{tcp_bad_csum_entry, tcp_probe_entry, tcp_retransmit_synack_entry},
+    stats::{RB_BAD_CSUM, RB_RETRANSMIT_SYNACK, RB_TCP_PROBE},
+};
 
 use crate::{
-    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
+    eBPF::{
+        ebpf_runner::prepend_string,
+        probes::{attach, handle},
+        skel::{OpenTcbeeProgs, TcbeeSkel},
+    },
     writer::Writer,
 };
 
 pub struct TracepointTracer {}
 
 impl TracepointTracer {
-    // T is passed to determine struct and names for registration
-    pub fn spawn<T: TracePointProbe + Serialize + Copy + Send + 'static>(
-        ebpf: &mut Ebpf,
-        rb: u32,
-        dir: String,
+    pub fn configure(progs: &mut OpenTcbeeProgs<'_>, enabled: bool) {
+        progs.tcp_probe.set_autoload(enabled);
+        progs.tcp_retransmit_synack.set_autoload(enabled);
+        progs.tcp_bad_csum.set_autoload(enabled);
+    }
+
+    pub fn spawn(
+        skel: &TcbeeSkel<'_>,
+        dir: &str,
         writer: &mut Writer,
+        links: &mut Vec<Link>,
     ) -> Result<(), Box<dyn Error>> {
-        let name = T::NAME;
-        let category = T::CATEGORY;
+        let (progs, maps) = (&skel.progs, &skel.maps);
+        Self::spawn_one::<tcp_probe_entry>(
+            &progs.tcp_probe,
+            &maps.TCP_PROBE_QUEUE,
+            RB_TCP_PROBE,
+            dir,
+            writer,
+            links,
+        )?;
+        Self::spawn_one::<tcp_retransmit_synack_entry>(
+            &progs.tcp_retransmit_synack,
+            &maps.TCP_RETRANSMIT_SYNACK_QUEUE,
+            RB_RETRANSMIT_SYNACK,
+            dir,
+            writer,
+            links,
+        )?;
+        Self::spawn_one::<tcp_bad_csum_entry>(
+            &progs.tcp_bad_csum,
+            &maps.TCP_BAD_CSUM_QUEUE,
+            RB_BAD_CSUM,
+            dir,
+            writer,
+            links,
+        )?;
+        Ok(())
+    }
 
-        // Get trace point object from eBPF library
-        let trace_point: &mut TracePoint = ebpf
-            .program_mut(name)
-            .ok_or(EBPFRunnerError::InvalidProgramError {
-                name: name.to_string(),
-            })?
-            .try_into()?;
-
-        // Load and attach tracepoint to kernel
-        trace_point.load()?;
-        trace_point.attach(category, name)?;
-
-        // Get queue from
-        let map = ebpf
-            .take_map(T::QUEUE)
-            .ok_or(EBPFRunnerError::QueueNotFoundError {
-                name: T::QUEUE.to_string(),
-                trace: T::NAME.to_string(),
-            })?;
-
-        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<T>(rb, buff, prepend_string(T::FILE.to_string(), &dir))?;
-
+    // T is passed to determine struct and names for registration
+    fn spawn_one<T: TracePointProbe + Serialize + Copy + Send + 'static>(
+        program: &ProgramMut<'_>,
+        map: &MapMut<'_>,
+        rb: u32,
+        dir: &str,
+        writer: &mut Writer,
+        links: &mut Vec<Link>,
+    ) -> Result<(), Box<dyn Error>> {
+        // Attaches to tracepoint/<T::CATEGORY>/<T::NAME> from the section name
+        attach(program, links)?;
+        writer.register::<T>(rb, handle(map)?, prepend_string(T::FILE.to_string(), dir))?;
         Ok(())
     }
 }

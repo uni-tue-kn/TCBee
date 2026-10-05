@@ -8,7 +8,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::anyhow;
 
 use crate::{
     eBPF::ebpf_runner_config::EbpfWatcherConfig,
@@ -16,7 +15,7 @@ use crate::{
     viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
 };
 
-use aya::{maps::PerCpuHashMap, Ebpf};
+use libbpf_rs::MapHandle;
 use log::error;
 use ratatui::{
     crossterm::{
@@ -65,7 +64,7 @@ pub struct EBPFWatcher {
 //TODO: Monitor packet rate vs TCP packet rate?
 impl EBPFWatcher {
     pub fn new(
-        ebpf: &mut Ebpf,
+        flows: MapHandle,
         stats: Arc<Stats>,
         bytes_written: Arc<AtomicU64>,
         update_period: u128,
@@ -96,10 +95,7 @@ impl EBPFWatcher {
             "Calls/s",
         );
 
-        let flow_tracker = FlowTracker::new(PerCpuHashMap::try_from(
-            ebpf.take_map("FLOWS")
-                .ok_or_else(|| anyhow!("Could not find FLOWS map!"))?,
-        )?);
+        let flow_tracker = FlowTracker::new(flows);
 
         let terminal: Option<DefaultTerminal> = match do_tui {
             true => {

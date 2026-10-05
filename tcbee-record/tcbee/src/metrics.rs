@@ -2,12 +2,14 @@ use std::{
     fs::File,
     io::{self, BufWriter, Write},
     mem,
-    os::fd::{AsFd, AsRawFd},
+    os::fd::{AsFd, AsRawFd, BorrowedFd},
     path::Path,
 };
 
-use aya::{maps::Map, Ebpf};
-use aya_obj::generated::{bpf_attr, bpf_cmd, bpf_prog_info};
+use libbpf_rs::{
+    libbpf_sys::{self, bpf_prog_info},
+    MapCore, Object,
+};
 use serde::Serialize;
 use tcbee_common::stats::{
     slot, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
@@ -121,25 +123,28 @@ impl Metrics {
 }
 
 /// Effective byte size of every ring buffer, indexed like `RINGBUFS`.
-/// Must be called before the maps are taken out of `ebpf`.
-pub fn ringbuf_sizes(ebpf: &Ebpf) -> Vec<Option<u32>> {
+pub fn ringbuf_sizes(object: &Object) -> Vec<Option<u32>> {
     RINGBUFS
         .iter()
-        .map(|(name, _)| match ebpf.map(name) {
-            Some(Map::RingBuf(data)) => data.info().ok().map(|info| info.max_entries()),
-            _ => None,
+        .map(|(name, _)| {
+            object
+                .maps()
+                .find(|map| map.name() == *name)
+                .map(|map| map.max_entries())
         })
         .collect()
 }
 
 /// Reads the kernel statistics of all loaded programs
-pub fn program_stats(ebpf: &Ebpf) -> Vec<ProgramStats> {
-    ebpf.programs()
-        .filter_map(|(name, program)| {
-            let fd = program.fd().ok()?;
-            let info = prog_info(fd.as_fd().as_raw_fd())?;
+pub fn program_stats(object: &Object) -> Vec<ProgramStats> {
+    object
+        .progs()
+        // Programs of disabled groups are not loaded and have no fd
+        .filter(|program| program.autoload())
+        .filter_map(|program| {
+            let info = prog_info(program.as_fd())?;
             Some(ProgramStats {
-                name: name.to_string(),
+                name: program.name().to_string_lossy().into_owned(),
                 recursion_misses: info.recursion_misses,
                 run_cnt: info.run_cnt,
                 run_time_ns: info.run_time_ns,
@@ -148,21 +153,10 @@ pub fn program_stats(ebpf: &Ebpf) -> Vec<ProgramStats> {
         .collect()
 }
 
-fn prog_info(fd: i32) -> Option<bpf_prog_info> {
-    // aya's ProgramInfo does not expose the run and miss counters
-    let mut info: bpf_prog_info = unsafe { mem::zeroed() };
-    let mut attr: bpf_attr = unsafe { mem::zeroed() };
-    attr.info.bpf_fd = fd as u32;
-    attr.info.info_len = mem::size_of::<bpf_prog_info>() as u32;
-    attr.info.info = &mut info as *mut _ as u64;
-
-    let ret = unsafe {
-        libc::syscall(
-            libc::SYS_bpf,
-            bpf_cmd::BPF_OBJ_GET_INFO_BY_FD as i32,
-            &mut attr as *mut bpf_attr,
-            mem::size_of::<bpf_attr>(),
-        )
-    };
+fn prog_info(fd: BorrowedFd<'_>) -> Option<bpf_prog_info> {
+    // libbpf-rs' ProgramInfo also reads the instructions, the plain info is enough here
+    let mut info = bpf_prog_info::default();
+    let mut len = mem::size_of::<bpf_prog_info>() as u32;
+    let ret = unsafe { libbpf_sys::bpf_prog_get_info_by_fd(fd.as_raw_fd(), &mut info, &mut len) };
     (ret == 0).then_some(info)
 }

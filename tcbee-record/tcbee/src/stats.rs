@@ -1,39 +1,37 @@
-use anyhow::anyhow;
-use aya::{
-    maps::{MapData, MapError, PerCpuArray},
-    Ebpf,
-};
+use libbpf_rs::{MapCore, MapFlags, MapHandle};
 use tcbee_common::stats::{
     slot, RB_COUNT, STATS_LEN, STATS_PER_RB, STAT_ATTEMPTED, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
 };
 
 /// Reads the `STATS` per-CPU counter array of the eBPF programs.
 pub struct Stats {
-    map: PerCpuArray<MapData, u64>,
+    map: MapHandle,
 }
 
 impl Stats {
-    pub fn new(ebpf: &mut Ebpf) -> anyhow::Result<Stats> {
-        let map = ebpf
-            .take_map("STATS")
-            .ok_or_else(|| anyhow!("Could not find STATS map!"))?;
-        Ok(Stats {
-            map: PerCpuArray::try_from(map)?,
-        })
+    pub fn new(map: MapHandle) -> Stats {
+        Stats { map }
     }
 
     /// Sums every counter slot over all CPUs.
     ///
     /// Slots are read one by one while the probes keep counting. The attempted counters
     /// are read last, so a live snapshot never shows more outcomes than attempts.
-    pub fn snapshot(&self) -> Result<Snapshot, MapError> {
+    pub fn snapshot(&self) -> libbpf_rs::Result<Snapshot> {
         let mut values = vec![0u64; STATS_LEN as usize];
         let attempted =
             |index: &u32| *index < slot(RB_COUNT, 0) && *index % STATS_PER_RB == STAT_ATTEMPTED;
         let outcomes = (0..STATS_LEN).filter(|i| !attempted(i));
         for index in outcomes.chain((0..STATS_LEN).filter(attempted)) {
-            let per_cpu = self.map.get(&index, 0)?;
-            values[index as usize] = per_cpu.iter().copied().fold(0u64, u64::wrapping_add);
+            let per_cpu = self
+                .map
+                .lookup_percpu(&index.to_ne_bytes(), MapFlags::ANY)?
+                .unwrap_or_default();
+            values[index as usize] = per_cpu
+                .iter()
+                .filter_map(|value| value.as_slice().try_into().ok())
+                .map(u64::from_ne_bytes)
+                .fold(0u64, u64::wrapping_add);
         }
         Ok(Snapshot { values })
     }
