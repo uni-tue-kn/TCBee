@@ -1,10 +1,10 @@
 [package]
-name = "workspace-hack"
+name = "duckdb-cache"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Pins build-dependency features, see the comment below"
+description = "Keeps libduckdb-sys from being rebuilt when the package selection changes, see the comment below"
 
 # serde_derive (a build dependency of libduckdb-sys) and the egui proc macros share `syn`. Without
 # this crate, `syn` gets more features in a build that includes tcbee-viz than in one that only

@@ -2,7 +2,7 @@
 # (DuckDB, SQLite, egui) are compiled once. tcbee-record and tcbee-live are separate workspaces.
 [workspace]
 resolver = "2"
-members = ["ts-storage", "tcbee-process", "tcbee-viz", "workspace-hack"]
+members = ["ts-storage", "tcbee-process", "tcbee-viz", "duckdb-cache"]
 exclude = ["tcbee-record", "tcbee-live"]
 
 [workspace.package]
@@ -12,7 +12,7 @@ license = "MIT"
 [workspace.dependencies]
 ts_storage = { path = "ts-storage", default-features = false }
 tcbee-trace = { path = "tcbee-record/tcbee-trace" }
-workspace-hack = { path = "workspace-hack" }
+duckdb-cache = { path = "duckdb-cache" }
 tempfile = "3"
 anyhow = "1"
 log = "0.4.22"

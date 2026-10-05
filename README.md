@@ -99,7 +99,7 @@ DuckDB's build script runs again (and with `bundled` recompiles all of DuckDB) w
 - Profile: `--release` and the default debug build are separate.
 - `RUSTFLAGS` and the other cargo environment (including the `DUCKDB_*` variables below).
 
-Build from the repository root; a `target/` per crate would compile DuckDB once per crate. `workspace-hack/` and the `[profile.dev.build-override]` in the root `Cargo.toml` exist so that the choice of `-p` does not change the build; if `cargo tree -p tcbee-viz -e features -i syn@3` shows `syn` features that are missing in [workspace-hack/Cargo.toml](workspace-hack/Cargo.toml), add them there.
+Build from the repository root; a `target/` per crate would compile DuckDB once per crate. `duckdb-cache/` and the `[profile.dev.build-override]` in the root `Cargo.toml` exist so that the choice of `-p` does not change the build; if `cargo tree -p tcbee-viz -e features -i syn@3` shows `syn` features that are missing in [duckdb-cache/Cargo.toml](duckdb-cache/Cargo.toml), add them there.
 
 For development you do not need `bundled`. Without it `libduckdb-sys` only links a `libduckdb` that is already there, which takes seconds. These environment variables of its build script choose the library:
 

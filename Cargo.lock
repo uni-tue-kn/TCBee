@@ -1262,6 +1262,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "duckdb-cache"
+version = "0.1.0"
+dependencies = [
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "ecolor"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3891,6 +3898,7 @@ dependencies = [
  "anyhow",
  "argparse",
  "bincode",
+ "duckdb-cache",
  "env_logger",
  "indicatif",
  "log",
@@ -3898,7 +3906,6 @@ dependencies = [
  "tcbee-trace",
  "tempfile",
  "ts_storage",
- "workspace-hack",
 ]
 
 [[package]]
@@ -3912,6 +3919,7 @@ dependencies = [
 name = "tcbee-viz"
 version = "0.1.0"
 dependencies = [
+ "duckdb-cache",
  "eframe",
  "egui",
  "egui_plot",
@@ -3919,7 +3927,6 @@ dependencies = [
  "rfd",
  "tempfile",
  "ts_storage",
- "workspace-hack",
 ]
 
 [[package]]
@@ -4118,10 +4125,10 @@ name = "ts_storage"
 version = "0.1.0"
 dependencies = [
  "duckdb",
+ "duckdb-cache",
  "rusqlite",
  "tempfile",
  "thiserror 1.0.69",
- "workspace-hack",
 ]
 
 [[package]]
@@ -5035,13 +5042,6 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "workspace-hack"
-version = "0.1.0"
-dependencies = [
- "syn 3.0.6",
-]
 
 [[package]]
 name = "writeable"
