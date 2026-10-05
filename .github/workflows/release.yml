@@ -43,15 +43,14 @@ jobs:
       - name: Install bpf-linker
         run: cargo install bpf-linker
 
-      - name: Build tcbee-process (bundled)
-        run: |
-          cd tcbee-process
-          cargo build --release --features ts_storage/bundled
+      - name: Cache cargo (workspace)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-bundled
 
-      - name: Build tcbee-viz
-        run: |
-          cd tcbee-viz
-          cargo build --release --features ts_storage/bundled
+      # One cargo call for both tools: DuckDB and SQLite are compiled once (bundled, both engines)
+      - name: Build tcbee-process and tcbee-viz (bundled)
+        run: cargo build --release -p tcbee-process -p tcbee-viz --features bundled
 
       - name: Build tcbee-live
         run: |
@@ -62,8 +61,8 @@ jobs:
         run: |
           mkdir -p release
           cp tcbee-record/target/release/tcbee-record release/
-          cp tcbee-process/target/release/tcbee-process release/
-          cp tcbee-viz/target/release/tcbee-viz release/
+          cp target/release/tcbee-process release/
+          cp target/release/tcbee-viz release/
           cp tcbee-live/target/release/tcbee-live release/
           cp tcbee release/
           cp LICENSE release/
