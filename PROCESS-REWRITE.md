@@ -16,10 +16,10 @@ If a session died, resume from the first unchecked package; `git log` shows what
 | WP | State |
 | --- | --- |
 | WP0 fixtures | done, reviewed, committed |
-| WP1 ts-storage core | implemented, in review (not committed) |
-| WP2 bindings macro + decoder | implementing (agent running) |
-| WP3 SQLite engine | not started |
-| WP4 DuckDB engine | not started |
+| WP1 ts-storage core | done, reviewed, committed |
+| WP2 bindings macro + decoder | implemented, in review (not committed) |
+| WP3 SQLite engine | implementing (agent running) |
+| WP4 DuckDB engine | implementing (agent running) |
 | WP5 contract tests | not started |
 | WP6 pipeline | not started |
 | WP7 viz migration | not started |
@@ -32,6 +32,7 @@ Log (newest last):
 - 2026-10-05: a real trace was recorded (`~/tcbee-traces/tcbee_2026-10-05T18-16-22`, 110 MB, no bbr, no tcp6); WP0 fixtures use its first 2000 records per file plus generated bbr/cwnd/tcp6. WP9 can use it as the benchmark input.
 - 2026-10-05: WP0 done, correctness and style review fixed.
 - 2026-10-05: WP1 written (v2 types, schema renderer, features); WP2 started in parallel.
+- 2026-10-05: WP1 reviewed and committed. WP2 written and in review; WP3 and WP4 started in parallel (separate files). No InfluxDB work (out of scope, A7).
 
 Decisions made by the maintainer:
 
