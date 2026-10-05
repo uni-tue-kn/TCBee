@@ -39,6 +39,7 @@ Log (newest last):
 - 2026-10-05: a 294 MB trace (`~/tcbee-traces/tcbee_2026-10-05T18-52-18`: cubic 8.6 MB, recv_sock 104, send_sock 67, tcp4 23+15, tcp_probe 76; no bbr/tcp6) is the WP9 benchmark input. It is cubic-only, so compare with the A1 numbers by file size, not record mix.
 - 2026-10-05: WP6 first run (release, SQLite only, 16 cores): 110 MB trace 3.4 s / 76 MB RSS / 91 MiB output; 294 MB trace 5.2 s (1.9 s after last worker) / 124 MB RSS / 247 MiB output. WP5 found one engine difference: SQLite drops the sign of -0.0, DuckDB keeps it (accepted, documented by an ignored test).
 - 2026-10-05: WP5 committed (90 contract tests on both engines). WP6 committed after review fixes (row counting checked against records, abort checks every 4096 records, failure-path tests); WP7 running. Legacy `ts-storage/tests/duckdb.rs` fails on re-runs when `db_duck_test.duck` is left over; it is deleted in WP8.
+- 2026-10-05: WP7 written, uncommitted in `tcbee-viz`. Both review agents died on a usage limit and were relaunched. Next after WP7: WP8, WP9.
 
 Decisions made by the maintainer:
 
@@ -717,4 +718,3 @@ Candidate tunings, in order: batch size, `--threads` default, DuckDB cached appe
   the old API. WP3 must remove the old `sqlite` crate and the old SQLite backend; until WP6/WP7
   move the callers, `database_factory(Sqlite)` returns an error on this branch and the old
   tools only work with DuckDB. `legacy` is deleted in WP8.
-- 2026-10-05: WP7 written, uncommitted in `tcbee-viz`. Both review agents died on a usage limit and were relaunched. Next after WP7: WP8, WP9.
