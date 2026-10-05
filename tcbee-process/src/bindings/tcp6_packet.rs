@@ -1,7 +1,10 @@
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, event::event_schema, ip::ip_addr_from_16_bytes,
+    reader::FromBuffer,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -83,5 +86,28 @@ impl EventIndexer for Tcp6Packet {
     }
     fn get_struct_length(&self) -> usize {
         64
+    }
+}
+
+event_schema! {
+    Tcp6Packet => "tcp6" {
+        seq => "SEQ_NUM": U32,
+        ack => "ACK_NUM": U32,
+        window => "WINDOW": U16,
+        flags => "FLAGS": U8,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let src = ip_addr_from_16_bytes(self.saddr);
+            let dst = ip_addr_from_16_bytes(self.daddr);
+
+            IpTuple {
+                src,
+                dst,
+                sport: self.sport as i64,
+                dport: self.dport as i64,
+                l4proto: 6,
+            }
+        }
     }
 }

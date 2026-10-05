@@ -4,8 +4,8 @@ use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
 use crate::{
-    bindings::event_indexer::EventIndexer, flow_tracker::AF_INET, ip::ip_addr_from_16_bytes,
-    reader::FromBuffer,
+    bindings::event_indexer::EventIndexer, event::event_schema, flow_tracker::AF_INET,
+    ip::ip_addr_from_16_bytes, reader::FromBuffer,
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default, Deserialize)]
@@ -98,4 +98,39 @@ impl FromBuffer for cwnd_trace_entry {
         }
     }
     const ENTRY_SIZE: usize = 62;
+}
+
+event_schema! {
+    cwnd_trace_entry => "cwnd" {
+        snd_cwnd => "perf_snd_cwnd": U32,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let src: IpAddr;
+            let dst: IpAddr;
+
+            if self.family == AF_INET {
+                let bytes = self.addr_v4.to_be_bytes();
+
+                let mut srcbytes: [u8; 4] = bytes[0..4].try_into().unwrap();
+                let mut dstbytes: [u8; 4] = bytes[4..8].try_into().unwrap();
+
+                srcbytes.reverse();
+                dstbytes.reverse();
+                src = IpAddr::V4(Ipv4Addr::from(srcbytes));
+                dst = IpAddr::V4(Ipv4Addr::from(dstbytes));
+            } else {
+                src = ip_addr_from_16_bytes(self.src_v6);
+                dst = ip_addr_from_16_bytes(self.dst_v6);
+            }
+
+            IpTuple {
+                src,
+                dst,
+                sport: self.sport as i64,
+                dport: self.dport as i64,
+                l4proto: 6,
+            }
+        }
+    }
 }

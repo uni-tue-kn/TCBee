@@ -1,4 +1,9 @@
 mod db_writer;
+// WP6: remove the allows, the new pipeline uses decode and event.
+#[cfg_attr(not(test), allow(dead_code))]
+mod decode;
+#[cfg_attr(not(test), allow(dead_code))]
+mod event;
 mod flow_tracker;
 mod ip;
 mod reader;
@@ -6,18 +11,7 @@ mod reader;
 #[cfg(test)]
 mod fixtures;
 
-mod bindings {
-    pub mod bbr;
-    pub mod ctypes;
-    pub mod cubic;
-    pub mod cwnd;
-    pub mod event_indexer;
-    pub mod sock;
-    pub mod tcp4_packet;
-    pub mod tcp6_packet;
-    pub mod tcp_packet;
-    pub mod tcp_probe;
-}
+mod bindings;
 
 use crate::bindings::event_indexer::EventIndexer;
 use argparse::{ArgumentParser, Store, StoreTrue};

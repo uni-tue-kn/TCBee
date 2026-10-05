@@ -3,7 +3,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, event::event_schema, ip::ip_addr_from_16_bytes,
+    reader::FromBuffer,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -149,5 +152,47 @@ impl EventIndexer for CubicEvent {
     }
     fn get_struct_length(&self) -> usize {
         72
+    }
+}
+
+event_schema! {
+    CubicEvent => "cubic" {
+        cnt: U32,
+        last_max_cwnd: U32,
+        last_cwnd: U32,
+        last_time: U32,
+        bic_origin_point: U32,
+        bic_K: U32,
+        delay_min: U32,
+        epoch_start: U32,
+        ack_cnt: U32,
+        tcp_cwnd: U32,
+        round_start: U32,
+        end_seq: U32,
+        last_ack: U32,
+        curr_rtt: U32,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let src: IpAddr;
+            let dst: IpAddr;
+
+            if self.addr_v4 != 0 {
+                let (parsed_src, parsed_dst) = unpack_ipv4_pair(self.addr_v4);
+                src = IpAddr::V4(parsed_src);
+                dst = IpAddr::V4(parsed_dst);
+            } else {
+                src = ip_addr_from_16_bytes(self.src_v6);
+                dst = ip_addr_from_16_bytes(self.dst_v6);
+            }
+
+            IpTuple {
+                src,
+                dst,
+                sport: self.sport as i64,
+                dport: self.dport as i64,
+                l4proto: 6,
+            }
+        }
     }
 }

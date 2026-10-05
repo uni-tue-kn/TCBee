@@ -4,8 +4,8 @@ use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
 use crate::{
-    bindings::event_indexer::EventIndexer, flow_tracker::AF_INET, ip::ip_addr_from_16_bytes,
-    reader::FromBuffer,
+    bindings::event_indexer::EventIndexer, event::event_schema, flow_tracker::AF_INET,
+    ip::ip_addr_from_16_bytes, reader::FromBuffer,
 };
 
 #[repr(C)]
@@ -200,5 +200,64 @@ impl EventIndexer for sock_trace_entry {
     }
     fn get_struct_length(&self) -> usize {
         160
+    }
+}
+
+event_schema! {
+    sock_trace_entry => "sock" {
+        pacing_rate: U64,
+        max_pacing_rate: U64,
+        backoff: U8,
+        rto: U32,
+        ato: U32,
+        rcv_mss: U16,
+        snd_cwnd: U32,
+        bytes_acked: U64,
+        snd_ssthresh: U32,
+        total_retrans: U32,
+        probes: U8,
+        lost: U32,
+        sacked_out: U32,
+        retrans: U32,
+        rcv_ssthresh: U32,
+        rttvar: U32,
+        advmss: U16,
+        reordering: U32,
+        rcv_rtt: U32,
+        rcv_space: U32,
+        bytes_received: U64,
+        segs_out: U32,
+        segs_in: U32,
+        snd_wscale: U16,
+        rcv_wscale: U16,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let src: IpAddr;
+            let dst: IpAddr;
+
+            if self.family == AF_INET {
+                let bytes = self.addr_v4.to_be_bytes();
+
+                let mut srcbytes: [u8; 4] = bytes[0..4].try_into().unwrap();
+                let mut dstbytes: [u8; 4] = bytes[4..8].try_into().unwrap();
+
+                srcbytes.reverse();
+                dstbytes.reverse();
+                src = IpAddr::V4(Ipv4Addr::from(srcbytes));
+                dst = IpAddr::V4(Ipv4Addr::from(dstbytes));
+            } else {
+                src = ip_addr_from_16_bytes(self.src_v6);
+                dst = ip_addr_from_16_bytes(self.dst_v6);
+            }
+
+            IpTuple {
+                src,
+                dst,
+                sport: self.sport as i64,
+                dport: self.dport as i64,
+                l4proto: 6,
+            }
+        }
     }
 }

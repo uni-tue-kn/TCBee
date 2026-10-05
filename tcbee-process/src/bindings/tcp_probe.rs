@@ -4,8 +4,8 @@ use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
 use crate::{
-    bindings::event_indexer::EventIndexer, flow_tracker::AF_INET, ip::ip_addr_from_16_bytes,
-    reader::FromBuffer, shorten_to_ipv4, shorten_to_ipv6,
+    bindings::event_indexer::EventIndexer, event::event_schema, flow_tracker::AF_INET,
+    ip::ip_addr_from_16_bytes, reader::FromBuffer, shorten_to_ipv4, shorten_to_ipv6,
 };
 
 #[repr(C)]
@@ -121,5 +121,42 @@ impl EventIndexer for TcpProbe {
     }
     fn get_struct_length(&self) -> usize {
         116
+    }
+}
+
+event_schema! {
+    TcpProbe => "tcp_probe" {
+        mark => "MARK": U32,
+        data_len => "DATA_LEN": U16,
+        snd_nxt => "SND_NXT": U32,
+        snd_una => "SND_UNA": U32,
+        snd_cwnd => "SND_CWND": U32,
+        ssthresh => "SSTRESH": U32,
+        snd_wnd => "SND_WND": U32,
+        srtt => "SRTT": U32,
+        rcv_wnd => "RCV_WND": U32,
+        sock_cookie => "SOCK_COOKIE": U64,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let src: IpAddr;
+            let dst: IpAddr;
+
+            if self.family == AF_INET {
+                //IPv4
+                src = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.saddr)));
+                dst = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(self.daddr)));
+            } else {
+                src = ip_addr_from_16_bytes(shorten_to_ipv6(self.saddr));
+                dst = ip_addr_from_16_bytes(shorten_to_ipv6(self.daddr));
+            }
+            IpTuple {
+                src: src,
+                dst: dst,
+                sport: self.sport as i64,
+                dport: self.dport as i64,
+                l4proto: 6,
+            }
+        }
     }
 }

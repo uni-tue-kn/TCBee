@@ -3,7 +3,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use serde::Deserialize;
 use ts_storage::{DataPoint, DataValue, IpTuple};
 
-use crate::{bindings::event_indexer::EventIndexer, db_writer::DBOperation, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, db_writer::DBOperation, event::event_schema,
+    reader::FromBuffer,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -86,5 +89,28 @@ impl EventIndexer for Tcp4Packet {
     }
     fn check_divider(&self) -> bool {
         self.div == 0xFFFFFFFFu32.to_be_bytes()
+    }
+}
+
+event_schema! {
+    Tcp4Packet => "tcp4" {
+        seq => "SEQ_NUM": U32,
+        ack => "ACK_NUM": U32,
+        window => "WINDOW": U16,
+        flags => "FLAGS": U8,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let src: IpAddr = IpAddr::V4(Ipv4Addr::from(self.saddr));
+            let dst: IpAddr = IpAddr::V4(Ipv4Addr::from(self.daddr));
+
+            IpTuple {
+                src,
+                dst,
+                sport: self.sport as i64,
+                dport: self.dport as i64,
+                l4proto: 6,
+            }
+        }
     }
 }

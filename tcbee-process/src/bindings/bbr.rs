@@ -3,7 +3,10 @@ use std::net::{IpAddr, Ipv4Addr};
 use serde::Deserialize;
 use ts_storage::{DataValue, IpTuple};
 
-use crate::{bindings::event_indexer::EventIndexer, ip::ip_addr_from_16_bytes, reader::FromBuffer};
+use crate::{
+    bindings::event_indexer::EventIndexer, event::event_schema, ip::ip_addr_from_16_bytes,
+    reader::FromBuffer,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -147,5 +150,45 @@ impl EventIndexer for BbrEvent {
 
     fn get_struct_length(&self) -> usize {
         106
+    }
+}
+
+event_schema! {
+    BbrEvent => "bbr" {
+        min_rtt_us: U32,
+        min_rtt_stamp: U32,
+        probe_rtt_done_stamp: U32,
+        rtt_cnt: U32,
+        next_rtt_delivered: U32,
+        cycle_mstamp: U64,
+        lt_bw: U32,
+        lt_last_delivered: U32,
+        lt_last_stamp: U32,
+        lt_last_lost: U32,
+        prior_cwnd: U32,
+        full_bw: U32,
+    }
+    {
+        fn flow_key(&self) -> IpTuple {
+            let src: IpAddr;
+            let dst: IpAddr;
+
+            if self.addr_v4 != 0 {
+                let (parsed_src, parsed_dst) = unpack_ipv4_pair(self.addr_v4);
+                src = IpAddr::V4(parsed_src);
+                dst = IpAddr::V4(parsed_dst);
+            } else {
+                src = ip_addr_from_16_bytes(self.src_v6);
+                dst = ip_addr_from_16_bytes(self.dst_v6);
+            }
+
+            IpTuple {
+                src,
+                dst,
+                sport: self.sport as i64,
+                dport: self.dport as i64,
+                l4proto: 6,
+            }
+        }
     }
 }
