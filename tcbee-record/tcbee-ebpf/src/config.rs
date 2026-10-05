@@ -29,6 +29,7 @@ pub const TCP_PROTOCOL: u8 = 0x06;
 // Fragment offset bits of iphdr.frag_off
 pub const IP_OFFSET_MASK: u16 = 0x1FFF;
 
+pub const AF_INET: u16 = 2;
 pub const AF_INET6: u16 = 10;
 
 // Header lengths
