@@ -1,15 +1,19 @@
-use std::error::Error;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum EBPFRunnerError {
-    #[error("Could not find queue with name: {name} for tracepoint: {trace}!")]
-    QueueNotFoundError { name: String, trace: String },
-    #[error("Could not find an available kernel program with {name}!")]
-    InvalidProgramError { name: String },
-    #[error("Could not load eBPF program '{name}' into kernel! Original Error: {orig_e:?}")]
-    TracepointKernelLoadError {
+    #[error("Could not attach eBPF program '{name}': {source}")]
+    AttachError {
         name: String,
-        orig_e: Box<dyn Error>,
+        source: libbpf_rs::Error,
     },
+    #[error("Could not get a handle to map '{name}': {source}")]
+    MapError {
+        name: String,
+        source: libbpf_rs::Error,
+    },
+    #[error("Interface '{name}' not found")]
+    InterfaceNotFound { name: String },
+    #[error("{0}")]
+    Unavailable(String),
 }

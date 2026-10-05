@@ -4,16 +4,11 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
-[features]
-default = []
-user = ["aya","serde"]
-ebpf = []
-
 [dependencies]
-aya = { workspace = true, optional = true }
-aya-ebpf.workspace = true
-serde = { version = "1.0.217", features = ["serde_derive"], optional = true }
-kernel-read-derive = { path = "../kernel-read-derive" }
+serde = { version = "1.0.217", features = ["serde_derive"] }
 
 [lib]
 path = "src/lib.rs"
+
+[build-dependencies]
+bindgen = { version = "0.73", default-features = false, features = ["runtime"] }

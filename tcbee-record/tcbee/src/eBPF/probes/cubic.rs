@@ -1,43 +1,69 @@
-use anyhow::Context;
-use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
 use std::error::Error;
-use tcbee_common::{bindings::cubic::cubic_trace_entry, prog_bindings::TraceProbe};
+
+use libbpf_rs::Link;
+use tcbee_common::{prog_bindings::TraceProbe, records::cubic_trace_entry};
+
+use tcbee_common::stats::RB_CUBIC;
 
 use crate::{
-    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
+    eBPF::{
+        ebpf_runner::prepend_string,
+        errors::EBPFRunnerError,
+        host::KernelBtf,
+        probes::{attach, handle, retarget},
+        skel::{OpenTcbeeProgs, TcbeeSkel},
+    },
     writer::Writer,
 };
+
+/// CUBIC is built in on most distributions, but may be a module
+const MODULE: &str = "tcp_cubic";
+const CONG_AVOID: &str = "cubictcp_cong_avoid";
+/// Renamed in kernel 7.2
+const CWND_EVENT: [&str; 2] = ["cubictcp_cwnd_event", "cubictcp_cwnd_event_tx_start"];
 
 pub struct CubicTracer {}
 
 impl CubicTracer {
-    pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
-        let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
+    /// Fails if CUBIC is enabled but not available in the kernel
+    pub fn configure(
+        progs: &mut OpenTcbeeProgs<'_>,
+        enabled: bool,
+        btf: &mut KernelBtf,
+    ) -> Result<(), EBPFRunnerError> {
+        progs.cubic_cong_control.set_autoload(enabled);
+        progs.cubic_cwnd_event.set_autoload(enabled);
+        if !enabled || !btf.available() {
+            return Ok(());
+        }
+        if !btf.has_func(Some(MODULE), CONG_AVOID) {
+            return Err(EBPFRunnerError::Unavailable(format!(
+                "Kernel function {} not found, is {} loaded?",
+                CONG_AVOID, MODULE
+            )));
+        }
+        retarget(&mut progs.cubic_cwnd_event, btf, Some(MODULE), &CWND_EVENT)?;
+        Ok(())
+    }
 
+    pub fn spawn(
+        skel: &TcbeeSkel<'_>,
+        dir: &str,
+        writer: &mut Writer,
+        links: &mut Vec<Link>,
+    ) -> Result<(), Box<dyn Error>> {
         // For Algo Update
-        let sendmsg: &mut FEntry = ebpf.program_mut("cubic_cong_control").unwrap().try_into()?;
-        sendmsg.load("cubictcp_cong_avoid", &btf)?;
-        sendmsg.attach()?;
-
-        // For Congestion Event
-        let recvmsg: &mut FEntry = ebpf.program_mut("cubic_cwnd_event").unwrap().try_into()?;
-        recvmsg.load("cubictcp_cwnd_event", &btf)?;
-        recvmsg.attach()?;
+        attach(&skel.progs.cubic_cong_control, links)?;
+        // For Congestion Event, unless the kernel has no such function
+        if skel.progs.cubic_cwnd_event.autoload() {
+            attach(&skel.progs.cubic_cwnd_event, links)?;
+        }
 
         // Both programs write to the same map
-        let map = ebpf
-            .take_map("CUBIC_EVENTS")
-            .ok_or(EBPFRunnerError::QueueNotFoundError {
-                name: "CUBIC_EVENTS".to_string(),
-                trace: "Congestion Algorithm Tracer - Cubic".to_string(),
-            })?;
-
-        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-
-        // We use a centrealized writing scheme
         writer.register::<cubic_trace_entry>(
-            buff,
-            prepend_string(cubic_trace_entry::FILE.to_string(), &dir),
+            RB_CUBIC,
+            handle(&skel.maps.CUBIC_EVENTS)?,
+            prepend_string(cubic_trace_entry::FILE.to_string(), dir),
         )?;
 
         Ok(())

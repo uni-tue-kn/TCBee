@@ -1,20 +1,30 @@
 // Crate components
 mod config;
 mod eBPF;
+mod metrics;
+mod stats;
 mod viz;
 mod writer;
 use std::net::IpAddr;
 
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
-use eBPF::ebpf_runner_config::{ip_to_filter_addr, EbpfRunnerConfig, FilterConfig};
+use eBPF::ebpf_runner_config::{
+    ip_to_filter_addr, parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig,
+};
 use tcbee_trace::TCBeeTrace;
+use writer::PollMode;
 
 // Error handling
 use log::info;
 
 // Async Libraries
-use tokio::{runtime::Builder, signal::ctrl_c};
+use std::time::Duration;
+use tokio::{
+    runtime::Builder,
+    signal::unix::{signal, SignalKind},
+    time::sleep,
+};
 use tokio_util::sync::CancellationToken;
 
 // Commandline arguments
@@ -63,6 +73,10 @@ fn main() -> anyhow::Result<()> {
     let mut trace_cwnd: bool = false;
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
+    let mut duration: f64 = 0.0;
+    let mut ringbuf_size: String = String::new();
+    let mut poll: String = "busy".to_string();
+    let mut writer_cpus: String = String::new();
 
     {
         let mut argparser = ArgumentParser::new();
@@ -153,7 +167,27 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut metrics).add_option(
             &["-m", "--metrics"],
             StoreTrue,
-            "Output a file containing general metrics, such as events handled and events lost. Stored under --dir path as 'metrics.json'",
+            "Write per ring buffer event counters, records written and per program recursion misses to metrics.json in the recording directory after shutdown.",
+        );
+        argparser.refer(&mut duration).add_option(
+            &["--duration"],
+            Store,
+            "Stop recording after this many seconds. Use 0 to record until stopped. Default is 0.",
+        );
+        argparser.refer(&mut poll).add_option(
+            &["--poll"],
+            Store,
+            "How writer threads wait for records: 'busy' spins and uses one core per ring buffer, 'wait' blocks until the kernel signals new records. Default is busy.",
+        );
+        argparser.refer(&mut writer_cpus).add_option(
+            &["--writer-cpus"],
+            Store,
+            "Comma-separated CPU ids to pin the writer threads to, assigned round-robin. One thread runs per ring buffer.",
+        );
+        argparser.refer(&mut ringbuf_size).add_option(
+            &["--ringbuf-size"],
+            Store,
+            "Ring buffer size in bytes (K, M, G suffixes), rounded up to a power of two. Either one size for all buffers, per group as tcp4=256M,sock=1G, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -175,6 +209,23 @@ fn main() -> anyhow::Result<()> {
         src_ips: parse_ip_csv(&src_ips, "source IP address")?,
         dst_ips: parse_ip_csv(&dst_ips, "destination IP address")?,
     };
+
+    let ringbuf_sizes = parse_ringbuf_sizes(&ringbuf_size)?;
+    let writer_cpus: Vec<usize> = parse_csv(&writer_cpus, "CPU id")?;
+    if let Some(cpu) = writer_cpus
+        .iter()
+        .find(|cpu| **cpu >= libc::CPU_SETSIZE as usize)
+    {
+        return Err(anyhow!("Invalid writer CPU id {}", cpu));
+    }
+    let poll_mode = match poll.as_str() {
+        "busy" => PollMode::Busy,
+        "wait" => PollMode::Wait,
+        other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
+    };
+
+    let duration = Duration::try_from_secs_f64(duration)
+        .map_err(|_| anyhow!("--duration must be a non-negative number of seconds"))?;
 
     if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd && !trace_algorithms {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
@@ -207,6 +258,9 @@ fn main() -> anyhow::Result<()> {
         .cwnd(trace_cwnd)
         .metrics(metrics)
         .algorithms(trace_algorithms)
+        .ringbuf_sizes(ringbuf_sizes)
+        .poll_mode(poll_mode)
+        .writer_cpus(writer_cpus)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints
@@ -220,6 +274,11 @@ fn main() -> anyhow::Result<()> {
         .build()?;
 
     runtime.block_on(async {
+        // Install the handlers before starting so that a signal during startup still
+        // stops the recorder cleanly instead of killing it
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+
         let starting_result = runner.run().await;
 
         if let Err(err) = starting_result {
@@ -229,14 +288,22 @@ fn main() -> anyhow::Result<()> {
             Err(err)
         } else {
             // Runner was created and correctly initialized
-            // If quiet mode: wait for ctrl+c to cancel
-            // If TUI is used: TUI will cancel the token so wait for that
-            if quiet {
-                let _ = ctrl_c().await;
-                token.cancel();
-            } else {
-                token.cancelled().await;
+            // Stop on SIGINT (ctrl+c in quiet mode, the TUI handles keys itself), SIGTERM,
+            // after --duration or when the TUI cancels the token
+            let timeout = async {
+                if duration.is_zero() {
+                    std::future::pending().await
+                } else {
+                    sleep(duration).await
+                }
+            };
+            tokio::select! {
+                _ = token.cancelled() => {}
+                _ = sigterm.recv() => {}
+                _ = sigint.recv() => {}
+                _ = timeout => {}
             }
+            token.cancel();
 
             info!("Stopping eBPF runner and threads!");
 

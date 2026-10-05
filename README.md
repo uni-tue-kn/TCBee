@@ -39,10 +39,11 @@ TCBee monitors TCP flows at up to 5M events/s. It captures packet headers via TC
 ### Prerequisites
 
 **Build tools:**
-- Clang/LLVM: `sudo apt install -y llvm clang libelf-dev libclang-dev`
-- Rust (> 1.28.1): [rustup.rs](https://rustup.rs/)
-- Stable + nightly toolchains: `rustup toolchain install stable && rustup toolchain install nightly --component rust-src`
-- BPF linker: `cargo install bpf-linker`
+- Rust stable: [rustup.rs](https://rustup.rs/)
+- Clang/LLVM, libelf and zlib headers: `sudo apt install -y llvm clang libclang-dev libelf-dev zlib1g-dev pkg-config make`
+- tcbee-live only: nightly toolchain and BPF linker: `rustup toolchain install nightly --component rust-src && cargo install bpf-linker`
+
+tcbee-record compiles its eBPF programs with clang and loads them with libbpf; see [tcbee-record/README.md](tcbee-record/README.md) for the static release build and kernel requirements (BTF, 5.8+, 5.9+ for `-k`/`-w`/`-a`).
 
 **Database libraries:**
 - SQLite: `sudo apt install -y libsqlite3-dev` (Arch: `sudo pacman -S sqlite`)
@@ -73,8 +74,6 @@ make live
 
 Move the binaries from `install/` to a directory in your `PATH`. The `tcbee` script dispatches to the right binary based on the subcommand.
 
-Built on the [aya rust template](https://github.com/aya-rs/aya-template).
-
 ### Record → Process → Visualize
 
 ```bash
@@ -92,7 +91,7 @@ tcbee viz
 
 ## What TCBee Does
 
-- Captures incoming and outgoing TCP headers via XDP and TC eBPF hooks
+- Captures incoming and outgoing TCP headers via TC eBPF hooks
 - Reads kernel TCP metrics (cwnd, ssthresh, srtt, ...) per packet or function call
 - Stores recordings in a SQLite or DuckDB database
 - Provides a plugin interface to compute derived metrics (e.g. retransmissions, duplicate ACKs) during post-processing
@@ -107,7 +106,7 @@ TCBee works in three phases: **record**, **process**, and **visualize**.
 
 <img src="./imgs/architecture.png" height=150/>
 
-**Record:** attaches eBPF probes and writes raw event data to `*.tcp` files. XDP/TC hooks capture packet headers; function hooks and tracepoints read kernel TCP metrics.
+**Record:** attaches eBPF probes and writes raw event data to `*.tcp` files. TC hooks capture packet headers; function hooks and tracepoints read kernel TCP metrics.
 
 **Process:** reads the raw files and writes a structured SQL database. Plugins run here to compute metrics that are too expensive to calculate live.
 
@@ -129,9 +128,9 @@ Metric sources:
 
 | Flag | Description |
 |---|---|
-| `-h [iface]` | TCP headers via XDP/TC on the given interface |
+| `-h [iface]` | TCP headers via TC on the given interface |
 | `-t` | Kernel tracepoints (most TCP metrics) |
-| `-k` | `tcp_sendmsg`/`tcp_recvmsg` hooks (all TCP metrics) |
+| `-k` | `__tcp_transmit_skb`/`tcp_rcv_established` hooks (all TCP metrics) |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
 
@@ -198,7 +197,7 @@ make live
 sudo ./install/tcbee live --select-port 5001
 ```
 
-See [tcbee-live/README.md](tcbee-live/README.md) for details.
+See [tcbee-live/README.md](tcbee-live/README.md) for details. tcbee-live is built on the [aya rust template](https://github.com/aya-rs/aya-template).
 
 ---
 
