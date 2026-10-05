@@ -128,10 +128,12 @@ impl EbpfRunner {
 
         let filter_mode = self.config.filter.mode();
         let filter_rules = self.config.filter.rule_flags();
+        let flow_tracking = self.config.do_tui as u8;
         let mut ebpf = EbpfLoader::new()
             .override_global("FILTER_PORT", &self.config.filter.single_port, true)
             .override_global("FILTER_MODE", &filter_mode, true)
             .override_global("FILTER_RULE_FLAGS", &filter_rules, true)
+            .override_global("FLOW_TRACKING", &flow_tracking, true)
             .load(aya::include_bytes_aligned!(concat!(
                 env!("OUT_DIR"),
                 "/tcbee"

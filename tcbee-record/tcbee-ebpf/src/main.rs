@@ -50,6 +50,9 @@ static mut FILTER_PORT: u16 = 0;
 static mut FILTER_MODE: u32 = tcbee_common::filter::FILTER_MODE_NONE;
 #[no_mangle]
 static mut FILTER_RULE_FLAGS: u32 = 0;
+// Set to 0 by userspace when the flow list is not displayed
+#[no_mangle]
+static FLOW_TRACKING: u8 = 1;
 
 /// net/ipv4/tcp_bbr.c
 // Called on update
