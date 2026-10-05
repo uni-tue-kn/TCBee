@@ -89,6 +89,7 @@ fn libbpf_log(level: PrintLevel, msg: String) {
 /// The skeleton borrows the storage of its object for its whole life. The runner keeps
 /// it until the program ends, so the storage (a pointer) is leaked to get a 'static
 /// skeleton. Dropping the skeleton still closes the object and its programs and maps.
+/// At most two are opened (see the BBR retry in `run`), so at most two pointers leak.
 fn open_skel() -> libbpf_rs::Result<OpenTcbeeSkel<'static>> {
     let storage = Box::leak(Box::new(MaybeUninit::uninit()));
     TcbeeSkelBuilder::default().open(storage)
@@ -123,6 +124,26 @@ fn configure_filter(skel: &TcbeeSkel<'_>, filter: &FilterConfig) -> libbpf_rs::R
         insert_filter_keys(map, ips.iter().map(|ip| ip.as_slice()))?;
     }
     Ok(())
+}
+
+/// Loads the programs and maps into the kernel. libbpf relocates all kernel struct
+/// accesses against the BTF of the running kernel here, a field that does not exist
+/// fails the load instead of reading garbage. The error includes the last libbpf
+/// warnings, they name the program, map or field that failed.
+///
+/// On failure the object is closed, which also closes every program and map it had
+/// already created in the kernel.
+fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, String> {
+    if let Ok(mut warnings) = LIBBPF_WARNINGS.lock() {
+        warnings.clear();
+    }
+    open.load().map_err(|err| {
+        let warnings = LIBBPF_WARNINGS
+            .lock()
+            .map(|warnings| warnings.join("\n"))
+            .unwrap_or_default();
+        format!("Could not load the eBPF programs: {}\n{}", err, warnings)
+    })
 }
 
 impl EbpfRunner {
@@ -236,21 +257,15 @@ impl EbpfRunner {
         }
     }
 
-    pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
-        env_logger::init();
-        libbpf_rs::set_print(Some((PrintLevel::Debug, libbpf_log)));
-
-        // Bump the memlock rlimit. This is needed for older kernels that don't use the
-        // new memcg based accounting, see https://lwn.net/Articles/837122/
-        let rlim = libc::rlimit {
-            rlim_cur: libc::RLIM_INFINITY,
-            rlim_max: libc::RLIM_INFINITY,
-        };
-        let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
-        if ret != 0 {
-            debug!("remove limit on locked memory failed, ret is: {}", ret);
-        }
-
+    /// Opens the skeleton and configures it from the config: rodata constants, ring
+    /// buffer sizes and which programs are loaded. BBR is only loaded if `with_bbr` is
+    /// set. Returns the skeleton and whether BBR is enabled.
+    fn open_configured(
+        &self,
+        tcx: bool,
+        with_bbr: bool,
+        btf: &mut KernelBtf,
+    ) -> Result<(OpenTcbeeSkel<'static>, bool), Box<dyn Error>> {
         let mut open = open_skel()?;
 
         // Configuration is read-only for the programs, so the verifier sees constants
@@ -276,34 +291,49 @@ impl EbpfRunner {
 
         // A skeleton loads all programs, the ones of disabled groups must be switched off.
         // Their attach targets may not even exist on this kernel.
-        let tcx = self.config.headers && uses_tcx();
         TCTracer::configure(&mut open.progs, self.config.headers, tcx);
         KernelTracer::configure(&mut open.progs, self.config.kernel);
         CwndTracer::configure(&mut open.progs, self.config.cwnd);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
-        let mut btf = KernelBtf::default();
-        CubicTracer::configure(&mut open.progs, self.config.algorithms, &mut btf)?;
-        let bbr = BBRTracer::configure(&mut open.progs, self.config.algorithms, &mut btf);
-        drop(btf);
+        CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
+        let bbr = BBRTracer::configure(&mut open.progs, self.config.algorithms && with_bbr, btf);
+        Ok((open, bbr))
+    }
 
-        if let Ok(mut warnings) = LIBBPF_WARNINGS.lock() {
-            warnings.clear();
-        }
-        // libbpf relocates all kernel struct accesses against the BTF of the running
-        // kernel here. A field that does not exist fails the load instead of reading
-        // garbage.
-        let skel = match open.load() {
-            Ok(skel) => skel,
-            Err(err) => {
-                let warnings = LIBBPF_WARNINGS
-                    .lock()
-                    .map(|warnings| warnings.join("\n"))
-                    .unwrap_or_default();
-                return Err(
-                    format!("Could not load the eBPF programs: {}\n{}", err, warnings).into(),
-                );
-            }
+    pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        env_logger::init();
+        libbpf_rs::set_print(Some((PrintLevel::Debug, libbpf_log)));
+
+        // Bump the memlock rlimit. This is needed for older kernels that don't use the
+        // new memcg based accounting, see https://lwn.net/Articles/837122/
+        let rlim = libc::rlimit {
+            rlim_cur: libc::RLIM_INFINITY,
+            rlim_max: libc::RLIM_INFINITY,
         };
+        let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
+        if ret != 0 {
+            debug!("remove limit on locked memory failed, ret is: {}", ret);
+        }
+
+        // A skeleton loads all programs at once, so one program that the kernel rejects
+        // fails all of them. BBR is optional (it may be an out-of-tree variant with other
+        // struct fields), so if loading fails with BBR, it is tried once more without.
+        let tcx = self.config.headers && uses_tcx();
+        let mut btf = KernelBtf::default();
+        let (open, mut bbr) = self.open_configured(tcx, true, &mut btf)?;
+        let skel = match load(open) {
+            Ok(skel) => skel,
+            Err(err) if bbr => {
+                error!("{}\nRetrying without the BBR programs", err);
+                // The failed object was closed when load() returned, its programs and
+                // maps are gone
+                let (open, _) = self.open_configured(tcx, false, &mut btf)?;
+                bbr = false;
+                load(open)?
+            }
+            Err(err) => return Err(err.into()),
+        };
+        drop(btf);
         let skel = self.skel.insert(skel);
         configure_filter(skel, &self.config.filter)?;
         self.ringbuf_sizes = ringbuf_sizes(skel.object());
