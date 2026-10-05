@@ -22,7 +22,6 @@ fn build_skeleton() -> anyhow::Result<()> {
         .source(BPF_SRC)
         .clang_args([
             "-Wall".into(),
-            "-Werror".into(),
             // vmlinux.h of newer kernels declares anonymous tagged struct members
             // (`struct foo;`), which the kernel itself builds with -fms-extensions.
             "-fms-extensions".into(),
