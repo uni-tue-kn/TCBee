@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-tcbee-common = { path = "../tcbee-common", features = ["user"]  }
+tcbee-common = { path = "../tcbee-common" }
 tcbee-trace = { path = "../tcbee-trace" }
 
 anyhow = { workspace = true, default-features = true }

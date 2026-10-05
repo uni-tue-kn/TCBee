@@ -4,18 +4,6 @@
 //! type here changes the on-disk format. The size asserts catch accidental changes.
 #![allow(non_camel_case_types, non_snake_case)]
 
-#[cfg(feature = "ebpf")]
-use crate::{
-    bindings::{
-        bbr::bbr,
-        cubic::cubic,
-        tcp_sock::{sock, tcp_sock},
-    },
-    kread::read_kernel,
-};
-#[cfg(feature = "ebpf")]
-use aya_ebpf::helpers::generated::bpf_ktime_get_ns;
-
 include!(concat!(env!("OUT_DIR"), "/records.rs"));
 
 use core::mem::size_of;
@@ -31,24 +19,3 @@ const _: () = assert!(size_of::<tcp_retransmit_synack_entry>() == 56);
 const _: () = assert!(size_of::<tcp_bad_csum_entry>() == 16);
 const _: () = assert!(size_of::<IpTuple>() == 38);
 const _: () = assert!(size_of::<FilterIp>() == 16);
-
-impl IpTuple {
-    /// Returns a canonical form with the lexicographically smaller (ip, port) pair as src,
-    /// so both directions of a TCP connection map to the same hash-map key.
-    #[inline(always)]
-    pub fn canonical(self) -> Self {
-        let swap =
-            self.src_ip > self.dst_ip || (self.src_ip == self.dst_ip && self.sport > self.dport);
-        if swap {
-            IpTuple {
-                src_ip: self.dst_ip,
-                dst_ip: self.src_ip,
-                sport: self.dport,
-                dport: self.sport,
-                protocol: self.protocol,
-            }
-        } else {
-            self
-        }
-    }
-}

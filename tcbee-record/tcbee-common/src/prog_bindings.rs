@@ -1,11 +1,6 @@
-use crate::bindings::{
-    bbr::bbr_trace_entry,
-    cubic::cubic_trace_entry,
-    tcp_bad_csum::tcp_bad_csum_entry,
-    tcp_header::{tcp4_packet_trace, tcp6_packet_trace},
-    tcp_probe::tcp_probe_entry,
-    tcp_retransmit_synack::tcp_retransmit_synack_entry,
-    tcp_sock::{cwnd_trace_entry, sock_trace_entry},
+use crate::records::{
+    bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, sock_trace_entry, tcp4_packet_trace,
+    tcp6_packet_trace, tcp_bad_csum_entry, tcp_probe_entry, tcp_retransmit_synack_entry,
 };
 
 // FIXME: We currently need to manually copy these bindings to tcbee-process as it cannot import tcbee-common

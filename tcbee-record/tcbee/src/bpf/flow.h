@@ -84,7 +84,7 @@ static __always_inline int cmp_addr(const __u8 *a, const __u8 *b)
 
 /*
  * Put the lexicographically smaller (ip, port) pair first, so both directions of a
- * connection map to the same key. Same order as IpTuple::canonical().
+ * connection map to the same key.
  */
 static __always_inline void canonical(struct ip_tuple *t)
 {
