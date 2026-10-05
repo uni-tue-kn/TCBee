@@ -1,4 +1,9 @@
-use std::{error::Error, sync::Arc, time::Duration};
+use std::{
+    error::Error,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use aya::{maps::HashMap, Ebpf, EbpfLoader};
 use log::{debug, error, info, warn};
@@ -25,9 +30,10 @@ use crate::{
         kernel::KernelTracer,
         tracepoints::TracepointTracer,
     },
+    metrics::{program_stats, ringbuf_sizes, Metrics, ProgramStats},
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
-    writer::Writer,
+    writer::{Writer, WriterReport},
 };
 
 use super::ebpf_runner_config::EbpfRunnerConfig;
@@ -39,6 +45,9 @@ pub struct EbpfRunner {
     config: EbpfRunnerConfig,
     ebpf: Option<Ebpf>,
     writer: Option<Writer>,
+    stats: Option<Arc<Stats>>,
+    ringbuf_sizes: Vec<Option<u32>>,
+    started: Option<Instant>,
 }
 
 pub fn prepend_string(filename: String, dir: &str) -> String {
@@ -58,6 +67,9 @@ impl EbpfRunner {
             config,
             ebpf: None,
             writer: None,
+            stats: None,
+            ringbuf_sizes: Vec::new(),
+            started: None,
         }
     }
 
@@ -110,6 +122,13 @@ impl EbpfRunner {
             let _ = thread.await;
         }
 
+        // Recursion misses only grow while the programs are attached
+        let programs = self.ebpf.as_ref().map(program_stats).unwrap_or_default();
+        let duration_s = self
+            .started
+            .map(|started| started.elapsed().as_secs_f64())
+            .unwrap_or_default();
+
         // Detach all programs so no new records arrive while draining. Dropping the
         // Ebpf object only closes the maps that were not taken by the writer.
         drop(self.ebpf.take());
@@ -140,6 +159,36 @@ impl EbpfRunner {
             }
             let records: u64 = reports.iter().map(|r| r.records).sum();
             println!("\nWrote {} records to {}", records, self.config.dir);
+
+            if self.config.metrics {
+                self.write_metrics(duration_s, &reports, programs);
+            }
+        }
+    }
+
+    fn write_metrics(&self, duration_s: f64, reports: &[WriterReport], programs: Vec<ProgramStats>) {
+        let Some(stats) = &self.stats else {
+            return;
+        };
+        let snapshot = match stats.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                error!("Could not read event counters for metrics: {}", err);
+                return;
+            }
+        };
+
+        let metrics = Metrics::new(
+            duration_s,
+            &snapshot,
+            reports,
+            &self.ringbuf_sizes,
+            programs,
+        );
+        let path = Path::new(&self.config.dir).join("metrics.json");
+        match metrics.write(&path) {
+            Ok(()) => println!("Wrote metrics to {}", path.display()),
+            Err(err) => error!("Could not write {}: {}", path.display(), err),
         }
     }
 
@@ -170,6 +219,7 @@ impl EbpfRunner {
                 "/tcbee"
             )))?;
         self.configure_filter(&mut ebpf)?;
+        self.ringbuf_sizes = ringbuf_sizes(&ebpf);
 
 
         info!("Starting eBPF probes!");
@@ -249,6 +299,7 @@ impl EbpfRunner {
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(&mut ebpf)?);
+        self.stats = Some(stats.clone());
         let mut watcher = EBPFWatcher::new(
             &mut ebpf,
             stats,
@@ -267,6 +318,7 @@ impl EbpfRunner {
         // Store to ensure that it is not dropped after this function finishes!
         self.ebpf = Some(ebpf);
         self.writer = Some(writer);
+        self.started = Some(Instant::now());
 
         Ok(())
     }

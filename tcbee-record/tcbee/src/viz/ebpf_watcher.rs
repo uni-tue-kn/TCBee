@@ -1,17 +1,15 @@
 use std::{
-    fs::File,
-    io::{self, BufWriter, Write},
+    io::{self, Write},
     sync::Arc,
     thread::sleep,
     time::{Duration, Instant},
 };
 
 use anyhow::anyhow;
-use serde::Serialize;
 
 use crate::{
     stats::{Snapshot, Stats},
-    eBPF::{ebpf_runner::prepend_string, ebpf_runner_config::EbpfWatcherConfig},
+    eBPF::ebpf_runner_config::EbpfWatcherConfig,
     viz::{flow_tracker::FlowTracker, rate_watcher::RateWatcher},
 };
 
@@ -63,17 +61,6 @@ pub struct EBPFWatcher {
     config: EbpfWatcherConfig,
 }
 
-#[derive(Serialize)]
-pub struct Metrics {
-    handled: u64,
-    dropped: u64,
-    ingress: u64,
-    egress: u64,
-    ingress_calls: u64,
-    egress_calls: u64,
-    tcp_bytes_sent: u64,
-    tcp_bytes_received: u64,
-}
 //TODO: Monitor packet rate vs TCP packet rate?
 impl EBPFWatcher {
     pub fn new(
@@ -663,32 +650,6 @@ impl EBPFWatcher {
                     }
                 }
             }
-        }
-
-        // Store metrics if needed
-        if self.config.metrics {
-            let metrics = Metrics {
-                handled: self.events_handled.get_counter_sum(&self.snapshot),
-                dropped: self.events_drops.get_counter_sum(&self.snapshot),
-                ingress: self.ingress_counter.get_counter_sum(&self.snapshot),
-                egress: self.egress_counter.get_counter_sum(&self.snapshot),
-                ingress_calls: self.tcp_sock_recv.get_counter_sum(&self.snapshot),
-                egress_calls: self.tcp_sock_send.get_counter_sum(&self.snapshot),
-                tcp_bytes_sent: self.tcp_bytes_sent.get_counter_sum(&self.snapshot),
-                tcp_bytes_received: self.tcp_bytes_recv.get_counter_sum(&self.snapshot),
-            };
-
-            let Ok(outfile) =
-                File::create(prepend_string("metrics.json".to_string(), &self.config.dir))
-            else {
-                error!("Could not open outfile: {}/metrics.json", self.config.dir);
-                return;
-            };
-
-            let mut writer = BufWriter::new(outfile);
-
-            let _ = serde_json::to_writer(&mut writer, &metrics);
-            let _ = writer.flush();
         }
 
         // Restore terminal view

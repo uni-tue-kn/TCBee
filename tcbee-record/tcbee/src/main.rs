@@ -1,6 +1,7 @@
 // Crate components
 mod config;
 mod eBPF;
+mod metrics;
 mod stats;
 mod viz;
 mod writer;
@@ -154,7 +155,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut metrics).add_option(
             &["-m", "--metrics"],
             StoreTrue,
-            "Output a file containing general metrics, such as events handled and events lost. Stored under --dir path as 'metrics.json'",
+            "Write per ring buffer event counters, records written and per program recursion misses to metrics.json in the recording directory after shutdown.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],

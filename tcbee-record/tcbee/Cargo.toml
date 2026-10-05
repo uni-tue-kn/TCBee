@@ -10,6 +10,7 @@ tcbee-trace = { path = "../tcbee-trace" }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
+aya-obj = { git = "https://github.com/aya-rs/aya", default-features = false }
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
