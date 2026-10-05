@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::{error::Error, sync::Arc, time::Duration};
 
 use aya::{maps::HashMap, Ebpf, EbpfLoader};
 use log::{debug, error, info, warn};
@@ -8,8 +8,12 @@ use tcbee_common::{
         tcp_retransmit_synack::tcp_retransmit_synack_entry,
     },
     filter::FilterIp,
+    stats::{RB_BAD_CSUM, RB_RETRANSMIT_SYNACK, RB_TCP_PROBE},
 };
-use tokio::task::{spawn_blocking, JoinHandle};
+use tokio::{
+    task::{spawn_blocking, JoinHandle},
+    time::sleep,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -97,18 +101,45 @@ impl EbpfRunner {
         Ok(())
     }
 
-    pub async fn stop(self) {
+    pub async fn stop(mut self) {
         // Signal child threads to stop
         self.stop_token.cancel();
 
-        if let Some(writer) = self.writer {
-            println!("FLUSHING WRITER!");
-            let flush_res = writer.shutdown();
-            if let Err(res) = flush_res {
-                println!("Failed during flush: {}", res);
-            } else {
-                println!("Flushed successfully!");
+        // Wait for the watcher, it restores the terminal
+        for thread in self.threads.drain(..) {
+            let _ = thread.await;
+        }
+
+        // Detach all programs so no new records arrive while draining. Dropping the
+        // Ebpf object only closes the maps that were not taken by the writer.
+        drop(self.ebpf.take());
+
+        // Programs that were already running when they were detached may still submit
+        sleep(Duration::from_millis(100)).await;
+
+        if let Some(writer) = self.writer.take() {
+            info!("Draining ring buffers and finishing files");
+            let reports = spawn_blocking(move || writer.shutdown())
+                .await
+                .unwrap_or_default();
+
+            for report in &reports {
+                match &report.error {
+                    Some(err) => error!(
+                        "Writer for {} failed after {} records: {}",
+                        report.file.display(),
+                        report.records,
+                        err
+                    ),
+                    None => info!(
+                        "Wrote {} records to {}",
+                        report.records,
+                        report.file.display()
+                    ),
+                }
             }
+            let records: u64 = reports.iter().map(|r| r.records).sum();
+            println!("\nWrote {} records to {}", records, self.config.dir);
         }
     }
 
@@ -178,18 +209,21 @@ impl EbpfRunner {
         if self.config.tracepoints {
             TracepointTracer::spawn::<tcp_probe_entry>(
                 &mut ebpf,
+                RB_TCP_PROBE,
                 self.config.dir.clone(),
                 &mut writer,
             )?;
 
             TracepointTracer::spawn::<tcp_retransmit_synack_entry>(
                 &mut ebpf,
+                RB_RETRANSMIT_SYNACK,
                 self.config.dir.clone(),
                 &mut writer,
             )?;
 
             TracepointTracer::spawn::<tcp_bad_csum_entry>(
                 &mut ebpf,
+                RB_BAD_CSUM,
                 self.config.dir.clone(),
                 &mut writer,
             )?;

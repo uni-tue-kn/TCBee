@@ -3,6 +3,8 @@ use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
 use std::error::Error;
 use tcbee_common::{bindings::cubic::cubic_trace_entry, prog_bindings::TraceProbe};
 
+use tcbee_common::stats::{RB_CUBIC};
+
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
@@ -36,6 +38,7 @@ impl CubicTracer {
 
         // We use a centrealized writing scheme
         writer.register::<cubic_trace_entry>(
+            RB_CUBIC,
             buff,
             prepend_string(cubic_trace_entry::FILE.to_string(), &dir),
         )?;

@@ -15,6 +15,7 @@ impl TracepointTracer {
     // T is passed to determine struct and names for registration
     pub fn spawn<T: TracePointProbe + Serialize + Copy + Send + 'static>(
         ebpf: &mut Ebpf,
+        rb: u32,
         dir: String,
         writer: &mut Writer,
     ) -> Result<(), Box<dyn Error>> {
@@ -42,7 +43,7 @@ impl TracepointTracer {
             })?;
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<T>(buff, prepend_string(T::FILE.to_string(), &dir))?;
+        writer.register::<T>(rb, buff, prepend_string(T::FILE.to_string(), &dir))?;
 
         Ok(())
     }

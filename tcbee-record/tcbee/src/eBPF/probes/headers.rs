@@ -10,6 +10,8 @@ use tcbee_common::{
     prog_bindings::TraceInoutProbe,
 };
 
+use tcbee_common::stats::{RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS};
+
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
@@ -55,6 +57,7 @@ impl TCTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<tcp4_packet_trace>(
+            RB_TCP4_INGRESS,
             buff,
             prepend_string(tcp4_packet_trace::IN_FILE.to_string(), &dir),
         )?;
@@ -68,6 +71,7 @@ impl TCTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<tcp6_packet_trace>(
+            RB_TCP6_INGRESS,
             buff,
             prepend_string(tcp6_packet_trace::IN_FILE.to_string(), &dir),
         )?;
@@ -103,6 +107,7 @@ impl TCTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<tcp4_packet_trace>(
+            RB_TCP4_EGRESS,
             buff,
             prepend_string(tcp4_packet_trace::OUT_FILE.to_string(), &dir),
         )?;
@@ -116,6 +121,7 @@ impl TCTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<tcp6_packet_trace>(
+            RB_TCP6_EGRESS,
             buff,
             prepend_string(tcp6_packet_trace::OUT_FILE.to_string(), &dir),
         )?;

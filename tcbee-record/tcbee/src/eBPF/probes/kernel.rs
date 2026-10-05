@@ -4,6 +4,8 @@ use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
 use tcbee_common::{bindings::tcp_sock::sock_trace_entry, prog_bindings::TraceInoutProbe};
 
+use tcbee_common::stats::{RB_SOCK_RECV, RB_SOCK_SEND};
+
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
@@ -38,6 +40,7 @@ impl KernelTracer {
 
         // Register with writer object
         writer.register::<sock_trace_entry>(
+            RB_SOCK_SEND,
             buff,
             prepend_string(sock_trace_entry::OUT_FILE.to_string(), &dir),
         )?;
@@ -53,6 +56,7 @@ impl KernelTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<sock_trace_entry>(
+            RB_SOCK_RECV,
             buff,
             prepend_string(sock_trace_entry::IN_FILE.to_string(), &dir),
         )?;

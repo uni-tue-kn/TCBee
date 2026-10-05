@@ -28,7 +28,7 @@ const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 /// one thread per buffer is both the safe and the optimal arrangement.
 pub struct Writer {
     running: Arc<AtomicBool>,
-    handles: Vec<JoinHandle<()>>,
+    handles: Vec<(WriterReport, JoinHandle<Result<u64, JobError>>)>,
     /// CPU IDs to pin writer threads to, assigned round-robin.
     /// Requires `isolcpus=<ids>` in the kernel boot parameters for full isolation.
     cpu_pool: Vec<usize>,
@@ -54,8 +54,10 @@ impl Writer {
     }
 
     /// Register a ring buffer map. Spawns a dedicated worker thread immediately.
+    /// `rb` is the ring buffer index from `tcbee_common::stats`.
     pub fn register<T>(
         &mut self,
+        rb: u32,
         map: RingBuf<MapData>,
         file_path: impl Into<PathBuf>,
     ) -> Result<(), WriterError>
@@ -79,14 +81,22 @@ impl Writer {
             cpu
         );
 
+        let report = WriterReport {
+            rb,
+            file: job.file_path.clone(),
+            records: 0,
+            error: None,
+        };
         let handle = thread::spawn(move || job_loop(Box::new(job), running, cpu));
-        self.handles.push(handle);
+        self.handles.push((report, handle));
 
         Ok(())
     }
 
-    /// Signal all worker threads to stop, flush their buffers, and join them.
-    pub fn shutdown(mut self) -> Result<(), WriterError> {
+    /// Signal all worker threads to stop, drain their ring buffers, finish the files and
+    /// join them. The eBPF programs must be detached before, otherwise records that are
+    /// submitted after the final drain are lost.
+    pub fn shutdown(mut self) -> Vec<WriterReport> {
         self.signal_stop();
         self.join_all()
     }
@@ -95,11 +105,18 @@ impl Writer {
         self.running.store(false, Ordering::Relaxed);
     }
 
-    fn join_all(&mut self) -> Result<(), WriterError> {
-        for handle in self.handles.drain(..) {
-            handle.join().map_err(|_| WriterError::WorkerPanicked)?;
-        }
-        Ok(())
+    fn join_all(&mut self) -> Vec<WriterReport> {
+        self.handles
+            .drain(..)
+            .map(|(mut report, handle)| {
+                match handle.join() {
+                    Ok(Ok(records)) => report.records = records,
+                    Ok(Err(err)) => report.error = Some(err.to_string()),
+                    Err(_) => report.error = Some(WriterError::WorkerPanicked.to_string()),
+                }
+                report
+            })
+            .collect()
     }
 }
 
@@ -121,33 +138,52 @@ fn pin_to_cpu(cpu_id: usize) {
     }
 }
 
-fn job_loop(mut job: Box<dyn Job>, running: Arc<AtomicBool>, cpu: Option<usize>) {
+fn job_loop(
+    mut job: Box<dyn Job>,
+    running: Arc<AtomicBool>,
+    cpu: Option<usize>,
+) -> Result<u64, JobError> {
     if let Some(cpu_id) = cpu {
         pin_to_cpu(cpu_id);
     }
 
-    while running.load(Ordering::Relaxed) {
-        match job.poll() {
-            Ok(()) => {}
-            Err(err) => {
-                error!(
-                    "Writer job {} failed: {}. Stopping thread.",
-                    job.name(),
-                    err
-                );
+    let mut records: u64 = 0;
+    let result = (|| {
+        while running.load(Ordering::Relaxed) {
+            records += job.poll()?;
+            thread::yield_now();
+        }
+        // Drain what was submitted before the programs were detached
+        loop {
+            let read = job.poll()?;
+            if read == 0 {
                 break;
             }
+            records += read;
         }
-        thread::yield_now();
+        Ok(())
+    })();
+
+    if let Err(err) = &result {
+        error!(
+            "Writer job {} failed after {} records: {}. Stopping thread.",
+            job.name(),
+            records,
+            err
+        );
     }
 
-    if let Err(err) = job.flush() {
+    // Finish the file even after an error so that the records written so far are kept
+    let flushed = job.flush();
+    if let Err(err) = &flushed {
         error!(
             "Failed to flush job {} during shutdown: {}",
             job.name(),
             err
         );
     }
+
+    result.and(flushed).map(|_| records)
 }
 
 const MIN_MMAP_GROWTH: usize = 64 * 1024;
@@ -284,7 +320,7 @@ impl Drop for Writer {
             return;
         }
         self.signal_stop();
-        for handle in self.handles.drain(..) {
+        for (_, handle) in self.handles.drain(..) {
             let _ = handle.join();
         }
     }
@@ -292,7 +328,8 @@ impl Drop for Writer {
 
 trait Job: Send {
     fn name(&self) -> &str;
-    fn poll(&mut self) -> Result<(), JobError>;
+    /// Writes all records that are currently in the ring buffer, returns their count.
+    fn poll(&mut self) -> Result<u64, JobError>;
     fn flush(&mut self) -> Result<(), JobError>;
 }
 
@@ -344,11 +381,11 @@ where
         self.file_path.to_str().unwrap_or("<unknown>")
     }
 
-    fn poll(&mut self) -> Result<(), JobError> {
+    fn poll(&mut self) -> Result<u64, JobError> {
         let mut reads = 0;
         let sink = match self.sink.as_mut() {
             Some(sink) => sink,
-            None => return Ok(()),
+            None => return Ok(0),
         };
 
         while let Some(entry) = self.map.next() {
@@ -365,7 +402,7 @@ where
             trace!("Wrote {} records to {}", reads, self.file_path.display());
         }
 
-        Ok(())
+        Ok(reads)
     }
 
     fn flush(&mut self) -> Result<(), JobError> {
@@ -374,6 +411,14 @@ where
         }
         Ok(())
     }
+}
+
+/// Outcome of one writer thread
+pub struct WriterReport {
+    pub rb: u32,
+    pub file: PathBuf,
+    pub records: u64,
+    pub error: Option<String>,
 }
 
 #[derive(Debug)]

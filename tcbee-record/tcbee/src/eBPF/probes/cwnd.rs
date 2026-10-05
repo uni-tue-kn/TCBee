@@ -4,6 +4,8 @@ use anyhow::Context;
 use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
 use tcbee_common::{bindings::tcp_sock::cwnd_trace_entry, prog_bindings::TraceInoutProbe};
 
+use tcbee_common::stats::{RB_CWND_RECV, RB_CWND_SEND};
+
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
@@ -36,6 +38,7 @@ impl CwndTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<cwnd_trace_entry>(
+            RB_CWND_SEND,
             buff,
             prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), &dir),
         )?;
@@ -51,6 +54,7 @@ impl CwndTracer {
 
         let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
         writer.register::<cwnd_trace_entry>(
+            RB_CWND_RECV,
             buff,
             prepend_string(cwnd_trace_entry::IN_FILE.to_string(), &dir),
         )?;

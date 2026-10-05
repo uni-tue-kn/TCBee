@@ -2,6 +2,8 @@ use aya::{maps::RingBuf, programs::KProbe, Ebpf};
 use std::error::Error;
 use tcbee_common::{bindings::bbr::bbr_trace_entry, prog_bindings::TraceProbe};
 
+use tcbee_common::stats::{RB_BBR};
+
 use crate::{
     eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
     writer::Writer,
@@ -34,6 +36,7 @@ impl BBRTracer {
 
         // We use a centrealized writing scheme
         writer.register::<bbr_trace_entry>(
+            RB_BBR,
             buff,
             prepend_string(bbr_trace_entry::FILE.to_string(), &dir),
         )?;
