@@ -39,6 +39,14 @@ Decisions made by the maintainer:
 - **No v1 compatibility**: databases written by the current code are not read, migrated or
   converted. Opening one fails with "schema v1 is not supported, reprocess the trace with
   tcbee-process". Raw traces are the source of truth.
+- **Selectable engines, minimal DuckDB rebuilds** (added during implementation): building DuckDB is
+  slow, so `ts-storage` has cargo features `sqlite` and `duckdb` (default: both), forwarded as
+  features of `tcbee-process` and `tcbee-viz`. A build without `duckdb` never compiles
+  `libduckdb-sys`; opening a file of a disabled engine returns a clear error. `libduckdb-sys` must
+  be rebuilt only when unavoidable: all three crates use the same feature set and flags, and WP8
+  evaluates a cargo workspace with one shared `target/` (today each crate has its own `target/` and
+  `Cargo.lock`, so DuckDB compiles three times), linking a system libduckdb instead of `bundled`
+  for development (`DUCKDB_LIB_DIR`), and documents it in the READMEs and CI.
 
 ---
 
@@ -528,6 +536,7 @@ in `lib.rs`. Do not edit the old modules or `src/error/`.
   `UnknownEngine`, `WriterGone`.
 - Traits and `create`/`open` signatures from A4 (`open`/`create` may return `todo!()` until WP3/WP4),
   with engine detection from the file header in `open`.
+- Engine features `sqlite`/`duckdb` as in the decisions above, with cfg-gated engine modules.
 - Cargo: add `rusqlite` (optional `bundled`), enable `duckdb` feature `appender-arrow`, keep
   `thiserror`. Update `bundled` to cover both.
 
@@ -663,6 +672,12 @@ tab_process, tab_single_flow, tab_multi_flow}.rs`, `data/{plot_state, series_dat
 - Update `ts-storage/README.md` (schema v2, API), `tcbee-process` README/usage text, the main
   `README.md` sections on processing, and `examples/db/{README.md, list_flows.py, plot_cwnd.py}` to
   the v2 schema (`series` + `ev_*` tables; `plot_cwnd.py` reads `ev_sock`/`ev_tcp_probe` directly).
+- Build time: forward the `sqlite`/`duckdb` features through `tcbee-process` and `tcbee-viz`
+  (WP6/WP7 keep them building with `--no-default-features --features sqlite` and `duckdb`);
+  decide on a cargo workspace with a shared `target/` and `Cargo.lock`, check that `libduckdb-sys`
+  is not rebuilt when switching between crates or running `cargo test`/`clippy` after `cargo build`
+  (same features and profile), document the system-libduckdb option, and add feature-matrix checks
+  to CI.
 - Review `testing/topology.py` and the root `tcbee` wrapper script for CLI and output-path changes.
 - CI (`.github/workflows/tcbee.yml`, `release.yml`): `--features ts_storage/bundled` must still
   build both engines; add `cargo test` for `ts-storage` and `tcbee-process` (the e2e tests use the
