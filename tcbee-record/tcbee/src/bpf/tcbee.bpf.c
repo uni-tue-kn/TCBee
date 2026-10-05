@@ -19,6 +19,12 @@ char LICENSE[] SEC("license") = "Dual MIT/GPL";
 
 /* ---- Tracepoints (-t) ------------------------------------------------------------ */
 
+/*
+ * The address arrays are copied with bpf_probe_read_kernel(). A direct copy would load
+ * through ctx + CO-RE offset, and the verifier rejects loads through a modified ctx
+ * pointer; only single fields like ctx->sport fold the offset into the load.
+ */
+
 /* IPv4 address in an ip_tuple, network byte order in the first 4 bytes */
 static __always_inline void tuple_set_v4(__u8 *dst, const __u8 *src)
 {
@@ -337,34 +343,30 @@ int tc_egress_packet_tracer(struct __sk_buff *skb)
 /* ---- Socket state (-k) and cwnd only (-w) ---------------------------------------- */
 
 /*
- * Ports of a socket for the filter. If they cannot be read the filter cannot be
- * evaluated, which is counted as an error. Returns false if the event is done.
+ * The hooks pass a struct sock. The verifier only allows direct loads within the BTF type
+ * of a pointer, so the tcp_sock (and the congestion control state in it) is reached
+ * through bpf_skc_to_tcp_sock() (kernel 5.9), one cheap helper call instead of one
+ * bpf_probe_read_kernel() per field. It returns NULL for sockets that are not full TCP
+ * sockets, which these hooks do not see; that is counted as an error.
  */
-static __always_inline bool sock_ports_filter(struct sock *sk, __u32 rb, __u16 *sport,
-					      __u16 *dport)
-{
-	if (sk_ports(sk, sport, dport)) {
-		count_attempt(rb);
-		count_error(rb);
-		return false;
-	}
-	return filter_sock(sk, *sport, *dport);
-}
 
 static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 {
-	struct tcp_sock *tp = (struct tcp_sock *)sk;
 	struct cwnd_trace_entry rec = {};
+	struct tcp_sock *tp;
 	__u16 sport, dport;
 
-	if (!sock_ports_filter(sk, rb, &sport, &dport))
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
 		return 0;
 	count_attempt(rb);
 
-	if (fill_header(&rec, sk)) {
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
 		count_error(rb);
 	} else {
-		rec.snd_cwnd = BPF_CORE_READ(tp, snd_cwnd);
+		fill_header(&rec, sk, sport, dport);
+		rec.snd_cwnd = tp->snd_cwnd;
 		submit(ringbuf, rb, &rec);
 	}
 
@@ -375,45 +377,48 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbuf,
 				      __u32 rb, __u32 bytes_slot)
 {
-	struct tcp_sock *tp = (struct tcp_sock *)sk;
 	struct sock_trace_entry rec = {};
+	struct tcp_sock *tp;
 	__u16 sport, dport;
 
-	if (!sock_ports_filter(sk, rb, &sport, &dport))
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
 		return 0;
 	count_attempt(rb);
 
-	add_stat(bytes_slot, BPF_CORE_READ(skb, len));
+	add_stat(bytes_slot, skb->len);
 
-	if (fill_header(&rec, sk)) {
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
 		count_error(rb);
 	} else {
+		fill_header(&rec, sk, sport, dport);
 		/* struct sock */
-		rec.pacing_rate = BPF_CORE_READ(sk, sk_pacing_rate);
-		rec.max_pacing_rate = BPF_CORE_READ(sk, sk_max_pacing_rate);
+		rec.pacing_rate = sk->sk_pacing_rate;
+		rec.max_pacing_rate = sk->sk_max_pacing_rate;
 		/* struct inet_connection_sock */
-		rec.backoff = BPF_CORE_READ(tp, inet_conn.icsk_backoff);
-		rec.rto = BPF_CORE_READ(tp, inet_conn.icsk_rto);
+		rec.backoff = tp->inet_conn.icsk_backoff;
+		rec.rto = tp->inet_conn.icsk_rto;
 		rec.ato = 0;
-		rec.rcv_mss = BPF_CORE_READ(tp, inet_conn.icsk_ack.rcv_mss);
+		rec.rcv_mss = tp->inet_conn.icsk_ack.rcv_mss;
 		/* struct tcp_sock */
-		rec.snd_cwnd = BPF_CORE_READ(tp, snd_cwnd);
-		rec.bytes_acked = BPF_CORE_READ(tp, bytes_acked);
-		rec.snd_ssthresh = BPF_CORE_READ(tp, snd_ssthresh);
-		rec.total_retrans = BPF_CORE_READ(tp, total_retrans);
-		rec.probes = BPF_CORE_READ(tp, keepalive_probes);
-		rec.lost = BPF_CORE_READ(tp, lost);
-		rec.sacked_out = BPF_CORE_READ(tp, sacked_out);
-		rec.retrans = BPF_CORE_READ(tp, retrans_out);
-		rec.rcv_ssthresh = BPF_CORE_READ(tp, rcv_ssthresh);
-		rec.rttvar = BPF_CORE_READ(tp, rttvar_us);
-		rec.advmss = BPF_CORE_READ(tp, advmss);
-		rec.reordering = BPF_CORE_READ(tp, reordering);
-		rec.rcv_rtt = BPF_CORE_READ(tp, rcv_rtt_est.rtt_us);
-		rec.rcv_space = BPF_CORE_READ(tp, rcvq_space.space);
-		rec.bytes_received = BPF_CORE_READ(tp, bytes_received);
-		rec.segs_out = BPF_CORE_READ(tp, segs_out);
-		rec.segs_in = BPF_CORE_READ(tp, segs_in);
+		rec.snd_cwnd = tp->snd_cwnd;
+		rec.bytes_acked = tp->bytes_acked;
+		rec.snd_ssthresh = tp->snd_ssthresh;
+		rec.total_retrans = tp->total_retrans;
+		rec.probes = tp->keepalive_probes;
+		rec.lost = tp->lost;
+		rec.sacked_out = tp->sacked_out;
+		rec.retrans = tp->retrans_out;
+		rec.rcv_ssthresh = tp->rcv_ssthresh;
+		rec.rttvar = tp->rttvar_us;
+		rec.advmss = tp->advmss;
+		rec.reordering = tp->reordering;
+		rec.rcv_rtt = tp->rcv_rtt_est.rtt_us;
+		rec.rcv_space = tp->rcvq_space.space;
+		rec.bytes_received = tp->bytes_received;
+		rec.segs_out = tp->segs_out;
+		rec.segs_in = tp->segs_in;
 		/* struct tcp_options_received, not read yet */
 		rec.snd_wscale = 0;
 		rec.rcv_wscale = 0;
@@ -454,31 +459,36 @@ int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
 
 static __always_inline int trace_cubic(struct sock *sk)
 {
-	struct bictcp___tcbee *ca = inet_csk_ca(sk);
 	struct cubic_trace_entry rec = {};
+	struct bictcp___tcbee *ca;
+	struct tcp_sock *tp;
 	__u16 sport, dport;
 
-	if (!sock_ports_filter(sk, RB_CUBIC, &sport, &dport))
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
 		return 0;
 	count_attempt(RB_CUBIC);
 
-	if (fill_header(&rec, sk)) {
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
 		count_error(RB_CUBIC);
 	} else {
-		rec.cnt = BPF_CORE_READ(ca, cnt);
-		rec.last_max_cwnd = BPF_CORE_READ(ca, last_max_cwnd);
-		rec.last_cwnd = BPF_CORE_READ(ca, last_cwnd);
-		rec.last_time = BPF_CORE_READ(ca, last_time);
-		rec.bic_origin_point = BPF_CORE_READ(ca, bic_origin_point);
-		rec.bic_K = BPF_CORE_READ(ca, bic_K);
-		rec.delay_min = BPF_CORE_READ(ca, delay_min);
-		rec.epoch_start = BPF_CORE_READ(ca, epoch_start);
-		rec.ack_cnt = BPF_CORE_READ(ca, ack_cnt);
-		rec.tcp_cwnd = BPF_CORE_READ(ca, tcp_cwnd);
-		rec.round_start = BPF_CORE_READ(ca, round_start);
-		rec.end_seq = BPF_CORE_READ(ca, end_seq);
-		rec.last_ack = BPF_CORE_READ(ca, last_ack);
-		rec.curr_rtt = BPF_CORE_READ(ca, curr_rtt);
+		ca = tcp_ca(tp);
+		fill_header(&rec, sk, sport, dport);
+		rec.cnt = ca->cnt;
+		rec.last_max_cwnd = ca->last_max_cwnd;
+		rec.last_cwnd = ca->last_cwnd;
+		rec.last_time = ca->last_time;
+		rec.bic_origin_point = ca->bic_origin_point;
+		rec.bic_K = ca->bic_K;
+		rec.delay_min = ca->delay_min;
+		rec.epoch_start = ca->epoch_start;
+		rec.ack_cnt = ca->ack_cnt;
+		rec.tcp_cwnd = ca->tcp_cwnd;
+		rec.round_start = ca->round_start;
+		rec.end_seq = ca->end_seq;
+		rec.last_ack = ca->last_ack;
+		rec.curr_rtt = ca->curr_rtt;
 		submit(&CUBIC_EVENTS, RB_CUBIC, &rec);
 	}
 
@@ -502,11 +512,16 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 
 /* ---- BBR (-a) ---------------------------------------------------------------------- */
 
-/* tcp_bbr is usually a module, fentry needs it loaded when the object is loaded */
+/*
+ * tcp_bbr is usually a module, fentry needs it loaded when the object is loaded. The
+ * struct bbr offsets are relocated against the module's BTF; the verifier only checks
+ * the loads against icsk_ca_priv in the vmlinux tcp_sock.
+ */
 static __always_inline int trace_bbr(struct sock *sk)
 {
-	struct bbr___tcbee *bbr = inet_csk_ca(sk);
 	struct bbr_trace_entry rec = {};
+	struct bbr___tcbee *bbr;
+	struct tcp_sock *tp;
 	__u16 sport, dport;
 
 	if (!sk) {
@@ -515,30 +530,34 @@ static __always_inline int trace_bbr(struct sock *sk)
 		count_error(RB_BBR);
 		return 0;
 	}
-	if (!sock_ports_filter(sk, RB_BBR, &sport, &dport))
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
 		return 0;
 	count_attempt(RB_BBR);
 
-	if (fill_header(&rec, sk)) {
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
 		count_error(RB_BBR);
 	} else {
-		rec.min_rtt_us = BPF_CORE_READ(bbr, min_rtt_us);
-		rec.min_rtt_stamp = BPF_CORE_READ(bbr, min_rtt_stamp);
-		rec.probe_rtt_done_stamp = BPF_CORE_READ(bbr, probe_rtt_done_stamp);
-		rec.rtt_cnt = BPF_CORE_READ(bbr, rtt_cnt);
-		rec.next_rtt_delivered = BPF_CORE_READ(bbr, next_rtt_delivered);
-		rec.cycle_mstamp = BPF_CORE_READ(bbr, cycle_mstamp);
+		bbr = tcp_ca(tp);
+		fill_header(&rec, sk, sport, dport);
+		rec.min_rtt_us = bbr->min_rtt_us;
+		rec.min_rtt_stamp = bbr->min_rtt_stamp;
+		rec.probe_rtt_done_stamp = bbr->probe_rtt_done_stamp;
+		rec.rtt_cnt = bbr->rtt_cnt;
+		rec.next_rtt_delivered = bbr->next_rtt_delivered;
+		rec.cycle_mstamp = bbr->cycle_mstamp;
 		/* Long-term bandwidth sampling only exists in BBRv1, 0 for BBRv3 and others */
 		if (bpf_core_field_exists(bbr->lt_bw))
-			rec.lt_bw = BPF_CORE_READ(bbr, lt_bw);
+			rec.lt_bw = bbr->lt_bw;
 		if (bpf_core_field_exists(bbr->lt_last_delivered))
-			rec.lt_last_delivered = BPF_CORE_READ(bbr, lt_last_delivered);
+			rec.lt_last_delivered = bbr->lt_last_delivered;
 		if (bpf_core_field_exists(bbr->lt_last_stamp))
-			rec.lt_last_stamp = BPF_CORE_READ(bbr, lt_last_stamp);
+			rec.lt_last_stamp = bbr->lt_last_stamp;
 		if (bpf_core_field_exists(bbr->lt_last_lost))
-			rec.lt_last_lost = BPF_CORE_READ(bbr, lt_last_lost);
-		rec.prior_cwnd = BPF_CORE_READ(bbr, prior_cwnd);
-		rec.full_bw = BPF_CORE_READ(bbr, full_bw);
+			rec.lt_last_lost = bbr->lt_last_lost;
+		rec.prior_cwnd = bbr->prior_cwnd;
+		rec.full_bw = bbr->full_bw;
 		submit(&BBR_EVENTS, RB_BBR, &rec);
 	}
 

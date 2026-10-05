@@ -44,12 +44,14 @@ struct bbr___tcbee {
 	u32 full_bw;
 } __attribute__((preserve_access_index));
 
-/* Congestion control private data of a socket, see inet_csk_ca() */
-static __always_inline void *inet_csk_ca(struct sock *sk)
+/*
+ * Congestion control private data of a socket, see inet_csk_ca(). The loads through the
+ * returned pointer are checked by the verifier against icsk_ca_priv (an array of u64) of
+ * the tcp_sock, which is why tp must come from bpf_skc_to_tcp_sock().
+ */
+static __always_inline void *tcp_ca(struct tcp_sock *tp)
 {
-	struct inet_connection_sock *icsk = (struct inet_connection_sock *)sk;
-
-	return (void *)icsk->icsk_ca_priv;
+	return (void *)tp->inet_conn.icsk_ca_priv;
 }
 
 #endif /* __TCBEE_CC_STRUCTS_H */

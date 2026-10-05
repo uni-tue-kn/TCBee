@@ -21,16 +21,25 @@ ASSERT_SOCK_HEADER(cwnd_trace_entry);
 ASSERT_SOCK_HEADER(cubic_trace_entry);
 ASSERT_SOCK_HEADER(bbr_trace_entry);
 
-/* Local port (skc_num) and remote port, both in host byte order */
-static __always_inline int sk_ports(struct sock *sk, __u16 *sport, __u16 *dport)
-{
-	__be16 be_dport;
-	int err;
+/*
+ * Socket fields are read with direct loads from the BTF typed fentry arguments, still
+ * CO-RE relocated. The JIT turns them into plain loads with an exception table entry,
+ * no helper call. A load that faults yields 0 instead of an error, so a record of a
+ * broken socket carries zeros and is still counted as handled; with a valid socket
+ * pointer from the hook this does not happen.
+ */
 
-	err = BPF_CORE_READ_INTO(sport, sk, __sk_common.skc_num);
-	err |= BPF_CORE_READ_INTO(&be_dport, sk, __sk_common.skc_dport);
-	*dport = bpf_ntohs(be_dport);
-	return err;
+/* Local port (skc_num) and remote port, both in host byte order */
+static __always_inline void sk_ports(struct sock *sk, __u16 *sport, __u16 *dport)
+{
+	*sport = sk->__sk_common.skc_num;
+	*dport = bpf_ntohs(sk->__sk_common.skc_dport);
+}
+
+/* The IPv6 socket addresses only exist with CONFIG_IPV6 */
+static __always_inline bool sk_has_v6(void)
+{
+	return bpf_core_field_exists(struct sock_common, skc_v6_daddr);
 }
 
 /*
@@ -41,12 +50,14 @@ static __always_inline void tuple_from_sk(struct ip_tuple *t, struct sock *sk, _
 					  __u16 dport)
 {
 	__builtin_memset(t, 0, sizeof(*t));
-	if (BPF_CORE_READ(sk, __sk_common.skc_family) == AF_INET6) {
-		BPF_CORE_READ_INTO(&t->src_ip, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-		BPF_CORE_READ_INTO(&t->dst_ip, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
+	if (sk->__sk_common.skc_family == AF_INET6) {
+		if (sk_has_v6()) {
+			__builtin_memcpy(t->src_ip, &sk->__sk_common.skc_v6_rcv_saddr, 16);
+			__builtin_memcpy(t->dst_ip, &sk->__sk_common.skc_v6_daddr, 16);
+		}
 	} else {
-		__be32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-		__be32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+		__be32 saddr = sk->__sk_common.skc_rcv_saddr;
+		__be32 daddr = sk->__sk_common.skc_daddr;
 
 		__builtin_memcpy(t->src_ip, &saddr, sizeof(saddr));
 		__builtin_memcpy(t->dst_ip, &daddr, sizeof(daddr));
@@ -128,21 +139,21 @@ static __always_inline void flow_track_sk(struct sock *sk, __u16 sport, __u16 dp
 
 /*
  * Fill the shared header of a socket based record: addr_v4 is the raw skc_addrpair,
- * sport is skc_num and dport is skc_dport in host byte order. Returns non-zero if a
- * kernel read failed.
+ * sport is skc_num and dport is skc_dport in host byte order, from sk_ports().
  */
-static __always_inline int fill_header(void *rec, struct sock *sk)
+static __always_inline void fill_header(void *rec, struct sock *sk, __u16 sport, __u16 dport)
 {
 	struct tcbee_sock_header *h = rec;
-	int err;
 
 	h->time = bpf_ktime_get_ns();
-	err = BPF_CORE_READ_INTO(&h->addr_v4, sk, __sk_common.skc_addrpair);
-	err |= BPF_CORE_READ_INTO(&h->src_v6, sk, __sk_common.skc_v6_rcv_saddr.in6_u.u6_addr8);
-	err |= BPF_CORE_READ_INTO(&h->dst_v6, sk, __sk_common.skc_v6_daddr.in6_u.u6_addr8);
-	err |= sk_ports(sk, &h->sport, &h->dport);
-	err |= BPF_CORE_READ_INTO(&h->family, sk, __sk_common.skc_family);
-	return err;
+	h->addr_v4 = sk->__sk_common.skc_addrpair;
+	if (sk_has_v6()) {
+		__builtin_memcpy(h->src_v6, &sk->__sk_common.skc_v6_rcv_saddr, 16);
+		__builtin_memcpy(h->dst_v6, &sk->__sk_common.skc_v6_daddr, 16);
+	}
+	h->sport = sport;
+	h->dport = dport;
+	h->family = sk->__sk_common.skc_family;
 }
 
 #endif /* __TCBEE_FLOW_H */
