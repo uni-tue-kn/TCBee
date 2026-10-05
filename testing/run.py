@@ -89,18 +89,18 @@ def rebuild():
         dirs.append(REPO_ROOT / "tcbee-live")
     if target in ("record", "all"):
         dirs.append(REPO_ROOT / "tcbee-record")
-    if target in ("process", "all"):
-        dirs.append(REPO_ROOT / "tcbee-process")
-    if target in ("viz", "all"):
-        dirs.append(REPO_ROOT / "tcbee-viz")
-    for d in dirs:
-        print(f"\nBuilding {d.name}...")
-        result = subprocess.run(
-            ["cargo", "build", "--release"],
-            cwd=d,
-        )
+    # tcbee-process and tcbee-viz are members of the cargo workspace in the repository root
+    # (one target/, DuckDB is compiled once): build them in one cargo call.
+    packages = [p for t, p in (("process", "tcbee-process"), ("viz", "tcbee-viz")) if target in (t, "all")]
+    builds = [(d.name, ["cargo", "build", "--release"], d) for d in dirs]
+    if packages:
+        flags = [flag for p in packages for flag in ("-p", p)]
+        builds.append((", ".join(packages), ["cargo", "build", "--release", *flags], REPO_ROOT))
+    for name, cmd, cwd in builds:
+        print(f"\nBuilding {name}...")
+        result = subprocess.run(cmd, cwd=cwd)
         if result.returncode != 0:
-            print(f"  Build failed for {d.name}.")
+            print(f"  Build failed for {name}.")
         else:
             print(f"  Done.")
 

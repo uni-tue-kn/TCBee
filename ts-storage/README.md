@@ -1,238 +1,168 @@
 <div align="center">
- <h2>ts-storage: TCP Flow Database Interface</h2>
+ <h2>ts-storage: TCP Flow Database</h2>
 
- ![image](https://img.shields.io/badge/licence-Apache%202.0-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/part%20of-TCBee-yellow)
+ ![image](https://img.shields.io/badge/licence-MIT-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/part%20of-TCBee-yellow)
 </div>
 
-Part of [TCBee](../README.md). A Rust library that provides a unified interface for reading and writing TCP flow data to either a SQLite or DuckDB database.
+Part of [TCBee](../README.md). A Rust library that reads and writes TCBee flow databases on SQLite or DuckDB behind one API. `tcbee-process` writes with it, `tcbee-viz` reads with it.
 
-- [Data Model](#data-model)
-- [Setup](#setup)
-- [Opening a Database](#opening-a-database)
-- [Example](#example)
-- [API Reference](#api-reference)
-  - [Flows](#flows)
-  - [Flow Attributes](#flow-attributes)
-  - [Time Series](#time-series)
-  - [Data Points](#data-points)
-- [Error Handling](#error-handling)
-- [Choosing a Backend](#choosing-a-backend)
+- [Database layout (schema version 2)](#database-layout-schema-version-2)
+- [Features and engines](#features-and-engines)
+- [Building without compiling DuckDB](#building-without-compiling-duckdb)
+- [Reading](#reading)
+- [Writing](#writing)
+- [Errors](#errors)
+- [Reading a database without this crate](#reading-a-database-without-this-crate)
+- [Tests](#tests)
 
-## Data Model
+## Database layout (schema version 2)
 
-<img src="doc/functions.png" alt="Data model" style="border-radius: 10px; border: 1px solid #000;"/>
+One table per recorded event type, one row per record, one typed column per field. The layout is the same on both engines; only the column types differ.
 
-A **Flow** represents a TCP connection, identified by its IP 5-tuple (source/destination address, source/destination port, protocol).
+| Table | Content |
+|---|---|
+| `meta(key, value)` | `schema_version` (`2`), `writer`, `trace_dir`, `created_at` |
+| `flows(id, src, dst, sport, dport, l4proto)` | one row per TCP flow (IP 5-tuple) |
+| `series(id, flow_id, kind, source, dir, name, value_type, tbl, col, n, t_min, t_max, v_min, v_max)` | catalog of all series with point count and bounds |
+| `ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6` | the recorded events, see below |
+| `derived_samples(series_id, ts, seq, v_int, v_float, v_bool, v_text)` | points of series created in the visualizer; one of the `v_*` columns is set |
 
-Each flow can have any number of **time series**, each holding measurements of a single typed metric over time. For example, a flow recorded with `-k`/`--kernel` will have separate time series for SEQ, ACK, cwnd, RTT, and so on.
+Every `ev_*` table starts with `flow_id`, `dir`, `ts` and `seq`, followed by one column per field of the record (`ev_sock.snd_cwnd`, `ev_tcp_probe."SND_CWND"`, ...). Column names are the series names TCBee has always used, with their original case, so quote them in SQL.
 
-A **time series** is typed at creation (`Int`, `Float`, `Boolean`, or `String`) and contains **data points**, each consisting of a timestamp (`f64`) and a value of the matching type.
+- `ts` is the recorder's `bpf_ktime_get_ns()` value in nanoseconds since boot, stored as an exact integer.
+- `dir` is 0 for sources without a direction (`tcp_probe`, `cubic`, `bbr`), 1 for send and 2 for receive files.
+- `seq` is the index of the record in its trace file. Ordering by `(ts, seq)` is stable; samples with equal timestamps are all kept.
+- A **series** is one column of one `(flow, source, dir)` group. `series.kind` is 0 for raw series and 1 for derived ones, `tbl` and `col` name the event table and column of a raw series, `n`, `t_min`, `t_max`, `v_min` and `v_max` describe its values, so bounds and counts need no scan. `value_type` is 0 bool, 1 u8, 2 u16, 3 u32, 4 u64, 5 i64, 6 f64, 7 text.
+- There are no foreign keys and no unique keys on event tables. DuckDB files have no indexes on them; SQLite files get one on `(flow_id, dir, ts, seq)` after the load.
+- Unsigned 64-bit columns (`pacing_rate`, `max_pacing_rate`, `SOCK_COOKIE`, ...) are stored as unsigned in DuckDB and as their two's complement `i64` bit pattern in SQLite, so SQLite shows `max_pacing_rate = u64::MAX` as `-1`. The read API of this crate converts back and saturates values above `i64::MAX` to `i64::MAX` on both engines.
+- Databases written by older TCBee versions (`time_series`, `time_series_data`) are not supported. Opening one fails with "reprocess the trace with tcbee-process".
 
-**Flow attributes** are optional string-keyed metadata attached to a flow, useful for storing computed values or annotations that do not have a time dimension.
+## Features and engines
 
-## Setup
+| Feature | Default | Effect |
+|---|---|---|
+| `sqlite` | yes | SQLite engine (`rusqlite`) |
+| `duckdb` | yes | DuckDB engine (`duckdb`, `libduckdb-sys`) |
+| `bundled` | no | compile the C libraries of the enabled engines into the binary |
 
-Add `ts_storage` as a dependency in your `Cargo.toml`:
+`tcbee-process` and `tcbee-viz` forward `sqlite`, `duckdb` and `bundled` as features of their own. Opening or creating a file of an engine that is not built in returns `StoreError::EngineDisabled`. The engine of an existing file is detected from its first bytes, not from the file name.
 
 ```toml
 [dependencies]
+# both engines
 ts_storage = { path = "../ts-storage" }
+# SQLite only: libduckdb-sys is never compiled
+ts_storage = { path = "../ts-storage", default-features = false, features = ["sqlite"] }
 ```
 
-Both SQLite and DuckDB backends are compiled by default. SQLite is bundled. DuckDB requires a system installation of `libduckdb` — download the matching version from the [DuckDB releases page](https://github.com/duckdb/duckdb/releases).
+The SQLite and DuckDB C libraries come from the system unless `bundled` is on:
 
-## Opening a Database
+- Without `bundled`, `rusqlite` links `libsqlite3` and `libduckdb-sys` links `libduckdb` from the system. Use a libduckdb of the same version as the `duckdb` crate in `Cargo.lock` (crate `1.10506.x` is DuckDB 1.5.6).
+- With `bundled`, both are compiled from source (DuckDB takes about ten minutes). The release builds use it.
 
-Use `database_factory` to open or create a database file. The returned value implements `TSDBInterface`.
+## Building without compiling DuckDB
 
-```rust
-use ts_storage::{database_factory, DBBackend};
+DuckDB takes long to compile. Use `--no-default-features --features sqlite` to leave it out, and see the root README, [Building without waiting for DuckDB](../README.md#building-without-waiting-for-duckdb), for sharing one build between the crates and for linking a system libduckdb.
 
-// DuckDB (recommended for analysis)
-let db = database_factory(DBBackend::DuckDB("flows.duck".into()))?;
-
-// SQLite
-let db = database_factory(DBBackend::SQLite("flows.sqlite".into()))?;
-```
-
-The path is created if it does not exist. Tables are set up automatically on first open.
-
-## Example
-
-The following records two data points for a single flow and reads them back.
+## Reading
 
 ```rust
-use std::net::IpAddr;
-use ts_storage::{database_factory, DBBackend, DataPoint, DataValue, IpTuple};
+let store = ts_storage::open(Path::new("flows.duck"))?;   // Box<dyn Store>
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = database_factory(DBBackend::DuckDB("flows.duck".into()))?;
-
-    // Register a flow
-    let tuple = IpTuple {
-        src: "10.0.0.1".parse::<IpAddr>()?,
-        dst: "10.0.0.2".parse::<IpAddr>()?,
-        sport: 12345,
-        dport: 5001,
-        l4proto: 6,
-    };
-    let flow = db.create_flow(&tuple)?;
-
-    // Create a typed time series for the congestion window
-    let cwnd = db.create_time_series(&flow, "snd_cwnd", DataValue::Int(0))?;
-
-    // Insert individual points
-    db.insert_data_point(&cwnd, &DataPoint { timestamp: 0.0,  value: DataValue::Int(10) })?;
-    db.insert_data_point(&cwnd, &DataPoint { timestamp: 0.05, value: DataValue::Int(12) })?;
-
-    // Or insert in bulk (much faster for large recordings)
-    let points: Vec<DataPoint> = (0..1000)
-        .map(|i| DataPoint {
-            timestamp: i as f64 * 0.001,
-            value: DataValue::Int(10 + i),
-        })
-        .collect();
-    db.insert_multiple_points(&cwnd, &points)?;
-
-    // Iterate over all points
-    for point in db.get_data_points(&cwnd)? {
-        println!("{:.3}s  {}", point.timestamp, point.value.as_string());
+for flow in store.flows()? {                              // Vec<Flow>
+    for s in store.series(flow.id)? {                     // Vec<SeriesInfo>
+        println!("{} {} {:?}: {} points", flow.id, s.name, s.dir, s.n);
+        // Points ordered by (ts, seq); the range is optional, inclusive, in f64 ns.
+        store.for_each_point(&s, Some((0.0, 5e6)), &mut |p: DataPoint| {
+            println!("{} ns  {}", p.timestamp, p.value.as_string());
+        })?;
     }
-
-    // Query a time window
-    for point in db.get_data_points_in_range(&cwnd, 0.2, 0.5)? {
-        println!("{:.3}s  {}", point.timestamp, point.value.as_string());
-    }
-
-    // Get the time and value range without reading all points
-    let bounds = db.get_time_series_bounds(&cwnd)?;
-    println!(
-        "t: {:.3} to {:.3},  cwnd min/max: {} / {}",
-        bounds.xmin,
-        bounds.xmax,
-        bounds.ymin.as_ref().map(|v| v.as_string()).unwrap_or_default(),
-        bounds.ymax.as_ref().map(|v| v.as_string()).unwrap_or_default(),
-    );
-
-    Ok(())
 }
 ```
 
-## API Reference
+`Store` (`Box<dyn Store>` is not `Send`):
 
-All methods return `Result<_, TSDBError>`.
+| Method | |
+|---|---|
+| `engine()` | `Engine::Sqlite` or `Engine::DuckDb` |
+| `flows()`, `flow(id)` | flows of the file |
+| `series(flow_id)`, `series_by_id(id)` | catalog rows (`SeriesInfo`) with `n`, `t_min`, `t_max`, `v_min`, `v_max` |
+| `for_each_point(&series, range, callback)` | stream the points of a raw or derived series |
+| `create_derived(flow_id, name, kind, points)` | add a derived series (`ValueKind::{Int, Float, Bool, String}`) |
+| `replace_derived(&existing, points)` | replace the points of a derived series in one transaction |
+| `delete_derived(&series)` | delete a derived series |
 
-### Flows
+Only derived series can be changed or deleted; raw series are read-only (`StoreError::NotDerived`). `open` checks `meta.schema_version` and returns `StoreError::UnsupportedSchema` for anything but 2.
 
-```rust
-// Create a flow from an IP 5-tuple (insert-or-fail if it already exists)
-let flow = db.create_flow(&tuple)?;
+## Writing
 
-// Look up an existing flow
-let flow = db.get_flow(&tuple)?;          // Option<Flow>
-let flow = db.get_flow_by_id(id)?;        // Option<Flow>
-
-// Iterate over all flows in the database
-for flow in db.list_flows()? { ... }
-
-// Remove a flow and all its time series
-db.delete_flow(&flow)?;
-```
-
-### Flow Attributes
-
-Key-value metadata stored per flow. Values can be any `DataValue` variant.
+A database is written in one pass by an `IngestSession`. Event tables are defined as `static` Rust data, filled in column-wise batches, and the catalog (flows, series, meta) is written at the end. The data goes to `<path>.partial`, which is renamed to `path` by `finish`. A session that is dropped or fails leaves no file behind. `create` fails with `StoreError::Exists` if the file exists, unless `CreateOptions { force: true }`.
 
 ```rust
-use ts_storage::FlowAttribute;
+static CWND: EventTable = EventTable {
+    source: "cwnd", // the table is called ev_cwnd
+    columns: &[Column { name: "snd_cwnd", ty: ColType::U32 }],
+};
 
-db.add_flow_attribute(&flow, &FlowAttribute {
-    name: "algorithm".into(),
-    value: DataValue::String("BBR".into()),
+let session = ts_storage::create(Engine::DuckDb, path, CreateOptions { force: true })?;
+session.create_tables(&[&CWND])?;
+
+let flow = Flow::new(1, IpTuple { src, dst, sport: 12345, dport: 5001, l4proto: 6 });
+
+let mut writer = session.writer()?;        // one per thread; writers are not Send
+let mut stats = StatsAccumulator::new();   // feeds the series table; merge() combines threads
+let mut batch = EventBatch::new(&CWND, 1000);
+for i in 0..1000i64 {
+    // flow id, direction, timestamp in ns, index of the record in its trace file
+    batch.push_header(flow.id, Dir::Send, 1_000_000 * i, i);
+    batch.u32(0).push(10 + i as u32);      // column 0 of CWND
+}
+stats.observe(&batch)?;
+writer.write(batch)?;
+writer.close()?;
+
+session.finish(Catalog {
+    series: stats.into_series(1),          // first series id
+    flows: vec![flow],
+    meta: vec![("writer".into(), "my-tool".into())],
 })?;
-
-// Update or create
-db.set_flow_attribute(&flow, &FlowAttribute {
-    name: "algorithm".into(),
-    value: DataValue::String("CUBIC".into()),
-})?;
-
-let attr = db.get_flow_attribute(&flow, "algorithm")?;
-println!("{}", attr.value.as_string());
-
-for attr in db.list_flow_attributes(&flow)? { ... }
-
-db.delete_flow_attribute(&flow, "algorithm")?;
 ```
 
-### Time Series
+Batches are validated (equal column lengths, no NaN in `f64` columns) before they are written. `tcbee-process` is the reference user: it keeps one writer and one `StatsAccumulator` per worker thread.
 
-A time series belongs to a flow and holds a sequence of data points all of the same type. The type is set at creation and cannot be changed. Pass any `DataValue` as the `ts_type` argument; only its variant matters, not its value.
+## Errors
 
-```rust
-// Create
-let rtt = db.create_time_series(&flow, "rtt_us", DataValue::Int(0))?;
-let loss = db.create_time_series(&flow, "loss_rate", DataValue::Float(0.0))?;
+All fallible calls return `StoreError`:
 
-// List all series for a flow
-for ts in db.list_time_series(&flow)? { ... }
+| Variant | When |
+|---|---|
+| `Sqlite`, `DuckDb`, `Io` | errors of the driver or the file system |
+| `UnsupportedSchema` | the file has a schema version other than 2 (or none) |
+| `EngineDisabled` | the file needs an engine that is not built in |
+| `UnknownEngine` | the file is neither SQLite nor DuckDB |
+| `Exists` | `create` without `force` on an existing file |
+| `NotDerived` | change or delete of a raw series |
+| `NotFound` | a series that must exist does not |
+| `TypeMismatch` | values do not fit the series or table (also invalid batches) |
+| `Corrupt` | the file holds a code or value this crate never writes |
+| `WriterGone` | the writer thread of an engine has died |
 
-// Look up by ID
-let ts = db.get_time_series_by_id(id)?;    // Option<TimeSeries>
+## Reading a database without this crate
 
-// Get time range and min/max value without scanning all points
-// ymin/ymax are None for Boolean and String series
-let bounds = db.get_time_series_bounds(&rtt)?;
+Both engines produce plain files, so any client works; [`examples/db`](../examples/db/) has Python scripts for SQLite and DuckDB. For example, the send-side congestion window of a flow:
 
-// Get the combined time range across all series in a flow
-let bounds = db.get_flow_bounds(&flow)?;
-
-// Remove a series and all its data points
-db.delete_time_series(&flow, &rtt)?;
+```sql
+SELECT ts, snd_cwnd FROM ev_sock WHERE flow_id = 3 AND dir = 1 ORDER BY ts, seq;
 ```
 
-### Data Points
+Flow ids are assigned during processing and change between runs; look them up in `flows`.
 
-```rust
-// Single insert
-db.insert_data_point(&rtt, &DataPoint {
-    timestamp: 1.234,
-    value: DataValue::Int(4200),
-})?;
+## Tests
 
-// Batch insert (preferred for large datasets)
-db.insert_multiple_points(&rtt, &points)?;
-
-// Read all points
-for dp in db.get_data_points(&rtt)? { ... }
-
-// Read a time window [t_start, t_end]
-for dp in db.get_data_points_in_range(&rtt, 1.0, 5.0)? { ... }
-
-// Count without fetching
-let n = db.get_data_points_count(&rtt)?;
+```bash
+cargo test -p ts_storage                                          # both engines
+cargo test -p ts_storage --no-default-features --features sqlite  # DuckDB tests are not built
+cargo test -p ts_storage --no-default-features --features duckdb
 ```
 
-*Note: the value type of each `DataPoint` must match the type the series was created with, otherwise `insert_data_point` returns `TSDBError::DataPointTypeMismatchError`.*
-
-## Error Handling
-
-All errors are variants of `TSDBError` (from `ts_storage::error`):
-
-| Variant | When it occurs |
-|---------|----------------|
-| `SetupError` | Database tables could not be created on open |
-| `NoAttributeError` | `get_flow_attribute` called for a name that does not exist |
-| `DataPointTypeMismatchError` | Inserting a point whose type differs from the series type |
-| `TimeSeriesNotFoundError` | Series ID does not exist in the database |
-| `TimeSeriesNoValue` | `get_time_series_bounds` called on an empty series |
-| `SqliteError` / `DuckDBError` | Propagated driver errors |
-
-## Choosing a Backend
-
-Both backends implement the same `TSDBInterface` and produce files that can be opened with any compatible SQLite or DuckDB client.
-
-- **SQLite**: lower memory use, single-writer, good for smaller recordings or when tooling for DuckDB is not available.
-- **DuckDB**: columnar storage, faster analytical queries, better throughput for bulk inserts. Recommended for recordings with many flows or long durations.
-
-The database file extension (`.sqlite` / `.duck`) is just a convention; the backend is selected by the `DBBackend` variant, not the filename.
+`tests/contract` runs every case on each enabled engine against the public API, plus a script that must give identical results on both.

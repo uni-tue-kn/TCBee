@@ -1,242 +1,185 @@
 #!/usr/bin/env python3
 """
-Plots TCP congestion window (CWND) over time from the TCBee SQLite database.
+Plots the congestion window of a flow from a database written by tcbee-process (schema version 2).
+
+The values come straight from the event tables: `ev_sock.snd_cwnd` (send side) and
+`ev_tcp_probe.SND_CWND`. Any other column of an event table can be plotted with
+--series <source>.<column>, for example sock.snd_ssthresh or tcp_probe.SRTT.
+
+Works on SQLite files with the standard library. DuckDB files need `pip install duckdb`.
+Plotting needs matplotlib.
 
 Usage:
-    ./plot_cwnd.py <database.sqlite> [flow-id] [--series <name>]
-
-If flow-id is not provided, lists available flows.
-Default series is 'tcp_cwnd', but you can specify others like 'last_max_cwnd', 'cnt', etc.
+    ./plot_cwnd.py <database> [flow-id] [--series sock.snd_cwnd,tcp_probe.SND_CWND]
+                   [--dir send|recv] [--output plot.png]
 """
 
 import sqlite3
 import sys
 from pathlib import Path
 
-try:
-    import matplotlib.pyplot as plt
-except ImportError:
-    print("Error: matplotlib is required for plotting.", file=sys.stderr)
-    print("Install with: pip install matplotlib", file=sys.stderr)
-    sys.exit(1)
+DEFAULT_SERIES = ["sock.snd_cwnd", "tcp_probe.SND_CWND"]
+DIRS = {"none": 0, "send": 1, "recv": 2}
 
 
-def swap_port_bytes(port: int) -> int:
-    """Swap bytes in port number (convert between network and host byte order)."""
-    return ((port & 0xFF) << 8) | ((port >> 8) & 0xFF)
+def connect(path: Path):
+    """Opens a SQLite or DuckDB file, whichever it is (read from the file header)."""
+    with open(path, "rb") as f:
+        header = f.read(16)
+    if header.startswith(b"SQLite format 3\0"):
+        return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    if header[8:12] == b"DUCK":
+        try:
+            import duckdb
+        except ImportError:
+            sys.exit("Error: reading DuckDB files needs the duckdb package (pip install duckdb)")
+        return duckdb.connect(str(path), read_only=True)
+    sys.exit(f"Error: {path} is neither a SQLite nor a DuckDB file")
 
 
-def get_flows(db_path: Path):
-    """Get all flows from database."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+def check_schema(db, path: Path):
+    try:
+        version = db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    except Exception:
+        version = None
+    if version is None or version[0] != "2":
+        sys.exit(
+            f"Error: {path} is not a schema version 2 database; "
+            "reprocess the recording with tcbee-process"
+        )
 
-    cursor.execute("""
-        SELECT
-            f.id, f.src, f.dst, f.sport, f.dport, f.l4proto,
-            COUNT(DISTINCT ts.time_series_id) as series_count
-        FROM flows f
-        LEFT JOIN time_series ts ON ts.flow_id = f.id
-        GROUP BY f.id
+
+def get_flows(db):
+    return db.execute(
+        """
+        SELECT f.id, f.src, f.dst, f.sport, f.dport, COUNT(s.id)
+        FROM flows f LEFT JOIN series s ON s.flow_id = f.id
+        GROUP BY f.id, f.src, f.dst, f.sport, f.dport
         ORDER BY f.id
-    """)
-
-    flows = []
-    for row in cursor.fetchall():
-        sport = swap_port_bytes(row['sport'])
-        dport = swap_port_bytes(row['dport'])
-        flows.append({
-            'id': row['id'],
-            'src': row['src'],
-            'dst': row['dst'],
-            'sport': sport,
-            'dport': dport,
-            'l4proto': row['l4proto'],
-            'series_count': row['series_count']
-        })
-
-    conn.close()
-    return flows
+        """
+    ).fetchall()
 
 
-def get_time_series_names(db_path: Path, flow_id: int):
-    """Get available time series for a flow."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT DISTINCT name
-        FROM time_series
-        WHERE flow_id = ?
-        ORDER BY name
-    """, (flow_id,))
-
-    names = [row[0] for row in cursor.fetchall()]
-    conn.close()
-    return names
-
-
-def get_time_series_data(db_path: Path, flow_id: int, series_name: str):
-    """Get time series data for a specific flow and series."""
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT tsd.timestamp, tsd.value_integer, tsd.value_float
-        FROM time_series_data tsd
-        JOIN time_series ts ON ts.time_series_id = tsd.time_series_id
-        WHERE ts.flow_id = ? AND ts.name = ?
-        ORDER BY tsd.timestamp
-    """, (flow_id, series_name))
-
-    data = []
-    for row in cursor.fetchall():
-        timestamp = row[0]
-        # Use integer value if available, otherwise float
-        value = row[1] if row[1] != -1 else row[2]
-        data.append((timestamp, value))
-
-    conn.close()
-    return data
-
-
-def plot_time_series(flow_info: dict, series_data: dict, output_file: Path = None):
+def find_series(db, flow_id: int, spec: str, direction: str):
     """
-    Plot time series data for a flow.
-
-    Args:
-        flow_info: Dictionary with flow information
-        series_data: Dictionary mapping series names to (timestamp, value) lists
-        output_file: Optional path to save the plot
+    Looks up `<source>.<column>` in the series catalog of the flow and returns
+    (event table, column, dir code). The identifiers come from the catalog, never from the
+    command line, so they are safe to put into the query.
     """
-    if not series_data:
-        print("No data to plot!")
-        return
+    source, _, column = spec.partition(".")
+    rows = db.execute(
+        """
+        SELECT dir, tbl, col FROM series
+        WHERE flow_id = ? AND kind = 0 AND source = ? AND name = ?
+        """,
+        (flow_id, source, column),
+    ).fetchall()
+    if not rows:
+        return None
+    # Sources without a direction (tcp_probe, cubic, bbr) have one row with dir 0. For sock, cwnd,
+    # tcp4 and tcp6 there is one per direction.
+    wanted = DIRS[direction]
+    for d, tbl, col in rows:
+        if d == wanted or d == 0:
+            return tbl, col, d
+    return None
 
-    fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Convert to relative time (seconds from first data point)
-    first_time = None
-    for series_name, data in series_data.items():
-        if data:
-            times = [d[0] for d in data]
-            values = [d[1] for d in data]
-
-            if first_time is None:
-                first_time = times[0]
-
-            # Convert to seconds relative to first point
-            times_sec = [(t - first_time) for t in times]
-
-            # Plot with different styles
-            if series_name == 'tcp_cwnd':
-                ax.plot(times_sec, values, label=series_name, linewidth=1.5, color='blue')
-            elif series_name == 'last_max_cwnd':
-                ax.plot(times_sec, values, label=series_name,
-                       linewidth=1, linestyle='--', color='red', alpha=0.7)
-            else:
-                ax.plot(times_sec, values, label=series_name, linewidth=1, alpha=0.8)
-
-    flow_str = f"{flow_info['src']}:{flow_info['sport']} -> {flow_info['dst']}:{flow_info['dport']}"
-
-    ax.set_xlabel('Time (seconds)', fontsize=12)
-    ax.set_ylabel('Value', fontsize=12)
-    ax.set_title(f'TCP Flow Time Series (Flow #{flow_info["id"]})\n{flow_str}', fontsize=14)
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc='best')
-
-    plt.tight_layout()
-
-    if output_file:
-        plt.savefig(output_file, dpi=150)
-        print(f"Plot saved to: {output_file}")
-    else:
-        plt.show()
+def read_series(db, flow_id: int, tbl: str, col: str, d: int):
+    """Returns (ts, value) rows in time order; ts is in nanoseconds since boot."""
+    return db.execute(
+        f'SELECT ts, "{col}" FROM "{tbl}" WHERE flow_id = ? AND dir = ? ORDER BY ts, seq',
+        (flow_id, d),
+    ).fetchall()
 
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <database.sqlite> [flow-id] [--series <name1,name2,...>] [--output <file.png>]")
-        print("\nExamples:")
-        print(f"  {sys.argv[0]} db.sqlite                          # List flows")
-        print(f"  {sys.argv[0]} db.sqlite 1                        # Plot tcp_cwnd for flow 1")
-        print(f"  {sys.argv[0]} db.sqlite 1 --series tcp_cwnd,last_max_cwnd")
-        print(f"  {sys.argv[0]} db.sqlite 1 --output plot.png")
+        print(__doc__)
         sys.exit(1)
 
-    db_path = Path(sys.argv[1])
+    path = Path(sys.argv[1])
+    if not path.exists():
+        sys.exit(f"Error: database not found: {path}")
 
-    if not db_path.exists():
-        print(f"Error: Database not found: {db_path}", file=sys.stderr)
-        sys.exit(1)
-
-    # Parse arguments
     flow_id = None
-    series_names = ['tcp_cwnd']  # Default series
-    output_file = None
-
-    for i, arg in enumerate(sys.argv[2:], start=2):
+    series = DEFAULT_SERIES
+    direction = "send"
+    output = None
+    argv = sys.argv[2:]
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
         if arg.isdigit():
             flow_id = int(arg)
-        elif arg == "--series" and i + 1 < len(sys.argv):
-            series_names = sys.argv[i + 1].split(',')
-        elif arg == "--output" and i + 1 < len(sys.argv):
-            output_file = Path(sys.argv[i + 1])
+        elif arg in ("--series", "--dir", "--output") and i + 1 < len(argv):
+            i += 1
+            if arg == "--series":
+                series = argv[i].split(",")
+            elif arg == "--dir":
+                direction = argv[i]
+            else:
+                output = Path(argv[i])
+        else:
+            sys.exit(f"Error: unknown argument {arg}")
+        i += 1
+    if direction not in ("send", "recv"):
+        sys.exit("Error: --dir is send or recv")
 
-    # Get flows
-    flows = get_flows(db_path)
+    db = connect(path)
+    check_schema(db, path)
+    flows = get_flows(db)
 
     if flow_id is None:
-        # List flows
-        print(f"Found {len(flows)} flows in database:\n")
-        print(f"{'ID':<5} {'Flow':<60} {'Series':<10}")
-        print("=" * 80)
+        print(f"Found {len(flows)} flows in {path}\n")
+        print(f"{'ID':<6} {'Flow':<56} {'Series':<8}")
+        print("=" * 72)
+        for fid, src, dst, sport, dport, n in flows:
+            print(f"{fid:<6} {f'{src}:{sport} -> {dst}:{dport}':<56} {n:<8}")
+        print(f"\nUsage: {sys.argv[0]} {path} <flow-id>")
+        return
 
-        for flow in flows:
-            flow_str = f"{flow['src']}:{flow['sport']} -> {flow['dst']}:{flow['dport']} (TCP)"
-            print(f"{flow['id']:<5} {flow_str:<60} {flow['series_count']:<10}")
+    flow = next((f for f in flows if f[0] == flow_id), None)
+    if flow is None:
+        sys.exit(f"Error: flow {flow_id} not found")
 
-        print(f"\nUsage: {sys.argv[0]} <database.sqlite> <flow-id> [--series <names>]")
-        sys.exit(0)
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        sys.exit("Error: matplotlib is required for plotting (pip install matplotlib)")
 
-    # Find the selected flow
-    selected_flow = next((f for f in flows if f['id'] == flow_id), None)
+    data = {}
+    for spec in series:
+        found = find_series(db, flow_id, spec, direction)
+        if found is None:
+            print(f"Warning: flow {flow_id} has no series {spec} ({direction})", file=sys.stderr)
+            continue
+        rows = read_series(db, flow_id, *found)
+        if rows:
+            data[spec] = rows
+            print(f"Loaded {len(rows)} values for {spec}")
+    if not data:
+        sys.exit("Error: nothing to plot")
 
-    if selected_flow is None:
-        print(f"Error: Flow ID {flow_id} not found in database", file=sys.stderr)
-        sys.exit(1)
+    # One time axis for all series: seconds since the earliest sample.
+    t0 = min(rows[0][0] for rows in data.values())
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for spec, rows in data.items():
+        ax.step([(t - t0) / 1e9 for t, _ in rows], [v for _, v in rows], where="post", label=spec)
 
-    # Get available series for this flow
-    available_series = get_time_series_names(db_path, flow_id)
+    _, src, dst, sport, dport, _ = flow
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Value")
+    ax.set_title(f"Flow {flow_id}: {src}:{sport} -> {dst}:{dport}")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best")
+    fig.tight_layout()
 
-    if not available_series:
-        print(f"Error: No time series data found for flow {flow_id}", file=sys.stderr)
-        sys.exit(1)
-
-    # Validate requested series
-    invalid_series = [s for s in series_names if s not in available_series]
-    if invalid_series:
-        print(f"Warning: Series not found: {', '.join(invalid_series)}", file=sys.stderr)
-        print(f"Available series: {', '.join(available_series)}", file=sys.stderr)
-        series_names = [s for s in series_names if s in available_series]
-
-    if not series_names:
-        print("Error: No valid series to plot", file=sys.stderr)
-        sys.exit(1)
-
-    # Fetch data for all requested series
-    series_data = {}
-    for series_name in series_names:
-        data = get_time_series_data(db_path, flow_id, series_name)
-        if data:
-            series_data[series_name] = data
-            print(f"Loaded {len(data)} data points for '{series_name}'")
-
-    flow_str = f"{selected_flow['src']}:{selected_flow['sport']} -> {selected_flow['dst']}:{selected_flow['dport']}"
-    print(f"\nPlotting flow #{flow_id}: {flow_str}")
-
-    plot_time_series(selected_flow, series_data, output_file)
+    if output:
+        fig.savefig(output, dpi=150)
+        print(f"Plot saved to {output}")
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":

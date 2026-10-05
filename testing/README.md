@@ -49,7 +49,7 @@ The interactive menu lets you pick the tool, congestion algorithm (CUBIC / BBR),
 
 - **tcbee-live** opens as a GUI window; the Mininet CLI stays in the terminal. Type `exit` to stop.
 - **tcbee-record** runs as a TUI in the current terminal. Quit with `q` or `Ctrl-C` to stop the topology.
-- **tcbee-full** first runs `tcbee-record` exactly like the record mode. Quit the recorder with `q` when you have captured enough data; the launcher then stops Mininet, runs `tcbee-process --duckdb` to create `/tmp/db.duck`, and opens `tcbee-viz /tmp/db.duck`.
+- **tcbee-full** first runs `tcbee-record` exactly like the record mode. Quit the recorder with `q` when you have captured enough data; the launcher then stops Mininet, runs `tcbee-process --duckdb --force` to create (or replace) `/tmp/db.duck`, and opens `tcbee-viz /tmp/db.duck`.
 
 In double-stream mode a second iperf3 flow starts 30 s after the first.
 
