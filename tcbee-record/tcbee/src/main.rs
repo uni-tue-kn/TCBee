@@ -260,7 +260,7 @@ fn main() -> anyhow::Result<()> {
         .algorithms(trace_algorithms)
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)
-        .writer_cpus(writer_cpus)
+        .writer_cpus(writer_cpus.clone())
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints
@@ -270,6 +270,7 @@ fn main() -> anyhow::Result<()> {
     let runtime = Builder::new_multi_thread()
         .worker_threads(cpus as usize)
         .thread_name("TCBee")
+        .on_thread_start(move || avoid_cpus(&writer_cpus))
         .enable_all()
         .build()?;
 
@@ -314,4 +315,31 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
     })
+}
+
+/// Keeps the calling thread off the CPUs the writer threads are pinned to, so that the
+/// control and UI threads don't take time from a spinning writer. Does nothing if no
+/// writer CPUs are set or they cover every CPU.
+fn avoid_cpus(writer_cpus: &[usize]) {
+    if writer_cpus.is_empty() {
+        return;
+    }
+    unsafe {
+        let mut current: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut current) != 0 {
+            return;
+        }
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        let mut any = false;
+        for cpu in 0..libc::CPU_SETSIZE as usize {
+            if libc::CPU_ISSET(cpu, &current) && !writer_cpus.contains(&cpu) {
+                libc::CPU_SET(cpu, &mut set);
+                any = true;
+            }
+        }
+        if any {
+            libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        }
+    }
 }
