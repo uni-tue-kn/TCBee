@@ -12,9 +12,8 @@ use libbpf_rs::{
 };
 use serde::Serialize;
 use tcbee_common::stats::{
-    slot, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RINGBUFS, SLOT_TCP_BYTES_RECEIVED, SLOT_TCP_BYTES_SENT,
-    STAT_ATTEMPTED, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+    RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RINGBUFS,     STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
 };
 
 use crate::{stats::Snapshot, writer::WriterReport};
@@ -57,8 +56,6 @@ pub struct Metrics {
     pub egress: u64,
     pub ingress_calls: u64,
     pub egress_calls: u64,
-    pub tcp_bytes_sent: u64,
-    pub tcp_bytes_received: u64,
     pub ringbufs: Vec<RingBufMetrics>,
     pub programs: Vec<ProgramStats>,
 }
@@ -71,11 +68,7 @@ impl Metrics {
         ringbuf_sizes: &[Option<u32>],
         programs: Vec<ProgramStats>,
     ) -> Metrics {
-        let attempts = |rbs: &[u32]| {
-            rbs.iter()
-                .map(|rb| snapshot.get(slot(*rb, STAT_ATTEMPTED)))
-                .sum()
-        };
+        let attempts = |rbs: &[u32]| rbs.iter().map(|rb| snapshot.invocations(*rb)).sum();
 
         let ringbufs: Vec<RingBufMetrics> = RINGBUFS
             .iter()
@@ -87,7 +80,7 @@ impl Metrics {
                     name,
                     file: report.map(|r| r.file.to_string_lossy().into_owned()),
                     size_bytes: ringbuf_sizes.get(rb as usize).copied().flatten(),
-                    attempted: snapshot.rb(rb, STAT_ATTEMPTED),
+                    attempted: snapshot.invocations(rb),
                     handled: snapshot.rb(rb, STAT_HANDLED),
                     dropped: snapshot.rb(rb, STAT_DROPPED),
                     error: snapshot.rb(rb, STAT_ERROR),
@@ -108,8 +101,6 @@ impl Metrics {
             egress: attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]),
             ingress_calls: attempts(&[RB_SOCK_RECV, RB_CWND_RECV]),
             egress_calls: attempts(&[RB_SOCK_SEND, RB_CWND_SEND]),
-            tcp_bytes_sent: snapshot.get(SLOT_TCP_BYTES_SENT),
-            tcp_bytes_received: snapshot.get(SLOT_TCP_BYTES_RECEIVED),
             ringbufs,
             programs,
         }

@@ -9,7 +9,7 @@
 #include "records.h"
 
 /* Mirrors tcbee_common::stats::STATS_LEN, see counters.h */
-#define TCBEE_STATS_LEN 54
+#define TCBEE_STATS_LEN 39
 #define TCBEE_MAX_FLOWS 100
 #define TCBEE_FILTER_MAX_ENTRIES 1024
 
@@ -42,7 +42,7 @@ RINGBUF(TCP_BAD_CSUM_QUEUE, RB_SMALL);
 RINGBUF(CUBIC_EVENTS, RB_SOCK);
 RINGBUF(BBR_EVENTS, RB_SOCK);
 
-/* Per ring buffer [attempted, handled, dropped, error] counters plus byte counters */
+/* Per ring buffer [handled, dropped, error] counters */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, TCBEE_STATS_LEN);

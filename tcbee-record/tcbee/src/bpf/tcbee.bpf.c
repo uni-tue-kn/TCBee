@@ -47,7 +47,6 @@ int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 
 	if (BPF_CORE_READ_INTO(&saddr, ctx, saddr) || BPF_CORE_READ_INTO(&daddr, ctx, daddr)) {
 		/* Cannot fill the record without the addresses */
-		count_attempt(RB_TCP_PROBE);
 		count_error(RB_TCP_PROBE);
 		return 0;
 	}
@@ -71,7 +70,6 @@ int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 			return 0;
 	}
 
-	count_attempt(RB_TCP_PROBE);
 	rec = reserve(&TCP_PROBE_QUEUE, RB_TCP_PROBE, rec);
 	if (rec) {
 		rec->time = bpf_ktime_get_ns();
@@ -116,7 +114,6 @@ int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 	    BPF_CORE_READ_INTO(&saddr_v6, ctx, saddr_v6) ||
 	    BPF_CORE_READ_INTO(&daddr_v6, ctx, daddr_v6)) {
 		/* Cannot fill the record without the addresses */
-		count_attempt(RB_RETRANSMIT_SYNACK);
 		count_error(RB_RETRANSMIT_SYNACK);
 		return 0;
 	}
@@ -138,7 +135,6 @@ int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 			return 0;
 	}
 
-	count_attempt(RB_RETRANSMIT_SYNACK);
 	rec = reserve(&TCP_RETRANSMIT_SYNACK_QUEUE, RB_RETRANSMIT_SYNACK, rec);
 	if (rec) {
 		rec->time = bpf_ktime_get_ns();
@@ -169,7 +165,6 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 
 	if (BPF_CORE_READ_INTO(&saddr, ctx, saddr) || BPF_CORE_READ_INTO(&daddr, ctx, daddr)) {
 		/* The filter cannot be evaluated without the event, count it as an error */
-		count_attempt(RB_BAD_CSUM);
 		count_error(RB_BAD_CSUM);
 		return 0;
 	}
@@ -199,7 +194,6 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 			return 0;
 	}
 
-	count_attempt(RB_BAD_CSUM);
 	rec = reserve(&TCP_BAD_CSUM_QUEUE, RB_BAD_CSUM, rec);
 	if (rec) {
 		rec->time = bpf_ktime_get_ns();
@@ -284,7 +278,7 @@ static __always_inline void *skb_header(struct __sk_buff *skb, __u32 off, void *
 
 /*
  * Every early return happens before the filter, so a packet that passes the filter is
- * always counted as attempted and then as handled or dropped. IPv6 extension headers
+ * always counted as handled or dropped. IPv6 extension headers
  * are not parsed, nexthdr must be TCP directly.
  */
 static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 rb4_id, void *rb6,
@@ -330,7 +324,6 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
 
-		count_attempt(rb4_id);
 		rec = reserve(rb4, rb4_id, rec);
 		if (rec) {
 			rec->time = bpf_ktime_get_ns();
@@ -369,7 +362,6 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
 
-		count_attempt(rb6_id);
 		rec = reserve(rb6, rb6_id, rec);
 		if (rec) {
 			rec->time = bpf_ktime_get_ns();
@@ -427,7 +419,6 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
-	count_attempt(rb);
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
@@ -443,7 +434,7 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 }
 
 static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbuf,
-				      __u32 rb, __u32 bytes_slot)
+				      __u32 rb)
 {
 	struct sock_trace_entry *rec;
 	struct tcp_sock *tp;
@@ -452,10 +443,6 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
-	count_attempt(rb);
-
-	/* Only this program writes the byte counter */
-	add_stat_owned(bytes_slot, skb->len, true);
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
@@ -501,14 +488,14 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 SEC("fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, SLOT_TCP_BYTES_SENT);
+	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND);
 }
 
 /* Only triggers in established state */
 SEC("fentry/tcp_rcv_established")
 int BPF_PROG(sock_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SLOT_TCP_BYTES_RECEIVED);
+	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV);
 }
 
 /* Lighter variants of the above that only record the cwnd */
@@ -536,7 +523,6 @@ static __always_inline int trace_cubic(struct sock *sk)
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
-	count_attempt(RB_CUBIC);
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
@@ -595,14 +581,12 @@ static __always_inline int trace_bbr(struct sock *sk)
 
 	if (!sk) {
 		/* The filter cannot be evaluated without the socket, count it as an error */
-		count_attempt(RB_BBR);
 		count_error(RB_BBR);
 		return 0;
 	}
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
-	count_attempt(RB_BBR);
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {

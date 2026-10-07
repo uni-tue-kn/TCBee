@@ -1,9 +1,9 @@
 //! Layout of the `STATS` per-CPU counter array shared by the eBPF programs and userspace.
 //!
-//! Every ring buffer owns four consecutive u64 slots. A probe invocation that passes the
-//! filter increments `STAT_ATTEMPTED` once and then exactly one of `STAT_HANDLED`
-//! (record submitted), `STAT_DROPPED` (ring buffer full) or `STAT_ERROR` (kernel read
-//! failed), so `attempted == handled + dropped + error` holds per ring buffer.
+//! Every ring buffer owns three consecutive u64 slots. A probe invocation that passes the
+//! filter increments exactly one of `STAT_HANDLED` (record submitted), `STAT_DROPPED`
+//! (ring buffer full) or `STAT_ERROR` (kernel read failed). The number of invocations
+//! is their sum.
 
 pub const RB_TCP4_EGRESS: u32 = 0;
 pub const RB_TCP4_INGRESS: u32 = 1;
@@ -20,16 +20,16 @@ pub const RB_CUBIC: u32 = 11;
 pub const RB_BBR: u32 = 12;
 pub const RB_COUNT: u32 = 13;
 
-pub const STAT_ATTEMPTED: u32 = 0;
-pub const STAT_HANDLED: u32 = 1;
-pub const STAT_DROPPED: u32 = 2;
-pub const STAT_ERROR: u32 = 3;
-pub const STATS_PER_RB: u32 = 4;
+pub const STAT_HANDLED: u32 = 0;
+pub const STAT_DROPPED: u32 = 1;
+pub const STAT_ERROR: u32 = 2;
+pub const STATS_PER_RB: u32 = 3;
+pub const STATS_LEN: u32 = RB_COUNT * STATS_PER_RB;
 
-/// Bytes seen by the `-k` probes after the filter (skb->len).
-pub const SLOT_TCP_BYTES_SENT: u32 = RB_COUNT * STATS_PER_RB;
-pub const SLOT_TCP_BYTES_RECEIVED: u32 = SLOT_TCP_BYTES_SENT + 1;
-pub const STATS_LEN: u32 = SLOT_TCP_BYTES_RECEIVED + 1;
+/// Slots whose sum is the number of probe invocations of a ring buffer
+pub const fn invocation_slots(rb: u32) -> [u32; 3] {
+    [slot(rb, STAT_HANDLED), slot(rb, STAT_DROPPED), slot(rb, STAT_ERROR)]
+}
 
 #[inline(always)]
 pub const fn slot(rb: u32, stat: u32) -> u32 {

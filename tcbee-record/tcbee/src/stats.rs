@@ -1,6 +1,6 @@
 use libbpf_rs::{MapCore, MapFlags, MapHandle};
 use tcbee_common::stats::{
-    slot, RB_COUNT, STATS_LEN, STATS_PER_RB, STAT_ATTEMPTED, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+    invocation_slots, slot, RB_COUNT, STATS_LEN, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
 };
 
 /// Reads the `STATS` per-CPU counter array of the eBPF programs.
@@ -15,14 +15,10 @@ impl Stats {
 
     /// Sums every counter slot over all CPUs.
     ///
-    /// Slots are read one by one while the probes keep counting. The attempted counters
-    /// are read last, so a live snapshot never shows more outcomes than attempts.
+    /// Slots are read one by one while the probes keep counting.
     pub fn snapshot(&self) -> libbpf_rs::Result<Snapshot> {
         let mut values = vec![0u64; STATS_LEN as usize];
-        let attempted =
-            |index: &u32| *index < slot(RB_COUNT, 0) && *index % STATS_PER_RB == STAT_ATTEMPTED;
-        let outcomes = (0..STATS_LEN).filter(|i| !attempted(i));
-        for index in outcomes.chain((0..STATS_LEN).filter(attempted)) {
+        for index in 0..STATS_LEN {
             let per_cpu = self
                 .map
                 .lookup_percpu(&index.to_ne_bytes(), MapFlags::ANY)?
@@ -72,7 +68,12 @@ impl Snapshot {
         self.total(STAT_ERROR)
     }
 
+    /// Probe invocations of one ring buffer: handled, dropped and failed events
+    pub fn invocations(&self, rb: u32) -> u64 {
+        self.sum(&invocation_slots(rb))
+    }
+
     pub fn attempted(&self) -> u64 {
-        self.total(STAT_ATTEMPTED)
+        (0..RB_COUNT).map(|rb| self.invocations(rb)).sum()
     }
 }

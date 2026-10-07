@@ -23,8 +23,6 @@ impl Status {
         event_rate: String,
         files_size: u64,
         file_rate: String,
-        bytes_received: String,
-        bytes_sent: String,
         border: Color,
     ) -> Vec<Paragraph<'_>> {
         let drop_style = match dropped {
@@ -75,22 +73,10 @@ impl Status {
                     .border_style(block_style)
                     .title("Write Speed"),
             ),
-            Paragraph::new(bytes_sent).style(value_style).block(
-                Block::bordered()
-                    .borders(Borders::BOTTOM)
-                    .border_style(block_style)
-                    .title("TCP Bytes Sent"),
-            ),
-            Paragraph::new(bytes_received).style(value_style).block(
-                Block::bordered()
-                    .borders(Borders::BOTTOM)
-                    .border_style(block_style)
-                    .title("TCP Bytes Received"),
-            ),
         ]
     }
 
     pub fn num_blocks(&self) -> usize {
-        8
+        6
     }
 }

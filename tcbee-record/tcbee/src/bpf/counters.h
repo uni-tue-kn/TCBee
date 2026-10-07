@@ -2,10 +2,9 @@
 /*
  * STATS counters, same slot layout as tcbee-common/src/stats.rs.
  *
- * A probe invocation that passes the filter calls count_attempt() once and then exactly
- * one of reserve() failing (dropped), commit() (handled) or count_error(), so
- * attempted == handled + dropped + error holds per ring buffer. Filtered out events
- * touch no counter.
+ * A probe invocation that passes the filter counts exactly one of reserve() failing
+ * (dropped), commit() (handled) or count_error(), so the invocations of a ring buffer are
+ * handled + dropped + error. Filtered out events touch no counter.
  */
 #ifndef __TCBEE_COUNTERS_H
 #define __TCBEE_COUNTERS_H
@@ -29,16 +28,12 @@
 #define RB_BBR 12
 #define RB_COUNT 13
 
-#define STAT_ATTEMPTED 0
-#define STAT_HANDLED 1
-#define STAT_DROPPED 2
-#define STAT_ERROR 3
-#define STATS_PER_RB 4
+#define STAT_HANDLED 0
+#define STAT_DROPPED 1
+#define STAT_ERROR 2
+#define STATS_PER_RB 3
 
-#define SLOT_TCP_BYTES_SENT (RB_COUNT * STATS_PER_RB)
-#define SLOT_TCP_BYTES_RECEIVED (SLOT_TCP_BYTES_SENT + 1)
-
-_Static_assert(SLOT_TCP_BYTES_RECEIVED + 1 == TCBEE_STATS_LEN, "STATS length");
+_Static_assert(RB_COUNT * STATS_PER_RB == TCBEE_STATS_LEN, "STATS length");
 
 /*
  * fentry and tracepoint programs only run with migration disabled, so a softirq can
@@ -102,11 +97,6 @@ static __always_inline void count(__u32 rb, __u32 stat)
 		add_stat_owned(slot, 1, !rb_tracepoint(rb));
 	else
 		add_stat(slot, 1);
-}
-
-static __always_inline void count_attempt(__u32 rb)
-{
-	count(rb, STAT_ATTEMPTED);
 }
 
 static __always_inline void count_error(__u32 rb)
