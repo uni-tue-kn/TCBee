@@ -147,7 +147,8 @@ static __always_inline void fill_header(void *rec, struct sock *sk, __u16 sport,
 
 	h->time = bpf_ktime_get_ns();
 	h->addr_v4 = sk->__sk_common.skc_addrpair;
-	if (sk_has_v6()) {
+	/* The record is zeroed, IPv4 flows keep zero v6 addresses */
+	if (sk->__sk_common.skc_family == AF_INET6 && sk_has_v6()) {
 		__builtin_memcpy(h->src_v6, &sk->__sk_common.skc_v6_rcv_saddr, 16);
 		__builtin_memcpy(h->dst_v6, &sk->__sk_common.skc_v6_daddr, 16);
 	}
