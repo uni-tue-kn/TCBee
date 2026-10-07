@@ -36,40 +36,39 @@ pub const fn slot(rb: u32, stat: u32) -> u32 {
     rb * STATS_PER_RB + stat
 }
 
-const MIB: u32 = 1 << 20;
+/// A ring buffer map of the eBPF object: an array with one ring buffer per CPU
+pub struct RingBuf {
+    /// Map name (the kernel shows the first 15 characters)
+    pub map: &'static str,
+    /// `--ringbuf-size` group
+    pub group: &'static str,
+    /// Default size of each CPU's ring buffer in bytes. A flow's events mostly land on one
+    /// or two CPUs, so a ring has to absorb a writer stall at a single CPU's event rate.
+    pub size_per_cpu: u32,
+}
 
-/// Default size of each CPU's ring buffer in bytes, indexed by `RB_*`. A flow's events mostly
-/// land on one or two CPUs, so a ring has to absorb a writer stall at a single CPU's event
-/// rate. IPv6 rings are smaller as they stay empty in most recordings.
-pub const RINGBUF_SIZES: [u32; RB_COUNT as usize] = [
-    16 * MIB, // tcp4 egress
-    16 * MIB, // tcp4 ingress
-    4 * MIB,  // tcp6 egress
-    4 * MIB,  // tcp6 ingress
-    16 * MIB, // sock send
-    16 * MIB, // sock recv
-    8 * MIB,  // cwnd send
-    8 * MIB,  // cwnd recv
-    4 * MIB,  // tcp_probe
-    MIB,      // retransmit synack
-    MIB,      // bad csum
-    8 * MIB,  // cubic
-    8 * MIB,  // bbr
-];
+const fn rb(map: &'static str, group: &'static str, mib: u32) -> RingBuf {
+    RingBuf {
+        map,
+        group,
+        size_per_cpu: mib << 20,
+    }
+}
 
-/// Ring buffer map names and the `--ringbuf-size` group they belong to, indexed by `RB_*`.
-pub const RINGBUFS: [(&str, &str); RB_COUNT as usize] = [
-    ("TCP4_PACKETS_EGRESS", "tcp4"),
-    ("TCP4_PACKETS_INGRESS", "tcp4"),
-    ("TCP6_PACKETS_EGRESS", "tcp6"),
-    ("TCP6_PACKETS_INGRESS", "tcp6"),
-    ("TCP_SEND_SOCK_EVENTS", "sock"),
-    ("TCP_RECV_SOCK_EVENTS", "sock"),
-    ("TCP_SEND_CWND_EVENTS", "cwnd"),
-    ("TCP_RECEIVE_CWND_EVENTS", "cwnd"),
-    ("TCP_PROBE_QUEUE", "tcp_probe"),
-    ("TCP_RETRANSMIT_SYNACK_QUEUE", "synack"),
-    ("TCP_BAD_CSUM_QUEUE", "bad_csum"),
-    ("CUBIC_EVENTS", "cubic"),
-    ("BBR_EVENTS", "bbr"),
+/// All ring buffer maps, indexed by `RB_*`. IPv6 rings are smaller as they stay empty in
+/// most recordings.
+pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
+    rb("TCP4_PACKETS_EGRESS", "tcp4", 16),
+    rb("TCP4_PACKETS_INGRESS", "tcp4", 16),
+    rb("TCP6_PACKETS_EGRESS", "tcp6", 4),
+    rb("TCP6_PACKETS_INGRESS", "tcp6", 4),
+    rb("TCP_SEND_SOCK_EVENTS", "sock", 16),
+    rb("TCP_RECV_SOCK_EVENTS", "sock", 16),
+    rb("TCP_SEND_CWND_EVENTS", "cwnd", 8),
+    rb("TCP_RECEIVE_CWND_EVENTS", "cwnd", 8),
+    rb("TCP_PROBE_QUEUE", "tcp_probe", 4),
+    rb("TCP_RETRANSMIT_SYNACK_QUEUE", "synack", 1),
+    rb("TCP_BAD_CSUM_QUEUE", "bad_csum", 1),
+    rb("CUBIC_EVENTS", "cubic", 8),
+    rb("BBR_EVENTS", "bbr", 8),
 ];

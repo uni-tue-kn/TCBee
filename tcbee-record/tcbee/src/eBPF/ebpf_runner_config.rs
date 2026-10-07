@@ -3,10 +3,7 @@ use std::net::IpAddr;
 use anyhow::anyhow;
 
 use crate::writer::PollMode;
-use tcbee_common::{
-    filter::*,
-    stats::{RINGBUFS, RINGBUF_SIZES},
-};
+use tcbee_common::{filter::*, stats::RINGBUFS};
 
 #[derive(Default, Debug, Clone)]
 pub struct FilterConfig {
@@ -99,7 +96,8 @@ pub fn parse_ringbuf_sizes(arg: &str) -> anyhow::Result<Vec<(&'static str, u32)>
     let mut sizes: Vec<(&'static str, u32)> = Vec::new();
     let mut set = |selector: Option<&str>, size: u64| -> anyhow::Result<()> {
         let mut matched = false;
-        for (name, group) in RINGBUFS {
+        for ringbuf in &RINGBUFS {
+            let (name, group) = (ringbuf.map, ringbuf.group);
             let selected = match selector {
                 None => true,
                 Some(sel) => sel.eq_ignore_ascii_case(group) || sel.eq_ignore_ascii_case(name),
@@ -111,7 +109,7 @@ pub fn parse_ringbuf_sizes(arg: &str) -> anyhow::Result<Vec<(&'static str, u32)>
             }
         }
         if !matched {
-            let mut groups: Vec<&str> = RINGBUFS.iter().map(|(_, group)| *group).collect();
+            let mut groups: Vec<&str> = RINGBUFS.iter().map(|ringbuf| ringbuf.group).collect();
             groups.dedup();
             return Err(anyhow!(
                 "Unknown ring buffer '{}', use one of: {}",
@@ -262,11 +260,11 @@ impl EbpfRunnerConfig {
 
     /// Size of each CPU's ring buffer `rb`: from `--ringbuf-size` or the default
     pub fn ringbuf_size(&self, rb: u32) -> u32 {
-        let name = RINGBUFS[rb as usize].0;
+        let ringbuf = &RINGBUFS[rb as usize];
         self.ringbuf_sizes
             .iter()
-            .find(|(n, _)| *n == name)
-            .map_or(RINGBUF_SIZES[rb as usize], |(_, size)| *size)
+            .find(|(name, _)| *name == ringbuf.map)
+            .map_or(ringbuf.size_per_cpu, |(_, size)| *size)
     }
 
     pub fn watcher_config(&self) -> EbpfWatcherConfig {
