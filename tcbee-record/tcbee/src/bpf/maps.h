@@ -14,28 +14,33 @@
 #define TCBEE_FILTER_MAX_ENTRIES 1024
 
 /*
- * Default ring buffer sizes in bytes, as many records as before. libbpf rounds them up to
- * a power-of-two multiple of the page size. --ringbuf-size overrides them before load.
+ * Default ring buffer sizes in bytes. The kernel allocates the pages when the map is
+ * created, so these are real memory. They have to absorb writer stalls (file growth,
+ * writeback). --ringbuf-size overrides them before load.
  */
-#define RINGBUF(name, record, count)                                                       \
+#define RINGBUF(name, bytes)                                                               \
 	struct {                                                                           \
 		__uint(type, BPF_MAP_TYPE_RINGBUF);                                        \
-		__uint(max_entries, sizeof(struct record) * (count));                      \
+		__uint(max_entries, bytes);                                                \
 	} name SEC(".maps")
 
-RINGBUF(TCP4_PACKETS_EGRESS, tcp4_packet_trace, 10000);
-RINGBUF(TCP4_PACKETS_INGRESS, tcp4_packet_trace, 10000);
-RINGBUF(TCP6_PACKETS_EGRESS, tcp6_packet_trace, 10000);
-RINGBUF(TCP6_PACKETS_INGRESS, tcp6_packet_trace, 10000);
-RINGBUF(TCP_SEND_SOCK_EVENTS, sock_trace_entry, 100000);
-RINGBUF(TCP_RECV_SOCK_EVENTS, sock_trace_entry, 100000);
-RINGBUF(TCP_SEND_CWND_EVENTS, cwnd_trace_entry, 100000);
-RINGBUF(TCP_RECEIVE_CWND_EVENTS, cwnd_trace_entry, 100000);
-RINGBUF(TCP_PROBE_QUEUE, tcp_probe_entry, 10000);
-RINGBUF(TCP_RETRANSMIT_SYNACK_QUEUE, tcp_retransmit_synack_entry, 10000);
-RINGBUF(TCP_BAD_CSUM_QUEUE, tcp_bad_csum_entry, 10000);
-RINGBUF(CUBIC_EVENTS, cubic_trace_entry, 100000);
-RINGBUF(BBR_EVENTS, bbr_trace_entry, 100000);
+#define RB_SMALL (4 << 20)
+#define RB_PACKETS (32 << 20)
+#define RB_SOCK (64 << 20)
+
+RINGBUF(TCP4_PACKETS_EGRESS, RB_PACKETS);
+RINGBUF(TCP4_PACKETS_INGRESS, RB_PACKETS);
+RINGBUF(TCP6_PACKETS_EGRESS, RB_PACKETS);
+RINGBUF(TCP6_PACKETS_INGRESS, RB_PACKETS);
+RINGBUF(TCP_SEND_SOCK_EVENTS, RB_SOCK);
+RINGBUF(TCP_RECV_SOCK_EVENTS, RB_SOCK);
+RINGBUF(TCP_SEND_CWND_EVENTS, RB_SOCK);
+RINGBUF(TCP_RECEIVE_CWND_EVENTS, RB_SOCK);
+RINGBUF(TCP_PROBE_QUEUE, RB_SMALL);
+RINGBUF(TCP_RETRANSMIT_SYNACK_QUEUE, RB_SMALL);
+RINGBUF(TCP_BAD_CSUM_QUEUE, RB_SMALL);
+RINGBUF(CUBIC_EVENTS, RB_SOCK);
+RINGBUF(BBR_EVENTS, RB_SOCK);
 
 /* Per ring buffer [attempted, handled, dropped, error] counters plus byte counters */
 struct {
