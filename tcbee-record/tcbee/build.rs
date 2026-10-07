@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf};
 
-use anyhow::{Context as _, anyhow};
+use anyhow::{anyhow, Context as _};
 use libbpf_cargo::SkeletonBuilder;
 
 const BPF_SRC: &str = "src/bpf/tcbee.bpf.c";
@@ -15,7 +15,10 @@ fn build_skeleton() -> anyhow::Result<()> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").context("CARGO_CFG_TARGET_ARCH not set")?;
     let vmlinux = PathBuf::from("src/bpf/vmlinux").join(&arch);
     if !vmlinux.join("vmlinux.h").exists() {
-        return Err(anyhow!("no vendored vmlinux.h for {arch} in {}", vmlinux.display()));
+        return Err(anyhow!(
+            "no vendored vmlinux.h for {arch} in {}",
+            vmlinux.display()
+        ));
     }
 
     SkeletonBuilder::new()
