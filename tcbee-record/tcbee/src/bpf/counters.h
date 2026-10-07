@@ -38,9 +38,8 @@ _Static_assert(RB_COUNT * STATS_PER_RB == TCBEE_STATS_LEN, "STATS length");
 /*
  * fentry and tracepoint programs only run with migration disabled, so a softirq can
  * interrupt an update on the same CPU. The atomic add keeps per-CPU increments exact.
- * A relaxed add whose result is unused compiles to a plain BPF_XADD (lock add), which
- * every kernel supports; __sync_fetch_and_add() becomes a BPF_FETCH atomic with the
- * default -mcpu=v3 of newer clang, which needs kernel 5.12.
+ * A relaxed add whose result is unused compiles to BPF_XADD (lock add), cheaper than the
+ * BPF_FETCH atomic of __sync_fetch_and_add().
  */
 static __always_inline void add_stat(__u32 slot, __u64 value)
 {

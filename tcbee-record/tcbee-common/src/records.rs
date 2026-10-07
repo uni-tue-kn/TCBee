@@ -18,5 +18,5 @@ const _: () = assert!(size_of::<tcp_probe_entry>() == 128);
 const _: () = assert!(size_of::<tcp_retransmit_synack_entry>() == 64);
 const _: () = assert!(size_of::<tcp_bad_csum_entry>() == 24);
 const _: () = assert!(size_of::<IpTuple>() == 38);
-const _: () = assert!(size_of::<SeqKey>() == 40);
+const _: () = assert!(size_of::<hook_seq_key>() == 40);
 const _: () = assert!(size_of::<FilterIp>() == 16);

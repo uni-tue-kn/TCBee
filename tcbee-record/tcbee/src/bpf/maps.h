@@ -60,16 +60,17 @@ struct {
  * hook_seq counters, see hook_seq.h. Shared by all CPUs: the counter of a flow direction at a
  * hook has to be one. Entries are only ever inserted with BPF_NOEXIST and never updated or
  * deleted while programs run, an update would replace the element under a concurrent
- * fetch-add. Userspace can raise max_entries before load.
+ * fetch-add. Entries are never freed either, every flow direction a probe records takes
+ * one per hook for the whole recording.
  */
-#define TCBEE_SEQ_ENTRIES 262144
+#define TCBEE_HOOK_SEQ_ENTRIES 262144
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, TCBEE_SEQ_ENTRIES);
-	__type(key, struct seq_key);
+	__uint(max_entries, TCBEE_HOOK_SEQ_ENTRIES);
+	__type(key, struct hook_seq_key);
 	__type(value, __u64);
-} SEQ SEC(".maps");
+} HOOK_SEQ SEC(".maps");
 
 /* Flows seen by any probe, key and value are the canonical tuple */
 struct {

@@ -18,16 +18,12 @@ const RECORDS: &[&str] = &[
     "tcp_retransmit_synack_entry",
     "tcp_bad_csum_entry",
     "ip_tuple",
-    "seq_key",
+    "hook_seq_key",
     "filter_ip",
 ];
 
 /// C names that keep their historical Rust names
-const RENAMES: &[(&str, &str)] = &[
-    ("ip_tuple", "IpTuple"),
-    ("seq_key", "SeqKey"),
-    ("filter_ip", "FilterIp"),
-];
+const RENAMES: &[(&str, &str)] = &[("ip_tuple", "IpTuple"), ("filter_ip", "FilterIp")];
 
 /// Adds the serde derives used to write the records to the trace files
 #[derive(Debug)]

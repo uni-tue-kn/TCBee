@@ -7,9 +7,9 @@
  * types below define the on-disk format read by tcbee-process. Do not reorder.
  *
  * Every record starts with time and hook_seq. hook_seq numbers the events of one flow
- * direction at one hook (ring buffer) from 1, see hook_seq.h. The records of a ring buffer come
- * from several CPUs, so their order in the file is not their order at the hook; sorting
- * one flow's records of one file by hook_seq restores it exactly.
+ * direction at one hook (output file) from 1, see hook_seq.h. A file's records come from the ring
+ * buffers of several CPUs, so their order in the file is not their order at the hook;
+ * sorting one flow's records of one file by hook_seq restores it exactly.
  */
 #ifndef __TCBEE_RECORDS_H
 #define __TCBEE_RECORDS_H
@@ -196,13 +196,13 @@ struct ip_tuple {
 };
 
 /*
- * Key of the SEQ map: one counter per flow direction (the tuple as the hook sees it, not
- * canonical) and ring buffer. family keeps an IPv4 tuple apart from the IPv6 address with
+ * Key of the HOOK_SEQ map: one counter per flow direction (the tuple as the hook sees it,
+ * not canonical) and ring buffer id. family keeps an IPv4 tuple apart from the IPv6 address with
  * the same leading bytes on the socket ring buffers, which carry both. 40 bytes without
  * padding; the padding byte inside ip_tuple is zeroed like for FLOWS.
  */
-struct seq_key {
-	struct ip_tuple t;
+struct hook_seq_key {
+	struct ip_tuple tuple;
 	uint8_t rb;
 	uint8_t family;
 };
@@ -224,7 +224,7 @@ _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");
 _Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
 _Static_assert(sizeof(struct ip_tuple) == 38, "ip_tuple size");
-_Static_assert(sizeof(struct seq_key) == 40, "seq_key size");
+_Static_assert(sizeof(struct hook_seq_key) == 40, "hook_seq_key size");
 _Static_assert(sizeof(struct filter_ip) == 16, "filter_ip size");
 
 #endif /* __TCBEE_RECORDS_H */

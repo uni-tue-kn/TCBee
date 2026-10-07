@@ -23,52 +23,51 @@
 #ifndef __TCBEE_HOOK_SEQ_H
 #define __TCBEE_HOOK_SEQ_H
 
-#include "config.h"
 #include "counters.h"
 #include "flow.h"
 #include "maps.h"
 
 /* key must be fully initialized, the padding byte of the tuple included */
-static __always_inline bool next_hook_seq(struct seq_key *key, __u64 *seq)
+static __always_inline bool next_hook_seq(struct hook_seq_key *key, __u64 *hook_seq)
 {
 	__u64 zero = 0, *counter;
 
-	counter = bpf_map_lookup_elem(&SEQ, key);
+	counter = bpf_map_lookup_elem(&HOOK_SEQ, key);
 	if (!counter) {
 		/* Two CPUs may insert at once, the loser gets -EEXIST and finds the winner's */
-		bpf_map_update_elem(&SEQ, key, &zero, BPF_NOEXIST);
-		counter = bpf_map_lookup_elem(&SEQ, key);
+		bpf_map_update_elem(&HOOK_SEQ, key, &zero, BPF_NOEXIST);
+		counter = bpf_map_lookup_elem(&HOOK_SEQ, key);
 		if (!counter)
 			return false;
 	}
-	*seq = __sync_fetch_and_add(counter, 1) + 1;
+	*hook_seq = __sync_fetch_and_add(counter, 1) + 1;
 	return true;
 }
 
 /* hook_seq of a tuple based event, counts an error for rb if there is none */
-static __always_inline bool hook_seq_tuple(const struct ip_tuple *t, __u16 family, __u32 rb,
-					   __u64 *seq)
+static __always_inline bool hook_seq_tuple(const struct ip_tuple *t, __u8 family, __u8 rb,
+					   __u64 *hook_seq)
 {
-	struct seq_key key;
+	struct hook_seq_key key;
 
 	__builtin_memset(&key, 0, sizeof(key));
-	key.t = *t;
+	key.tuple = *t;
 	key.rb = rb;
 	key.family = family;
-	if (next_hook_seq(&key, seq))
+	if (next_hook_seq(&key, hook_seq))
 		return true;
 	count_error(rb);
 	return false;
 }
 
 /* hook_seq of a socket based event, the tuple is local -> remote */
-static __always_inline bool hook_seq_sk(struct sock *sk, __u16 sport, __u16 dport, __u32 rb,
-					__u64 *seq)
+static __always_inline bool hook_seq_sk(struct sock *sk, __u16 sport, __u16 dport, __u8 rb,
+					__u64 *hook_seq)
 {
 	struct ip_tuple t;
 
 	tuple_from_sk(&t, sk, sport, dport);
-	return hook_seq_tuple(&t, sk->__sk_common.skc_family, rb, seq);
+	return hook_seq_tuple(&t, sk->__sk_common.skc_family, rb, hook_seq);
 }
 
 #endif /* __TCBEE_HOOK_SEQ_H */
