@@ -71,7 +71,11 @@ impl TracepointTracer {
     ) -> Result<(), Box<dyn Error>> {
         // Attaches to tracepoint/<T::CATEGORY>/<T::NAME> from the section name
         attach(program, links)?;
-        writer.register::<T>(rb, handle(map)?, prepend_string(T::FILE.to_string(), dir))?;
+        writer.register::<T>(
+            rb,
+            vec![handle(map)?],
+            prepend_string(T::FILE.to_string(), dir),
+        )?;
         Ok(())
     }
 }

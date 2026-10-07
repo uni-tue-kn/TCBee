@@ -35,12 +35,12 @@ impl CwndTracer {
 
         writer.register::<cwnd_trace_entry>(
             RB_CWND_SEND,
-            handle(&skel.maps.TCP_SEND_CWND_EVENTS)?,
+            vec![handle(&skel.maps.TCP_SEND_CWND_EVENTS)?],
             prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), dir),
         )?;
         writer.register::<cwnd_trace_entry>(
             RB_CWND_RECV,
-            handle(&skel.maps.TCP_RECEIVE_CWND_EVENTS)?,
+            vec![handle(&skel.maps.TCP_RECEIVE_CWND_EVENTS)?],
             prepend_string(cwnd_trace_entry::IN_FILE.to_string(), dir),
         )?;
 

@@ -35,12 +35,12 @@ impl KernelTracer {
 
         writer.register::<sock_trace_entry>(
             RB_SOCK_SEND,
-            handle(&skel.maps.TCP_SEND_SOCK_EVENTS)?,
+            vec![handle(&skel.maps.TCP_SEND_SOCK_EVENTS)?],
             prepend_string(sock_trace_entry::OUT_FILE.to_string(), dir),
         )?;
         writer.register::<sock_trace_entry>(
             RB_SOCK_RECV,
-            handle(&skel.maps.TCP_RECV_SOCK_EVENTS)?,
+            vec![handle(&skel.maps.TCP_RECV_SOCK_EVENTS)?],
             prepend_string(sock_trace_entry::IN_FILE.to_string(), dir),
         )?;
 

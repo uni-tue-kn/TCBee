@@ -62,7 +62,7 @@ impl CubicTracer {
         // Both programs write to the same map
         writer.register::<cubic_trace_entry>(
             RB_CUBIC,
-            handle(&skel.maps.CUBIC_EVENTS)?,
+            vec![handle(&skel.maps.CUBIC_EVENTS)?],
             prepend_string(cubic_trace_entry::FILE.to_string(), dir),
         )?;
 

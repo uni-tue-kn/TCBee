@@ -26,9 +26,10 @@ const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 
 /// Serializes entries pulled from eBPF maps and writes them to files.
 ///
-/// Each registered ring buffer gets its own dedicated OS thread so that a busy
-/// probe cannot starve others. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so
-/// one thread per buffer is both the safe and the optimal arrangement.
+/// Each output file gets its own dedicated OS thread so that a busy probe cannot starve
+/// others. The thread reads all ring buffers of its file (one per CPU) through one libbpf
+/// ring buffer manager. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so a ring buffer is never
+/// shared between threads.
 /// How writer threads wait for new records
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PollMode {
@@ -88,13 +89,13 @@ impl Writer {
         self.bytes_written.clone()
     }
 
-    /// Register a ring buffer map. Spawns a dedicated worker thread immediately.
-    /// `rb` is the ring buffer index from `tcbee_common::stats`. The handle keeps the map
-    /// open, so the thread can drain it after the eBPF object is closed.
+    /// Register the ring buffer maps of one output file. Spawns a dedicated worker thread
+    /// immediately. `rb` is the ring buffer index from `tcbee_common::stats`. The handles
+    /// keep the maps open, so the thread can drain them after the eBPF object is closed.
     pub fn register<T>(
         &mut self,
         rb: u32,
-        map: MapHandle,
+        maps: Vec<MapHandle>,
         file_path: impl Into<PathBuf>,
     ) -> Result<(), WriterError>
     where
@@ -127,7 +128,7 @@ impl Writer {
         // The ring buffer is set up inside the thread, which then reports whether that
         // worked, so a broken map fails here and not only at shutdown
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let handle = thread::spawn(move || job_loop(job, map, running, cpu, poll_mode, ready_tx));
+        let handle = thread::spawn(move || job_loop(job, maps, running, cpu, poll_mode, ready_tx));
         match ready_rx.recv() {
             Ok(Ok(())) => {
                 self.handles.push((report, handle));
@@ -193,7 +194,7 @@ fn pin_to_cpu(cpu_id: usize) {
 
 fn job_loop<T>(
     job: MapWriterJob<T>,
-    map: MapHandle,
+    maps: Vec<MapHandle>,
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
     poll_mode: PollMode,
@@ -206,15 +207,16 @@ where
         pin_to_cpu(cpu_id);
     }
 
-    // libbpf calls the callback for every record while consuming the ring buffer. The
-    // loop below needs the job too, so the callback only borrows it.
+    // libbpf calls the callback for every record while consuming the ring buffers. The
+    // loop below needs the job too, so the callbacks only borrow it.
     let job = RefCell::new(job);
-    let rb = {
+    let rb = (|| {
         let mut builder = RingBufferBuilder::new();
-        builder
-            .add(&map, |data| job.borrow_mut().write(data))
-            .and_then(|builder| mem::take(builder).build())
-    };
+        for map in &maps {
+            builder.add(map, |data| job.borrow_mut().write(data))?;
+        }
+        builder.build()
+    })();
     let rb = match rb {
         Ok(rb) => {
             let _ = ready.send(Ok(()));

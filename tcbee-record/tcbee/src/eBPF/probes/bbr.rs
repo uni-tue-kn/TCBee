@@ -71,7 +71,7 @@ impl BBRTracer {
         // Both programs write to the same map
         writer.register::<bbr_trace_entry>(
             RB_BBR,
-            handle(&skel.maps.BBR_EVENTS)?,
+            vec![handle(&skel.maps.BBR_EVENTS)?],
             prepend_string(bbr_trace_entry::FILE.to_string(), dir),
         )?;
 

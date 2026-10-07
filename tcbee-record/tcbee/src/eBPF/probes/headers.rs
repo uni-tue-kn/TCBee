@@ -200,22 +200,22 @@ impl TCTracer {
 
         writer.register::<tcp4_packet_trace>(
             RB_TCP4_INGRESS,
-            handle(&skel.maps.TCP4_PACKETS_INGRESS)?,
+            vec![handle(&skel.maps.TCP4_PACKETS_INGRESS)?],
             prepend_string(tcp4_packet_trace::IN_FILE.to_string(), dir),
         )?;
         writer.register::<tcp6_packet_trace>(
             RB_TCP6_INGRESS,
-            handle(&skel.maps.TCP6_PACKETS_INGRESS)?,
+            vec![handle(&skel.maps.TCP6_PACKETS_INGRESS)?],
             prepend_string(tcp6_packet_trace::IN_FILE.to_string(), dir),
         )?;
         writer.register::<tcp4_packet_trace>(
             RB_TCP4_EGRESS,
-            handle(&skel.maps.TCP4_PACKETS_EGRESS)?,
+            vec![handle(&skel.maps.TCP4_PACKETS_EGRESS)?],
             prepend_string(tcp4_packet_trace::OUT_FILE.to_string(), dir),
         )?;
         writer.register::<tcp6_packet_trace>(
             RB_TCP6_EGRESS,
-            handle(&skel.maps.TCP6_PACKETS_EGRESS)?,
+            vec![handle(&skel.maps.TCP6_PACKETS_EGRESS)?],
             prepend_string(tcp6_packet_trace::OUT_FILE.to_string(), dir),
         )?;
 
