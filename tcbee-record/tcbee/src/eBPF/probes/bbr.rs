@@ -10,7 +10,8 @@ use crate::{
     eBPF::{
         ebpf_runner::prepend_string,
         host::KernelBtf,
-        probes::{attach, handle, retarget},
+        probes::{attach, retarget},
+        rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
     },
     writer::Writer,
@@ -71,7 +72,7 @@ impl BBRTracer {
         // Both programs write to the same map
         writer.register::<bbr_trace_entry>(
             RB_BBR,
-            vec![handle(&skel.maps.BBR_EVENTS)?],
+            rings::of(&skel.maps.BBR_EVENTS)?,
             prepend_string(bbr_trace_entry::FILE.to_string(), dir),
         )?;
 

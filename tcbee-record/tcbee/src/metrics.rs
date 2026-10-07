@@ -8,7 +8,7 @@ use std::{
 
 use libbpf_rs::{
     libbpf_sys::{self, bpf_prog_info},
-    MapCore, Object,
+    Object,
 };
 use serde::Serialize;
 use tcbee_common::stats::{
@@ -34,7 +34,8 @@ pub struct ProgramStats {
 pub struct RingBufMetrics {
     pub name: &'static str,
     pub file: Option<String>,
-    pub size_bytes: Option<u32>,
+    /// Size of each CPU's ring buffer, None if the ring buffers were not created
+    pub size_per_cpu_bytes: Option<u32>,
     pub attempted: u64,
     pub handled: u64,
     pub dropped: u64,
@@ -47,6 +48,8 @@ pub struct RingBufMetrics {
 #[derive(Serialize)]
 pub struct Metrics {
     pub duration_s: f64,
+    /// Ring buffers per probe output (one per possible CPU)
+    pub cpus: u32,
     pub attempted: u64,
     pub handled: u64,
     pub dropped: u64,
@@ -66,6 +69,7 @@ impl Metrics {
         snapshot: &Snapshot,
         reports: &[WriterReport],
         ringbuf_sizes: &[Option<u32>],
+        cpus: u32,
         programs: Vec<ProgramStats>,
     ) -> Metrics {
         let attempts = |rbs: &[u32]| rbs.iter().map(|rb| snapshot.invocations(*rb)).sum();
@@ -79,7 +83,7 @@ impl Metrics {
                 RingBufMetrics {
                     name,
                     file: report.map(|r| r.file.to_string_lossy().into_owned()),
-                    size_bytes: ringbuf_sizes.get(rb as usize).copied().flatten(),
+                    size_per_cpu_bytes: ringbuf_sizes.get(rb as usize).copied().flatten(),
                     attempted: snapshot.invocations(rb),
                     handled: snapshot.rb(rb, STAT_HANDLED),
                     dropped: snapshot.rb(rb, STAT_DROPPED),
@@ -92,6 +96,7 @@ impl Metrics {
 
         Metrics {
             duration_s,
+            cpus,
             attempted: snapshot.attempted(),
             handled: snapshot.handled(),
             dropped: snapshot.dropped(),
@@ -111,19 +116,6 @@ impl Metrics {
         serde_json::to_writer_pretty(&mut writer, self)?;
         writer.flush()
     }
-}
-
-/// Effective byte size of every ring buffer, indexed like `RINGBUFS`.
-pub fn ringbuf_sizes(object: &Object) -> Vec<Option<u32>> {
-    RINGBUFS
-        .iter()
-        .map(|(name, _)| {
-            object
-                .maps()
-                .find(|map| map.name() == *name)
-                .map(|map| map.max_entries())
-        })
-        .collect()
 }
 
 /// Reads the kernel statistics of all loaded programs

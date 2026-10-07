@@ -71,7 +71,7 @@ At least one metric source is required.
 | `--tui-observation-window-s N` | `0` | Sliding window of the TUI graphs in seconds; 0 shows the whole recording |
 | `--poll busy\|wait` | `busy` | Writer threads spin (one core per ring buffer) or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
-| `--ringbuf-size SIZE` | | Ring buffer size (K, M, G suffixes), one value or per group, see `--help` |
+| `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
 

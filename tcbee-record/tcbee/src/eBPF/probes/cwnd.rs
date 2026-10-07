@@ -8,7 +8,8 @@ use tcbee_common::stats::{RB_CWND_RECV, RB_CWND_SEND};
 use crate::{
     eBPF::{
         ebpf_runner::prepend_string,
-        probes::{attach, handle},
+        probes::attach,
+        rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
     },
     writer::Writer,
@@ -35,12 +36,12 @@ impl CwndTracer {
 
         writer.register::<cwnd_trace_entry>(
             RB_CWND_SEND,
-            vec![handle(&skel.maps.TCP_SEND_CWND_EVENTS)?],
+            rings::of(&skel.maps.TCP_SEND_CWND_EVENTS)?,
             prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), dir),
         )?;
         writer.register::<cwnd_trace_entry>(
             RB_CWND_RECV,
-            vec![handle(&skel.maps.TCP_RECEIVE_CWND_EVENTS)?],
+            rings::of(&skel.maps.TCP_RECEIVE_CWND_EVENTS)?,
             prepend_string(cwnd_trace_entry::IN_FILE.to_string(), dir),
         )?;
 

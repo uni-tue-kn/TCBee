@@ -11,7 +11,8 @@ use tcbee_common::{
 use crate::{
     eBPF::{
         ebpf_runner::prepend_string,
-        probes::{attach, handle},
+        probes::attach,
+        rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
     },
     writer::Writer,
@@ -73,7 +74,7 @@ impl TracepointTracer {
         attach(program, links)?;
         writer.register::<T>(
             rb,
-            vec![handle(map)?],
+            rings::of(map)?,
             prepend_string(T::FILE.to_string(), dir),
         )?;
         Ok(())

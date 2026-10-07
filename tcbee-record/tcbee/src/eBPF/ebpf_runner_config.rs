@@ -3,7 +3,10 @@ use std::net::IpAddr;
 use anyhow::anyhow;
 
 use crate::writer::PollMode;
-use tcbee_common::{filter::*, stats::RINGBUFS};
+use tcbee_common::{
+    filter::*,
+    stats::{RINGBUFS, RINGBUF_SIZES},
+};
 
 #[derive(Default, Debug, Clone)]
 pub struct FilterConfig {
@@ -255,6 +258,15 @@ impl EbpfRunnerConfig {
     pub fn ringbuf_sizes(mut self, sizes: Vec<(&'static str, u32)>) -> EbpfRunnerConfig {
         self.ringbuf_sizes = sizes;
         self
+    }
+
+    /// Size of each CPU's ring buffer `rb`: from `--ringbuf-size` or the default
+    pub fn ringbuf_size(&self, rb: u32) -> u32 {
+        let name = RINGBUFS[rb as usize].0;
+        self.ringbuf_sizes
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map_or(RINGBUF_SIZES[rb as usize], |(_, size)| *size)
     }
 
     pub fn watcher_config(&self) -> EbpfWatcherConfig {

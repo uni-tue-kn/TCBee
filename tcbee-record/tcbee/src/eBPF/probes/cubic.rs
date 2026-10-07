@@ -10,7 +10,8 @@ use crate::{
         ebpf_runner::prepend_string,
         errors::EBPFRunnerError,
         host::KernelBtf,
-        probes::{attach, handle, retarget},
+        probes::{attach, retarget},
+        rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
     },
     writer::Writer,
@@ -62,7 +63,7 @@ impl CubicTracer {
         // Both programs write to the same map
         writer.register::<cubic_trace_entry>(
             RB_CUBIC,
-            vec![handle(&skel.maps.CUBIC_EVENTS)?],
+            rings::of(&skel.maps.CUBIC_EVENTS)?,
             prepend_string(cubic_trace_entry::FILE.to_string(), dir),
         )?;
 

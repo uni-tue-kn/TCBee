@@ -424,7 +424,7 @@ int tc_egress_packet_tracer(struct __sk_buff *skb)
  * sockets, which these hooks do not see; that is counted as an error.
  */
 
-static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
+static __always_inline int trace_cwnd(struct sock *sk, void *ringbufs, __u32 rb)
 {
 	struct cwnd_trace_entry *rec;
 	struct tcp_sock *tp;
@@ -440,7 +440,7 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(rb);
-	} else if ((rec = reserve(ringbuf, rb, rec))) {
+	} else if ((rec = reserve(ringbufs, rb, rec))) {
 		fill_header(rec, sk, sport, dport, seq);
 		rec->snd_cwnd = tp->snd_cwnd;
 		commit(rec, rb);
@@ -450,7 +450,7 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 	return 0;
 }
 
-static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbuf,
+static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
 				      __u32 rb)
 {
 	struct sock_trace_entry *rec;
@@ -467,7 +467,7 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(rb);
-	} else if ((rec = reserve(ringbuf, rb, rec))) {
+	} else if ((rec = reserve(ringbufs, rb, rec))) {
 		fill_header(rec, sk, sport, dport, seq);
 		/* struct sock */
 		rec->pacing_rate = sk->sk_pacing_rate;

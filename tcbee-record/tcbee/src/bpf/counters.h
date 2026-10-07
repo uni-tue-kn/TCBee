@@ -105,15 +105,23 @@ static __always_inline void count_error(__u32 rb)
 }
 
 /*
- * Records are written in place: reserve a slot, fill it, commit it. A full ring buffer
- * counts the event as dropped. The slot is zeroed first, so padding bytes and fields a
- * probe does not set are deterministic. Nothing between reserve and commit can fail, so
- * a reserved record is never discarded.
+ * Records are written in place: reserve a slot in this CPU's ring buffer (see maps.h),
+ * fill it, commit it. A full ring buffer counts the event as dropped, a missing one (never
+ * the case once userspace created them) as error. The slot is zeroed first, so padding
+ * bytes and fields a probe does not set are deterministic. Nothing between reserve and
+ * commit can fail, so a reserved record is never discarded.
  */
-static __always_inline void *reserve_record(void *ringbuf, __u32 rb, __u64 size)
+static __always_inline void *reserve_record(void *ringbufs, __u32 rb, __u64 size)
 {
-	void *rec = bpf_ringbuf_reserve(ringbuf, size, 0);
+	__u32 cpu = bpf_get_smp_processor_id();
+	void *ringbuf, *rec;
 
+	ringbuf = bpf_map_lookup_elem(ringbufs, &cpu);
+	if (!ringbuf) {
+		count_error(rb);
+		return NULL;
+	}
+	rec = bpf_ringbuf_reserve(ringbuf, size, 0);
 	if (!rec)
 		count(rb, STAT_DROPPED);
 	return rec;
@@ -127,13 +135,14 @@ static __always_inline void commit(void *rec, __u32 rb)
 }
 
 /*
- * rec = reserve(ringbuf, rb, rec): reserves and zeroes sizeof(*rec) bytes, NULL if the
- * ring buffer is full. Zeroing through the typed pointer lets clang use 8 byte stores
- * (every record starts with a u64), a void pointer would make it store byte by byte.
+ * rec = reserve(ringbufs, rb, rec): reserves and zeroes sizeof(*rec) bytes in this CPU's
+ * ring buffer of ringbufs, NULL if it is full. Zeroing through the typed pointer lets
+ * clang use 8 byte stores (every record starts with a u64), a void pointer would make it
+ * store byte by byte.
  */
-#define reserve(ringbuf, rb, rec)                                                          \
+#define reserve(ringbufs, rb, rec)                                                         \
 	({                                                                                 \
-		typeof(rec) __rec = reserve_record(ringbuf, rb, sizeof(*(rec)));           \
+		typeof(rec) __rec = reserve_record(ringbufs, rb, sizeof(*(rec)));          \
 		if (__rec)                                                                 \
 			__builtin_memset(__rec, 0, sizeof(*__rec));                        \
 		__rec;                                                                     \

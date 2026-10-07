@@ -36,6 +36,27 @@ pub const fn slot(rb: u32, stat: u32) -> u32 {
     rb * STATS_PER_RB + stat
 }
 
+const MIB: u32 = 1 << 20;
+
+/// Default size of each CPU's ring buffer in bytes, indexed by `RB_*`. A flow's events mostly
+/// land on one or two CPUs, so a ring has to absorb a writer stall at a single CPU's event
+/// rate. IPv6 rings are smaller as they stay empty in most recordings.
+pub const RINGBUF_SIZES: [u32; RB_COUNT as usize] = [
+    16 * MIB, // tcp4 egress
+    16 * MIB, // tcp4 ingress
+    4 * MIB,  // tcp6 egress
+    4 * MIB,  // tcp6 ingress
+    16 * MIB, // sock send
+    16 * MIB, // sock recv
+    8 * MIB,  // cwnd send
+    8 * MIB,  // cwnd recv
+    4 * MIB,  // tcp_probe
+    MIB,      // retransmit synack
+    MIB,      // bad csum
+    8 * MIB,  // cubic
+    8 * MIB,  // bbr
+];
+
 /// Ring buffer map names and the `--ringbuf-size` group they belong to, indexed by `RB_*`.
 pub const RINGBUFS: [(&str, &str); RB_COUNT as usize] = [
     ("TCP4_PACKETS_EGRESS", "tcp4"),
