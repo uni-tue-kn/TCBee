@@ -24,16 +24,10 @@ use crate::config::WRITER_BUFFER_SIZE;
 
 const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 
-/// Serializes entries pulled from eBPF maps and writes them to files.
-///
-/// Each output file gets its own dedicated OS thread so that a busy probe cannot starve
-/// others. The thread reads all ring buffers of its file (one per CPU) through one libbpf
-/// ring buffer manager. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so a ring buffer is never
-/// shared between threads.
 /// How writer threads wait for new records
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PollMode {
-    /// Spin on the ring buffer. Lowest latency, but every writer thread uses a full core.
+    /// Spin on the ring buffers. Lowest latency, but every writer thread uses a full core.
     #[default]
     Busy,
     /// Block in poll() until the kernel signals new records.
@@ -53,6 +47,12 @@ impl PollMode {
 /// Upper bound for a blocking wait, so that a stop request is noticed
 const WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Serializes entries pulled from eBPF maps and writes them to files.
+///
+/// Each output file gets its own dedicated OS thread so that a busy probe cannot starve
+/// others. The thread reads all ring buffers of its file (one per CPU) through one libbpf
+/// ring buffer manager. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so a ring buffer is never
+/// shared between threads.
 pub struct Writer {
     poll_mode: PollMode,
     running: Arc<AtomicBool>,
@@ -125,7 +125,7 @@ impl Writer {
             error: None,
         };
         let poll_mode = self.poll_mode;
-        // The ring buffer is set up inside the thread, which then reports whether that
+        // The ring buffers are set up inside the thread, which then reports whether that
         // worked, so a broken map fails here and not only at shutdown
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let handle = thread::spawn(move || job_loop(job, maps, running, cpu, poll_mode, ready_tx));

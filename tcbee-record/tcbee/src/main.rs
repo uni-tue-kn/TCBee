@@ -177,12 +177,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut poll).add_option(
             &["--poll"],
             Store,
-            "How writer threads wait for records: 'busy' spins and uses one core per ring buffer, 'wait' blocks until the kernel signals new records. Default is busy.",
+            "How writer threads wait for records: 'busy' spins and uses one core per output file, 'wait' blocks until the kernel signals new records. Default is busy.",
         );
         argparser.refer(&mut writer_cpus).add_option(
             &["--writer-cpus"],
             Store,
-            "Comma-separated CPU ids to pin the writer threads to, assigned round-robin. One thread runs per ring buffer.",
+            "Comma-separated CPU ids to pin the writer threads to, assigned round-robin. One thread runs per output file.",
         );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],

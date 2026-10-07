@@ -17,6 +17,7 @@ micro-benchmarks. The testbed runs from `EVALUATION.md` (E2/E3) are the real che
 | 4 | Writer copies each record as precomputed byte ranges instead of bincode/serde | `5f542be` |
 | – | `records_written` kept after a writer error (was reported as 0) | `2ea0f2a` |
 | – | BBRv1-only `lt_*` fields read only if they exist (BBRv3 / out-of-tree `struct bbr` load) | `093873b` |
+| 9 | One ring buffer per CPU; `hook_seq` in every record restores the order of a flow's events at a hook | branch `per-cpu-ringbuf` |
 
 The on-disk format, the STATS slot layout, map names, program names and CLI are unchanged.
 
@@ -139,6 +140,34 @@ Micro-benchmark (release, one core, 20 M records, this laptop):
 This was the largest userspace per-record cost; at several Mev/s per ring buffer, bincode
 alone would have used most of a writer core.
 
+### Item 9: per-CPU ring buffers
+
+With one ring buffer per probe output, every CPU took the same spinlock in
+`__bpf_ringbuf_reserve`. On the 400G testbed (KVM guests, 24 vCPUs, `-h`, offloads off,
+8 sending cores) that lock took 23% of the sender CPU (`__pv_queued_spin_lock_slowpath`,
+paravirt spinlocks make it worse in a guest), `tc_egress_packet_tracer` cost 1.9 µs per
+run against 0.45 µs on a single sending core, and the event rate stopped at 1.6 M/s no
+matter how many cores sent. Each ring buffer map is now an `ARRAY_OF_MAPS` with one ring
+buffer per CPU; userspace creates the rings after load (online CPUs only) and one writer
+thread per output file consumes all of them. Measured with the same traffic:
+`tc_egress_packet_tracer` 1989 → 507 ns per run, the lock is gone from the profile,
++41% events in a 15 s run with 8 flows, no drops.
+
+A flow's egress hook runs on several CPUs (sending task, ACK processing in softirq, TSQ
+and pacing timers), so the file order of its records is no longer its hook order, and the
+timestamps cannot restore it (`bpf_ktime_get_ns()` is not monotonic across CPUs; the guest
+even runs on kvm-clock with unsynchronized TSCs). The runs never overlap, though: the socket
+lock (TC egress, socket hooks) and the NAPI ownership of the RX queue (TC ingress) serialize
+them. Every record therefore carries `hook_seq`, taken with an atomic fetch-add on a counter
+per flow direction and hook (`HOOK_SEQ` hash map) inside that critical section, right after
+the filter. Sorting by `hook_seq` restores the hook order exactly; drops leave gaps, and the
+final counters in `metrics.json` (`hook_seq_issued`) also cover drops at the end of a flow.
+Validated with traces: with shared ring buffers file order equals `hook_seq` order; with
+per-CPU ring buffers file order breaks TCP invariants (sequence and ACK numbers going back
+to values never sent) in up to 4186 places per run, `hook_seq` order in none, for 1 to 64
+flows, moving RX IRQs and forced drops (missing numbers = dropped events exactly). Cost:
+one hash lookup and one fetch-add per event.
+
 ### Item 6: other per-record writer work (checked, nothing left to do)
 
 `serialized_size` is computed once per type (now at registration), `bytes_written` is
@@ -153,11 +182,9 @@ per-record work is the libbpf callback trampoline and the mmap bounds check.
 | `-t` tracepoints | 5.8 | unchanged |
 | `-k`, `-w`, `-a` | 5.8 (+5.5 fentry) | **5.9** (`bpf_skc_to_tcp_sock`) |
 | BBR (module BTF CO-RE) | 5.11 | unchanged |
-| plain counters | – | 5.12, older kernels use atomic adds automatically |
-| atomics | silently 5.12 (BPF_FETCH from clang v3 default) | any kernel |
+| `hook_seq` (BPF_FETCH atomic) | – | **5.12** for all probes |
 
-5.8 is the only release that loses `-k/-w/-a`; every LTS with ring buffers (5.10+) has
-the helper.
+Since `hook_seq`, every probe needs 5.12; the LTS releases 5.15 and newer qualify.
 
 ## Evaluated, not implemented
 
@@ -169,8 +196,8 @@ for 131 k pages), while populate works page by page. Not a safe win, dropped. Re
 only if the testbed's output file system maps page by page (no large folios: ext4 got
 them only recently, around 6.16; xfs since 5.18; check the fault count); measure with the writer thread's `minflt` and CPU per record.
 
-**7. One consumer thread for several ring buffers.** Busy mode spins one thread per ring
-buffer (13 with `-htkwa`). A single libbpf `RingBuffer` with all maps (one callback per
+**7. One consumer thread for several output files.** Busy mode spins one thread per output
+file (13 with `-htkwa`), each reading the ring buffers of all CPUs. A single libbpf `RingBuffer` with all maps (one callback per
 map, epoll in wait mode) would free cores but caps total consume throughput at one core
 and changes the `--writer-cpus` semantics. Proposed: an option `--writers N` that shards
 ring buffers over N threads, default unchanged. Gain: T-core CPU, not event rate. Risk:
@@ -184,15 +211,9 @@ then `BPF_RB_FORCE_WAKEUP`; the 100 ms poll timeout bounds latency. Costs one he
 per event and changes latency semantics (records can sit for up to the timeout). Measure:
 irq_work / context switch counts and T-core CPU in `--poll wait`, E3 rate.
 
-**9. Ring buffer contention and NUMA.** All CPUs reserve in one ring buffer per group
-under its spinlock (`EVALUATION.md` §5 expects this to be the scaling limit). Options:
-per-CPU ring buffers (`ARRAY_OF_MAPS` of ringbufs indexed by `bpf_get_smp_processor_id()`,
-userspace adds all inner maps; outer map keeps the current name), or one ring buffer per
-NUMA node; plus `numa_node` on map creation so the ring memory sits on the node of the
-NIC/cores that write it (the testbed's two 100G NICs are on different nodes). Large change
-(map layout, writer, per-CPU files or a merge step, ordering across CPUs); do it only if
-the ablation in `EVALUATION.md` §5 shows the spinlock is the limit. Measure: E3 scaling
-with flows/cores, `perf` lock contention on `__bpf_ringbuf_reserve`.
+**9b. NUMA placement of the per-CPU ring buffers.** Each CPU's ring buffer could be created
+with `numa_node` of that CPU so the producer writes local memory. The testbed VMs have one
+node, so this was not measured.
 
 **11. Flow tracking (TUI only).** Off in headless runs (rodata), so it does not affect the
 evaluation, which does not read `FLOWS` either. With the TUI, every event does a 38-byte
