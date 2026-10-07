@@ -236,8 +236,9 @@ where
         while running.load(Ordering::Relaxed) {
             match poll_mode {
                 PollMode::Busy => {
+                    // consume drains the ring, spin (no syscall) instead of yielding
                     check(&job, rb.consume_raw())?;
-                    thread::yield_now();
+                    std::hint::spin_loop();
                 }
                 PollMode::Wait => {
                     check(&job, rb.poll_raw(WAIT_TIMEOUT))?;
