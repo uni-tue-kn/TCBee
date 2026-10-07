@@ -11,6 +11,7 @@ use crate::{
 #[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct Tcp6Packet {
     pub time: u64,
+    pub hook_seq: u64,
     pub saddr: [u8; 16usize],
     pub daddr: [u8; 16usize],
     pub sport: u16,
@@ -23,7 +24,7 @@ pub struct Tcp6Packet {
 }
 
 event_schema! {
-    Tcp6Packet => "tcp6", 59 {
+    Tcp6Packet => "tcp6", 67 {
         seq => "SEQ_NUM": U32,
         ack => "ACK_NUM": U32,
         window => "WINDOW": U16,

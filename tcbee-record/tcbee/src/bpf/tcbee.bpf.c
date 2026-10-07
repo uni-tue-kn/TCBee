@@ -13,6 +13,7 @@
 #include "counters.h"
 #include "filter.h"
 #include "flow.h"
+#include "hook_seq.h"
 #include "cc_structs.h"
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";
@@ -39,6 +40,7 @@ int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 	struct tcp_probe_entry *rec;
 	__u16 sport, dport, family;
 	struct ip_tuple t;
+	__u64 seq;
 
 	sport = ctx->sport;
 	dport = ctx->dport;
@@ -52,27 +54,28 @@ int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 	}
 	family = ctx->family;
 
-	if (filter_needs_tuple() || FLOW_TRACKING) {
-		__builtin_memset(&t, 0, sizeof(t));
-		if (family == AF_INET6) {
-			/* sin6_addr is at offset 8 */
-			__builtin_memcpy(t.src_ip, &saddr[8], 16);
-			__builtin_memcpy(t.dst_ip, &daddr[8], 16);
-		} else {
-			/* sin_addr is at offset 4 */
-			tuple_set_v4(t.src_ip, &saddr[4]);
-			tuple_set_v4(t.dst_ip, &daddr[4]);
-		}
-		t.sport = sport;
-		t.dport = dport;
-		t.protocol = IPPROTO_TCP;
-		if (filter_needs_tuple() && !filter_tuple_match(&t))
-			return 0;
+	__builtin_memset(&t, 0, sizeof(t));
+	if (family == AF_INET6) {
+		/* sin6_addr is at offset 8 */
+		__builtin_memcpy(t.src_ip, &saddr[8], 16);
+		__builtin_memcpy(t.dst_ip, &daddr[8], 16);
+	} else {
+		/* sin_addr is at offset 4 */
+		tuple_set_v4(t.src_ip, &saddr[4]);
+		tuple_set_v4(t.dst_ip, &daddr[4]);
 	}
+	t.sport = sport;
+	t.dport = dport;
+	t.protocol = IPPROTO_TCP;
+	if (filter_needs_tuple() && !filter_tuple_match(&t))
+		return 0;
 
+	if (!hook_seq_tuple(&t, family, RB_TCP_PROBE, &seq))
+		return 0;
 	rec = reserve(&TCP_PROBE_QUEUE, RB_TCP_PROBE, rec);
 	if (rec) {
 		rec->time = bpf_ktime_get_ns();
+		rec->hook_seq = seq;
 		__builtin_memcpy(rec->saddr, saddr, sizeof(saddr));
 		__builtin_memcpy(rec->daddr, daddr, sizeof(daddr));
 		rec->sport = sport;
@@ -104,6 +107,7 @@ int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 	struct tcp_retransmit_synack_entry *rec;
 	__u16 sport, dport, family;
 	struct ip_tuple t;
+	__u64 seq;
 
 	sport = ctx->sport;
 	dport = ctx->dport;
@@ -119,25 +123,26 @@ int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 	}
 	family = ctx->family;
 
-	if (filter_needs_tuple() || FLOW_TRACKING) {
-		__builtin_memset(&t, 0, sizeof(t));
-		if (family == AF_INET6) {
-			__builtin_memcpy(t.src_ip, saddr_v6, 16);
-			__builtin_memcpy(t.dst_ip, daddr_v6, 16);
-		} else {
-			tuple_set_v4(t.src_ip, saddr);
-			tuple_set_v4(t.dst_ip, daddr);
-		}
-		t.sport = sport;
-		t.dport = dport;
-		t.protocol = IPPROTO_TCP;
-		if (filter_needs_tuple() && !filter_tuple_match(&t))
-			return 0;
+	__builtin_memset(&t, 0, sizeof(t));
+	if (family == AF_INET6) {
+		__builtin_memcpy(t.src_ip, saddr_v6, 16);
+		__builtin_memcpy(t.dst_ip, daddr_v6, 16);
+	} else {
+		tuple_set_v4(t.src_ip, saddr);
+		tuple_set_v4(t.dst_ip, daddr);
 	}
+	t.sport = sport;
+	t.dport = dport;
+	t.protocol = IPPROTO_TCP;
+	if (filter_needs_tuple() && !filter_tuple_match(&t))
+		return 0;
 
+	if (!hook_seq_tuple(&t, family, RB_RETRANSMIT_SYNACK, &seq))
+		return 0;
 	rec = reserve(&TCP_RETRANSMIT_SYNACK_QUEUE, RB_RETRANSMIT_SYNACK, rec);
 	if (rec) {
 		rec->time = bpf_ktime_get_ns();
+		rec->hook_seq = seq;
 		rec->sport = sport;
 		rec->dport = dport;
 		rec->family = family;
@@ -162,6 +167,7 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 	__u16 sport, dport, family;
 	struct ip_tuple t;
 	bool is_ipv4;
+	__u64 seq;
 
 	if (BPF_CORE_READ_INTO(&saddr, ctx, saddr) || BPF_CORE_READ_INTO(&daddr, ctx, daddr)) {
 		/* The filter cannot be evaluated without the event, count it as an error */
@@ -178,25 +184,26 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 	/* sa_family in host byte order at offset 0, sin_addr at 4, sin6_addr at 8 */
 	__builtin_memcpy(&family, saddr, sizeof(family));
 	is_ipv4 = family == AF_INET;
-	if (filter_needs_tuple()) {
-		__builtin_memset(&t, 0, sizeof(t));
-		if (is_ipv4) {
-			tuple_set_v4(t.src_ip, &saddr[4]);
-			tuple_set_v4(t.dst_ip, &daddr[4]);
-		} else {
-			__builtin_memcpy(t.src_ip, &saddr[8], 16);
-			__builtin_memcpy(t.dst_ip, &daddr[8], 16);
-		}
-		t.sport = sport;
-		t.dport = dport;
-		t.protocol = IPPROTO_TCP;
-		if (!filter_tuple_match(&t))
-			return 0;
+	__builtin_memset(&t, 0, sizeof(t));
+	if (is_ipv4) {
+		tuple_set_v4(t.src_ip, &saddr[4]);
+		tuple_set_v4(t.dst_ip, &daddr[4]);
+	} else {
+		__builtin_memcpy(t.src_ip, &saddr[8], 16);
+		__builtin_memcpy(t.dst_ip, &daddr[8], 16);
 	}
+	t.sport = sport;
+	t.dport = dport;
+	t.protocol = IPPROTO_TCP;
+	if (filter_needs_tuple() && !filter_tuple_match(&t))
+		return 0;
 
+	if (!hook_seq_tuple(&t, family, RB_BAD_CSUM, &seq))
+		return 0;
 	rec = reserve(&TCP_BAD_CSUM_QUEUE, RB_BAD_CSUM, rec);
 	if (rec) {
 		rec->time = bpf_ktime_get_ns();
+		rec->hook_seq = seq;
 		/* The record only holds IPv4 addresses, leave them zero for IPv6 */
 		if (is_ipv4) {
 			__builtin_memcpy(rec->saddr, &saddr[4], 4);
@@ -288,6 +295,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 	__be16 proto_buf, *proto;
 	__u16 sport, dport;
 	struct ip_tuple t;
+	__u64 seq;
 
 	proto = skb_header(skb, TC_ETH_PROTO_OFF, &proto_buf, sizeof(proto_buf));
 	if (!proto)
@@ -324,9 +332,12 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
 
+		if (!hook_seq_tuple(&t, AF_INET, rb4_id, &seq))
+			return TC_ACT_UNSPEC;
 		rec = reserve(rb4, rb4_id, rec);
 		if (rec) {
 			rec->time = bpf_ktime_get_ns();
+			rec->hook_seq = seq;
 			rec->saddr = bpf_ntohl(ip->saddr);
 			rec->daddr = bpf_ntohl(ip->daddr);
 			rec->sport = sport;
@@ -362,9 +373,12 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
 
+		if (!hook_seq_tuple(&t, AF_INET6, rb6_id, &seq))
+			return TC_ACT_UNSPEC;
 		rec = reserve(rb6, rb6_id, rec);
 		if (rec) {
 			rec->time = bpf_ktime_get_ns();
+			rec->hook_seq = seq;
 			__builtin_memcpy(rec->saddr_v6, ip6->saddr, 16);
 			__builtin_memcpy(rec->daddr_v6, ip6->daddr, 16);
 			rec->sport = sport;
@@ -415,16 +429,19 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbuf, __u32 rb)
 	struct cwnd_trace_entry *rec;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
+	__u64 seq;
 
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, rb, &seq))
 		return 0;
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(rb);
 	} else if ((rec = reserve(ringbuf, rb, rec))) {
-		fill_header(rec, sk, sport, dport);
+		fill_header(rec, sk, sport, dport, seq);
 		rec->snd_cwnd = tp->snd_cwnd;
 		commit(rec, rb);
 	}
@@ -439,16 +456,19 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 	struct sock_trace_entry *rec;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
+	__u64 seq;
 
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, rb, &seq))
 		return 0;
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(rb);
 	} else if ((rec = reserve(ringbuf, rb, rec))) {
-		fill_header(rec, sk, sport, dport);
+		fill_header(rec, sk, sport, dport, seq);
 		/* struct sock */
 		rec->pacing_rate = sk->sk_pacing_rate;
 		rec->max_pacing_rate = sk->sk_max_pacing_rate;
@@ -519,9 +539,12 @@ static __always_inline int trace_cubic(struct sock *sk)
 	struct bictcp___tcbee *ca;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
+	__u64 seq;
 
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, RB_CUBIC, &seq))
 		return 0;
 
 	tp = bpf_skc_to_tcp_sock(sk);
@@ -529,7 +552,7 @@ static __always_inline int trace_cubic(struct sock *sk)
 		count_error(RB_CUBIC);
 	} else if ((rec = reserve(&CUBIC_EVENTS, RB_CUBIC, rec))) {
 		ca = tcp_ca(tp);
-		fill_header(rec, sk, sport, dport);
+		fill_header(rec, sk, sport, dport, seq);
 		rec->cnt = ca->cnt;
 		rec->last_max_cwnd = ca->last_max_cwnd;
 		rec->last_cwnd = ca->last_cwnd;
@@ -578,6 +601,7 @@ static __always_inline int trace_bbr(struct sock *sk)
 	struct bbr___tcbee *bbr;
 	struct tcp_sock *tp;
 	__u16 sport, dport;
+	__u64 seq;
 
 	if (!sk) {
 		/* The filter cannot be evaluated without the socket, count it as an error */
@@ -587,13 +611,15 @@ static __always_inline int trace_bbr(struct sock *sk)
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
+	if (!hook_seq_sk(sk, sport, dport, RB_BBR, &seq))
+		return 0;
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
 		count_error(RB_BBR);
 	} else if ((rec = reserve(&BBR_EVENTS, RB_BBR, rec))) {
 		bbr = tcp_ca(tp);
-		fill_header(rec, sk, sport, dport);
+		fill_header(rec, sk, sport, dport, seq);
 		rec->min_rtt_us = bbr->min_rtt_us;
 		rec->min_rtt_stamp = bbr->min_rtt_stamp;
 		rec->probe_rtt_done_stamp = bbr->probe_rtt_done_stamp;

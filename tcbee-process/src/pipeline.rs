@@ -346,12 +346,14 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
             .with_context(|| format!("cannot open {}", file_plan.path.display()))?;
         let mut batch = EventBatch::new(binding.table, BATCH_ROWS);
 
-        let res = (binding.decode)(&file, unit.records.clone(), &mut |seq, row| {
-            if seq % ABORT_CHECK_RECORDS == 0 && shared.aborted() {
+        let res = (binding.decode)(&file, unit.records.clone(), &mut |index, row| {
+            if index % ABORT_CHECK_RECORDS == 0 && shared.aborted() {
                 return Err(Box::new(Aborted) as RowError);
             }
             let flow = cache.id(row.flow_key());
-            batch.push_header(flow, binding.dir, row.ts_ns(), seq as i64);
+            // A series is read in (ts, seq) order. hook_seq is the exact hook order, ts sorts
+            // first, so the two only differ if a CPU's clock read went backwards
+            batch.push_header(flow, binding.dir, row.ts_ns(), row.hook_seq());
             row.push_row(&mut batch);
             if batch.len() >= BATCH_ROWS {
                 flush_batch(&mut batch, &mut *writer, &mut output, &file_plan.bar)?;

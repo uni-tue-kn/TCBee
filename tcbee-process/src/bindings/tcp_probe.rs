@@ -13,6 +13,7 @@ use crate::{
 #[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct TcpProbe {
     pub time: u64,
+    pub hook_seq: u64,
     pub saddr: [u8; 28usize],
     pub daddr: [u8; 28usize],
     pub sport: u16,
@@ -32,7 +33,7 @@ pub struct TcpProbe {
 }
 
 event_schema! {
-    TcpProbe => "tcp_probe", 116 {
+    TcpProbe => "tcp_probe", 124 {
         mark => "MARK": U32,
         data_len => "DATA_LEN": U16,
         snd_nxt => "SND_NXT": U32,

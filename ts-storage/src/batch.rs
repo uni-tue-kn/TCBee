@@ -122,6 +122,8 @@ impl EventBatch {
         }
     }
 
+    /// `seq` orders rows of one series that share a timestamp; tcbee-process passes the
+    /// recorder's per flow and hook sequence number.
     pub fn push_header(&mut self, flow_id: i64, dir: Dir, ts: i64, seq: i64) {
         self.flow_id.push(flow_id);
         self.dir.push(dir.code());

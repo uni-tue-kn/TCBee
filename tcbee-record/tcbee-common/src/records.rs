@@ -8,14 +8,15 @@ include!(concat!(env!("OUT_DIR"), "/records.rs"));
 
 use core::mem::size_of;
 
-const _: () = assert!(size_of::<tcp4_packet_trace>() == 32);
-const _: () = assert!(size_of::<tcp6_packet_trace>() == 56);
-const _: () = assert!(size_of::<sock_trace_entry>() == 176);
-const _: () = assert!(size_of::<cwnd_trace_entry>() == 64);
-const _: () = assert!(size_of::<cubic_trace_entry>() == 112);
-const _: () = assert!(size_of::<bbr_trace_entry>() == 112);
-const _: () = assert!(size_of::<tcp_probe_entry>() == 120);
-const _: () = assert!(size_of::<tcp_retransmit_synack_entry>() == 56);
-const _: () = assert!(size_of::<tcp_bad_csum_entry>() == 16);
+const _: () = assert!(size_of::<tcp4_packet_trace>() == 40);
+const _: () = assert!(size_of::<tcp6_packet_trace>() == 64);
+const _: () = assert!(size_of::<sock_trace_entry>() == 184);
+const _: () = assert!(size_of::<cwnd_trace_entry>() == 72);
+const _: () = assert!(size_of::<cubic_trace_entry>() == 120);
+const _: () = assert!(size_of::<bbr_trace_entry>() == 120);
+const _: () = assert!(size_of::<tcp_probe_entry>() == 128);
+const _: () = assert!(size_of::<tcp_retransmit_synack_entry>() == 64);
+const _: () = assert!(size_of::<tcp_bad_csum_entry>() == 24);
 const _: () = assert!(size_of::<IpTuple>() == 38);
+const _: () = assert!(size_of::<SeqKey>() == 40);
 const _: () = assert!(size_of::<FilterIp>() == 16);

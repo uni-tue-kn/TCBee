@@ -47,6 +47,9 @@ pub trait Event: Sized {
     fn flow_key(&self) -> IpTuple;
     /// Recorder timestamp, nanoseconds since boot.
     fn ts_ns(&self) -> i64;
+    /// Position among the records of the same flow direction and hook, from 1. The recorder's
+    /// ring buffers are per CPU, so this and not the file order is the order of the hook.
+    fn hook_seq(&self) -> i64;
     /// Whether the 4 byte divider at the end of the record is intact.
     fn check_divider(&self) -> bool;
     /// Appends the field values to the column vectors of `batch`; the caller has already pushed
@@ -59,6 +62,7 @@ pub trait Event: Sized {
 pub trait Row {
     fn flow_key(&self) -> IpTuple;
     fn ts_ns(&self) -> i64;
+    fn hook_seq(&self) -> i64;
     fn push_row(&self, batch: &mut EventBatch);
 }
 
@@ -68,6 +72,9 @@ impl<E: Event> Row for E {
     }
     fn ts_ns(&self) -> i64 {
         Event::ts_ns(self)
+    }
+    fn hook_seq(&self) -> i64 {
+        Event::hook_seq(self)
     }
     fn push_row(&self, batch: &mut EventBatch) {
         Event::push_row(self, batch)
@@ -141,7 +148,8 @@ pub(crate) use col_name;
 /// }
 /// ```
 ///
-/// The struct needs the fields `time` (u64, ns) and `div` (`[u8; 4]`) and a `Deserialize` impl.
+/// The struct needs the fields `time` (u64, ns), `hook_seq` (u64) and `div` (`[u8; 4]`) and a
+/// `Deserialize` impl.
 /// The number after the source is the record size in the trace file (the bincode encoding; the
 /// binding tests check it against the fixtures). The block after the columns holds the
 /// hand-written `flow_key`.
@@ -172,6 +180,9 @@ macro_rules! event_schema {
             }
             fn ts_ns(&self) -> i64 {
                 self.time as i64
+            }
+            fn hook_seq(&self) -> i64 {
+                self.hook_seq as i64
             }
             fn check_divider(&self) -> bool {
                 self.div == 0xFFFFFFFFu32.to_be_bytes()

@@ -3,7 +3,7 @@
 Deserializes CubicEvent structs from a bincode-serialized binary file.
 
 The CubicEvent struct is serialized using Rust's bincode format:
-- Total size: 114 bytes per entry (bincode serialization)
+- Total size: 122 bytes per entry (bincode serialization)
 - Little-endian byte order
 """
 
@@ -17,6 +17,7 @@ class CubicEvent(NamedTuple):
     """CubicEvent struct matching the Rust definition."""
     # Shared ID fields
     time: int              # u64
+    hook_seq: int         # u64, position within the flow's events
     addr_v4: int          # u64
     src_v6: bytes         # [u8; 16]
     dst_v6: bytes         # [u8; 16]
@@ -59,14 +60,14 @@ class CubicEvent(NamedTuple):
 
 # Bincode serialization format (little-endian, no padding)
 # < = little-endian
-# QQ = 2x u64 (time, addr_v4)
+# QQQ = 3x u64 (time, hook_seq, addr_v4)
 # 16s16s = 2x [u8; 16] (src_v6, dst_v6)
 # I = u32 (ports)
 # H = u16 (family)
 # IIIIIIIIIIIIII = 14x u32 (cnt through curr_rtt)
 # 4s = [u8; 4] (div)
-CUBIC_EVENT_FORMAT = "<QQ16s16sIHIIIIIIIIIIIIII4s"
-CUBIC_EVENT_SIZE = struct.calcsize(CUBIC_EVENT_FORMAT)  # Should be 114 bytes
+CUBIC_EVENT_FORMAT = "<QQQ16s16sIHIIIIIIIIIIIIII4s"
+CUBIC_EVENT_SIZE = struct.calcsize(CUBIC_EVENT_FORMAT)  # Should be 122 bytes
 
 def read_cubic_events(file_path: Path):
     """

@@ -42,10 +42,10 @@ const SMALL: &[(&str, &str, u8, u64, usize)] = &[
 ];
 
 /// Size of one `tcp4` record in the trace file.
-const TCP4_RECORD: usize = 35;
-/// Byte offsets inside a `tcp4` record: `time` (u64) first, `seq` (u32) after both addresses and
-/// both ports, the divider in the last four bytes.
-const TCP4_SEQ_OFFSET: usize = 20;
+const TCP4_RECORD: usize = 43;
+/// Byte offsets inside a `tcp4` record: `time` and `hook_seq` (u64) first, `seq` (u32) after both
+/// addresses and both ports, the divider in the last four bytes.
+const TCP4_SEQ_OFFSET: usize = 28;
 
 fn path_str(p: &Path) -> &str {
     p.to_str().unwrap()
@@ -309,6 +309,7 @@ fn write_tcp4_trace(
     for i in 0..total {
         let mut rec = template[..TCP4_RECORD].to_vec();
         rec[..8].copy_from_slice(&(1_000 + i as u64 / 3).to_le_bytes());
+        rec[8..16].copy_from_slice(&(i as u64 + 1).to_le_bytes());
         rec[TCP4_SEQ_OFFSET..TCP4_SEQ_OFFSET + 4].copy_from_slice(&(i as u32).to_le_bytes());
         if corrupt.contains(&i) {
             rec[TCP4_RECORD - 1] ^= 0xFF;
@@ -344,7 +345,7 @@ fn corrupted_divider_fails_and_leaves_no_output() {
         let err = run(Args::new(&trace, &out, engine)).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("tcp4_send.tcp"), "{msg}");
-        assert!(msg.contains("offset 105"), "{msg}");
+        assert!(msg.contains("offset 129"), "{msg}");
         assert!(msg.contains("divider"), "{msg}");
         assert_no_output(&out);
     }
@@ -485,8 +486,9 @@ fn source_resolution() {
     assert_no_output(&out);
 }
 
-/// A file of more than one unit: record indexes must continue across units, so rows read back
-/// in (ts, seq) order give exactly the sequence 0, 1, 2, ... (`SEQ_NUM` holds the record index).
+/// A file of more than one unit: rows read back in (ts, seq) order give exactly the sequence
+/// 0, 1, 2, ... (`SEQ_NUM` holds the record index, every 3 records share a timestamp and
+/// hook_seq breaks the tie).
 #[test]
 fn file_larger_than_one_unit_keeps_record_order() {
     let total = 2 * UNIT_RECORDS as usize + 50_000;

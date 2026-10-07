@@ -78,9 +78,9 @@ Raw data is written as `*.tcp` files to the recording directory. Filter flags ar
 ## Kernel requirements
 
 - BTF of the running kernel (`/sys/kernel/btf/vmlinux`, `CONFIG_DEBUG_INFO_BTF=y`)
-- BPF ring buffers: 5.8, enough for `-h` and `-t` (the `tcp_bad_csum` tracepoint of `-t`
-  appeared in 5.11)
-- `-k`, `-w`, `-a` use fentry programs and `bpf_skc_to_tcp_sock`: 5.9
+- 5.12: every probe numbers its events per flow with a fetch-and-add atomic (`hook_seq`).
+  Ring buffers (5.8), fentry programs and `bpf_skc_to_tcp_sock` (5.9) are older; the
+  `tcp_bad_csum` tracepoint of `-t` appeared in 5.11.
 - `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
   `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
   and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.

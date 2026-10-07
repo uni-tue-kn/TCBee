@@ -12,6 +12,7 @@ use crate::{
 pub struct CubicEvent {
     // Shared ID
     pub time: u64,
+    pub hook_seq: u64,
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
@@ -37,7 +38,7 @@ pub struct CubicEvent {
 }
 
 event_schema! {
-    CubicEvent => "cubic", 114 {
+    CubicEvent => "cubic", 122 {
         cnt: U32,
         last_max_cwnd: U32,
         last_cwnd: U32,

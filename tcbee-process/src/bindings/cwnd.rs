@@ -10,6 +10,7 @@ use crate::{
 #[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct cwnd_trace_entry {
     pub time: u64,
+    pub hook_seq: u64,
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
@@ -20,7 +21,7 @@ pub struct cwnd_trace_entry {
     pub div: [u8; 4usize],
 }
 event_schema! {
-    cwnd_trace_entry => "cwnd", 62 {
+    cwnd_trace_entry => "cwnd", 70 {
         snd_cwnd => "perf_snd_cwnd": U32,
     }
     {

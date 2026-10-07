@@ -141,11 +141,13 @@ static __always_inline void flow_track_sk(struct sock *sk, __u16 sport, __u16 dp
  * Fill the shared header of a socket based record: addr_v4 is the raw skc_addrpair,
  * sport is skc_num and dport is skc_dport in host byte order, from sk_ports().
  */
-static __always_inline void fill_header(void *rec, struct sock *sk, __u16 sport, __u16 dport)
+static __always_inline void fill_header(void *rec, struct sock *sk, __u16 sport, __u16 dport,
+					__u64 seq)
 {
 	struct tcbee_sock_header *h = rec;
 
 	h->time = bpf_ktime_get_ns();
+	h->hook_seq = seq;
 	h->addr_v4 = sk->__sk_common.skc_addrpair;
 	/* The record is zeroed, IPv4 flows keep zero v6 addresses */
 	if (sk->__sk_common.skc_family == AF_INET6 && sk_has_v6()) {

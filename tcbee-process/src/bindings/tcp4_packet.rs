@@ -10,6 +10,7 @@ use crate::{event::event_schema, ip::flow_tuple};
 #[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct Tcp4Packet {
     pub time: u64,
+    pub hook_seq: u64,
     pub saddr: u32,
     pub daddr: u32,
     pub sport: u16,
@@ -22,7 +23,7 @@ pub struct Tcp4Packet {
 }
 
 event_schema! {
-    Tcp4Packet => "tcp4", 35 {
+    Tcp4Packet => "tcp4", 43 {
         seq => "SEQ_NUM": U32,
         ack => "ACK_NUM": U32,
         window => "WINDOW": U16,
