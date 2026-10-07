@@ -331,6 +331,9 @@ fn allocate(file: &File, offset: usize, len: usize) -> io::Result<()> {
 
 const MIN_MMAP_GROWTH: usize = 64 * 1024;
 const MAX_MMAP_GROWTH: usize = 1 << 30;
+/// Smallest step when growing in the background, so that small files do not spawn a
+/// helper every few kilobytes
+const MIN_BACKGROUND_GROWTH: usize = 16 << 20;
 
 struct MmapBackedFile {
     file: File,
@@ -338,6 +341,8 @@ struct MmapBackedFile {
     position: usize,
     capacity: usize,
     growth: usize,
+    /// Background growth in flight: the new mapping and the capacity it covers
+    pending: Option<mpsc::Receiver<io::Result<(MmapMut, usize)>>>,
 }
 
 impl MmapBackedFile {
@@ -370,7 +375,52 @@ impl MmapBackedFile {
             position: existing_len,
             capacity,
             growth,
+            pending: None,
         })
+    }
+
+    /// Next capacity when the file has to grow to hold `required` bytes. Grows
+    /// geometrically so that remapping stays rare at high record rates.
+    fn next_capacity(&self, required: usize) -> usize {
+        let step = self
+            .capacity
+            .clamp(self.growth.max(MIN_BACKGROUND_GROWTH), MAX_MMAP_GROWTH);
+        required
+            .max(self.capacity.saturating_add(step))
+            .next_multiple_of(self.growth)
+    }
+
+    /// Extends the file to `new_capacity` and maps all of it
+    fn grow(file: &File, old_capacity: usize, new_capacity: usize) -> io::Result<MmapMut> {
+        allocate(file, old_capacity, new_capacity - old_capacity)?;
+        file.set_len(new_capacity as u64)?;
+        unsafe { MmapMut::map_mut(file) }
+    }
+
+    /// Preallocates the next chunk on a helper thread, the writer keeps using the old
+    /// mapping until the new one is ready. fallocate can block for a long time and the
+    /// ring buffer would overflow meanwhile.
+    fn start_growth(&mut self, new_capacity: usize) -> io::Result<()> {
+        let file = self.file.try_clone()?;
+        let old_capacity = self.capacity;
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("tcbee-grow".into())
+            .spawn(move || {
+                let _ = tx
+                    .send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
+            })?;
+        self.pending = Some(rx);
+        Ok(())
+    }
+
+    fn adopt(&mut self, map: MmapMut, capacity: usize) {
+        self.capacity = capacity;
+        if let Some(old) = self.map.replace(map) {
+            // Unmapping a large dirty mapping is slow, keep it off the writer thread.
+            // The written pages stay in the page cache.
+            thread::spawn(move || drop(old));
+        }
     }
 
     fn ensure_capacity(&mut self, additional: usize) -> io::Result<()> {
@@ -383,25 +433,42 @@ impl MmapBackedFile {
             .checked_add(additional)
             .ok_or_else(|| io::Error::new(ErrorKind::Other, "file size overflow"))?;
 
-        if required <= self.capacity {
-            return Ok(());
+        // Take over a finished background growth without waiting for it
+        if let Some(rx) = &self.pending {
+            match rx.try_recv() {
+                Ok(grown) => {
+                    self.pending = None;
+                    let (map, capacity) = grown?;
+                    self.adopt(map, capacity);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.pending = None;
+                    return Err(io::Error::new(ErrorKind::Other, "file growth thread died"));
+                }
+            }
         }
 
-        // Grow geometrically so that remapping stays rare at high record rates
-        let step = self.capacity.clamp(self.growth, MAX_MMAP_GROWTH);
-        let new_capacity = required
-            .max(self.capacity.saturating_add(step))
-            .next_multiple_of(self.growth);
+        if required > self.capacity {
+            // Out of room: the helper was too slow or not started, wait for it
+            if let Some(rx) = self.pending.take() {
+                let (map, capacity) = rx
+                    .recv()
+                    .map_err(|_| io::Error::new(ErrorKind::Other, "file growth thread died"))??;
+                self.adopt(map, capacity);
+            }
+            if required > self.capacity {
+                let new_capacity = self.next_capacity(required);
+                let map = Self::grow(&self.file, self.capacity, new_capacity)?;
+                self.adopt(map, new_capacity);
+            }
+        }
 
-        allocate(&self.file, self.capacity, new_capacity - self.capacity)?;
-
-        // Unmapping a shared mapping keeps the written pages in the page cache
-        drop(self.map.take());
-
-        self.file.set_len(new_capacity as u64)?;
-        let map = unsafe { MmapMut::map_mut(&self.file)? };
-        self.map = Some(map);
-        self.capacity = new_capacity;
+        // Start the next growth while half of the file is still free
+        if self.pending.is_none() && required > self.capacity / 2 {
+            let new_capacity = self.next_capacity(required);
+            self.start_growth(new_capacity)?;
+        }
 
         Ok(())
     }
@@ -419,6 +486,10 @@ impl MmapBackedFile {
     }
 
     fn finish(mut self) -> io::Result<()> {
+        // Let a running growth end, it must not extend the file after the final set_len
+        if let Some(rx) = self.pending.take() {
+            let _ = rx.recv();
+        }
         if let Some(map) = self.map.take() {
             map.flush_range(0, self.position)?;
         }
@@ -764,6 +835,25 @@ mod tests {
         let mut rng = Rng(42);
         for _ in 0..20_000 {
             let record = rng.bytes(37);
+            file.reserve(record.len()).unwrap().copy_from_slice(&record);
+            expected.extend_from_slice(&record);
+        }
+        file.finish().unwrap();
+        let written = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(written == expected);
+    }
+
+    /// Writing faster than the helper can grow forces several background and blocking growths
+    #[test]
+    fn mmap_file_grows_in_background() {
+        let path = env::temp_dir().join(format!("tcbee-grow-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut file = MmapBackedFile::new(&path, 1000).unwrap();
+        let mut expected = Vec::new();
+        let mut rng = Rng(7);
+        for _ in 0..50_000 {
+            let record = rng.bytes(1000);
             file.reserve(record.len()).unwrap().copy_from_slice(&record);
             expected.extend_from_slice(&record);
         }
