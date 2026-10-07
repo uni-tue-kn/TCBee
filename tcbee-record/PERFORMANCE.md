@@ -96,8 +96,7 @@ Plain `*counter += v` for the slots of `RB_SOCK_*`, `RB_CWND_*` and the byte cou
 (each written by one fentry program), and of the three tracepoint ring buffers:
 
 - fentry: the trampoline skips a program already active on the CPU (`bpf_prog->active`,
-  kernel 5.12), which also covers preemption. A CO-RE `bpf_core_field_exists(struct
-  bpf_prog, active)` picks the atomic add on older kernels, where a softirq can re-enter.
+  kernel 5.12, which `hook_seq` requires anyway), which also covers preemption.
 - tracepoints: preemption disabled and `bpf_prog_active` guard, on all kernels.
 
 TC (egress can be entered from TC ingress processing; kept conservative) and CUBIC/BBR (two

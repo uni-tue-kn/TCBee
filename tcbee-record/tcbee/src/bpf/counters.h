@@ -53,23 +53,16 @@ static __always_inline void add_stat(__u32 slot, __u64 value)
  * Plain read-modify-write for slots that exactly one program writes, cheaper than the
  * locked add. Such a program cannot nest on itself on one CPU, so no update is lost:
  *  - tracepoint programs run with preemption disabled and are skipped while
- *    bpf_prog_active is held on the CPU (all kernels);
+ *    bpf_prog_active is held on the CPU;
  *  - fentry programs are skipped while the same program is active on the CPU, which also
- *    covers preemption (bpf_prog->active, kernel 5.12). Older kernels lack that guard and
- *    a softirq can run the program again on top of itself, so they keep the atomic add.
- *    The check is a CO-RE relocation, resolved when the object is loaded.
+ *    covers preemption (bpf_prog->active).
  * TC programs and the CUBIC/BBR hooks, which share a ring buffer between two programs,
  * always use the atomic add.
  */
-static __always_inline void add_stat_owned(__u32 slot, __u64 value, bool fentry)
+static __always_inline void add_stat_owned(__u32 slot, __u64 value)
 {
-	__u64 *counter;
+	__u64 *counter = bpf_map_lookup_elem(&STATS, &slot);
 
-	if (fentry && !bpf_core_field_exists(struct bpf_prog, active)) {
-		add_stat(slot, value);
-		return;
-	}
-	counter = bpf_map_lookup_elem(&STATS, &slot);
 	if (counter)
 		*counter += value;
 }
@@ -82,18 +75,13 @@ static __always_inline bool rb_owned(__u32 rb)
 	       rb == RB_BAD_CSUM;
 }
 
-static __always_inline bool rb_tracepoint(__u32 rb)
-{
-	return rb == RB_TCP_PROBE || rb == RB_RETRANSMIT_SYNACK || rb == RB_BAD_CSUM;
-}
-
 /* rb is a constant in every caller, so this folds to one of the two adds */
 static __always_inline void count(__u32 rb, __u32 stat)
 {
 	__u32 slot = rb * STATS_PER_RB + stat;
 
 	if (rb_owned(rb))
-		add_stat_owned(slot, 1, !rb_tracepoint(rb));
+		add_stat_owned(slot, 1);
 	else
 		add_stat(slot, 1);
 }

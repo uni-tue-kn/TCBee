@@ -176,11 +176,6 @@ struct tcp_sock {
 	u32 total_retrans;
 };
 
-/* Only the field existence is tested by tcbee.bpf.c. */
-struct bpf_prog {
-	u8 *active;
-};
-
 #ifndef BPF_NO_PRESERVE_ACCESS_INDEX
 #pragma clang attribute pop
 #endif
