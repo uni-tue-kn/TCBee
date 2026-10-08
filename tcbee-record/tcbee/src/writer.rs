@@ -319,15 +319,20 @@ fn allocate(file: &File, offset: usize, len: usize) -> io::Result<()> {
     if len == 0 {
         return Ok(());
     }
-    let ret = unsafe { libc::fallocate(file.as_raw_fd(), 0, offset as i64, len as i64) };
-    if ret == 0 {
-        return Ok(());
-    }
-    let err = io::Error::last_os_error();
-    match err.raw_os_error() {
-        // Not every file system supports it, fall back to a sparse file
-        Some(libc::EOPNOTSUPP) => Ok(()),
-        _ => Err(err),
+    loop {
+        let ret = unsafe { libc::fallocate(file.as_raw_fd(), 0, offset as i64, len as i64) };
+        if ret == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            // tmpfs gives up a long allocation when a signal arrives (SIGSTOP/SIGCONT, for
+            // example) and frees what it had allocated. Giving up here would stop the writer.
+            Some(libc::EINTR) => continue,
+            // Not every file system supports it, fall back to a sparse file
+            Some(libc::EOPNOTSUPP) => return Ok(()),
+            _ => return Err(err),
+        }
     }
 }
 
