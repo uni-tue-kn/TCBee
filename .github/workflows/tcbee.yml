@@ -32,8 +32,8 @@ jobs:
     - name: TCBee-Record Build
       run: cd tcbee-record && cargo build --release
 
-    - name: Checked-in records match records.h
-      run: cd tcbee-record && cargo test -p tcbee-common --test records_gen
+    - name: TCBee-Record Test
+      run: cd tcbee-record && cargo test
 
   # tcbee-process, tcbee-viz and ts-storage form the cargo workspace in the repository root.
   # Every leg builds the engines it names and no others, and runs the tests of all three crates,

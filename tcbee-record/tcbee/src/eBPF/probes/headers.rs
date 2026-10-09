@@ -5,16 +5,12 @@ use libbpf_rs::{
     TC_INGRESS,
 };
 use log::{info, warn};
-use tcbee_common::{
-    prog_bindings::TraceInoutProbe,
-    records::{tcp4_packet_trace, tcp6_packet_trace},
-};
+use tcbee_common::records::{tcp4_packet_trace, tcp6_packet_trace};
 
 use tcbee_common::stats::{RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS};
 
 use crate::{
     eBPF::{
-        ebpf_runner::prepend_string,
         errors::EBPFRunnerError,
         host::kernel_version,
         rings,
@@ -201,22 +197,22 @@ impl TCTracer {
         writer.register::<tcp4_packet_trace>(
             RB_TCP4_INGRESS,
             rings::of(&skel.maps.TCP4_PACKETS_INGRESS)?,
-            prepend_string(tcp4_packet_trace::IN_FILE.to_string(), dir),
+            dir,
         )?;
         writer.register::<tcp6_packet_trace>(
             RB_TCP6_INGRESS,
             rings::of(&skel.maps.TCP6_PACKETS_INGRESS)?,
-            prepend_string(tcp6_packet_trace::IN_FILE.to_string(), dir),
+            dir,
         )?;
         writer.register::<tcp4_packet_trace>(
             RB_TCP4_EGRESS,
             rings::of(&skel.maps.TCP4_PACKETS_EGRESS)?,
-            prepend_string(tcp4_packet_trace::OUT_FILE.to_string(), dir),
+            dir,
         )?;
         writer.register::<tcp6_packet_trace>(
             RB_TCP6_EGRESS,
             rings::of(&skel.maps.TCP6_PACKETS_EGRESS)?,
-            prepend_string(tcp6_packet_trace::OUT_FILE.to_string(), dir),
+            dir,
         )?;
 
         Ok(())

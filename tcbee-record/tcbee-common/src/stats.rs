@@ -5,6 +5,8 @@
 //! (ring buffer full) or `STAT_ERROR` (kernel read failed). The number of invocations
 //! is their sum.
 
+use tcbee_trace::TraceFile;
+
 pub const RB_TCP4_EGRESS: u32 = 0;
 pub const RB_TCP4_INGRESS: u32 = 1;
 pub const RB_TCP6_EGRESS: u32 = 2;
@@ -40,6 +42,8 @@ pub const fn slot(rb: u32, stat: u32) -> u32 {
 pub struct RingBuf {
     /// Map name (the kernel shows the first 15 characters)
     pub map: &'static str,
+    /// Trace file its records are written to
+    pub file: TraceFile,
     /// `--ringbuf-size` group
     pub group: &'static str,
     /// Default size of each CPU's ring buffer in bytes. A flow's events mostly land on one
@@ -47,28 +51,34 @@ pub struct RingBuf {
     pub size_per_cpu: u32,
 }
 
-const fn rb(map: &'static str, group: &'static str, mib: u32) -> RingBuf {
+const fn rb(map: &'static str, file: TraceFile, group: &'static str, mib: u32) -> RingBuf {
     RingBuf {
         map,
+        file,
         group,
         size_per_cpu: mib << 20,
     }
 }
 
 /// All ring buffer maps, indexed by `RB_*`. IPv6 rings are smaller as they stay empty in
-/// most recordings.
+/// most recordings. `tests/c_mirror.rs` checks the ids and map names against the eBPF sources.
 pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
-    rb("TCP4_PACKETS_EGRESS", "tcp4", 16),
-    rb("TCP4_PACKETS_INGRESS", "tcp4", 16),
-    rb("TCP6_PACKETS_EGRESS", "tcp6", 4),
-    rb("TCP6_PACKETS_INGRESS", "tcp6", 4),
-    rb("TCP_SEND_SOCK_EVENTS", "sock", 16),
-    rb("TCP_RECV_SOCK_EVENTS", "sock", 16),
-    rb("TCP_SEND_CWND_EVENTS", "cwnd", 8),
-    rb("TCP_RECEIVE_CWND_EVENTS", "cwnd", 8),
-    rb("TCP_PROBE_QUEUE", "tcp_probe", 4),
-    rb("TCP_RETRANSMIT_SYNACK_QUEUE", "synack", 1),
-    rb("TCP_BAD_CSUM_QUEUE", "bad_csum", 1),
-    rb("CUBIC_EVENTS", "cubic", 8),
-    rb("BBR_EVENTS", "bbr", 8),
+    rb("TCP4_PACKETS_EGRESS", TraceFile::Tcp4Send, "tcp4", 16),
+    rb("TCP4_PACKETS_INGRESS", TraceFile::Tcp4Receive, "tcp4", 16),
+    rb("TCP6_PACKETS_EGRESS", TraceFile::Tcp6Send, "tcp6", 4),
+    rb("TCP6_PACKETS_INGRESS", TraceFile::Tcp6Receive, "tcp6", 4),
+    rb("TCP_SEND_SOCK_EVENTS", TraceFile::SendSock, "sock", 16),
+    rb("TCP_RECV_SOCK_EVENTS", TraceFile::RecvSock, "sock", 16),
+    rb("TCP_SEND_CWND_EVENTS", TraceFile::SendCwnd, "cwnd", 8),
+    rb("TCP_RECEIVE_CWND_EVENTS", TraceFile::RecvCwnd, "cwnd", 8),
+    rb("TCP_PROBE_QUEUE", TraceFile::TcpProbe, "tcp_probe", 4),
+    rb(
+        "TCP_RETRANSMIT_SYNACK_QUEUE",
+        TraceFile::TcpRetransmitSynack,
+        "synack",
+        1,
+    ),
+    rb("TCP_BAD_CSUM_QUEUE", TraceFile::TcpBadCsum, "bad_csum", 1),
+    rb("CUBIC_EVENTS", TraceFile::Cubic, "cubic", 8),
+    rb("BBR_EVENTS", TraceFile::Bbr, "bbr", 8),
 ];

@@ -1,13 +1,12 @@
 use std::error::Error;
 
 use libbpf_rs::Link;
-use tcbee_common::{prog_bindings::TraceInoutProbe, records::cwnd_trace_entry};
+use tcbee_common::records::cwnd_trace_entry;
 
 use tcbee_common::stats::{RB_CWND_RECV, RB_CWND_SEND};
 
 use crate::{
     eBPF::{
-        ebpf_runner::prepend_string,
         probes::attach,
         rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
@@ -37,12 +36,12 @@ impl CwndTracer {
         writer.register::<cwnd_trace_entry>(
             RB_CWND_SEND,
             rings::of(&skel.maps.TCP_SEND_CWND_EVENTS)?,
-            prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), dir),
+            dir,
         )?;
         writer.register::<cwnd_trace_entry>(
             RB_CWND_RECV,
             rings::of(&skel.maps.TCP_RECEIVE_CWND_EVENTS)?,
-            prepend_string(cwnd_trace_entry::IN_FILE.to_string(), dir),
+            dir,
         )?;
 
         Ok(())

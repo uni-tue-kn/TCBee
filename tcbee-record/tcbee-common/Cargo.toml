@@ -6,6 +6,7 @@ license = "MIT"
 
 [dependencies]
 serde = { version = "1.0.217", features = ["serde_derive"] }
+tcbee-trace = { path = "../tcbee-trace" }
 
 [lib]
 path = "src/lib.rs"

@@ -1,13 +1,12 @@
 use std::error::Error;
 
 use libbpf_rs::Link;
-use tcbee_common::{prog_bindings::TraceInoutProbe, records::sock_trace_entry};
+use tcbee_common::records::sock_trace_entry;
 
 use tcbee_common::stats::{RB_SOCK_RECV, RB_SOCK_SEND};
 
 use crate::{
     eBPF::{
-        ebpf_runner::prepend_string,
         probes::attach,
         rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
@@ -37,12 +36,12 @@ impl KernelTracer {
         writer.register::<sock_trace_entry>(
             RB_SOCK_SEND,
             rings::of(&skel.maps.TCP_SEND_SOCK_EVENTS)?,
-            prepend_string(sock_trace_entry::OUT_FILE.to_string(), dir),
+            dir,
         )?;
         writer.register::<sock_trace_entry>(
             RB_SOCK_RECV,
             rings::of(&skel.maps.TCP_RECV_SOCK_EVENTS)?,
-            prepend_string(sock_trace_entry::IN_FILE.to_string(), dir),
+            dir,
         )?;
 
         Ok(())

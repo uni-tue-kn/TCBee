@@ -19,7 +19,7 @@ use libbpf_rs::{MapHandle, RingBufferBuilder};
 use log::{debug, error, info, trace};
 use memmap2::MmapMut;
 use serde::Serialize;
-use tcbee_common::records::RECORD_DELIMITER;
+use tcbee_common::{records::RECORD_DELIMITER, stats::RINGBUFS};
 
 use crate::config::WRITER_BUFFER_SIZE;
 
@@ -95,12 +95,15 @@ impl Writer {
         &mut self,
         rb: u32,
         maps: Vec<MapHandle>,
-        file_path: impl Into<PathBuf>,
+        trace_dir: impl AsRef<Path>,
     ) -> Result<(), WriterError>
     where
         T: Serialize + Copy + Send + 'static,
     {
-        let job = MapWriterJob::<T>::new(file_path.into(), self.bytes_written.clone())?;
+        let file_path = trace_dir
+            .as_ref()
+            .join(RINGBUFS[rb as usize].file.filename());
+        let job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?;
         let running = self.running.clone();
 
         let cpu = if self.cpu_pool.is_empty() {

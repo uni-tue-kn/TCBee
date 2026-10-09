@@ -2,13 +2,12 @@ use std::error::Error;
 
 use libbpf_rs::Link;
 use log::error;
-use tcbee_common::{prog_bindings::TraceProbe, records::bbr_trace_entry};
+use tcbee_common::records::bbr_trace_entry;
 
 use tcbee_common::stats::RB_BBR;
 
 use crate::{
     eBPF::{
-        ebpf_runner::prepend_string,
         host::KernelBtf,
         probes::{attach, retarget},
         rings,
@@ -70,11 +69,7 @@ impl BBRTracer {
         }
 
         // Both programs write to the same map
-        writer.register::<bbr_trace_entry>(
-            RB_BBR,
-            rings::of(&skel.maps.BBR_EVENTS)?,
-            prepend_string(bbr_trace_entry::FILE.to_string(), dir),
-        )?;
+        writer.register::<bbr_trace_entry>(RB_BBR, rings::of(&skel.maps.BBR_EVENTS)?, dir)?;
 
         Ok(())
     }

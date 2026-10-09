@@ -1,13 +1,12 @@
 use std::error::Error;
 
 use libbpf_rs::Link;
-use tcbee_common::{prog_bindings::TraceProbe, records::cubic_trace_entry};
+use tcbee_common::records::cubic_trace_entry;
 
 use tcbee_common::stats::RB_CUBIC;
 
 use crate::{
     eBPF::{
-        ebpf_runner::prepend_string,
         errors::EBPFRunnerError,
         host::KernelBtf,
         probes::{attach, retarget},
@@ -61,11 +60,7 @@ impl CubicTracer {
         }
 
         // Both programs write to the same map
-        writer.register::<cubic_trace_entry>(
-            RB_CUBIC,
-            rings::of(&skel.maps.CUBIC_EVENTS)?,
-            prepend_string(cubic_trace_entry::FILE.to_string(), dir),
-        )?;
+        writer.register::<cubic_trace_entry>(RB_CUBIC, rings::of(&skel.maps.CUBIC_EVENTS)?, dir)?;
 
         Ok(())
     }

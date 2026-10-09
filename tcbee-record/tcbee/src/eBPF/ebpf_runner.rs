@@ -65,13 +65,6 @@ pub struct EbpfRunner {
     started: Option<Instant>,
 }
 
-pub fn prepend_string(filename: String, dir: &str) -> String {
-    std::path::Path::new(dir)
-        .join(&filename)
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// Last libbpf warnings, shown when loading fails. They name the program, map or the
 /// kernel struct field that could not be relocated.
 static LIBBPF_WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
