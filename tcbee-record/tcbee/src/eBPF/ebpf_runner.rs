@@ -364,7 +364,7 @@ impl EbpfRunner {
             optional.insert(OptionalGroup::Bbr);
         }
         let pm = self.config.mptcp.pm && !disabled.contains(&OptionalGroup::MptcpPm);
-        if MptcpPmTracer::configure(&mut open.progs, pm, btf) {
+        if MptcpPmTracer::configure(open.open_object_mut(), pm, btf) {
             optional.insert(OptionalGroup::MptcpPm);
         }
         Ok((open, optional))

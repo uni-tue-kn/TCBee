@@ -8,6 +8,19 @@
 
 use std::collections::BTreeSet;
 
+use crate::eBPF::probes::mptcp::PM_HOOKS;
+
+/// The program names of `PM_HOOKS`
+const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
+    let mut names = [""; PM_HOOKS.len()];
+    let mut i = 0;
+    while i < PM_HOOKS.len() {
+        names[i] = PM_HOOKS[i].0;
+        i += 1;
+    }
+    names
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OptionalGroup {
     Bbr,
@@ -41,14 +54,7 @@ impl OptionalGroup {
                 "cwnd_sock_sendmsg",
                 "cwnd_sock_recvmsg",
             ],
-            OptionalGroup::MptcpPm => &[
-                "mptcp_pm_event",
-                "mptcp_pm_announced",
-                "mptcp_pm_removed",
-                "mptcp_pm_token_destroy",
-                "mptcp_pm_subflow_connect",
-                "mptcp_pm_mp_fail",
-            ],
+            OptionalGroup::MptcpPm => &MPTCP_PM_PROGRAMS,
         }
     }
 
