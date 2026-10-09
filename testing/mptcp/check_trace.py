@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks the sock records of a recording made by run.sh.
+"""Checks a recording made by run.sh: sock records, path manager events and the database.
 
     check_trace.py TRACE_DIR MPTCP_PORT TCP_PORT [DB]
 
@@ -17,7 +17,11 @@ import struct
 import sys
 from pathlib import Path
 
-# sock_trace_entry on disk (bincode, see tcbee-record/tcbee/src/bpf/records.h): the header
+# The layouts below mirror sock_trace_entry and mptcp_pm_entry in
+# tcbee-record/tcbee/src/bpf/records.h (bincode, no padding). Update them together with the
+# size asserts in tcbee-record/tcbee-common/src/records.rs.
+#
+# sock_trace_entry on disk: the header
 # (time, hook_seq, addr_v4, src_v6, dst_v6, sport, dport, family), the socket fields, conn_id
 # last, then the 4 byte divider.
 SOCK_RECORD = 172
@@ -26,9 +30,13 @@ PORTS_OFFSET = 56
 ADDR_V4_OFFSET = 16
 CONN_ID_OFFSET = SOCK_RECORD - 8
 
-# mptcp_pm_entry on disk: the same header, then token, remote_token, subflow_id, error, event,
-# local_id, remote_id, backup, addr_id, addr_family, addr_port, addr
+# mptcp_pm_entry on disk: the same header, then the path manager fields
 PM_RECORD = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHH16s")
+PmRecord = collections.namedtuple(
+    "PmRecord",
+    "time hook_seq addr_v4 src_v6 dst_v6 sport dport family token remote_token subflow_id "
+    "error event local_id remote_id backup addr_id addr_family addr_port addr",
+)
 CREATED, ESTABLISHED, CLOSED, SUB_ESTABLISHED = 1, 2, 3, 10
 TOKEN_DESTROYED, SUBFLOW_CONNECT = 100, 101
 
@@ -56,9 +64,8 @@ def pm_events(path: Path):
         sys.exit(f"{path}: {len(data)} bytes is no whole number of mptcp_pm records")
     events = []
     for i in range(0, len(data), size):
-        f = PM_RECORD.unpack_from(data, i)
-        time, token, subflow_id, error, event = f[0], f[8], f[10], f[11], f[12]
-        events.append((time, event, token, subflow_id, error))
+        r = PmRecord(*PM_RECORD.unpack_from(data, i))
+        events.append((r.time, r.event, r.token, r.subflow_id, r.error))
     return [e[1:] for e in sorted(events)]
 
 
@@ -86,11 +93,15 @@ def main() -> int:
                 tcp_tags[conn_id] += 1
 
     for conn_id, flows in sorted(subflows.items()):
-        print(f"      conn_id {conn_id:#010x}: " + ", ".join(f"{a}:{b}->{c}:{d}" for a, b, c, d in sorted(flows)))
+        names = ", ".join(f"{a}:{b}->{c}:{d}" for a, b, c, d in sorted(flows))
+        print(f"      conn_id {conn_id:#010x}: {names}")
     check(len(subflows) == 2, f"two MPTCP conn_ids (one per side), got {len(subflows)}")
     check(all(len(f) == 2 for f in subflows.values()), "two subflows per conn_id")
     # The first segments of a subflow may leave before the kernel links it to its connection
-    check(all(n <= 2 for n in untagged.values()), f"at most 2 untagged records per subflow: {dict(untagged)}")
+    check(
+        all(n <= 2 for n in untagged.values()),
+        f"at most 2 untagged records per subflow: {dict(untagged)}",
+    )
     check(set(tcp_tags) == {0}, f"plain TCP records have conn_id 0: {dict(tcp_tags)}")
 
     events = pm_events(trace / "mptcp_pm.tcp")
@@ -104,7 +115,8 @@ def main() -> int:
     check(set(by_token) == set(subflows), "path manager tokens are the conn_ids")
     for token, seq in by_token.items():
         life = [e for e in seq if e in (CREATED, ESTABLISHED, CLOSED, TOKEN_DESTROYED)]
-        check(life == [CREATED, ESTABLISHED, CLOSED, TOKEN_DESTROYED], f"{token:#010x} lifecycle in order")
+        lifecycle = [CREATED, ESTABLISHED, CLOSED, TOKEN_DESTROYED]
+        check(life == lifecycle, f"{token:#010x} lifecycle in order")
         check(seq.count(SUB_ESTABLISHED) == 1, f"{token:#010x} established its second subflow")
 
     if len(sys.argv) > 4:
@@ -117,7 +129,8 @@ def main() -> int:
                 "JOIN flows f ON f.id = c.flow_id WHERE c.connection_id = ?",
                 (db_id,),
             ).fetchall()
-            check(set(rows) == subflows[token], f"database connection {token:#010x} has its subflows")
+            ok = set(rows) == subflows[token]
+            check(ok, f"database connection {token:#010x} has its subflows")
     return 1 if failed else 0
 
 
