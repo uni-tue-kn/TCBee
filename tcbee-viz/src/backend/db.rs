@@ -200,7 +200,7 @@ impl DbBackend {
                 if !label.is_empty() {
                     label.push_str(", ");
                 }
-                label.push_str(&m.conn_id.to_string());
+                label.push_str(&m.connection_id.to_string());
                 if let Some(subflow) = m.subflow_id {
                     label.push_str(&format!("/{subflow}"));
                 }

@@ -45,7 +45,7 @@ pub struct ConnectionInfo {
 /// reused, so it may belong to several connections, one after the other.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionFlow {
-    pub conn_id: i64,
+    pub connection_id: i64,
     pub flow_id: i64,
     /// Number of the flow within the connection, for MPTCP the subflow id
     pub subflow_id: Option<i64>,

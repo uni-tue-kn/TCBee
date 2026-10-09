@@ -261,7 +261,7 @@ impl Worker {
             let mut connection_flow = conn.prepare(sql::INSERT_CONNECTION_FLOW)?;
             for cf in &catalog.connection_flows {
                 connection_flow.execute(params![
-                    cf.conn_id,
+                    cf.connection_id,
                     cf.flow_id,
                     cf.subflow_id,
                     cf.first_ts,
@@ -582,7 +582,7 @@ impl Store for SqliteStore {
         let mut stmt = self.conn.prepare_cached(sql::SELECT_CONNECTION_FLOWS)?;
         let rows = stmt.query_map([], |r| {
             Ok(ConnectionFlow {
-                conn_id: r.get(0)?,
+                connection_id: r.get(0)?,
                 flow_id: r.get(1)?,
                 subflow_id: r.get(2)?,
                 first_ts: r.get(3)?,

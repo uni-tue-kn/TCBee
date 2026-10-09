@@ -111,11 +111,11 @@ def main() -> int:
         db = sqlite3.connect(sys.argv[4])
         conns = dict(db.execute("SELECT key, id FROM connections WHERE kind = 'mptcp'").fetchall())
         check(set(conns) == set(subflows), f"database has one connection per conn_id: {len(conns)}")
-        for token, conn_id in conns.items():
+        for token, db_id in conns.items():
             rows = db.execute(
                 "SELECT f.src, f.sport, f.dst, f.dport FROM connection_flows c "
-                "JOIN flows f ON f.id = c.flow_id WHERE c.conn_id = ?",
-                (conn_id,),
+                "JOIN flows f ON f.id = c.flow_id WHERE c.connection_id = ?",
+                (db_id,),
             ).fetchall()
             check(set(rows) == subflows[token], f"database connection {token:#010x} has its subflows")
     return 1 if failed else 0

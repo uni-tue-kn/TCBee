@@ -24,7 +24,7 @@ One table per recorded event type, one row per record, one typed column per fiel
 | `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at` |
 | `flows(id, src, dst, sport, dport, l4proto)` | one row per TCP flow (IP 5-tuple) |
 | `connections(id, kind, key, flow_id, start_ts, end_ts)` | connections that group flows, e.g. an MPTCP connection (`kind` `mptcp`, `key` its token); `flow_id` holds the connection's own series |
-| `connection_flows(conn_id, flow_id, subflow_id, first_ts, last_ts)` | the flows of each connection, e.g. the subflows of an MPTCP connection |
+| `connection_flows(connection_id, flow_id, subflow_id, first_ts, last_ts)` | the flows of each connection, e.g. the subflows of an MPTCP connection |
 | `series(id, flow_id, kind, source, dir, name, value_type, tbl, col, n, t_min, t_max, v_min, v_max)` | catalog of all series with point count and bounds |
 | `ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6`, `ev_mptcp_pm` | the recorded events, see below |
 | `derived_samples(series_id, ts, seq, v_int, v_float, v_bool, v_text)` | points of series created in the visualizer; one of the `v_*` columns is set |

@@ -104,7 +104,7 @@ impl Subflow {
 pub struct TabMptcp {
     /// The connections of the database the state below belongs to
     connections: Vec<ConnectionInfo>,
-    conn_id: Option<i64>,
+    connection_id: Option<i64>,
     subflows: Vec<Subflow>,
     metrics: Vec<MetricKey>,
     metric: Option<MetricKey>,
@@ -184,7 +184,7 @@ impl TabMptcp {
             let subflows = db
                 .list_connection_flows()
                 .iter()
-                .filter(|m| m.conn_id == c.id)
+                .filter(|m| m.connection_id == c.id)
                 .count();
             let text = format!(
                 "#{}  token {:#010x}  {} flows  {:.2} s",
@@ -194,7 +194,7 @@ impl TabMptcp {
                 (c.end_ts - c.start_ts) as f64 / 1e9
             );
             let response = ui
-                .selectable_label(self.conn_id == Some(c.id), text)
+                .selectable_label(self.connection_id == Some(c.id), text)
                 .on_hover_text(format!(
                     "starts {:.3} s after the first connection",
                     (c.start_ts - origin) as f64 / 1e9
@@ -207,7 +207,7 @@ impl TabMptcp {
             self.select_connection(db, id);
         }
 
-        if self.conn_id.is_none() {
+        if self.connection_id.is_none() {
             return;
         }
         ui.add_space(12.0);
@@ -238,14 +238,14 @@ impl TabMptcp {
 
     /// Reads the subflows of a connection and their catalogs, the metrics they share and the
     /// path manager events.
-    fn select_connection(&mut self, db: &DbBackend, conn_id: i64) {
-        self.conn_id = Some(conn_id);
+    fn select_connection(&mut self, db: &DbBackend, connection_id: i64) {
+        self.connection_id = Some(connection_id);
         self.subflows.clear();
         self.events.clear();
         for m in db
             .list_connection_flows()
             .iter()
-            .filter(|m| m.conn_id == conn_id)
+            .filter(|m| m.connection_id == connection_id)
         {
             let Some(flow) = db.get_flow_by_id(m.flow_id) else {
                 continue;
@@ -326,7 +326,7 @@ impl TabMptcp {
     }
 
     fn show_connection(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
-        if self.conn_id.is_none() {
+        if self.connection_id.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     RichText::new("Select an MPTCP connection from the sidebar.")

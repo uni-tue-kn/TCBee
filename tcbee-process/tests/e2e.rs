@@ -334,7 +334,7 @@ fn small_fixture_groups_mptcp_connections() {
             .connection_flows()
             .unwrap()
             .iter()
-            .map(|m| (m.conn_id, sport(m.flow_id), m.subflow_id))
+            .map(|m| (m.connection_id, sport(m.flow_id), m.subflow_id))
             .collect();
         assert_eq!(
             members,

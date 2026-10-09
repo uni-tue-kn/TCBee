@@ -336,8 +336,8 @@ pub fn catalog_connections_round_trip(engine: Engine) {
         start_ts,
         end_ts,
     };
-    let member = |conn_id, flow_id, subflow_id, first_ts, last_ts| ConnectionFlow {
-        conn_id,
+    let member = |connection_id, flow_id, subflow_id, first_ts, last_ts| ConnectionFlow {
+        connection_id,
         flow_id,
         subflow_id,
         first_ts,

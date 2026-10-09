@@ -278,13 +278,13 @@ pub static CONNECTIONS: Table = Table {
 pub static CONNECTION_FLOWS: Table = Table {
     name: "connection_flows",
     columns: &[
-        col("conn_id", SqlType::BigInt, true),
+        col("connection_id", SqlType::BigInt, true),
         col("flow_id", SqlType::BigInt, true),
         col("subflow_id", SqlType::BigInt, false),
         col("first_ts", SqlType::BigInt, true),
         col("last_ts", SqlType::BigInt, true),
     ],
-    constraints: &["PRIMARY KEY (\"conn_id\", \"flow_id\")"],
+    constraints: &["PRIMARY KEY (\"connection_id\", \"flow_id\")"],
 };
 
 pub static SERIES: Table = Table {
@@ -534,12 +534,12 @@ mod tests {
             create_fixed_table_sql(Dialect::Sqlite, &CONNECTION_FLOWS),
             concat!(
                 "CREATE TABLE \"connection_flows\" (\n",
-                "    \"conn_id\" INTEGER NOT NULL,\n",
+                "    \"connection_id\" INTEGER NOT NULL,\n",
                 "    \"flow_id\" INTEGER NOT NULL,\n",
                 "    \"subflow_id\" INTEGER,\n",
                 "    \"first_ts\" INTEGER NOT NULL,\n",
                 "    \"last_ts\" INTEGER NOT NULL,\n",
-                "    PRIMARY KEY (\"conn_id\", \"flow_id\")\n",
+                "    PRIMARY KEY (\"connection_id\", \"flow_id\")\n",
                 ")"
             )
         );

@@ -213,7 +213,7 @@ fn insert_connections(conn: &Connection, catalog: &Catalog) -> Result<(), StoreE
     let mut app = conn.appender("connection_flows")?;
     for cf in &catalog.connection_flows {
         app.append_row(params![
-            cf.conn_id,
+            cf.connection_id,
             cf.flow_id,
             cf.subflow_id,
             cf.first_ts,
@@ -603,7 +603,7 @@ impl Store for DuckStore {
         let mut st = self.conn.prepare(sql::SELECT_CONNECTION_FLOWS)?;
         let rows = st.query_map([], |r| {
             Ok(ConnectionFlow {
-                conn_id: r.get(0)?,
+                connection_id: r.get(0)?,
                 flow_id: r.get(1)?,
                 subflow_id: r.get(2)?,
                 first_ts: r.get(3)?,

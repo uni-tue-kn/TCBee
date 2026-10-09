@@ -207,7 +207,7 @@ pub fn assemble(
         for (flow_id, first_ts, last_ts) in flows {
             let subflow_id = subflow_ids.get(&(flow_id, token)).copied();
             let member = |flow_id| ConnectionFlow {
-                conn_id: info.id,
+                connection_id: info.id,
                 flow_id,
                 subflow_id,
                 first_ts,
@@ -265,9 +265,9 @@ mod tests {
         }
     }
 
-    fn members(cf: &[ConnectionFlow], conn_id: i64) -> Vec<(i64, Option<i64>)> {
+    fn members(cf: &[ConnectionFlow], connection_id: i64) -> Vec<(i64, Option<i64>)> {
         cf.iter()
-            .filter(|c| c.conn_id == conn_id)
+            .filter(|c| c.connection_id == connection_id)
             .map(|c| (c.flow_id, c.subflow_id))
             .collect()
     }
