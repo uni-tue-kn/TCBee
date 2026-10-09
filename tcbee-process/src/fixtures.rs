@@ -127,6 +127,11 @@ mod generate {
             } else {
                 0
             },
+            addr_0: if event == TCBEE_MPTCP_SUBFLOW_CONNECT {
+                u32::from_le_bytes(DST)
+            } else {
+                0
+            },
             ..Default::default()
         }
     }

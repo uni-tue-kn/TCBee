@@ -31,11 +31,12 @@ ADDR_V4_OFFSET = 16
 CONN_ID_OFFSET = SOCK_RECORD - 8
 
 # mptcp_pm_entry on disk: the same header, then the path manager fields
-PM_RECORD = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHH16s")
+PM_RECORD = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHHIIII")
 PmRecord = collections.namedtuple(
     "PmRecord",
     "time hook_seq addr_v4 src_v6 dst_v6 sport dport family token remote_token subflow_id "
-    "error event local_id remote_id backup addr_id addr_family addr_port addr",
+    "error event local_id remote_id backup addr_id addr_family addr_port addr_0 addr_1 addr_2 "
+    "addr_3",
 )
 CREATED, ESTABLISHED, CLOSED, SUB_ESTABLISHED = 1, 2, 3, 10
 TOKEN_DESTROYED, SUBFLOW_CONNECT = 100, 101

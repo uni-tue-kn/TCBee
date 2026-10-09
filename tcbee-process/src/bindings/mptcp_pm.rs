@@ -19,6 +19,10 @@ event_schema! {
         addr_id: U8,
         addr_family: U16,
         addr_port: U16,
+        addr_0: U32,
+        addr_1: U32,
+        addr_2: U32,
+        addr_3: U32,
     }
     {
         fn flow_key(&self) -> IpTuple {

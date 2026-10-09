@@ -225,11 +225,18 @@ struct mptcp_pm_entry {
 	uint8_t local_id;
 	uint8_t remote_id;
 	uint8_t backup;
-	/* ANNOUNCED, REMOVED, SUBFLOW_CONNECT: the address (id, AF_INET(6), port in host order) */
+	/*
+	 * ANNOUNCED, REMOVED, SUBFLOW_CONNECT: the address (id, AF_INET(6), port in host order).
+	 * addr_0 to addr_3 hold its bytes in network order, 4 each, an IPv4 address only addr_0;
+	 * words and not bytes, so that every part is a database column.
+	 */
 	uint8_t addr_id;
 	uint16_t addr_family;
 	uint16_t addr_port;
-	uint8_t addr[16];
+	uint32_t addr_0;
+	uint32_t addr_1;
+	uint32_t addr_2;
+	uint32_t addr_3;
 };
 
 /* tracepoint tcp/tcp_bad_csum, TCP_BAD_CSUM_QUEUE. IPv4 addresses only. */

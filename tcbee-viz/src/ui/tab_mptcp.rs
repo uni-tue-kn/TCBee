@@ -3,6 +3,7 @@
 //! acknowledged bytes.
 
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 
 use egui::{RichText, ScrollArea};
 use egui_plot::{Corner, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
@@ -77,6 +78,25 @@ fn pm_event_name(event: i64) -> &'static str {
         TCBEE_MPTCP_MP_FAIL => "MP_FAIL",
         _ => "event",
     }
+}
+
+/// The address of a path manager event, from its family, port and the four words that hold
+/// its bytes in network order (see `mptcp_pm_entry` in records.h)
+fn event_address(family: i64, port: i64, words: [i64; 4]) -> Option<String> {
+    let mut bytes = [0u8; 16];
+    for (chunk, word) in bytes.chunks_mut(4).zip(words) {
+        chunk.copy_from_slice(&(word as u32).to_le_bytes());
+    }
+    let ip = match family {
+        2 => IpAddr::from([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        10 => IpAddr::from(bytes),
+        _ => return None,
+    };
+    Some(match (ip, port) {
+        (ip, 0) => ip.to_string(),
+        (IpAddr::V6(ip), port) => format!("[{ip}]:{port}"),
+        (ip, port) => format!("{ip}:{port}"),
+    })
 }
 
 /// One subflow of the selected connection with its catalog
@@ -284,20 +304,36 @@ impl TabMptcp {
         self.needs_fit = true;
 
         for sub in &self.subflows {
-            let Some(events) = sub
-                .series
-                .iter()
-                .find(|s| s.source == "mptcp_pm" && s.name == "event")
-            else {
-                continue;
+            let column = |name: &str| -> Vec<(f64, DataValue)> {
+                sub.series
+                    .iter()
+                    .find(|s| s.source == "mptcp_pm" && s.name == name)
+                    .and_then(|s| db.load_all(s).ok())
+                    .unwrap_or_default()
             };
+            // The columns of one table, so their points line up row by row
+            let events = column("event");
+            let family = column("addr_family");
+            let port = column("addr_port");
+            let words = ["addr_0", "addr_1", "addr_2", "addr_3"].map(|name| column(name));
             let short = sub.member.subflow_id.map(|id| format!(" (subflow {id})"));
-            for (t, v) in db.load_all(events).unwrap_or_default() {
-                if let DataValue::Int(event) = v {
-                    let label =
-                        format!("{}{}", pm_event_name(event), short.as_deref().unwrap_or(""));
-                    self.events.push((t, label));
-                }
+            for (row, (t, event)) in events.iter().enumerate() {
+                let DataValue::Int(event) = *event else {
+                    continue;
+                };
+                let int = |values: &[(f64, DataValue)]| match values.get(row) {
+                    Some((_, DataValue::Int(v))) => *v,
+                    _ => 0,
+                };
+                let address =
+                    event_address(int(&family), int(&port), words.each_ref().map(|w| int(w)));
+                let label = format!(
+                    "{}{}{}",
+                    pm_event_name(event),
+                    address.map(|a| format!(" {a}")).unwrap_or_default(),
+                    short.as_deref().unwrap_or("")
+                );
+                self.events.push((*t, label));
             }
         }
         self.events.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -494,6 +530,23 @@ mod tests {
         assert_eq!(pm_event_name(10), "subflow established");
         assert_eq!(pm_event_name(100), "token destroyed");
         assert_eq!(pm_event_name(-1), "event");
+    }
+
+    #[test]
+    fn event_addresses() {
+        let v4 = u32::from_le_bytes([10, 31, 1, 2]) as i64;
+        assert_eq!(
+            event_address(2, 5501, [v4, 0, 0, 0]).unwrap(),
+            "10.31.1.2:5501"
+        );
+        assert_eq!(event_address(2, 0, [v4, 0, 0, 0]).unwrap(), "10.31.1.2");
+        let one = u32::from_le_bytes([0, 0, 0, 1]) as i64;
+        let db8 = u32::from_le_bytes([0x20, 0x01, 0x0d, 0xb8]) as i64;
+        assert_eq!(
+            event_address(10, 80, [db8, 0, 0, one]).unwrap(),
+            "[2001:db8::1]:80"
+        );
+        assert_eq!(event_address(0, 0, [0; 4]), None);
     }
 
     #[test]

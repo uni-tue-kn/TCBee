@@ -702,11 +702,12 @@ static __always_inline void mptcp_pm_addr(struct mptcp_pm_entry *rec,
 	rec->addr_id = BPF_CORE_READ(addr, id);
 	rec->addr_family = BPF_CORE_READ(addr, family);
 	rec->addr_port = bpf_ntohs(BPF_CORE_READ(addr, port));
+	/* addr_0 to addr_3 are adjacent, they take the address bytes as they are */
 	if (rec->addr_family == AF_INET)
-		bpf_core_read(rec->addr, 4, &addr->addr);
+		bpf_core_read(&rec->addr_0, 4, &addr->addr);
 	/* addr6 only exists with CONFIG_MPTCP_IPV6 */
 	else if (bpf_core_field_exists(addr->addr6))
-		bpf_core_read(rec->addr, 16, &addr->addr6);
+		bpf_core_read(&rec->addr_0, 16, &addr->addr6);
 }
 
 /*
