@@ -1,7 +1,11 @@
 use std::cell::{OnceCell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ts_storage::{DataPoint, DataValue, Engine, Flow, SeriesInfo, SeriesKind, Store, StoreError};
+use ts_storage::{
+    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, SeriesInfo, SeriesKind,
+    Store, StoreError,
+};
 
 use crate::{backend::binding::series_label, data::series_data::SeriesData};
 
@@ -117,6 +121,11 @@ pub struct DbBackend {
     store: Option<Box<dyn Store>>,
     /// Flows never change while a file is open, so they are read once.
     flows: OnceCell<Vec<Flow>>,
+    /// Same for connections and their flows.
+    connections: OnceCell<Vec<ConnectionInfo>>,
+    connection_flows: OnceCell<Vec<ConnectionFlow>>,
+    /// Flow id to "connection/subflow" labels, see `connection_label`
+    connection_labels: OnceCell<HashMap<i64, String>>,
     /// Last read error that was logged, so a failing plot reload logs once, not every frame.
     last_error: RefCell<Option<String>>,
 }
@@ -157,6 +166,48 @@ impl DbBackend {
                 Vec::new()
             })
         })
+    }
+
+    /// Connections that group flows (MPTCP), read on first use.
+    pub fn list_connections(&self) -> &[ConnectionInfo] {
+        let Some(db) = &self.store else { return &[] };
+        self.connections.get_or_init(|| {
+            db.connections().unwrap_or_else(|e| {
+                self.report(format!("listing connections failed: {e}"));
+                Vec::new()
+            })
+        })
+    }
+
+    /// The flows of all connections, ordered by connection, read on first use.
+    pub fn list_connection_flows(&self) -> &[ConnectionFlow] {
+        let Some(db) = &self.store else { return &[] };
+        self.connection_flows.get_or_init(|| {
+            db.connection_flows().unwrap_or_else(|e| {
+                self.report(format!("listing connection flows failed: {e}"));
+                Vec::new()
+            })
+        })
+    }
+
+    /// The connections a flow belongs to as "connection/subflow" (e.g. "3/2", or "3" without
+    /// subflow id), comma separated if a reused tuple belongs to several. Empty for none.
+    pub fn connection_label(&self, flow_id: i64) -> &str {
+        let labels = self.connection_labels.get_or_init(|| {
+            let mut labels: HashMap<i64, String> = HashMap::new();
+            for m in self.list_connection_flows() {
+                let label = labels.entry(m.flow_id).or_default();
+                if !label.is_empty() {
+                    label.push_str(", ");
+                }
+                label.push_str(&m.conn_id.to_string());
+                if let Some(subflow) = m.subflow_id {
+                    label.push_str(&format!("/{subflow}"));
+                }
+            }
+            labels
+        });
+        labels.get(&flow_id).map_or("", String::as_str)
     }
 
     pub fn get_flow_by_id(&self, id: i64) -> Option<&Flow> {

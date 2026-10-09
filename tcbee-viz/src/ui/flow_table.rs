@@ -9,6 +9,7 @@ const COL_ID: f32 = 36.0;
 const COL_PORT: f32 = 54.0;
 const COL_SERIES: f32 = 54.0;
 const COL_POINTS: f32 = 72.0;
+const COL_CONN: f32 = 54.0;
 const ROW_HEIGHT: f32 = 22.0;
 const SEARCH_ICON_W: f32 = 18.0;
 const CLEAR_BUTTON_W: f32 = 22.0;
@@ -23,6 +24,7 @@ Use column:value to limit a term:\n\
   sport:443\n\
   dport:5201\n\
   port:443\n\
+  conn:3 (flows of MPTCP connection 3)\n\
 Combine terms with spaces, e.g. src:10.0.0.1 dport:443";
 
 /// A filterable table widget for selecting a TCP flow.
@@ -116,9 +118,12 @@ impl FlowTable {
                 );
 
                 let filter_lower = self.filter.to_lowercase();
-                let visible: Vec<&Flow> = flows
+                // The connection column only appears for recordings with connections
+                let show_conn = !db.list_connections().is_empty();
+                let visible: Vec<(&Flow, &str)> = flows
                     .iter()
-                    .filter(|f| flow_matches(f, &filter_lower))
+                    .map(|f| (f, db.connection_label(f.id)))
+                    .filter(|(f, conn)| flow_matches(f, conn, &filter_lower))
                     .collect();
 
                 ui.separator();
@@ -135,7 +140,8 @@ impl FlowTable {
                 }
 
                 // ── Header ────────────────────────────────────────────────────────
-                let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS;
+                let conn_w = if show_conn { COL_CONN } else { 0.0 };
+                let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w;
                 let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
 
                 let header_rect = egui::Rect::from_min_size(
@@ -152,6 +158,9 @@ impl FlowTable {
                     header_cell(ui, "Sport", COL_PORT);
                     header_cell(ui, "Dst IP", col_ip);
                     header_cell(ui, "Dport", COL_PORT);
+                    if show_conn {
+                        header_cell(ui, "Conn", COL_CONN).on_hover_text("MPTCP connection/subflow");
+                    }
                     header_cell(ui, "Series", COL_SERIES);
                     header_cell(ui, "Points", COL_POINTS);
                 });
@@ -169,7 +178,7 @@ impl FlowTable {
                     .show_rows(ui, ROW_HEIGHT, row_count, |ui, range| {
                         ui.set_width(content_w);
                         for i in range {
-                            let flow = visible[i];
+                            let (flow, conn) = &visible[i];
                             let fid = flow.id;
                             let is_selected = self.selected_id == Some(fid);
                             let stats = *self
@@ -209,6 +218,9 @@ impl FlowTable {
                                 data_cell(ui, &flow.tuple.sport.to_string(), COL_PORT, is_selected);
                                 data_cell(ui, &flow.tuple.dst.to_string(), col_ip, is_selected);
                                 data_cell(ui, &flow.tuple.dport.to_string(), COL_PORT, is_selected);
+                                if show_conn {
+                                    data_cell(ui, conn, COL_CONN, is_selected);
+                                }
                                 data_cell(
                                     ui,
                                     &stats.series_count.to_string(),
@@ -263,7 +275,8 @@ fn flow_stats(db: &DbBackend, flow: &Flow) -> FlowStats {
     }
 }
 
-fn flow_matches(flow: &Flow, filter: &str) -> bool {
+/// `conn` is the flow's connection label, see `DbBackend::connection_label`
+fn flow_matches(flow: &Flow, conn: &str, filter: &str) -> bool {
     if filter.is_empty() {
         return true;
     }
@@ -271,10 +284,14 @@ fn flow_matches(flow: &Flow, filter: &str) -> bool {
     if filter.split_whitespace().count() > 1 {
         return filter
             .split_whitespace()
-            .all(|term| flow_matches(flow, term));
+            .all(|term| flow_matches(flow, conn, term));
     }
 
     if let Some((column, value)) = filter.split_once(':') {
+        if column == "conn" {
+            return value.is_empty()
+                || conn.split(", ").any(|c| c.split('/').next() == Some(value));
+        }
         return flow_column_matches(flow, column, value);
     }
 
@@ -321,7 +338,7 @@ fn format_count(count: i64) -> String {
     }
 }
 
-fn header_cell(ui: &mut Ui, label: &str, width: f32) {
+fn header_cell(ui: &mut Ui, label: &str, width: f32) -> egui::Response {
     let dark_mode = ui.visuals().dark_mode;
     ui.add_sized(
         [width, ROW_HEIGHT],
@@ -331,7 +348,7 @@ fn header_cell(ui: &mut Ui, label: &str, width: f32) {
                 .strong()
                 .size(12.0),
         ),
-    );
+    )
 }
 
 fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) {
@@ -349,4 +366,38 @@ fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) {
         [width, ROW_HEIGHT],
         egui::Label::new(RichText::new(text).color(color).size(12.0)).truncate(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use ts_storage::IpTuple;
+
+    use super::*;
+
+    fn flow() -> Flow {
+        let ip = |last| IpAddr::V4(Ipv4Addr::new(10, 0, 0, last));
+        Flow::new(
+            12,
+            IpTuple {
+                src: ip(1),
+                dst: ip(2),
+                sport: 40000,
+                dport: 5201,
+                l4proto: 6,
+            },
+        )
+    }
+
+    #[test]
+    fn conn_filter_matches_the_connection_id() {
+        let f = flow();
+        assert!(flow_matches(&f, "3/2", "conn:3"));
+        assert!(flow_matches(&f, "1, 3", "conn:3"));
+        assert!(!flow_matches(&f, "13/1", "conn:3"));
+        assert!(!flow_matches(&f, "", "conn:3"));
+        assert!(flow_matches(&f, "3/2", "conn:3 dport:5201"));
+        assert!(flow_matches(&f, "", "dport:5201"));
+    }
 }
