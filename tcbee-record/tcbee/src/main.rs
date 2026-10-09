@@ -10,7 +10,7 @@ use std::net::IpAddr;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_to_filter_addr, parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig,
+    ip_to_filter_addr, parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig, MptcpModes,
 };
 use tcbee_trace::TCBeeTrace;
 use writer::PollMode;
@@ -71,6 +71,8 @@ fn main() -> anyhow::Result<()> {
     let mut trace_kernel: bool = false;
     let mut trace_algorithms: bool = false;
     let mut trace_cwnd: bool = false;
+    let mut trace_mptcp: bool = false;
+    let mut mptcp_modes: String = String::new();
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
     let mut duration: f64 = 0.0;
@@ -194,6 +196,16 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Record behaviour of congestion algorithms: Cubic and BBR.",
         );
+        argparser.refer(&mut trace_mptcp).add_option(
+            &["-M", "--mptcp"],
+            StoreTrue,
+            "Record MPTCP: tag the sock (-k) and cwnd (-w) records of subflows with the token of their MPTCP connection.",
+        );
+        argparser.refer(&mut mptcp_modes).add_option(
+            &["--mptcp-modes"],
+            Store,
+            "What -M records, comma-separated: tag. Implies -M. Default is tag.",
+        );
 
         // Will try to parse arguments or exit program on error!
         argparser.parse_args_or_exit();
@@ -223,6 +235,19 @@ fn main() -> anyhow::Result<()> {
         "wait" => PollMode::Wait,
         other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
     };
+
+    let mptcp = if !mptcp_modes.is_empty() {
+        MptcpModes::parse(&mptcp_modes)?
+    } else if trace_mptcp {
+        MptcpModes::DEFAULT
+    } else {
+        MptcpModes::default()
+    };
+    if mptcp.tag && !trace_kernel && !trace_cwnd {
+        return Err(anyhow!(
+            "MPTCP tagging needs -k or -w, it tags their records"
+        ));
+    }
 
     let duration = Duration::try_from_secs_f64(duration)
         .map_err(|_| anyhow!("--duration must be a non-negative number of seconds"))?;
@@ -258,6 +283,7 @@ fn main() -> anyhow::Result<()> {
         .cwnd(trace_cwnd)
         .metrics(metrics)
         .algorithms(trace_algorithms)
+        .mptcp(mptcp)
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())

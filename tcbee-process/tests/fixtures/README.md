@@ -7,7 +7,7 @@
   `tcbee_2026-10-05T18-16-22` (IPv4, port 8080, many flows, `max_pacing_rate = u64::MAX` records).
   The source trace was in tmpfs; a copy is kept at `~/tcbee-traces` outside the repo. It predates
   `hook_seq`, which was inserted afterwards as the record index + 1 (recorded with shared ring
-  buffers, so file order was hook order).
+  buffers, so file order was hook order). The sock records also got `conn_id` = 0 (no MPTCP).
 - **Generated** by `src/fixtures.rs`: `bbr`, `send_cwnd`, `tcp6_*`, the empty files and
   `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
   each flow from 1. Regenerate with
@@ -27,10 +27,10 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `tcp_probe.tcp` | `tcp_probe_entry` | 124 | 2000 | real |
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |
 | `tcp_bad_csum.tcp` | none | | 0 | generated |
-| `send_sock.tcp` | `sock_trace_entry` | 168 | 2000 | real |
-| `recv_sock.tcp` | `sock_trace_entry` | 168 | 2000 | real |
-| `send_cwnd.tcp` | `cwnd_trace_entry` | 70 | 1000 | generated |
-| `recv_cwnd.tcp` | `cwnd_trace_entry` | 70 | 0 | generated |
+| `send_sock.tcp` | `sock_trace_entry` | 172 | 2000 | real |
+| `recv_sock.tcp` | `sock_trace_entry` | 172 | 2000 | real |
+| `send_cwnd.tcp` | `cwnd_trace_entry` | 74 | 1000 | generated |
+| `recv_cwnd.tcp` | `cwnd_trace_entry` | 74 | 0 | generated |
 | `tcp4_receive.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
 | `tcp4_send.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
 | `tcp6_receive.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
@@ -38,5 +38,5 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 
 ## `tcbee_truncated/`
 
-`send_sock.tcp` only: 10 sock records (1680 bytes) followed by the first 17 bytes of an
-eleventh record (1697 bytes in total).
+`send_sock.tcp` only: 10 sock records (1720 bytes) followed by the first 17 bytes of an
+eleventh record (1737 bytes in total).

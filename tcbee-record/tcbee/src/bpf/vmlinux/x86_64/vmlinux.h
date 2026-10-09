@@ -149,6 +149,7 @@ struct inet_connection_sock {
 		__u16 rcv_mss;
 	} icsk_ack;
 	u64 icsk_ca_priv[13];
+	void *icsk_ulp_data;
 };
 
 struct tcp_sock {
@@ -174,6 +175,15 @@ struct tcp_sock {
 	} rcvq_space;
 	u8 keepalive_probes;
 	u32 total_retrans;
+	bool is_mptcp;
+};
+
+struct mptcp_subflow_context {
+	struct sock *conn;
+};
+
+struct mptcp_sock {
+	u32 token;
 };
 
 #ifndef BPF_NO_PRESERVE_ACCESS_INDEX

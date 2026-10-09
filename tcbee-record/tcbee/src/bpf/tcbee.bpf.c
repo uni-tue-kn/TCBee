@@ -12,6 +12,7 @@
 #include "maps.h"
 #include "counters.h"
 #include "filter.h"
+#include "mptcp.h"
 #include "flow.h"
 #include "hook_seq.h"
 #include "cc_structs.h"
@@ -443,6 +444,7 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbufs, __u32 rb)
 	} else if ((rec = reserve(ringbufs, rb, rec))) {
 		fill_header(rec, sk, sport, dport, hook_seq);
 		rec->snd_cwnd = tp->snd_cwnd;
+		rec->conn_id = mptcp_conn_id(tp);
 		commit(rec, rb);
 	}
 
@@ -498,6 +500,7 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 		/* struct tcp_options_received, not read yet */
 		rec->snd_wscale = 0;
 		rec->rcv_wscale = 0;
+		rec->conn_id = mptcp_conn_id(tp);
 		commit(rec, rb);
 	}
 

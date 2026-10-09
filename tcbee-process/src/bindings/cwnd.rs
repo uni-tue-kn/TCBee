@@ -8,7 +8,7 @@ use crate::{
 use tcbee_common::records::cwnd_trace_entry;
 
 event_schema! {
-    cwnd_trace_entry => "cwnd", 70 {
+    cwnd_trace_entry => "cwnd", 74 {
         snd_cwnd => "perf_snd_cwnd": U32,
     }
     {

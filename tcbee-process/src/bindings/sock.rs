@@ -8,7 +8,7 @@ use crate::{
 use tcbee_common::records::sock_trace_entry;
 
 event_schema! {
-    sock_trace_entry => "sock", 168 {
+    sock_trace_entry => "sock", 172 {
         pacing_rate: U64,
         max_pacing_rate: U64,
         backoff: U8,

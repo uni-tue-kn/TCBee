@@ -97,12 +97,16 @@ struct sock_trace_entry {
 	/* struct tcp_options_received */
 	uint16_t snd_wscale;
 	uint16_t rcv_wscale;
+	/* Token of the MPTCP connection of a subflow (-M tag), 0 otherwise. In the padding. */
+	uint32_t conn_id;
 };
 
 /* Same hooks as sock_trace_entry, TCP_SEND_CWND_EVENTS / TCP_RECEIVE_CWND_EVENTS */
 struct cwnd_trace_entry {
 	TCBEE_SOCK_HEADER
 	uint32_t snd_cwnd;
+	/* As in sock_trace_entry */
+	uint32_t conn_id;
 };
 
 /* fentry cubictcp_cong_avoid / cubictcp_cwnd_event, CUBIC_EVENTS */

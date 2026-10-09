@@ -20,6 +20,9 @@ const volatile __u64 RB_SUBMIT_FLAGS = BPF_RB_NO_WAKEUP;
 /* Set to 0 by userspace when the flow list is not displayed */
 const volatile __u8 FLOW_TRACKING = 1;
 
+/* Set to 1 by userspace (-M tag) to tag MPTCP subflow records with their connection, mptcp.h */
+const volatile __u8 MPTCP_TAG = 0;
+
 /* Constants that only exist as macros in the uapi headers, not in BTF */
 #define AF_INET 2
 #define AF_INET6 10

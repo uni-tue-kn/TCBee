@@ -136,6 +136,41 @@ pub fn parse_ringbuf_sizes(arg: &str) -> anyhow::Result<Vec<(&'static str, u32)>
     Ok(sizes)
 }
 
+/// What `-M` records about MPTCP
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct MptcpModes {
+    /// Tag the sock and cwnd records of a subflow with the token of its connection
+    pub tag: bool,
+}
+
+impl MptcpModes {
+    /// The modes of a plain `-M`
+    pub const DEFAULT: MptcpModes = MptcpModes { tag: true };
+    const NAMES: &'static str = "tag";
+
+    pub fn any(self) -> bool {
+        self.tag
+    }
+
+    /// Parses `--mptcp-modes`, a comma separated list of modes
+    pub fn parse(arg: &str) -> anyhow::Result<MptcpModes> {
+        let mut modes = MptcpModes::default();
+        for mode in arg.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+            match mode {
+                "tag" => modes.tag = true,
+                other => {
+                    return Err(anyhow!(
+                        "Unknown MPTCP mode '{}', use {}",
+                        other,
+                        MptcpModes::NAMES
+                    ))
+                }
+            }
+        }
+        Ok(modes)
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct EbpfRunnerConfig {
     pub iface: String,
@@ -149,6 +184,7 @@ pub struct EbpfRunnerConfig {
     pub cwnd: bool,
     pub metrics: bool,
     pub algorithms: bool,
+    pub mptcp: MptcpModes,
     pub dir: String,
     pub ringbuf_sizes: Vec<(&'static str, u32)>,
     pub poll_mode: PollMode,
@@ -243,6 +279,11 @@ impl EbpfRunnerConfig {
         self
     }
 
+    pub fn mptcp(mut self, modes: MptcpModes) -> EbpfRunnerConfig {
+        self.mptcp = modes;
+        self
+    }
+
     pub fn writer_cpus(mut self, cpus: Vec<usize>) -> EbpfRunnerConfig {
         self.writer_cpus = cpus;
         self
@@ -297,6 +338,14 @@ mod tests {
         assert_eq!(get("TCP6_PACKETS_EGRESS"), 1 << 20);
         assert_eq!(get("TCP_RECV_SOCK_EVENTS"), 8192);
         assert_eq!(get("TCP_SEND_SOCK_EVENTS"), 1 << 20);
+    }
+
+    #[test]
+    fn mptcp_modes() {
+        assert_eq!(MptcpModes::parse("tag").unwrap(), MptcpModes { tag: true });
+        assert_eq!(MptcpModes::parse(" tag, ").unwrap(), MptcpModes::DEFAULT);
+        assert!(!MptcpModes::parse("").unwrap().any());
+        assert!(MptcpModes::parse("tag,foo").is_err());
     }
 
     #[test]

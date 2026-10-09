@@ -106,7 +106,7 @@ const SOCK_COLS: &str = "pacing_rate:U64 max_pacing_rate:U64 backoff:U8 rto:U32 
 fn sock_send() {
     let x = Expect {
         source: "sock",
-        entry_size: 168,
+        entry_size: 172,
         columns: SOCK_COLS,
         file: "send_sock.tcp",
         records: 2000,
@@ -124,7 +124,7 @@ fn sock_send() {
 fn sock_recv() {
     let x = Expect {
         source: "sock",
-        entry_size: 168,
+        entry_size: 172,
         columns: SOCK_COLS,
         file: "recv_sock.tcp",
         records: 2000,
@@ -197,7 +197,7 @@ fn bbr() {
 fn cwnd() {
     let x = Expect {
         source: "cwnd",
-        entry_size: 70,
+        entry_size: 74,
         columns: "perf_snd_cwnd:U32",
         file: "send_cwnd.tcp",
         records: 1000,
@@ -505,11 +505,11 @@ fn file_table_maps_every_trace_file() {
         .filter_map(|f| binding(*f).map(|b| (b.table.source, b.entry_size, b.table.columns.len())))
         .collect();
     for (s, size, n) in [
-        ("sock", 168, 25),
+        ("sock", 172, 25),
         ("tcp_probe", 124, 10),
         ("cubic", 122, 14),
         ("bbr", 118, 12),
-        ("cwnd", 70, 1),
+        ("cwnd", 74, 1),
         ("tcp6", 67, 4),
         ("tcp4", 43, 4),
     ] {

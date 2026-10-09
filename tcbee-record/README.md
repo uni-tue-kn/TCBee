@@ -62,6 +62,7 @@ At least one metric source is required.
 | `-k` | fentry on `__tcp_transmit_skb` and `tcp_rcv_established` (all TCP metrics) |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
+| `-M` | MPTCP, with `-k` or `-w`: tags the records of a subflow with the token of its MPTCP connection (`conn_id`) |
 
 | Flag | Default | Description |
 |---|---|---|
@@ -75,6 +76,7 @@ At least one metric source is required.
 | `--poll busy\|wait` | `busy` | Writer threads spin (one core per output file) or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
+| `--mptcp-modes LIST` | `tag` | What `-M` records, comma-separated: `tag` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
@@ -94,6 +96,7 @@ Raw data is written as `*.tcp` files to the recording directory. Filter flags ar
 - `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
   `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
   and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.
+- `-M` needs MPTCP in the kernel (`CONFIG_MPTCP`, 5.6). Without it, `conn_id` stays 0.
 - `-h` attaches with tcx on 6.6 and newer. Older kernels use a clsact qdisc, which
   tcbee-record creates through netlink (no `tc` command needed) and removes again on exit
   if it created it.

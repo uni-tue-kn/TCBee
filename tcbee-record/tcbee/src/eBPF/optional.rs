@@ -11,14 +11,17 @@ use std::collections::BTreeSet;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OptionalGroup {
     Bbr,
+    /// The MPTCP code in the sock and cwnd programs (MPTCP_TAG); without it they still load
+    MptcpTag,
 }
 
 impl OptionalGroup {
-    pub const ALL: [OptionalGroup; 1] = [OptionalGroup::Bbr];
+    pub const ALL: [OptionalGroup; 2] = [OptionalGroup::Bbr, OptionalGroup::MptcpTag];
 
     pub fn name(self) -> &'static str {
         match self {
             OptionalGroup::Bbr => "BBR",
+            OptionalGroup::MptcpTag => "MPTCP tagging",
         }
     }
 
@@ -26,6 +29,12 @@ impl OptionalGroup {
     pub fn programs(self) -> &'static [&'static str] {
         match self {
             OptionalGroup::Bbr => &["bbr_cong_control", "bbr_cwnd_event"],
+            OptionalGroup::MptcpTag => &[
+                "sock_sendmsg",
+                "sock_recvmsg",
+                "cwnd_sock_sendmsg",
+                "cwnd_sock_recvmsg",
+            ],
         }
     }
 
@@ -124,7 +133,18 @@ mod tests {
 
     #[test]
     fn failing_core_program_is_not_retried() {
+        let w = warnings(&["libbpf: prog 'tc_ingress_packet_tracer': failed to load: -13"]);
+        assert_eq!(to_disable(&bbr(), &w), None);
+    }
+
+    #[test]
+    fn failing_sock_program_retries_without_mptcp_tagging_only_once() {
         let w = warnings(&["libbpf: prog 'sock_sendmsg': failed to load: -13"]);
+        let tag = BTreeSet::from([OptionalGroup::Bbr, OptionalGroup::MptcpTag]);
+        assert_eq!(
+            to_disable(&tag, &w),
+            Some(BTreeSet::from([OptionalGroup::MptcpTag]))
+        );
         assert_eq!(to_disable(&bbr(), &w), None);
     }
 

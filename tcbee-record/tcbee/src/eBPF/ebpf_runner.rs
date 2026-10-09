@@ -341,6 +341,8 @@ impl EbpfRunner {
         rodata.FILTER_RULE_FLAGS = self.config.filter.rule_flags();
         rodata.FLOW_TRACKING = self.config.do_tui as u8;
         rodata.RB_SUBMIT_FLAGS = self.config.poll_mode.submit_flags();
+        let mptcp_tag = self.config.mptcp.tag && !disabled.contains(&OptionalGroup::MptcpTag);
+        rodata.MPTCP_TAG = mptcp_tag as u8;
 
         rings::set_slots(open.open_object_mut(), cpus)?;
 
@@ -352,6 +354,9 @@ impl EbpfRunner {
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
         CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
         let mut optional = BTreeSet::new();
+        if mptcp_tag {
+            optional.insert(OptionalGroup::MptcpTag);
+        }
         let bbr = self.config.algorithms && !disabled.contains(&OptionalGroup::Bbr);
         if BBRTracer::configure(&mut open.progs, bbr, btf) {
             optional.insert(OptionalGroup::Bbr);

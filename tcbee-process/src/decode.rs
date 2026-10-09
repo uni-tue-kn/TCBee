@@ -180,7 +180,7 @@ mod tests {
         });
         match res {
             Err(RangeError::Io { offset, source }) => {
-                assert_eq!(offset, 1680);
+                assert_eq!(offset, 1720);
                 assert_eq!(source.kind(), io::ErrorKind::UnexpectedEof);
             }
             other => panic!("expected an I/O error, got {other:?}"),
@@ -188,11 +188,11 @@ mod tests {
         assert_eq!(seen, (0..10).collect::<Vec<_>>());
 
         match collect::<sock_trace_entry>(&file, 10..11) {
-            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 1680),
+            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 1720),
             other => panic!("expected an I/O error, got {other:?}"),
         }
         match collect::<sock_trace_entry>(&file, 12..14) {
-            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 12 * 168),
+            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 12 * 172),
             other => panic!("expected an I/O error, got {other:?}"),
         }
     }
