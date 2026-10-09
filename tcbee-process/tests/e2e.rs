@@ -257,6 +257,61 @@ fn engines_and_thread_counts_agree_point_by_point() {
     }
 }
 
+/// FNV-1a, a hash that stays the same across Rust releases (unlike `DefaultHasher`).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// Hash of every flow tuple, and per "source|dir" the hash of its series in key order.
+fn digests(d: &Dump) -> BTreeMap<String, u64> {
+    let mut groups: BTreeMap<String, String> = BTreeMap::new();
+    groups.insert("flows".into(), d.flows.join("\n"));
+    for (key, series) in &d.series {
+        let fields: Vec<&str> = key.split('|').collect();
+        groups
+            .entry(format!("{}|{}", fields[1], fields[2]))
+            .or_default()
+            .push_str(&format!("{key}={series:?}\n"));
+    }
+    groups
+        .into_iter()
+        .map(|(group, text)| (group, fnv1a(text.as_bytes())))
+        .collect()
+}
+
+/// Digests of tcbee_small as decoded at the time this test was written. A change means that some
+/// value read from the fixture changed: on purpose (update the table) or by mistake.
+const SMALL_DIGESTS: &[(&str, u64)] = &[
+    ("bbr|0", 5969312066039208668),
+    ("cubic|0", 18293315105502254295),
+    ("cwnd|1", 10154183732297103522),
+    ("flows", 17654629037281800754),
+    ("sock|1", 3144412637236659025),
+    ("sock|2", 6540169290698444424),
+    ("tcp4|1", 16532087506000249234),
+    ("tcp4|2", 6241242892840854424),
+    ("tcp6|1", 16373615277353532148),
+    ("tcp6|2", 17698873937259955636),
+    ("tcp_probe|0", 438283687335302762),
+];
+
+#[test]
+fn small_fixture_decodes_to_the_golden_digests() {
+    let expected: BTreeMap<String, u64> = SMALL_DIGESTS
+        .iter()
+        .map(|(group, digest)| (group.to_string(), *digest))
+        .collect();
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, _) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
+        let store = ts_storage::open(&out).unwrap();
+        let actual = digests(&dump(&*store));
+        assert_eq!(actual, expected, "{engine:?}");
+    }
+}
+
 #[test]
 fn u64_max_is_saturated_and_stats_describe_read_values() {
     for (engine, ext) in engines() {
