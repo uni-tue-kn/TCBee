@@ -27,7 +27,7 @@ Output. An existing output file is never touched without `-f`. The database is w
 
 Exit codes. `0` is success (and `--help`), `1` means processing failed (unreadable or corrupt recording, existing output without `-f`, I/O or database error), `2` means wrong arguments.
 
-Format. Databases use schema version 2: one table per record type (`ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6`) with one row per record and one typed column per field, plus the `flows` and `series` catalogs. Timestamps are exact integer nanoseconds. Send and receive samples of a flow are separate series. Databases written by earlier versions are not readable; process the recording again.
+Format. Databases use schema version 3: one table per record type (`ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6`, `ev_mptcp_pm`) with one row per record and one typed column per field, plus the `flows`, `connections`, `connection_flows` and `series` catalogs. Timestamps are exact integer nanoseconds. Send and receive samples of a flow are separate series. Databases written by earlier versions are not readable; process the recording again.
 
 ## How it works
 

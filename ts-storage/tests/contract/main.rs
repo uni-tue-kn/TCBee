@@ -53,6 +53,7 @@ macro_rules! all_cases {
             several_batches_and_writers
             two_writers_append_to_one_table_and_flow
             catalog_flows_by_tuple
+            catalog_connections_round_trip
             catalog_series_per_flow
             catalog_same_name_differs_by_dir
             catalog_stats_match_brute_force

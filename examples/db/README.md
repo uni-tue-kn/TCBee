@@ -1,6 +1,6 @@
 # TCBee Database Access Examples
 
-Examples for reading the flow databases written by `tcbee-process` with plain SQL. The files are ordinary SQLite or DuckDB databases (schema version 2), so any client works. The scripts here need only Python 3; DuckDB files need `pip install duckdb` and plotting needs `pip install matplotlib`.
+Examples for reading the flow databases written by `tcbee-process` with plain SQL. The files are ordinary SQLite or DuckDB databases (schema version 3), so any client works. The scripts here need only Python 3; DuckDB files need `pip install duckdb` and plotting needs `pip install matplotlib`.
 
 To try them without a recording, process the test traces of the repository:
 

@@ -6,7 +6,7 @@
 
 Part of [TCBee](../README.md). A Rust library that reads and writes TCBee flow databases on SQLite or DuckDB behind one API. `tcbee-process` writes with it, `tcbee-viz` reads with it.
 
-- [Database layout (schema version 2)](#database-layout-schema-version-2)
+- [Database layout (schema version 3)](#database-layout-schema-version-3)
 - [Features and engines](#features-and-engines)
 - [Building without compiling DuckDB](#building-without-compiling-duckdb)
 - [Reading](#reading)
@@ -15,16 +15,18 @@ Part of [TCBee](../README.md). A Rust library that reads and writes TCBee flow d
 - [Reading a database without this crate](#reading-a-database-without-this-crate)
 - [Tests](#tests)
 
-## Database layout (schema version 2)
+## Database layout (schema version 3)
 
 One table per recorded event type, one row per record, one typed column per field. The layout is the same on both engines; only the column types differ.
 
 | Table | Content |
 |---|---|
-| `meta(key, value)` | `schema_version` (`2`), `writer`, `trace_dir`, `created_at` |
+| `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at` |
 | `flows(id, src, dst, sport, dport, l4proto)` | one row per TCP flow (IP 5-tuple) |
+| `connections(id, kind, key, flow_id, start_ts, end_ts)` | connections that group flows, e.g. an MPTCP connection (`kind` `mptcp`, `key` its token); `flow_id` holds the connection's own series |
+| `connection_flows(conn_id, flow_id, subflow_id, first_ts, last_ts)` | the flows of each connection, e.g. the subflows of an MPTCP connection |
 | `series(id, flow_id, kind, source, dir, name, value_type, tbl, col, n, t_min, t_max, v_min, v_max)` | catalog of all series with point count and bounds |
-| `ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6` | the recorded events, see below |
+| `ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6`, `ev_mptcp_pm` | the recorded events, see below |
 | `derived_samples(series_id, ts, seq, v_int, v_float, v_bool, v_text)` | points of series created in the visualizer; one of the `v_*` columns is set |
 
 Every `ev_*` table starts with `flow_id`, `dir`, `ts` and `seq`, followed by one column per field of the record (`ev_sock.snd_cwnd`, `ev_tcp_probe."SND_CWND"`, ...). Column names are the series names TCBee has always used, with their original case, so quote them in SQL.
@@ -92,7 +94,7 @@ for flow in store.flows()? {                              // Vec<Flow>
 | `replace_derived(&existing, points)` | replace the points of a derived series in one transaction |
 | `delete_derived(&series)` | delete a derived series |
 
-Only derived series can be changed or deleted; raw series are read-only (`StoreError::NotDerived`). `open` checks `meta.schema_version` and returns `StoreError::UnsupportedSchema` for anything but 2.
+Only derived series can be changed or deleted; raw series are read-only (`StoreError::NotDerived`). `open` checks `meta.schema_version` and returns `StoreError::UnsupportedSchema` for anything but 3.
 
 ## Writing
 
@@ -137,7 +139,7 @@ All fallible calls return `StoreError`:
 | Variant | When |
 |---|---|
 | `Sqlite`, `DuckDb`, `Io` | errors of the driver or the file system |
-| `UnsupportedSchema` | the file has a schema version other than 2 (or none) |
+| `UnsupportedSchema` | the file has a schema version other than 3 (or none) |
 | `EngineDisabled` | the file needs an engine that is not built in |
 | `UnknownEngine` | the file is neither SQLite nor DuckDB |
 | `Exists` | `create` without `force` on an existing file |

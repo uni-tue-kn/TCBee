@@ -1,8 +1,8 @@
 //! The contract: one function per case, each taking the engine to run on.
 
 use ts_storage::{
-    detect_engine, Catalog, ColType, CreateOptions, DataValue, Dir, Engine, IpTuple, SeriesInfo,
-    SeriesKind, StatsAccumulator, Store, StoreError, ValueKind,
+    detect_engine, Catalog, ColType, ConnectionFlow, ConnectionInfo, CreateOptions, DataValue, Dir,
+    Engine, IpTuple, SeriesInfo, SeriesKind, StatsAccumulator, Store, StoreError, ValueKind,
 };
 
 use crate::fixture::*;
@@ -161,6 +161,7 @@ fn finish_with(
             flows,
             series: acc.into_series(1),
             meta: vec![],
+            ..Catalog::default()
         })
         .unwrap();
 }
@@ -324,6 +325,52 @@ pub fn catalog_flows_by_tuple(engine: Engine) {
     assert_eq!(got, want);
     assert_eq!(st.flow(2).unwrap().unwrap().tuple, want[1].1);
     assert!(st.flow(4).unwrap().is_none());
+}
+
+pub fn catalog_connections_round_trip(engine: Engine) {
+    let mptcp = |id, key, flow_id, start_ts, end_ts| ConnectionInfo {
+        id,
+        kind: "mptcp".into(),
+        key,
+        flow_id,
+        start_ts,
+        end_ts,
+    };
+    let member = |conn_id, flow_id, subflow_id, first_ts, last_ts| ConnectionFlow {
+        conn_id,
+        flow_id,
+        subflow_id,
+        first_ts,
+        last_ts,
+    };
+    let connections = vec![
+        mptcp(1, 0xdead_beef, Some(3), 10, 90),
+        mptcp(2, 7, None, 5, 5),
+    ];
+    // Flow 1 belongs to both connections, one after the other
+    let members = vec![
+        member(2, 1, Some(2), 5, 5),
+        member(1, 2, None, 20, 90),
+        member(1, 1, Some(1), 10, 80),
+    ];
+    let env = Env::new();
+    let s = ts_storage::create(engine, &env.path, CreateOptions::default()).unwrap();
+    s.finish(Catalog {
+        flows: vec![flow(1, 1000), flow(2, 2000), flow(3, 3000)],
+        connections: connections.clone(),
+        connection_flows: members.clone(),
+        ..Catalog::default()
+    })
+    .unwrap();
+
+    let st = ts_storage::open(&env.path).unwrap();
+    assert_eq!(st.connections().unwrap(), connections);
+    let want = vec![members[2].clone(), members[1].clone(), members[0].clone()];
+    assert_eq!(st.connection_flows().unwrap(), want);
+
+    let (_env, plain) = catalog_db(engine);
+    assert!(plain.connections().unwrap().is_empty());
+    assert!(plain.connection_flows().unwrap().is_empty());
 }
 
 pub fn catalog_series_per_flow(engine: Engine) {

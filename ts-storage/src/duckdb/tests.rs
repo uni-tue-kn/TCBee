@@ -268,6 +268,7 @@ fn sample_db() -> (TmpDb, Box<dyn Store>) {
         flows: vec![flow(1, 1000), flow(2, 2000)],
         series: acc.into_series(1),
         meta: vec![("writer".into(), "test".into())],
+        ..Catalog::default()
     })
     .unwrap();
     let st = open(db.path()).unwrap();
@@ -303,7 +304,7 @@ fn meta_has_caller_entries_and_ours() {
         );
     }
     assert_eq!(meta.len(), 3);
-    assert_eq!(meta["schema_version"], "2");
+    assert_eq!(meta["schema_version"], "3");
     assert_eq!(meta["writer"], "test");
     assert!(meta["created_at"].starts_with("20") && meta["created_at"].ends_with('Z'));
 }

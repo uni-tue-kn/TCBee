@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lists the TCP flows of a database written by tcbee-process (schema version 2).
+Lists the TCP flows of a database written by tcbee-process (schema version 3).
 
 Works on SQLite files with the standard library. DuckDB files need `pip install duckdb`.
 
@@ -33,9 +33,9 @@ def check_schema(db, path: Path):
         version = db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     except Exception:
         version = None
-    if version is None or version[0] != "2":
+    if version is None or version[0] != "3":
         sys.exit(
-            f"Error: {path} is not a schema version 2 database; "
+            f"Error: {path} is not a schema version 3 database; "
             "reprocess the recording with tcbee-process"
         )
 

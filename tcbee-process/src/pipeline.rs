@@ -432,6 +432,7 @@ fn build_catalog(registry: FlowRegistry, stats: StatsAccumulator, trace: &TCBeeT
             ),
             ("trace_dir".to_string(), trace.dir().display().to_string()),
         ],
+        ..Catalog::default()
     }
 }
 

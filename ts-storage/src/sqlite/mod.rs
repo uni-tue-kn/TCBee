@@ -31,12 +31,11 @@ use super::catalog::{derived_ts, flow_from_parts, Catalog, DerivedStats, SeriesI
 use super::error::StoreError;
 use super::schema::{
     create_derived_index_sql, create_fixed_table_sql, create_index_sql, create_table_sql, ColType,
-    Dialect, Dir, EventTable, SeriesKind, ValueKind, DERIVED_SAMPLES, FLOWS, META, SCHEMA_VERSION,
-    SERIES,
+    Dialect, Dir, EventTable, SeriesKind, ValueKind, FIXED_TABLES, SCHEMA_VERSION,
 };
 use super::time::now_iso8601;
 use super::{sql, BatchWriter, Engine, IngestSession, Store};
-use crate::{DataPoint, DataValue, Flow};
+use crate::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow};
 
 /// Rows per transaction during ingest.
 pub const COMMIT_ROWS: u64 = 1_000_000;
@@ -105,7 +104,7 @@ fn start_session(
     // The partial file is deleted when anything fails, so durability is not needed.
     conn.execute_batch("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")?;
     conn.set_prepared_statement_cache_capacity(64);
-    for t in [&META, &FLOWS, &SERIES, &DERIVED_SAMPLES] {
+    for t in FIXED_TABLES {
         conn.execute_batch(&create_fixed_table_sql(Dialect::Sqlite, t))?;
     }
     if let Some(idx) = create_derived_index_sql(Dialect::Sqlite) {
@@ -251,6 +250,22 @@ impl Worker {
                     f.tuple.sport,
                     f.tuple.dport,
                     f.tuple.l4proto
+                ])?;
+            }
+            let mut connection = conn.prepare(sql::INSERT_CONNECTION)?;
+            for c in &catalog.connections {
+                connection.execute(params![
+                    c.id, c.kind, c.key, c.flow_id, c.start_ts, c.end_ts
+                ])?;
+            }
+            let mut connection_flow = conn.prepare(sql::INSERT_CONNECTION_FLOW)?;
+            for cf in &catalog.connection_flows {
+                connection_flow.execute(params![
+                    cf.conn_id,
+                    cf.flow_id,
+                    cf.subflow_id,
+                    cf.first_ts,
+                    cf.last_ts
                 ])?;
             }
             let mut series = conn.prepare(&sql::insert_series())?;
@@ -546,6 +561,35 @@ impl Store for SqliteStore {
         let mut stmt = self.conn.prepare_cached(sql::SELECT_FLOW)?;
         let mut rows = stmt.query([id])?;
         rows.next()?.map(row_to_flow).transpose()
+    }
+
+    fn connections(&self) -> Result<Vec<ConnectionInfo>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(sql::SELECT_CONNECTIONS)?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ConnectionInfo {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                key: r.get(2)?,
+                flow_id: r.get(3)?,
+                start_ts: r.get(4)?,
+                end_ts: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn connection_flows(&self) -> Result<Vec<ConnectionFlow>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(sql::SELECT_CONNECTION_FLOWS)?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ConnectionFlow {
+                conn_id: r.get(0)?,
+                flow_id: r.get(1)?,
+                subflow_id: r.get(2)?,
+                first_ts: r.get(3)?,
+                last_ts: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     fn series(&self, flow_id: i64) -> Result<Vec<SeriesInfo>, StoreError> {

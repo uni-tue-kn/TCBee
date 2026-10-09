@@ -246,6 +246,7 @@ pub fn build(
         flows,
         series: acc.into_series(1),
         meta: vec![("writer".into(), "contract test".into())],
+        ..Catalog::default()
     })
 }
 

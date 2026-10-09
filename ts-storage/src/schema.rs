@@ -3,7 +3,7 @@
 use super::error::StoreError;
 
 /// Version written to `meta.schema_version`.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Names of the four fixed columns at the front of every event table.
 pub(crate) const FIXED_EVENT_COLUMNS: [&str; 4] = ["flow_id", "dir", "ts", "seq"];
@@ -262,6 +262,31 @@ pub static FLOWS: Table = Table {
     ],
 };
 
+pub static CONNECTIONS: Table = Table {
+    name: "connections",
+    columns: &[
+        col("id", SqlType::BigInt, true),
+        col("kind", SqlType::Text, true),
+        col("key", SqlType::BigInt, true),
+        col("flow_id", SqlType::BigInt, false),
+        col("start_ts", SqlType::BigInt, true),
+        col("end_ts", SqlType::BigInt, true),
+    ],
+    constraints: &["PRIMARY KEY (\"id\")"],
+};
+
+pub static CONNECTION_FLOWS: Table = Table {
+    name: "connection_flows",
+    columns: &[
+        col("conn_id", SqlType::BigInt, true),
+        col("flow_id", SqlType::BigInt, true),
+        col("subflow_id", SqlType::BigInt, false),
+        col("first_ts", SqlType::BigInt, true),
+        col("last_ts", SqlType::BigInt, true),
+    ],
+    constraints: &["PRIMARY KEY (\"conn_id\", \"flow_id\")"],
+};
+
 pub static SERIES: Table = Table {
     name: "series",
     columns: &[
@@ -299,6 +324,16 @@ pub static DERIVED_SAMPLES: Table = Table {
     ],
     constraints: &[],
 };
+
+/// The tables every database has besides the event tables, in creation order
+pub(crate) static FIXED_TABLES: [&Table; 6] = [
+    &META,
+    &FLOWS,
+    &CONNECTIONS,
+    &CONNECTION_FLOWS,
+    &SERIES,
+    &DERIVED_SAMPLES,
+];
 
 /// Quotes an identifier with `"`, doubling embedded quotes.
 pub(crate) fn quote_ident(s: &str) -> String {
@@ -478,6 +513,33 @@ mod tests {
                 "    \"v_float\" DOUBLE,\n",
                 "    \"v_bool\" BOOLEAN,\n",
                 "    \"v_text\" TEXT\n",
+                ")"
+            )
+        );
+        assert_eq!(
+            create_fixed_table_sql(Dialect::DuckDb, &CONNECTIONS),
+            concat!(
+                "CREATE TABLE \"connections\" (\n",
+                "    \"id\" BIGINT NOT NULL,\n",
+                "    \"kind\" TEXT NOT NULL,\n",
+                "    \"key\" BIGINT NOT NULL,\n",
+                "    \"flow_id\" BIGINT,\n",
+                "    \"start_ts\" BIGINT NOT NULL,\n",
+                "    \"end_ts\" BIGINT NOT NULL,\n",
+                "    PRIMARY KEY (\"id\")\n",
+                ")"
+            )
+        );
+        assert_eq!(
+            create_fixed_table_sql(Dialect::Sqlite, &CONNECTION_FLOWS),
+            concat!(
+                "CREATE TABLE \"connection_flows\" (\n",
+                "    \"conn_id\" INTEGER NOT NULL,\n",
+                "    \"flow_id\" INTEGER NOT NULL,\n",
+                "    \"subflow_id\" INTEGER,\n",
+                "    \"first_ts\" INTEGER NOT NULL,\n",
+                "    \"last_ts\" INTEGER NOT NULL,\n",
+                "    PRIMARY KEY (\"conn_id\", \"flow_id\")\n",
                 ")"
             )
         );

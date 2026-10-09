@@ -487,6 +487,7 @@ mod tests {
             flows: vec![flow],
             series: acc.into_series(1),
             meta: vec![("writer".into(), "tcbee-viz test".into())],
+            ..Catalog::default()
         })
         .unwrap();
     }

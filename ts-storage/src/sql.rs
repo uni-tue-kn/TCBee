@@ -70,6 +70,11 @@ pub const SELECT_FLOWS: &str =
 pub const SELECT_FLOW: &str =
     r#"SELECT "id", "src", "dst", "sport", "dport", "l4proto" FROM "flows" WHERE "id" = ?"#;
 
+pub const INSERT_CONNECTION: &str = r#"INSERT INTO "connections" ("id", "kind", "key", "flow_id", "start_ts", "end_ts") VALUES (?, ?, ?, ?, ?, ?)"#;
+pub const SELECT_CONNECTIONS: &str = r#"SELECT "id", "kind", "key", "flow_id", "start_ts", "end_ts" FROM "connections" ORDER BY "id""#;
+pub const INSERT_CONNECTION_FLOW: &str = r#"INSERT INTO "connection_flows" ("conn_id", "flow_id", "subflow_id", "first_ts", "last_ts") VALUES (?, ?, ?, ?, ?)"#;
+pub const SELECT_CONNECTION_FLOWS: &str = r#"SELECT "conn_id", "flow_id", "subflow_id", "first_ts", "last_ts" FROM "connection_flows" ORDER BY "conn_id", "first_ts", "flow_id""#;
+
 pub fn insert_series() -> String {
     format!(
         r#"INSERT INTO "series" ({SERIES_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#

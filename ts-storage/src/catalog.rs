@@ -8,7 +8,7 @@ use std::ops::Range;
 use super::batch::{ColumnData, EventBatch};
 use super::error::StoreError;
 use super::schema::{ColType, Dir, EventTable, SeriesKind, ValueKind};
-use crate::{DataPoint, DataValue, Flow, IpTuple};
+use crate::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow, IpTuple};
 
 /// One row of the `series` table.
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +34,8 @@ pub struct SeriesInfo {
 #[derive(Debug, Default)]
 pub struct Catalog {
     pub flows: Vec<Flow>,
+    pub connections: Vec<ConnectionInfo>,
+    pub connection_flows: Vec<ConnectionFlow>,
     pub series: Vec<SeriesInfo>,
     pub meta: Vec<(String, String)>,
 }

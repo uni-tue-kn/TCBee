@@ -23,6 +23,7 @@ fn build(db: &TmpDb, batches: Vec<EventBatch>, flows: Vec<Flow>) -> Result<(), S
         flows,
         series: acc.into_series(1),
         meta: vec![("writer".into(), "test".into())],
+        ..Catalog::default()
     })
 }
 
@@ -95,7 +96,7 @@ fn storage_format_on_disk() {
         c.query_row(sql::SELECT_META_VALUE, [k], |r| r.get(0))
             .unwrap()
     };
-    assert_eq!(meta("schema_version"), "2");
+    assert_eq!(meta("schema_version"), "3");
     assert_eq!(meta("writer"), "test");
     assert!(meta("created_at").ends_with('Z') && meta("created_at").len() == 20);
     // Indexes are built after the load.

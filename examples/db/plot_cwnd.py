@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plots the congestion window of a flow from a database written by tcbee-process (schema version 2).
+Plots the congestion window of a flow from a database written by tcbee-process (schema version 3).
 
 The values come straight from the event tables: `ev_sock.snd_cwnd` (send side) and
 `ev_tcp_probe.SND_CWND`. Any other column of an event table can be plotted with
@@ -42,9 +42,9 @@ def check_schema(db, path: Path):
         version = db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     except Exception:
         version = None
-    if version is None or version[0] != "2":
+    if version is None or version[0] != "3":
         sys.exit(
-            f"Error: {path} is not a schema version 2 database; "
+            f"Error: {path} is not a schema version 3 database; "
             "reprocess the recording with tcbee-process"
         )
 

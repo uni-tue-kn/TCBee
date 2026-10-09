@@ -25,7 +25,7 @@ pub mod time;
 pub use batch::{ColumnData, EventBatch};
 pub use catalog::{Catalog, SeriesInfo, StatsAccumulator};
 pub use error::StoreError;
-pub use model::{DataPoint, DataValue, Flow, IpTuple};
+pub use model::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow, IpTuple};
 pub use schema::{
     ColType, Column, Dialect, Dir, EventTable, SeriesKind, Table, ValueKind, SCHEMA_VERSION,
 };
@@ -64,7 +64,7 @@ pub fn detect_engine(path: &Path) -> Result<Engine, StoreError> {
     }
 }
 
-/// Detects the engine, opens the file and checks `meta.schema_version == 2`.
+/// Detects the engine, opens the file and checks `meta.schema_version == 3`.
 pub fn open(path: &Path) -> Result<Box<dyn Store>, StoreError> {
     let engine = detect_engine(path)?;
     match engine {

@@ -25,11 +25,11 @@ use super::catalog::{derived_ts, flow_from_parts, Catalog, DerivedStats, SeriesI
 use super::error::StoreError;
 use super::schema::{
     create_fixed_table_sql, create_table_sql, ColType, Dialect, Dir, EventTable, SeriesKind,
-    ValueKind, DERIVED_SAMPLES, FLOWS, META, SCHEMA_VERSION, SERIES,
+    ValueKind, FIXED_TABLES, SCHEMA_VERSION,
 };
 use super::time::now_iso8601;
 use super::{sql, BatchWriter, CreateOptions, Engine, IngestSession, Store};
-use crate::{DataPoint, DataValue, Flow};
+use crate::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow};
 
 mod arrow;
 #[cfg(test)]
@@ -94,7 +94,7 @@ pub(crate) fn create(
         finished: false,
     };
     session.with_conn(|c| {
-        for t in [&META, &FLOWS, &SERIES, &DERIVED_SAMPLES] {
+        for t in FIXED_TABLES {
             c.execute_batch(&create_fixed_table_sql(D, t))?;
         }
         Ok(())
@@ -178,6 +178,7 @@ impl IngestSession for DuckSession {
 fn write_catalog(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> {
     let tx = conn.unchecked_transaction()?;
     insert_flows(conn, catalog)?;
+    insert_connections(conn, catalog)?;
     insert_series(conn, catalog)?;
     insert_meta(conn, catalog)?;
     tx.commit()?;
@@ -195,6 +196,28 @@ fn insert_flows(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> 
             f.tuple.sport,
             f.tuple.dport,
             f.tuple.l4proto
+        ])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
+fn insert_connections(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> {
+    let mut app = conn.appender("connections")?;
+    for c in &catalog.connections {
+        app.append_row(params![
+            c.id, c.kind, c.key, c.flow_id, c.start_ts, c.end_ts
+        ])?;
+    }
+    app.flush()?;
+    let mut app = conn.appender("connection_flows")?;
+    for cf in &catalog.connection_flows {
+        app.append_row(params![
+            cf.conn_id,
+            cf.flow_id,
+            cf.subflow_id,
+            cf.first_ts,
+            cf.last_ts
         ])?;
     }
     app.flush()?;
@@ -559,6 +582,35 @@ impl Store for DuckStore {
         let mut st = self.conn.prepare(sql::SELECT_FLOW)?;
         let mut rows = st.query(params![id])?;
         rows.next()?.map(row_to_flow).transpose()
+    }
+
+    fn connections(&self) -> Result<Vec<ConnectionInfo>, StoreError> {
+        let mut st = self.conn.prepare(sql::SELECT_CONNECTIONS)?;
+        let rows = st.query_map([], |r| {
+            Ok(ConnectionInfo {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                key: r.get(2)?,
+                flow_id: r.get(3)?,
+                start_ts: r.get(4)?,
+                end_ts: r.get(5)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn connection_flows(&self) -> Result<Vec<ConnectionFlow>, StoreError> {
+        let mut st = self.conn.prepare(sql::SELECT_CONNECTION_FLOWS)?;
+        let rows = st.query_map([], |r| {
+            Ok(ConnectionFlow {
+                conn_id: r.get(0)?,
+                flow_id: r.get(1)?,
+                subflow_id: r.get(2)?,
+                first_ts: r.get(3)?,
+                last_ts: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     fn series(&self, flow_id: i64) -> Result<Vec<SeriesInfo>, StoreError> {

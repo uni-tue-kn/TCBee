@@ -1,5 +1,5 @@
 //! `tcbee-process`: converts a TCBee trace directory into a SQLite or DuckDB database
-//! (schema version 2).
+//! (schema version 3).
 //!
 //! `main.rs` only parses arguments and maps errors to exit codes, so the tests call [`run`].
 
