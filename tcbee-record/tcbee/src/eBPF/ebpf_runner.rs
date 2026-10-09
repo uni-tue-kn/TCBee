@@ -371,10 +371,11 @@ impl EbpfRunner {
     }
 
     /// Without MPTCP in the kernel, -M records nothing: a warning, or an error if it is the
-    /// only thing to record. mptcp_event exists whenever the kernel has MPTCP.
+    /// only thing to record. The kernel has struct mptcp_sock whenever it has MPTCP; missing
+    /// path manager functions are handled per hook.
     fn check_kernel_mptcp(&mut self, btf: &mut KernelBtf) -> Result<(), Box<dyn Error>> {
         let wanted = self.config.mptcp.tag || self.config.mptcp.pm;
-        if !wanted || !btf.available() || btf.has_func(None, "mptcp_event") {
+        if !wanted || !btf.available() || btf.has_struct("mptcp_sock") {
             return Ok(());
         }
         let c = &self.config;

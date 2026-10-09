@@ -57,6 +57,20 @@ impl KernelBtf {
             .is_some_and(find)
     }
 
+    /// Whether vmlinux has a struct named `name`
+    pub fn has_struct(&mut self, name: &str) -> bool {
+        let Ok(name) = CString::new(name) else {
+            return false;
+        };
+        self.vmlinux().is_some_and(|btf| unsafe {
+            libbpf_sys::btf__find_by_name_kind(
+                btf.as_ptr(),
+                name.as_ptr(),
+                libbpf_sys::BTF_KIND_STRUCT,
+            ) > 0
+        })
+    }
+
     /// The first of `candidates` that exists, see `has_func`
     pub fn find_func<'a>(
         &mut self,

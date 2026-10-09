@@ -288,6 +288,10 @@ _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");
 _Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
 _Static_assert(sizeof(struct mptcp_pm_entry) == 120, "mptcp_pm_entry size");
+/* The address is read into addr_0 to addr_3 at once */
+_Static_assert(__builtin_offsetof(struct mptcp_pm_entry, addr_3) ==
+		       __builtin_offsetof(struct mptcp_pm_entry, addr_0) + 12,
+	       "mptcp_pm_entry address words adjacent");
 _Static_assert(sizeof(struct ip_tuple) == 38, "ip_tuple size");
 _Static_assert(sizeof(struct hook_seq_key) == 40, "hook_seq_key size");
 _Static_assert(sizeof(struct filter_ip) == 16, "filter_ip size");
