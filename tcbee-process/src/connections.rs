@@ -350,6 +350,23 @@ mod tests {
     }
 
     #[test]
+    fn records_after_the_last_lifetime_belong_to_it() {
+        let a = tuple(40000, 5201);
+        let fl = flows(&[a.clone()]);
+        let mut tagged = TaggedFlows::default();
+        // Data still leaving after the token was destroyed
+        tagged.observe(1, 7, 150);
+        let events = [
+            event(10, TCBEE_MPTCP_CREATED, 7, 1, &a),
+            event(100, TCBEE_MPTCP_TOKEN_DESTROYED, 7, 0, &a),
+        ];
+        let (conns, cf) = assemble(tagged, &events, &fl);
+        assert_eq!(conns.len(), 1);
+        assert_eq!((conns[0].start_ts, conns[0].end_ts), (10, 150));
+        assert_eq!(members(&cf, 1), vec![(1, Some(1))]);
+    }
+
+    #[test]
     fn tags_without_path_manager_events() {
         let (a, b) = (tuple(40000, 5201), tuple(40001, 5201));
         let fl = flows(&[a, b]);
