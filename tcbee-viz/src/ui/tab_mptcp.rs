@@ -33,8 +33,6 @@ use crate::{
     },
 };
 
-/// `kind` of MPTCP rows in the connections table
-const KIND_MPTCP: &str = "mptcp";
 /// Shown when the database has no MPTCP connection
 pub const NO_MPTCP_HINT: &str =
     "No MPTCP was recorded in this database. Record with tcbee-record -M to see MPTCP connections.";
@@ -43,7 +41,9 @@ const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
 
 /// Whether the database has MPTCP connections, which enables the tab
 pub fn has_mptcp(db: &DbBackend) -> bool {
-    db.list_connections().iter().any(|c| c.kind == KIND_MPTCP)
+    db.list_connections()
+        .iter()
+        .any(|c| c.kind == ConnectionInfo::KIND_MPTCP)
 }
 
 /// A series that every subflow may have: (source, dir, name)
@@ -80,6 +80,90 @@ fn pm_event_name(event: i64) -> &'static str {
     }
 }
 
+/// The MPTCP connections of the database with their sidebar text
+fn connection_rows(db: &DbBackend) -> Vec<ConnectionRow> {
+    let mptcp: Vec<&ConnectionInfo> = db
+        .list_connections()
+        .iter()
+        .filter(|c| c.kind == ConnectionInfo::KIND_MPTCP)
+        .collect();
+    let origin = mptcp.iter().map(|c| c.start_ts).min().unwrap_or(0);
+    mptcp
+        .into_iter()
+        .map(|c| {
+            let flows = db
+                .list_connection_flows()
+                .iter()
+                .filter(|m| m.connection_id == c.id)
+                .count();
+            ConnectionRow {
+                info: c.clone(),
+                text: format!(
+                    "#{}  token {:#010x}  {} flows  {:.2} s, at {:.3} s",
+                    c.id,
+                    c.key,
+                    flows,
+                    (c.end_ts - c.start_ts) as f64 / 1e9,
+                    (c.start_ts - origin) as f64 / 1e9
+                ),
+            }
+        })
+        .collect()
+}
+
+/// The path manager events of one subflow that belong to `connection` (a flow tuple may be
+/// reused by another connection): (time, marker label)
+fn subflow_events(
+    db: &DbBackend,
+    sub: &Subflow,
+    connection: &ConnectionInfo,
+) -> Vec<(f64, String)> {
+    let column = |name: &str| -> Vec<(f64, DataValue)> {
+        sub.series
+            .iter()
+            .find(|s| s.source == "mptcp_pm" && s.name == name)
+            .and_then(|s| db.load_all(s).ok())
+            .unwrap_or_default()
+    };
+    let events = column("event");
+    let others = ["token", "error", "addr_id", "addr_family", "addr_port"].map(|n| column(n));
+    let words = ["addr_0", "addr_1", "addr_2", "addr_3"].map(|n| column(n));
+    // Columns of one table, read in the same (ts, seq) order: rows line up unless the reads
+    // disagree, then only the event names are shown
+    let aligned = others
+        .iter()
+        .chain(&words)
+        .all(|c| c.len() == events.len() && c.iter().zip(&events).all(|(a, b)| a.0 == b.0));
+    let [token, error, addr_id, family, port] = others;
+    let span = connection.start_ts as f64..=connection.end_ts as f64;
+    let subflow = sub.member.subflow_id.map(|id| format!(" (subflow {id})"));
+    let mut out = Vec::new();
+    for (row, (t, event)) in events.iter().enumerate() {
+        let DataValue::Int(event) = *event else {
+            continue;
+        };
+        let int = |values: &[(f64, DataValue)]| match values.get(row) {
+            Some((_, DataValue::Int(v))) if aligned => *v,
+            _ => 0,
+        };
+        if aligned && int(&token) != connection.key || !span.contains(t) {
+            continue;
+        }
+        let mut label = pm_event_name(event).to_string();
+        match event_address(int(&family), int(&port), words.each_ref().map(|w| int(w))) {
+            Some(address) => label.push_str(&format!(" {address}")),
+            None if int(&addr_id) != 0 => label.push_str(&format!(" id {}", int(&addr_id))),
+            None => {}
+        }
+        if int(&error) != 0 {
+            label.push_str(&format!(" failed ({})", int(&error)));
+        }
+        label.push_str(subflow.as_deref().unwrap_or(""));
+        out.push((*t, label));
+    }
+    out
+}
+
 /// The address of a path manager event, from its family, port and the four words that hold
 /// its bytes in network order (see `mptcp_pm_entry` in records.h)
 fn event_address(family: i64, port: i64, words: [i64; 4]) -> Option<String> {
@@ -102,7 +186,10 @@ fn event_address(family: i64, port: i64, words: [i64; 4]) -> Option<String> {
 /// One subflow of the selected connection with its catalog
 struct Subflow {
     member: ConnectionFlow,
+    /// Legend name
     label: String,
+    /// Its flow, for the table
+    flow: String,
     series: Vec<SeriesInfo>,
 }
 
@@ -120,11 +207,19 @@ impl Subflow {
     }
 }
 
+/// A connection in the sidebar
+struct ConnectionRow {
+    info: ConnectionInfo,
+    text: String,
+}
+
+/// The tab is reset whenever another tab is shown, and the database only changes on the Home
+/// tab, so its state always belongs to the open database.
 #[derive(Default)]
 pub struct TabMptcp {
-    /// The connections of the database the state below belongs to
-    connections: Vec<ConnectionInfo>,
-    connection_id: Option<i64>,
+    /// The MPTCP connections of the database, read when the tab is first shown
+    connections: Vec<ConnectionRow>,
+    connection: Option<ConnectionInfo>,
     subflows: Vec<Subflow>,
     metrics: Vec<MetricKey>,
     metric: Option<MetricKey>,
@@ -141,24 +236,11 @@ impl TabMptcp {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
-        if !db.is_connected() {
-            ui.centered_and_justified(|ui| {
-                ui.label("No database loaded. Go to Home and select a database file.");
-            });
-            return;
-        }
-        let mptcp: Vec<ConnectionInfo> = db
-            .list_connections()
-            .iter()
-            .filter(|c| c.kind == KIND_MPTCP)
-            .cloned()
-            .collect();
-        if mptcp != self.connections {
-            // Another database was opened
-            self.reset();
-            self.connections = mptcp;
+        if self.connections.is_empty() {
+            self.connections = connection_rows(db);
         }
         if self.connections.is_empty() {
+            // The tab is disabled then, this only shows if that changes
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new(NO_MPTCP_HINT).color(egui::Color32::GRAY));
             });
@@ -178,7 +260,7 @@ impl TabMptcp {
                     .show(ui, |ui| {
                         egui::Frame::NONE
                             .inner_margin(egui::Margin::symmetric(16, 8))
-                            .show(ui, |ui| self.show_sidebar(ui, db, settings));
+                            .show(ui, |ui| self.show_sidebar(ui, db));
                     });
             });
 
@@ -190,44 +272,21 @@ impl TabMptcp {
             });
     }
 
-    fn show_sidebar(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
+    fn show_sidebar(&mut self, ui: &mut egui::Ui, db: &DbBackend) {
         ui.label(RichText::new("MPTCP connections").strong());
         ui.add_space(4.0);
         let mut clicked = None;
-        let origin = self
-            .connections
-            .iter()
-            .map(|c| c.start_ts)
-            .min()
-            .unwrap_or(0);
-        for c in &self.connections {
-            let subflows = db
-                .list_connection_flows()
-                .iter()
-                .filter(|m| m.connection_id == c.id)
-                .count();
-            let text = format!(
-                "#{}  token {:#010x}  {} flows  {:.2} s",
-                c.id,
-                c.key,
-                subflows,
-                (c.end_ts - c.start_ts) as f64 / 1e9
-            );
-            let response = ui
-                .selectable_label(self.connection_id == Some(c.id), text)
-                .on_hover_text(format!(
-                    "starts {:.3} s after the first connection",
-                    (c.start_ts - origin) as f64 / 1e9
-                ));
-            if response.clicked() {
-                clicked = Some(c.id);
+        for row in &self.connections {
+            let selected = self.connection.as_ref().map(|c| c.id) == Some(row.info.id);
+            if ui.selectable_label(selected, &row.text).clicked() {
+                clicked = Some(row.info.clone());
             }
         }
-        if let Some(id) = clicked {
-            self.select_connection(db, id);
+        if let Some(connection) = clicked {
+            self.select_connection(db, connection);
         }
 
-        if self.connection_id.is_none() {
+        if self.connection.is_none() {
             return;
         }
         ui.add_space(12.0);
@@ -251,15 +310,17 @@ impl TabMptcp {
                 }
             });
         if let Some(m) = chosen {
+            // Loaded by show_connection, at the width of the plot
             self.metric = Some(m);
-            self.load_metric(db, settings, ui.ctx().screen_rect().width());
+            self.series.clear();
+            self.needs_fit = true;
         }
     }
 
     /// Reads the subflows of a connection and their catalogs, the metrics they share and the
     /// path manager events.
-    fn select_connection(&mut self, db: &DbBackend, connection_id: i64) {
-        self.connection_id = Some(connection_id);
+    fn select_connection(&mut self, db: &DbBackend, connection: ConnectionInfo) {
+        let connection_id = connection.id;
         self.subflows.clear();
         self.events.clear();
         for m in db
@@ -277,6 +338,7 @@ impl TabMptcp {
             self.subflows.push(Subflow {
                 member: m.clone(),
                 label: format!("{label} ({}:{})", flow.tuple.src, flow.tuple.sport),
+                flow: format_flow(flow),
                 series: db.list_series_for_flow(m.flow_id),
             });
         }
@@ -304,39 +366,10 @@ impl TabMptcp {
         self.needs_fit = true;
 
         for sub in &self.subflows {
-            let column = |name: &str| -> Vec<(f64, DataValue)> {
-                sub.series
-                    .iter()
-                    .find(|s| s.source == "mptcp_pm" && s.name == name)
-                    .and_then(|s| db.load_all(s).ok())
-                    .unwrap_or_default()
-            };
-            // The columns of one table, so their points line up row by row
-            let events = column("event");
-            let family = column("addr_family");
-            let port = column("addr_port");
-            let words = ["addr_0", "addr_1", "addr_2", "addr_3"].map(|name| column(name));
-            let short = sub.member.subflow_id.map(|id| format!(" (subflow {id})"));
-            for (row, (t, event)) in events.iter().enumerate() {
-                let DataValue::Int(event) = *event else {
-                    continue;
-                };
-                let int = |values: &[(f64, DataValue)]| match values.get(row) {
-                    Some((_, DataValue::Int(v))) => *v,
-                    _ => 0,
-                };
-                let address =
-                    event_address(int(&family), int(&port), words.each_ref().map(|w| int(w)));
-                let label = format!(
-                    "{}{}{}",
-                    pm_event_name(event),
-                    address.map(|a| format!(" {a}")).unwrap_or_default(),
-                    short.as_deref().unwrap_or("")
-                );
-                self.events.push((*t, label));
-            }
+            self.events.extend(subflow_events(db, sub, &connection));
         }
         self.events.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.connection = Some(connection);
     }
 
     /// Loads the selected metric of every subflow over the whole connection.
@@ -349,7 +382,19 @@ impl TabMptcp {
             .iter()
             .filter_map(|s| s.find(metric).map(|info| (s, info)))
             .collect();
-        let Some((t_min, t_max)) = flow_x_bounds(infos.iter().map(|(_, info)| *info)) else {
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        // A flow tuple may also belong to other connections: only this one's time span
+        let Some((t_min, t_max)) = flow_x_bounds(infos.iter().map(|(_, info)| *info))
+            .map(|(lo, hi)| {
+                (
+                    lo.max(connection.start_ts as f64),
+                    hi.min(connection.end_ts as f64),
+                )
+            })
+            .filter(|(lo, hi)| lo <= hi)
+        else {
             return;
         };
         let colors = generate_colors(infos.len());
@@ -362,7 +407,7 @@ impl TabMptcp {
     }
 
     fn show_connection(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
-        if self.connection_id.is_none() {
+        if self.connection.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     RichText::new("Select an MPTCP connection from the sidebar.")
@@ -374,11 +419,14 @@ impl TabMptcp {
         if self.series.is_empty() && self.metric.is_some() && self.needs_fit {
             self.load_metric(db, settings, ui.available_width());
         }
-        let table_height = (self.subflows.len() as f32 + 2.0) * 22.0 + 16.0;
+        let table_height = ((self.subflows.len() as f32 + 2.0) * 22.0 + 16.0).min(200.0);
         let plot_height = plot_height_with_footer(ui.available_height() - table_height);
         self.show_plot(ui, db, settings, plot_height);
         ui.separator();
-        self.show_subflow_table(ui, db);
+        ScrollArea::vertical()
+            .id_salt("mptcp_subflow_table_scroll")
+            .max_height(table_height)
+            .show(ui, |ui| self.show_subflow_table(ui));
     }
 
     fn show_plot(
@@ -418,10 +466,12 @@ impl TabMptcp {
         let mut visible = None;
         plot.show(ui, |plot_ui| {
             if fit {
-                let (mut x_min, mut x_max, mut y_max) = (f64::MAX, f64::MIN, 1.0_f64);
+                let (mut x_min, mut x_max) = (f64::MAX, f64::MIN);
+                let (mut y_min, mut y_max) = (0.0_f64, 1.0_f64);
                 for s in &self.series {
                     x_min = x_min.min(s.global_t_min);
                     x_max = x_max.max(s.global_t_max);
+                    y_min = y_min.min(s.global_y_min);
                     y_max = y_max.max(s.global_y_max);
                 }
                 for (t, _) in &self.events {
@@ -430,7 +480,7 @@ impl TabMptcp {
                 }
                 if x_min < x_max {
                     plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                        [x_min, 0.0],
+                        [x_min, y_min * 1.05],
                         [x_max, y_max * 1.05],
                     ));
                 }
@@ -459,11 +509,17 @@ impl TabMptcp {
             }
         });
 
-        // Zoomed in: load the visible window in more detail
+        // Panned or zoomed in: load the visible part of the data in more detail
         if let Some((x_min, x_max)) = visible {
             for sd in &mut self.series {
-                let stale = sd.loaded_range.is_none_or(|(lo, hi)| {
-                    x_min < lo || x_max > hi || (x_max - x_min) * 4.0 < hi - lo
+                // The plot may show more than there is data, as the markers widen the fit
+                let lo = x_min.max(sd.global_t_min);
+                let hi = x_max.min(sd.global_t_max);
+                if lo >= hi {
+                    continue;
+                }
+                let stale = sd.loaded_range.is_none_or(|(loaded_lo, loaded_hi)| {
+                    lo < loaded_lo || hi > loaded_hi || (hi - lo) * 4.0 < loaded_hi - loaded_lo
                 });
                 if stale {
                     load_series_window(db, sd, x_min, x_max, settings, Some(width));
@@ -472,7 +528,7 @@ impl TabMptcp {
         }
     }
 
-    fn show_subflow_table(&self, ui: &mut egui::Ui, db: &DbBackend) {
+    fn show_subflow_table(&self, ui: &mut egui::Ui) {
         let total: f64 = self.subflows.iter().filter_map(Subflow::bytes_acked).sum();
         let origin = self
             .subflows
@@ -491,10 +547,7 @@ impl TabMptcp {
                 for sub in &self.subflows {
                     let m = &sub.member;
                     ui.label(m.subflow_id.map_or("-".to_string(), |id| id.to_string()));
-                    ui.label(
-                        db.get_flow_by_id(m.flow_id)
-                            .map_or_else(String::new, format_flow),
-                    );
+                    ui.label(&sub.flow);
                     ui.label(format!(
                         "{:.3} – {:.3}",
                         (m.first_ts - origin) as f64 / 1e9,

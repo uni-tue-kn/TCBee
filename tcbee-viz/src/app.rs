@@ -86,8 +86,14 @@ impl eframe::App for TcbeeApp {
 
                     let has_mptcp = tab_mptcp::has_mptcp(&self.db);
                     if self.active_tab == Tab::Mptcp && !has_mptcp {
+                        self.reset_tab(Tab::Mptcp);
                         self.active_tab = Tab::Home;
                     }
+                    let mptcp_hint = if self.db.is_connected() {
+                        tab_mptcp::NO_MPTCP_HINT
+                    } else {
+                        "Open a database on the Home tab first."
+                    };
                     for &(tab, label) in TABS {
                         let selected = self.active_tab == tab;
                         let enabled = tab != Tab::Mptcp || has_mptcp;
@@ -113,7 +119,7 @@ impl eframe::App for TcbeeApp {
                         ));
                         let response = ui
                             .add_enabled(enabled, button)
-                            .on_disabled_hover_text(tab_mptcp::NO_MPTCP_HINT);
+                            .on_disabled_hover_text(mptcp_hint);
                         if response.clicked() && !selected {
                             self.reset_tab(self.active_tab);
                             self.active_tab = tab;
