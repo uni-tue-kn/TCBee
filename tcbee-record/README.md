@@ -4,7 +4,10 @@
 
 - Rust stable (1.82 or newer): `rustup toolchain install stable`
 - clang 11 or newer, to compile the eBPF programs in `tcbee/src/bpf/`
-- libclang, used by bindgen for the shared record layout (`tcbee/src/bpf/records.h`)
+- libclang, only for `cargo test`: the `records_gen` test of tcbee-common checks that the
+  checked-in Rust records (`tcbee-common/src/records_gen.rs`) match `tcbee/src/bpf/records.h`.
+  After changing records.h, regenerate them with
+  `TCBEE_REGEN_RECORDS=1 cargo test -p tcbee-common --test records_gen`
 - libelf and zlib development headers, found through pkg-config, plus make and a C compiler
   for the bundled libbpf
 

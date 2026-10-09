@@ -10,5 +10,6 @@ serde = { version = "1.0.217", features = ["serde_derive"] }
 [lib]
 path = "src/lib.rs"
 
-[build-dependencies]
+[dev-dependencies]
+# Only the records_gen test regenerates src/records_gen.rs, see there
 bindgen = { version = "0.73", default-features = false, features = ["runtime"] }

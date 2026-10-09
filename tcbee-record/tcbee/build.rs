@@ -1,12 +1,39 @@
-use std::{env, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
-use anyhow::{anyhow, Context as _};
+use anyhow::{anyhow, bail, Context as _};
 use libbpf_cargo::SkeletonBuilder;
 
 const BPF_SRC: &str = "src/bpf/tcbee.bpf.c";
+const RECORDS_H: &str = "src/bpf/records.h";
+const RECORDS_GEN: &str = "../tcbee-common/src/records_gen.rs";
 
 fn main() -> anyhow::Result<()> {
+    check_records_generated()?;
     build_skeleton()
+}
+
+/// FNV-1a, the same hash as in tcbee-common/tests/records_gen.rs
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// The Rust record types (tcbee-common/src/records_gen.rs) are generated from records.h by a
+/// test, not at build time. Its first line holds the hash of the records.h it was generated
+/// from: the eBPF programs and the writer must not disagree on the layout.
+fn check_records_generated() -> anyhow::Result<()> {
+    let records_h = fs::read(RECORDS_H).context(RECORDS_H)?;
+    let generated = fs::read_to_string(RECORDS_GEN).context(RECORDS_GEN)?;
+    let expected = format!("// records.h FNV-1a: {:#018x}", fnv1a(&records_h));
+    if generated.lines().next() != Some(expected.as_str()) {
+        bail!(
+            "{RECORDS_H} changed since {RECORDS_GEN} was generated, regenerate it with \
+             TCBEE_REGEN_RECORDS=1 cargo test -p tcbee-common --test records_gen"
+        );
+    }
+    println!("cargo:rerun-if-changed={RECORDS_GEN}");
+    Ok(())
 }
 
 /// Compile the C eBPF object and generate its libbpf-rs skeleton.
