@@ -4,8 +4,13 @@ use crate::{
     backend::db::DbBackend,
     settings::AppSettings,
     ui::{
-        tab_home::TabHome, tab_multi_flow::TabMultiFlow, tab_process::TabProcess,
-        tab_settings::TabSettings, tab_single_flow::TabSingleFlow, theme,
+        tab_home::TabHome,
+        tab_mptcp::{self, TabMptcp},
+        tab_multi_flow::TabMultiFlow,
+        tab_process::TabProcess,
+        tab_settings::TabSettings,
+        tab_single_flow::TabSingleFlow,
+        theme,
     },
 };
 
@@ -14,6 +19,7 @@ pub enum Tab {
     Home,
     Single,
     Multi,
+    Mptcp,
     Process,
     Settings,
 }
@@ -22,6 +28,7 @@ const TABS: &[(Tab, &str)] = &[
     (Tab::Home, "Home"),
     (Tab::Single, "Single Flow"),
     (Tab::Multi, "Multi Flow"),
+    (Tab::Mptcp, "MPTCP"),
     (Tab::Process, "Process"),
     (Tab::Settings, "Settings"),
 ];
@@ -34,6 +41,7 @@ pub struct TcbeeApp {
     tab_home: TabHome,
     tab_single: TabSingleFlow,
     tab_multi: TabMultiFlow,
+    tab_mptcp: TabMptcp,
     tab_process: TabProcess,
     tab_settings: TabSettings,
 }
@@ -47,6 +55,7 @@ impl Default for TcbeeApp {
             tab_home: TabHome::default(),
             tab_single: TabSingleFlow::default(),
             tab_multi: TabMultiFlow::default(),
+            tab_mptcp: TabMptcp::default(),
             tab_process: TabProcess::default(),
             tab_settings: TabSettings::default(),
         }
@@ -75,8 +84,13 @@ impl eframe::App for TcbeeApp {
                     );
                     ui.add_space(16.0);
 
+                    let has_mptcp = tab_mptcp::has_mptcp(&self.db);
+                    if self.active_tab == Tab::Mptcp && !has_mptcp {
+                        self.active_tab = Tab::Home;
+                    }
                     for &(tab, label) in TABS {
                         let selected = self.active_tab == tab;
+                        let enabled = tab != Tab::Mptcp || has_mptcp;
                         let button = egui::Button::new(egui::RichText::new(label).strong().color(
                             if selected {
                                 egui::Color32::WHITE
@@ -97,7 +111,10 @@ impl eframe::App for TcbeeApp {
                                 egui::Color32::TRANSPARENT
                             },
                         ));
-                        if ui.add(button).clicked() && !selected {
+                        let response = ui
+                            .add_enabled(enabled, button)
+                            .on_disabled_hover_text(tab_mptcp::NO_MPTCP_HINT);
+                        if response.clicked() && !selected {
                             self.reset_tab(self.active_tab);
                             self.active_tab = tab;
                         }
@@ -117,6 +134,9 @@ impl eframe::App for TcbeeApp {
                 }
                 Tab::Multi => {
                     self.tab_multi.show(ui, &self.db, &self.settings);
+                }
+                Tab::Mptcp => {
+                    self.tab_mptcp.show(ui, &self.db, &self.settings);
                 }
                 Tab::Process => {
                     self.tab_process.show(ui, &self.db, &self.settings);
@@ -155,6 +175,7 @@ impl TcbeeApp {
         match tab {
             Tab::Single => self.tab_single.reset(),
             Tab::Multi => self.tab_multi.reset(),
+            Tab::Mptcp => self.tab_mptcp.reset(),
             Tab::Process => self.tab_process.reset(),
             _ => {}
         }

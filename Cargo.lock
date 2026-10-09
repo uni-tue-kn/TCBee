@@ -3934,6 +3934,7 @@ dependencies = [
  "egui_plot",
  "rand 0.9.5",
  "rfd",
+ "tcbee-common",
  "tempfile",
  "ts_storage",
 ]
