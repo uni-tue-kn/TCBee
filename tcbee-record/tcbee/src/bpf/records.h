@@ -193,6 +193,7 @@ enum tcbee_mptcp_event {
 	TCBEE_MPTCP_SUB_ESTABLISHED = 10,
 	TCBEE_MPTCP_SUB_CLOSED = 11,
 	TCBEE_MPTCP_SUB_PRIORITY = 13,
+	/* Not recorded, mptcp_event_pm_listener() is not hooked */
 	TCBEE_MPTCP_LISTENER_CREATED = 15,
 	TCBEE_MPTCP_LISTENER_CLOSED = 16,
 	/* The token is freed, the kernel may hand it to a new connection from now on */
@@ -220,7 +221,7 @@ struct mptcp_pm_entry {
 	int64_t error;
 	/* enum tcbee_mptcp_event */
 	uint8_t event;
-	/* Address ids of the subflow's two ends, and its backup flag */
+	/* Address ids of the subflow's two ends (255: not set yet), and its backup flag */
 	uint8_t local_id;
 	uint8_t remote_id;
 	uint8_t backup;

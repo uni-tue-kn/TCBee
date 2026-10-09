@@ -704,7 +704,8 @@ static __always_inline void mptcp_pm_addr(struct mptcp_pm_entry *rec,
 	rec->addr_port = bpf_ntohs(BPF_CORE_READ(addr, port));
 	if (rec->addr_family == AF_INET)
 		bpf_core_read(rec->addr, 4, &addr->addr);
-	else
+	/* addr6 only exists with CONFIG_MPTCP_IPV6 */
+	else if (bpf_core_field_exists(addr->addr6))
 		bpf_core_read(rec->addr, 16, &addr->addr6);
 }
 
@@ -727,6 +728,12 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 	/* Not sk_ports(): sk may be a struct mptcp_sock, which allows no direct socket loads */
 	sport = BPF_CORE_READ(sk, __sk_common.skc_num);
 	dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	/*
+	 * A connect that fails right away destroys the token before the connection got its
+	 * addresses; such a connection never had a subflow worth a record
+	 */
+	if (!sport && !dport)
+		return 0;
 	if (!filter_sock(sk, sport, dport))
 		return 0;
 	if (!hook_seq_sk(sk, sport, dport, RB_MPTCP_PM, &hook_seq))

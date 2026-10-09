@@ -199,7 +199,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_mptcp).add_option(
             &["-M", "--mptcp"],
             StoreTrue,
-            "Record MPTCP: path manager and connection lifecycle events, and with -k or -w the token of its MPTCP connection in every record of a subflow.",
+            "Record MPTCP: path manager and connection lifecycle events, and with -k or -w the token of its MPTCP connection in the records of each subflow.",
         );
         argparser.refer(&mut mptcp_modes).add_option(
             &["--mptcp-modes"],

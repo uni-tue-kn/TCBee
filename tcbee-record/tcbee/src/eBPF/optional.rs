@@ -169,6 +169,16 @@ mod tests {
     }
 
     #[test]
+    fn failing_path_manager_program_disables_only_its_group() {
+        let w = warnings(&["libbpf: prog 'mptcp_pm_announced': failed to load: -22"]);
+        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::MptcpPm]))
+        );
+    }
+
+    #[test]
     fn group_that_is_already_disabled_is_not_retried() {
         let w = warnings(&["libbpf: prog 'bbr_cwnd_event': failed to load: -22"]);
         assert_eq!(to_disable(&BTreeSet::new(), &w), None);

@@ -47,7 +47,7 @@ use crate::{
     writer::{Writer, WriterReport},
 };
 
-use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig};
+use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig, MptcpModes};
 
 // TODO: how to handle multiple tracepoints at the same time?
 pub struct EbpfRunner {
@@ -370,6 +370,22 @@ impl EbpfRunner {
         Ok((open, optional))
     }
 
+    /// Without MPTCP in the kernel, -M records nothing: a warning, or an error if it is the
+    /// only thing to record. mptcp_event exists whenever the kernel has MPTCP.
+    fn check_kernel_mptcp(&mut self, btf: &mut KernelBtf) -> Result<(), Box<dyn Error>> {
+        let wanted = self.config.mptcp.tag || self.config.mptcp.pm;
+        if !wanted || !btf.available() || btf.has_func(None, "mptcp_event") {
+            return Ok(());
+        }
+        let c = &self.config;
+        if !(c.headers || c.tracepoints || c.kernel || c.cwnd || c.algorithms) {
+            return Err("The kernel has no MPTCP (CONFIG_MPTCP), -M has nothing to record".into());
+        }
+        warn!("The kernel has no MPTCP (CONFIG_MPTCP), -M records nothing");
+        self.config.mptcp = MptcpModes::default();
+        Ok(())
+    }
+
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         env_logger::init();
         libbpf_rs::set_print(Some((PrintLevel::Debug, libbpf_log)));
@@ -390,6 +406,7 @@ impl EbpfRunner {
         let tcx = self.config.headers && uses_tcx();
         let cpus = rings::Cpus::get()?;
         let mut btf = KernelBtf::default();
+        self.check_kernel_mptcp(&mut btf)?;
         let mut disabled = BTreeSet::new();
         let (skel, optional) = loop {
             let (open, optional) = self.open_configured(tcx, &disabled, &mut btf, &cpus)?;
