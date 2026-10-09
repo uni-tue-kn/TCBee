@@ -660,3 +660,159 @@ int BPF_PROG(bbr_cwnd_event, struct sock *sk)
 {
 	return trace_bbr(sk);
 }
+
+/* ---- MPTCP path manager (-M pm) ---------------------------------------------------- */
+
+/*
+ * One record per path manager or lifecycle event of an MPTCP connection. These hooks run a
+ * few times per connection, so the MPTCP structs are read with BPF_CORE_READ throughout. A
+ * connection (struct mptcp_sock) starts with its struct sock, which holds the tuple of the
+ * first subflow.
+ */
+
+/* Subflow fields, from the subflow context in the ULP data of ssk */
+static __always_inline void mptcp_pm_subflow(struct mptcp_pm_entry *rec, const struct sock *ssk)
+{
+	struct mptcp_subflow_context *subflow;
+	struct tcp_sock *tp;
+
+	tp = bpf_skc_to_tcp_sock((struct sock *)ssk);
+	if (!tp)
+		return;
+	subflow = tp->inet_conn.icsk_ulp_data;
+	if (!subflow)
+		return;
+	if (!rec->token) {
+		struct mptcp_sock *msk = (struct mptcp_sock *)BPF_CORE_READ(subflow, conn);
+
+		rec->token = BPF_CORE_READ(msk, token);
+	}
+	rec->remote_token = BPF_CORE_READ(subflow, remote_token);
+	if (bpf_core_field_exists(subflow->subflow_id))
+		rec->subflow_id = BPF_CORE_READ_BITFIELD_PROBED(subflow, subflow_id);
+	/* Their types differ between kernels, the probed bitfield read adapts to the size */
+	rec->local_id = BPF_CORE_READ_BITFIELD_PROBED(subflow, local_id);
+	rec->remote_id = BPF_CORE_READ_BITFIELD_PROBED(subflow, remote_id);
+	rec->backup = BPF_CORE_READ_BITFIELD_PROBED(subflow, backup);
+}
+
+static __always_inline void mptcp_pm_addr(struct mptcp_pm_entry *rec,
+					  const struct mptcp_addr_info *addr)
+{
+	rec->addr_id = BPF_CORE_READ(addr, id);
+	rec->addr_family = BPF_CORE_READ(addr, family);
+	rec->addr_port = bpf_ntohs(BPF_CORE_READ(addr, port));
+	if (rec->addr_family == AF_INET)
+		bpf_core_read(rec->addr, 4, &addr->addr);
+	else
+		bpf_core_read(rec->addr, 16, &addr->addr6);
+}
+
+/*
+ * The record's tuple is the one of ssk if given, else the one of the connection. addr is the
+ * address of the event, if any.
+ */
+static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *msk,
+					  const struct sock *ssk,
+					  const struct mptcp_addr_info *addr, __s64 error)
+{
+	struct sock *sk = ssk ? (struct sock *)ssk : (struct sock *)msk;
+	struct mptcp_pm_entry *rec;
+	__u16 sport, dport;
+	__u64 hook_seq;
+
+	if (!sk)
+		return 0;
+	sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, RB_MPTCP_PM, &hook_seq))
+		return 0;
+	rec = reserve(&MPTCP_PM_EVENTS, RB_MPTCP_PM, rec);
+	if (!rec)
+		return 0;
+
+	fill_header(rec, sk, sport, dport, hook_seq);
+	rec->event = event;
+	rec->error = error;
+	if (msk)
+		rec->token = BPF_CORE_READ(msk, token);
+	if (ssk)
+		mptcp_pm_subflow(rec, ssk);
+	if (addr)
+		mptcp_pm_addr(rec, addr);
+	commit(rec, RB_MPTCP_PM);
+	return 0;
+}
+
+/* Events whose address is only an id */
+static __always_inline int trace_mptcp_pm_id(__u8 event, const struct mptcp_sock *msk, __u8 id)
+{
+	struct mptcp_pm_entry *rec;
+	struct sock *sk = (struct sock *)msk;
+	__u16 sport, dport;
+	__u64 hook_seq;
+
+	sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, RB_MPTCP_PM, &hook_seq))
+		return 0;
+	rec = reserve(&MPTCP_PM_EVENTS, RB_MPTCP_PM, rec);
+	if (!rec)
+		return 0;
+
+	fill_header(rec, sk, sport, dport, hook_seq);
+	rec->event = event;
+	rec->token = BPF_CORE_READ(msk, token);
+	rec->addr_id = id;
+	commit(rec, RB_MPTCP_PM);
+	return 0;
+}
+
+/* The netlink path manager events, sent whether or not anyone listens */
+SEC("fentry/mptcp_event")
+int BPF_PROG(mptcp_pm_event, int type, const struct mptcp_sock *msk, const struct sock *ssk)
+{
+	return trace_mptcp_pm(type, msk, ssk, NULL, 0);
+}
+
+/* The peer announced an address */
+SEC("fentry/mptcp_event_addr_announced")
+int BPF_PROG(mptcp_pm_announced, const struct sock *ssk, const struct mptcp_addr_info *info)
+{
+	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, 0);
+}
+
+/* The peer removed the address with this id */
+SEC("fentry/mptcp_event_addr_removed")
+int BPF_PROG(mptcp_pm_removed, const struct mptcp_sock *msk, __u8 id)
+{
+	return trace_mptcp_pm_id(TCBEE_MPTCP_REMOVED, msk, id);
+}
+
+/* End of the token's life: a later connection may get the same token */
+SEC("fentry/mptcp_token_destroy")
+int BPF_PROG(mptcp_pm_token_destroy, struct mptcp_sock *msk)
+{
+	if (!BPF_CORE_READ(msk, token))
+		return 0;
+	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, 0);
+}
+
+/* A subflow the path manager tried to open to the address remote */
+SEC("fexit/__mptcp_subflow_connect")
+int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_info *loc,
+	     const struct mptcp_addr_info *remote, int ret)
+{
+	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_CONNECT, (const struct mptcp_sock *)sk, NULL,
+			      remote, ret);
+}
+
+SEC("fentry/mptcp_pm_mp_fail_received")
+int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk)
+{
+	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL, 0);
+}

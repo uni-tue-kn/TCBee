@@ -13,15 +13,21 @@ pub enum OptionalGroup {
     Bbr,
     /// The MPTCP code in the sock and cwnd programs (MPTCP_TAG); without it they still load
     MptcpTag,
+    MptcpPm,
 }
 
 impl OptionalGroup {
-    pub const ALL: [OptionalGroup; 2] = [OptionalGroup::Bbr, OptionalGroup::MptcpTag];
+    pub const ALL: [OptionalGroup; 3] = [
+        OptionalGroup::Bbr,
+        OptionalGroup::MptcpTag,
+        OptionalGroup::MptcpPm,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             OptionalGroup::Bbr => "BBR",
             OptionalGroup::MptcpTag => "MPTCP tagging",
+            OptionalGroup::MptcpPm => "MPTCP path manager events",
         }
     }
 
@@ -34,6 +40,14 @@ impl OptionalGroup {
                 "sock_recvmsg",
                 "cwnd_sock_sendmsg",
                 "cwnd_sock_recvmsg",
+            ],
+            OptionalGroup::MptcpPm => &[
+                "mptcp_pm_event",
+                "mptcp_pm_announced",
+                "mptcp_pm_removed",
+                "mptcp_pm_token_destroy",
+                "mptcp_pm_subflow_connect",
+                "mptcp_pm_mp_fail",
             ],
         }
     }

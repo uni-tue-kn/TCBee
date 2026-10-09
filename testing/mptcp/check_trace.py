@@ -3,8 +3,9 @@
 
     check_trace.py TRACE_DIR MPTCP_PORT TCP_PORT
 
-Every MPTCP connection must show up with two subflows on each side under one conn_id, and the
-plain TCP connection must have conn_id 0. Exits with 1 on a failed check.
+Every MPTCP connection must show up with two subflows on each side under one conn_id, the plain
+TCP connection must have conn_id 0, and the path manager events of each side must describe the
+connection's life. Exits with 1 on a failed check.
 """
 
 import collections
@@ -22,6 +23,12 @@ PORTS_OFFSET = 56
 ADDR_V4_OFFSET = 16
 CONN_ID_OFFSET = SOCK_RECORD - 8
 
+# mptcp_pm_entry on disk: the same header, then token, remote_token, subflow_id, error, event,
+# local_id, remote_id, backup, addr_id, addr_family, addr_port, addr
+PM_RECORD = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHH16s")
+CREATED, ESTABLISHED, CLOSED, SUB_ESTABLISHED = 1, 2, 3, 10
+TOKEN_DESTROYED, SUBFLOW_CONNECT = 100, 101
+
 
 def records(path: Path):
     data = path.read_bytes()
@@ -36,6 +43,20 @@ def records(path: Path):
         remote = ipaddress.IPv4Address((addr_v4 & 0xFFFFFFFF).to_bytes(4, "little"))
         (conn_id,) = struct.unpack_from("<I", rec, CONN_ID_OFFSET)
         yield (str(local), sport, str(remote), dport), conn_id
+
+
+def pm_events(path: Path):
+    """(event, token, subflow_id, error) per record, in recording order"""
+    data = path.read_bytes()
+    size = PM_RECORD.size + 4
+    if len(data) % size:
+        sys.exit(f"{path}: {len(data)} bytes is no whole number of mptcp_pm records")
+    events = []
+    for i in range(0, len(data), size):
+        f = PM_RECORD.unpack_from(data, i)
+        time, token, subflow_id, error, event = f[0], f[8], f[10], f[11], f[12]
+        events.append((time, event, token, subflow_id, error))
+    return [e[1:] for e in sorted(events)]
 
 
 def main() -> int:
@@ -68,6 +89,20 @@ def main() -> int:
     # The first segments of a subflow may leave before the kernel links it to its connection
     check(all(n <= 2 for n in untagged.values()), f"at most 2 untagged records per subflow: {dict(untagged)}")
     check(set(tcp_tags) == {0}, f"plain TCP records have conn_id 0: {dict(tcp_tags)}")
+
+    events = pm_events(trace / "mptcp_pm.tcp")
+    by_token = collections.defaultdict(list)
+    for event, token, _subflow_id, error in events:
+        by_token[token].append(event)
+        if event == SUBFLOW_CONNECT:
+            check(error == 0, f"subflow connect of {token:#010x} succeeded: {error}")
+    for token, seq in sorted(by_token.items()):
+        print(f"      pm {token:#010x}: {seq}")
+    check(set(by_token) == set(subflows), "path manager tokens are the conn_ids")
+    for token, seq in by_token.items():
+        life = [e for e in seq if e in (CREATED, ESTABLISHED, CLOSED, TOKEN_DESTROYED)]
+        check(life == [CREATED, ESTABLISHED, CLOSED, TOKEN_DESTROYED], f"{token:#010x} lifecycle in order")
+        check(seq.count(SUB_ESTABLISHED) == 1, f"{token:#010x} established its second subflow")
     return 1 if failed else 0
 
 

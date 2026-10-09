@@ -8,7 +8,7 @@
   The source trace was in tmpfs; a copy is kept at `~/tcbee-traces` outside the repo. It predates
   `hook_seq`, which was inserted afterwards as the record index + 1 (recorded with shared ring
   buffers, so file order was hook order). The sock records also got `conn_id` = 0 (no MPTCP).
-- **Generated** by `src/fixtures.rs`: `bbr`, `send_cwnd`, `tcp6_*`, the empty files and
+- **Generated** by `src/fixtures.rs`: `bbr`, `mptcp_pm`, `send_cwnd`, `tcp6_*`, the empty files and
   `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
   each flow from 1. Regenerate with
   `cargo test --features fixture-gen -- --ignored regenerate_fixtures`.
@@ -23,6 +23,7 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | File | Binding | Record size (bytes) | Records | Origin |
 | --- | --- | --- | --- | --- |
 | `bbr.tcp` | `bbr_trace_entry` | 118 | 500 | generated |
+| `mptcp_pm.tcp` | `mptcp_pm_entry` | 111 | 12 | generated |
 | `cubic.tcp` | `cubic_trace_entry` | 122 | 2000 | real |
 | `tcp_probe.tcp` | `tcp_probe_entry` | 124 | 2000 | real |
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |

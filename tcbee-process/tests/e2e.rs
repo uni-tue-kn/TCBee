@@ -30,6 +30,7 @@ fn engines() -> Vec<(Engine, &'static str)> {
 /// (file, source, dir code, records, columns) of tcbee_small; see the fixture README.
 const SMALL: &[(&str, &str, u8, u64, usize)] = &[
     ("bbr.tcp", "bbr", 0, 500, 12),
+    ("mptcp_pm.tcp", "mptcp_pm", 0, 12, 11),
     ("cubic.tcp", "cubic", 0, 2000, 14),
     ("tcp_probe.tcp", "tcp_probe", 0, 2000, 10),
     ("send_sock.tcp", "sock", 1, 2000, 25),
@@ -288,6 +289,7 @@ const SMALL_DIGESTS: &[(&str, u64)] = &[
     ("cubic|0", 18293315105502254295),
     ("cwnd|1", 10154183732297103522),
     ("flows", 17654629037281800754),
+    ("mptcp_pm|0", 16429479184820387206),
     ("sock|1", 3144412637236659025),
     ("sock|2", 6540169290698444424),
     ("tcp4|1", 16532087506000249234),

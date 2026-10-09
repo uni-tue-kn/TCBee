@@ -21,6 +21,8 @@ const RECORDS: &[&str] = &[
     "tcp_probe_entry",
     "tcp_retransmit_synack_entry",
     "tcp_bad_csum_entry",
+    "mptcp_pm_entry",
+    "tcbee_mptcp_event",
     "ip_tuple",
     "hook_seq_key",
     "filter_ip",
@@ -79,6 +81,8 @@ fn generate() -> String {
         .derive_partialeq(true)
         .derive_eq(true)
         .generate_comments(false)
+        // TCBEE_MPTCP_CREATED, not tcbee_mptcp_event_TCBEE_MPTCP_CREATED
+        .prepend_enum_name(false)
         .parse_callbacks(Box::new(Callbacks));
     for record in RECORDS {
         builder = builder.allowlist_type(record);

@@ -21,6 +21,7 @@ pub enum TraceFile {
     Tcp4Send,
     Tcp6Receive,
     Tcp6Send,
+    MptcpPm,
 }
 
 impl TraceFile {
@@ -39,6 +40,7 @@ impl TraceFile {
             TraceFile::Tcp4Send => "tcp4_send.tcp",
             TraceFile::Tcp6Receive => "tcp6_receive.tcp",
             TraceFile::Tcp6Send => "tcp6_send.tcp",
+            TraceFile::MptcpPm => "mptcp_pm.tcp",
         }
     }
 
@@ -57,6 +59,7 @@ impl TraceFile {
             TraceFile::Tcp4Send,
             TraceFile::Tcp6Receive,
             TraceFile::Tcp6Send,
+            TraceFile::MptcpPm,
         ]
     }
 }

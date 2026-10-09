@@ -199,12 +199,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_mptcp).add_option(
             &["-M", "--mptcp"],
             StoreTrue,
-            "Record MPTCP: tag the sock (-k) and cwnd (-w) records of subflows with the token of their MPTCP connection.",
+            "Record MPTCP: path manager and connection lifecycle events, and with -k or -w the token of its MPTCP connection in every record of a subflow.",
         );
         argparser.refer(&mut mptcp_modes).add_option(
             &["--mptcp-modes"],
             Store,
-            "What -M records, comma-separated: tag. Implies -M. Default is tag.",
+            "What -M records, comma-separated: tag (needs -k or -w), pm. Implies -M. Default is pm, plus tag with -k or -w.",
         );
 
         // Will try to parse arguments or exit program on error!
@@ -239,7 +239,7 @@ fn main() -> anyhow::Result<()> {
     let mptcp = if !mptcp_modes.is_empty() {
         MptcpModes::parse(&mptcp_modes)?
     } else if trace_mptcp {
-        MptcpModes::DEFAULT
+        MptcpModes::default_for(trace_kernel || trace_cwnd)
     } else {
         MptcpModes::default()
     };
@@ -252,7 +252,13 @@ fn main() -> anyhow::Result<()> {
     let duration = Duration::try_from_secs_f64(duration)
         .map_err(|_| anyhow!("--duration must be a non-negative number of seconds"))?;
 
-    if !trace_headers && !trace_tracepoints && !trace_kernel && !trace_cwnd && !trace_algorithms {
+    if !trace_headers
+        && !trace_tracepoints
+        && !trace_kernel
+        && !trace_cwnd
+        && !trace_algorithms
+        && !mptcp.pm
+    {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
 

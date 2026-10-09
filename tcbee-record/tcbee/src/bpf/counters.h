@@ -26,7 +26,8 @@
 #define RB_BAD_CSUM 10
 #define RB_CUBIC 11
 #define RB_BBR 12
-#define RB_COUNT 13
+#define RB_MPTCP_PM 13
+#define RB_COUNT 14
 
 #define STAT_HANDLED 0
 #define STAT_DROPPED 1

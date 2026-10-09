@@ -14,9 +14,9 @@ use libbpf_rs::{
 };
 use log::{debug, error, info, warn};
 use tcbee_common::stats::{
-    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_RETRANSMIT_SYNACK, RB_SOCK_RECV,
-    RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE,
-    RINGBUFS,
+    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
+    RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
+    RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -35,6 +35,7 @@ use crate::{
             handle,
             headers::{uses_tcx, TCTracer, TcAttachment},
             kernel::KernelTracer,
+            mptcp::MptcpPmTracer,
             tracepoints::TracepointTracer,
         },
         rings,
@@ -172,7 +173,7 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
 
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
-    let groups: [(bool, &[u32]); 6] = [
+    let groups: [(bool, &[u32]); 7] = [
         (
             config.headers,
             &[
@@ -190,6 +191,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         ),
         (config.algorithms, &[RB_CUBIC]),
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
+        (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
     ];
     groups
         .into_iter()
@@ -361,6 +363,10 @@ impl EbpfRunner {
         if BBRTracer::configure(&mut open.progs, bbr, btf) {
             optional.insert(OptionalGroup::Bbr);
         }
+        let pm = self.config.mptcp.pm && !disabled.contains(&OptionalGroup::MptcpPm);
+        if MptcpPmTracer::configure(&mut open.progs, pm, btf) {
+            optional.insert(OptionalGroup::MptcpPm);
+        }
         Ok((open, optional))
     }
 
@@ -477,6 +483,10 @@ impl EbpfRunner {
                     }
                 }
             }
+        }
+
+        if optional.contains(&OptionalGroup::MptcpPm) {
+            MptcpPmTracer::spawn(skel, dir, writer, links)?;
         }
 
         // TODO: should be true by default in get_watcher_config()

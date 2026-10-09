@@ -3,6 +3,7 @@ pub mod cubic;
 pub mod cwnd;
 pub mod headers;
 pub mod kernel;
+pub mod mptcp;
 pub mod tracepoints;
 
 use libbpf_rs::{Link, MapCore, MapHandle, MapMut, OpenProgramMut, ProgramMut};

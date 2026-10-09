@@ -42,8 +42,10 @@ typedef __u8 uint8_t;
 typedef __u16 uint16_t;
 typedef __u32 uint32_t;
 typedef __u64 uint64_t;
+typedef __s64 int64_t;
 typedef __u8 u8;
 typedef __u16 u16;
+typedef __s16 s16;
 typedef __u32 u32;
 typedef __u64 u64;
 typedef __u64 __addrpair;
@@ -178,12 +180,31 @@ struct tcp_sock {
 	bool is_mptcp;
 };
 
+struct in_addr {
+	__be32 s_addr;
+};
+
 struct mptcp_subflow_context {
+	u32 remote_token;
+	u32 backup: 1;
+	s16 local_id;
+	u8 remote_id;
+	u32 subflow_id;
 	struct sock *conn;
 };
 
 struct mptcp_sock {
 	u32 token;
+};
+
+struct mptcp_addr_info {
+	u8 id;
+	unsigned short family;
+	__be16 port;
+	union {
+		struct in_addr addr;
+		struct in6_addr addr6;
+	};
 };
 
 #ifndef BPF_NO_PRESERVE_ACCESS_INDEX

@@ -55,6 +55,7 @@ fn ring_buffer_ids_match_counters_h() {
         RB_BAD_CSUM,
         RB_CUBIC,
         RB_BBR,
+        RB_MPTCP_PM,
     );
     assert_eq!(c, rust);
     let mut ids: Vec<u32> = rust.into_values().collect();

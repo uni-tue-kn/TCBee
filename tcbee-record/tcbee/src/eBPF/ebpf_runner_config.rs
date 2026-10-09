@@ -141,15 +141,20 @@ pub fn parse_ringbuf_sizes(arg: &str) -> anyhow::Result<Vec<(&'static str, u32)>
 pub struct MptcpModes {
     /// Tag the sock and cwnd records of a subflow with the token of its connection
     pub tag: bool,
+    /// Record path manager and lifecycle events
+    pub pm: bool,
 }
 
 impl MptcpModes {
-    /// The modes of a plain `-M`
-    pub const DEFAULT: MptcpModes = MptcpModes { tag: true };
-    const NAMES: &'static str = "tag";
+    const NAMES: &'static str = "tag, pm";
 
-    pub fn any(self) -> bool {
-        self.tag
+    /// The modes of a plain `-M`: path manager events, and tagging if sock or cwnd records are
+    /// recorded
+    pub fn default_for(tagged_records: bool) -> MptcpModes {
+        MptcpModes {
+            tag: tagged_records,
+            pm: true,
+        }
     }
 
     /// Parses `--mptcp-modes`, a comma separated list of modes
@@ -158,6 +163,7 @@ impl MptcpModes {
         for mode in arg.split(',').map(str::trim).filter(|m| !m.is_empty()) {
             match mode {
                 "tag" => modes.tag = true,
+                "pm" => modes.pm = true,
                 other => {
                     return Err(anyhow!(
                         "Unknown MPTCP mode '{}', use {}",
@@ -342,9 +348,16 @@ mod tests {
 
     #[test]
     fn mptcp_modes() {
-        assert_eq!(MptcpModes::parse("tag").unwrap(), MptcpModes { tag: true });
-        assert_eq!(MptcpModes::parse(" tag, ").unwrap(), MptcpModes::DEFAULT);
-        assert!(!MptcpModes::parse("").unwrap().any());
+        let tag = MptcpModes {
+            tag: true,
+            pm: false,
+        };
+        assert_eq!(MptcpModes::parse(" tag, ").unwrap(), tag);
+        assert_eq!(
+            MptcpModes::parse("pm,tag").unwrap(),
+            MptcpModes::default_for(true)
+        );
+        assert_eq!(MptcpModes::parse("").unwrap(), MptcpModes::default());
         assert!(MptcpModes::parse("tag,foo").is_err());
     }
 

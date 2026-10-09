@@ -194,6 +194,22 @@ fn bbr() {
 }
 
 #[test]
+fn mptcp_pm() {
+    let x = Expect {
+        source: "mptcp_pm",
+        entry_size: 111,
+        columns: "event:U8 token:U32 remote_token:U32 subflow_id:U32 error:I64 local_id:U8 \
+            remote_id:U8 backup:U8 addr_id:U8 addr_family:U16 addr_port:U16",
+        file: "mptcp_pm.tcp",
+        records: 12,
+        ts0: 1_000_000_000_000,
+        key0: tuple("10.0.0.1", "10.0.0.2", 40000, 5201),
+        row0: &[1, 0x1000, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    };
+    check::<mptcp_pm_entry>(&x);
+}
+
+#[test]
 fn cwnd() {
     let x = Expect {
         source: "cwnd",
@@ -488,6 +504,7 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::TcpProbe, "tcp_probe", Dir::None),
         (TraceFile::Cubic, "cubic", Dir::None),
         (TraceFile::Bbr, "bbr", Dir::None),
+        (TraceFile::MptcpPm, "mptcp_pm", Dir::None),
     ];
     for (file, source, dir) in want {
         let b = binding(file).unwrap();
@@ -512,6 +529,7 @@ fn file_table_maps_every_trace_file() {
         ("cwnd", 74, 1),
         ("tcp6", 67, 4),
         ("tcp4", 43, 4),
+        ("mptcp_pm", 111, 11),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -520,7 +538,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 7);
+    assert_eq!(names.len(), 8);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.

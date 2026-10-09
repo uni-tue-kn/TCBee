@@ -20,6 +20,7 @@ typedef __UINT8_TYPE__ uint8_t;
 typedef __UINT16_TYPE__ uint16_t;
 typedef __UINT32_TYPE__ uint32_t;
 typedef __UINT64_TYPE__ uint64_t;
+typedef __INT64_TYPE__ int64_t;
 #endif
 
 /* TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}. Addresses in host byte order. */
@@ -179,6 +180,57 @@ struct tcp_retransmit_synack_entry {
 	uint8_t daddr_v6[16];
 };
 
+/*
+ * Event of an mptcp_pm_entry. 1 to 16 are the kernel's enum mptcp_event_type (uapi
+ * linux/mptcp.h), the netlink path manager events, from 100 on events of TCBee's own hooks.
+ */
+enum tcbee_mptcp_event {
+	TCBEE_MPTCP_CREATED = 1,
+	TCBEE_MPTCP_ESTABLISHED = 2,
+	TCBEE_MPTCP_CLOSED = 3,
+	TCBEE_MPTCP_ANNOUNCED = 6,
+	TCBEE_MPTCP_REMOVED = 7,
+	TCBEE_MPTCP_SUB_ESTABLISHED = 10,
+	TCBEE_MPTCP_SUB_CLOSED = 11,
+	TCBEE_MPTCP_SUB_PRIORITY = 13,
+	TCBEE_MPTCP_LISTENER_CREATED = 15,
+	TCBEE_MPTCP_LISTENER_CLOSED = 16,
+	/* The token is freed, the kernel may hand it to a new connection from now on */
+	TCBEE_MPTCP_TOKEN_DESTROYED = 100,
+	/* The path manager tried to open a subflow, error holds the result */
+	TCBEE_MPTCP_SUBFLOW_CONNECT = 101,
+	/* The peer sent MP_FAIL on a subflow */
+	TCBEE_MPTCP_MP_FAIL = 102,
+};
+
+/*
+ * MPTCP path manager and connection lifecycle (-M pm), MPTCP_PM_EVENTS. The header holds the
+ * tuple of the subflow, or for connection events the tuple of the connection, which is the one
+ * of its first subflow. Fields that do not apply to an event are 0.
+ */
+struct mptcp_pm_entry {
+	TCBEE_SOCK_HEADER
+	/* Local token of the connection, the conn_id of its subflows */
+	uint32_t token;
+	/* Token of the peer, known on the subflows that the client joined (MP_JOIN) */
+	uint32_t remote_token;
+	/* Subflow number within the connection, kernel 6.5 and newer */
+	uint32_t subflow_id;
+	/* TCBEE_MPTCP_SUBFLOW_CONNECT: 0 or the negative error */
+	int64_t error;
+	/* enum tcbee_mptcp_event */
+	uint8_t event;
+	/* Address ids of the subflow's two ends, and its backup flag */
+	uint8_t local_id;
+	uint8_t remote_id;
+	uint8_t backup;
+	/* ANNOUNCED, REMOVED, SUBFLOW_CONNECT: the address (id, AF_INET(6), port in host order) */
+	uint8_t addr_id;
+	uint16_t addr_family;
+	uint16_t addr_port;
+	uint8_t addr[16];
+};
+
 /* tracepoint tcp/tcp_bad_csum, TCP_BAD_CSUM_QUEUE. IPv4 addresses only. */
 struct tcp_bad_csum_entry {
 	uint64_t time;
@@ -227,6 +279,7 @@ _Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
 _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");
 _Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
+_Static_assert(sizeof(struct mptcp_pm_entry) == 120, "mptcp_pm_entry size");
 _Static_assert(sizeof(struct ip_tuple) == 38, "ip_tuple size");
 _Static_assert(sizeof(struct hook_seq_key) == 40, "hook_seq_key size");
 _Static_assert(sizeof(struct filter_ip) == 16, "filter_ip size");

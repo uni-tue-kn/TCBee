@@ -15,7 +15,9 @@ mod generate {
 
     use serde::Serialize;
     use tcbee_common::records::{
-        bbr_trace_entry, cwnd_trace_entry, sock_trace_entry, tcp6_packet_trace, RECORD_DELIMITER,
+        bbr_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry, tcp6_packet_trace,
+        RECORD_DELIMITER, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
+        TCBEE_MPTCP_SUBFLOW_CONNECT, TCBEE_MPTCP_SUB_ESTABLISHED, TCBEE_MPTCP_TOKEN_DESTROYED,
     };
 
     use crate::event::Event;
@@ -83,6 +85,52 @@ mod generate {
         }
     }
 
+    /// The life of two MPTCP connections, one on each flow: event `i / 2` of flow `i % 2`.
+    /// The second subflow is reported on the connection's tuple.
+    fn mptcp_pm(i: u64) -> mptcp_pm_entry {
+        let events = [
+            TCBEE_MPTCP_CREATED,
+            TCBEE_MPTCP_ESTABLISHED,
+            TCBEE_MPTCP_SUBFLOW_CONNECT,
+            TCBEE_MPTCP_SUB_ESTABLISHED,
+            TCBEE_MPTCP_CLOSED,
+            TCBEE_MPTCP_TOKEN_DESTROYED,
+        ];
+        let event = events[(i / 2) as usize];
+        let joined = event == TCBEE_MPTCP_SUB_ESTABLISHED;
+        mptcp_pm_entry {
+            time: ts(i, false),
+            hook_seq: hook_seq(i),
+            addr_v4: addr_v4(SRC, DST),
+            sport: sport(i),
+            dport: 5201,
+            family: AF_INET,
+            token: 0x1000 + (i % 2) as u32,
+            remote_token: if joined { 0x2000 + (i % 2) as u32 } else { 0 },
+            subflow_id: if event == TCBEE_MPTCP_CREATED {
+                1
+            } else if joined {
+                2
+            } else {
+                0
+            },
+            event: event as u8,
+            local_id: joined as u8,
+            addr_id: (event == TCBEE_MPTCP_SUBFLOW_CONNECT) as u8,
+            addr_family: if event == TCBEE_MPTCP_SUBFLOW_CONNECT {
+                AF_INET
+            } else {
+                0
+            },
+            addr_port: if event == TCBEE_MPTCP_SUBFLOW_CONNECT {
+                5201
+            } else {
+                0
+            },
+            ..Default::default()
+        }
+    }
+
     fn bbr(i: u64) -> bbr_trace_entry {
         let n = i as u32;
         bbr_trace_entry {
@@ -138,6 +186,7 @@ mod generate {
         fs::create_dir_all(&trunc).unwrap();
 
         write(&small, "bbr.tcp", (0..500).map(bbr));
+        write(&small, "mptcp_pm.tcp", (0..12).map(mptcp_pm));
         write(&small, "send_cwnd.tcp", (0..1000).map(cwnd));
         write(&small, "tcp6_receive.tcp", (0..500).map(|i| tcp6(i, true)));
         write(&small, "tcp6_send.tcp", (0..500).map(|i| tcp6(i, false)));
@@ -157,8 +206,8 @@ mod checks {
 
     use crate::event::Event;
     use tcbee_common::records::{
-        bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, sock_trace_entry, tcp4_packet_trace,
-        tcp6_packet_trace, tcp_probe_entry,
+        bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry,
+        tcp4_packet_trace, tcp6_packet_trace, tcp_probe_entry,
     };
     use tcbee_trace::{TCBeeTrace, TraceFile};
 
@@ -196,6 +245,7 @@ mod checks {
         assert!(total < 2 * 1024 * 1024, "fixtures too large: {total}");
 
         check::<bbr_trace_entry>("bbr.tcp", 500);
+        check::<mptcp_pm_entry>("mptcp_pm.tcp", 12);
         check::<cubic_trace_entry>("cubic.tcp", 2000);
         check::<tcp_probe_entry>("tcp_probe.tcp", 2000);
         check::<sock_trace_entry>("recv_sock.tcp", 2000);
