@@ -1,5 +1,7 @@
 use std::{
+    collections::BTreeSet,
     error::Error,
+    fmt,
     mem::MaybeUninit,
     path::Path,
     sync::{Arc, Mutex},
@@ -25,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     eBPF::{
         host::KernelBtf,
+        optional::{self, OptionalGroup},
         probes::{
             bbr::BBRTracer,
             cubic::CubicTracer,
@@ -92,7 +95,8 @@ fn libbpf_log(level: PrintLevel, msg: String) {
 /// The skeleton borrows the storage of its object for its whole life. The runner keeps
 /// it until the program ends, so the storage (a pointer) is leaked to get a 'static
 /// skeleton. Dropping the skeleton still closes the object and its programs and maps.
-/// At most two are opened (see the BBR retry in `run`), so at most two pointers leak.
+/// It is opened once per load attempt (see `run`), so at most one pointer per optional
+/// group and one more leak.
 fn open_skel() -> libbpf_rs::Result<OpenTcbeeSkel<'static>> {
     let storage = Box::leak(Box::new(MaybeUninit::uninit()));
     TcbeeSkelBuilder::default().open(storage)
@@ -129,28 +133,45 @@ fn configure_filter(skel: &TcbeeSkel<'_>, filter: &FilterConfig) -> libbpf_rs::R
     Ok(())
 }
 
+/// A failed load with the last libbpf warnings, they name the program, map or field that
+/// failed.
+struct LoadError {
+    error: libbpf_rs::Error,
+    warnings: Vec<String>,
+}
+
+impl fmt::Display for LoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Could not load the eBPF programs: {}\n{}",
+            self.error,
+            self.warnings.join("\n")
+        )
+    }
+}
+
 /// Loads the programs and maps into the kernel. libbpf relocates all kernel struct
 /// accesses against the BTF of the running kernel here, a field that does not exist
-/// fails the load instead of reading garbage. The error includes the last libbpf
-/// warnings, they name the program, map or field that failed.
+/// fails the load instead of reading garbage.
 ///
 /// On failure the object is closed, which also closes every program and map it had
 /// already created in the kernel.
-fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, String> {
+fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
     if let Ok(mut warnings) = LIBBPF_WARNINGS.lock() {
         warnings.clear();
     }
-    open.load().map_err(|err| {
-        let warnings = LIBBPF_WARNINGS
+    open.load().map_err(|error| LoadError {
+        error,
+        warnings: LIBBPF_WARNINGS
             .lock()
-            .map(|warnings| warnings.join("\n"))
-            .unwrap_or_default();
-        format!("Could not load the eBPF programs: {}\n{}", err, warnings)
+            .map(|warnings| warnings.clone())
+            .unwrap_or_default(),
     })
 }
 
 /// Ring buffers that the enabled probe groups write to
-fn enabled_ringbufs(config: &EbpfRunnerConfig, bbr: bool) -> Vec<u32> {
+fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let groups: [(bool, &[u32]); 6] = [
         (
             config.headers,
@@ -168,7 +189,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, bbr: bool) -> Vec<u32> {
             &[RB_TCP_PROBE, RB_RETRANSMIT_SYNACK, RB_BAD_CSUM],
         ),
         (config.algorithms, &[RB_CUBIC]),
-        (config.algorithms && bbr, &[RB_BBR]),
+        (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
     ];
     groups
         .into_iter()
@@ -298,15 +319,15 @@ impl EbpfRunner {
     }
 
     /// Opens the skeleton and configures it from the config: rodata constants, one ring
-    /// buffer slot per CPU and which programs are loaded. BBR is only loaded if `with_bbr` is
-    /// set. Returns the skeleton and whether BBR is enabled.
+    /// buffer slot per CPU and which programs are loaded. The optional groups in `disabled`
+    /// are not loaded. Returns the skeleton and the enabled optional groups.
     fn open_configured(
         &self,
         tcx: bool,
-        with_bbr: bool,
+        disabled: &BTreeSet<OptionalGroup>,
         btf: &mut KernelBtf,
         cpus: &rings::Cpus,
-    ) -> Result<(OpenTcbeeSkel<'static>, bool), Box<dyn Error>> {
+    ) -> Result<(OpenTcbeeSkel<'static>, BTreeSet<OptionalGroup>), Box<dyn Error>> {
         let mut open = open_skel()?;
 
         // Configuration is read-only for the programs, so the verifier sees constants
@@ -330,8 +351,12 @@ impl EbpfRunner {
         CwndTracer::configure(&mut open.progs, self.config.cwnd);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
         CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
-        let bbr = BBRTracer::configure(&mut open.progs, self.config.algorithms && with_bbr, btf);
-        Ok((open, bbr))
+        let mut optional = BTreeSet::new();
+        let bbr = self.config.algorithms && !disabled.contains(&OptionalGroup::Bbr);
+        if BBRTracer::configure(&mut open.progs, bbr, btf) {
+            optional.insert(OptionalGroup::Bbr);
+        }
+        Ok((open, optional))
     }
 
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
@@ -349,24 +374,26 @@ impl EbpfRunner {
             debug!("remove limit on locked memory failed, ret is: {}", ret);
         }
 
-        // A skeleton loads all programs at once, so one program that the kernel rejects
-        // fails all of them. BBR is optional (it may be an out-of-tree variant with other
-        // struct fields), so if loading fails with BBR, it is tried once more without.
+        // If loading fails in an optional group, the object is opened again without that
+        // group. Every retry disables at least one more group, so this ends.
         let tcx = self.config.headers && uses_tcx();
         let cpus = rings::Cpus::get()?;
         let mut btf = KernelBtf::default();
-        let (open, mut bbr) = self.open_configured(tcx, true, &mut btf, &cpus)?;
-        let skel = match load(open) {
-            Ok(skel) => skel,
-            Err(err) if bbr => {
-                error!("{}\nRetrying without the BBR programs", err);
-                // The failed object was closed when load() returned, its programs and
-                // maps are gone
-                let (open, _) = self.open_configured(tcx, false, &mut btf, &cpus)?;
-                bbr = false;
-                load(open)?
+        let mut disabled = BTreeSet::new();
+        let (skel, optional) = loop {
+            let (open, optional) = self.open_configured(tcx, &disabled, &mut btf, &cpus)?;
+            match load(open) {
+                Ok(skel) => break (skel, optional),
+                Err(err) => match optional::to_disable(&optional, &err.warnings) {
+                    Some(groups) => {
+                        // The failed object was closed when load() returned, its programs
+                        // and maps are gone
+                        error!("{}\nRetrying without {}", err, optional::names(&groups));
+                        disabled.extend(groups);
+                    }
+                    None => return Err(err.to_string().into()),
+                },
             }
-            Err(err) => return Err(err.into()),
         };
         drop(btf);
         let skel = self.skel.insert(skel);
@@ -374,7 +401,7 @@ impl EbpfRunner {
 
         // The ring buffers exist before any program is attached, so no event finds its
         // CPU's ring missing. Records submitted before a writer starts wait in the ring.
-        let enabled = enabled_ringbufs(&self.config, bbr);
+        let enabled = enabled_ringbufs(&self.config, &optional);
         let size = |rb: u32| self.config.ringbuf_size(rb);
         rings::create(skel.object(), &enabled, size, &cpus)?;
         self.ring_cpus = cpus.online.len() as u32;
@@ -430,7 +457,7 @@ impl EbpfRunner {
         if self.config.algorithms {
             CubicTracer::spawn(skel, dir, writer, links)?;
             watcher_config.graphs.cubic = true;
-            if bbr {
+            if optional.contains(&OptionalGroup::Bbr) {
                 // BBR fails softly, so a program that was attached before the error has
                 // to be detached here. Other groups fail the start, stop() detaches them.
                 let attached = links.len();
