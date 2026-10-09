@@ -195,7 +195,7 @@ for 131 k pages), while populate works page by page. Not a safe win, dropped. Re
 only if the testbed's output file system maps page by page (no large folios: ext4 got
 them only recently, around 6.16; xfs since 5.18; check the fault count); measure with the writer thread's `minflt` and CPU per record.
 
-**7. One consumer thread for several output files.** Busy mode spins one thread per output
+**7. One consumer thread for several output files.** Busy mode runs one thread per output
 file (13 with `-htkwa`), each reading the ring buffers of all CPUs. A single libbpf `RingBuffer` with all maps (one callback per
 map, epoll in wait mode) would free cores but caps total consume throughput at one core
 and changes the `--writer-cpus` semantics. Proposed: an option `--writers N` that shards
