@@ -67,3 +67,15 @@ Edit the constants at the top of `topology.py`:
 | `BOTTLENECK_BW` | 10 Mbps | Bottleneck bandwidth |
 | `BOTTLENECK_DELAY` | 40 ms | One-way delay on the bottleneck link |
 | `QUEUE_SIZE` | 150 pkts | Bottleneck queue depth |
+
+## MPTCP
+
+`mptcp/run.sh` tests MPTCP recording without Mininet. It builds two network namespaces joined
+by two veth pairs, so an MPTCP connection gets one subflow per path, records it next to a plain
+TCP connection with `tcbee-record -k -M`, and checks the recording with `mptcp/check_trace.py`.
+It needs root, iproute2 with `ip mptcp` and an MPTCP kernel, and uses the release build of
+`tcbee-record` (`TCBEE_RECORD` overrides it):
+
+```bash
+sudo testing/mptcp/run.sh [SECONDS]
+```
