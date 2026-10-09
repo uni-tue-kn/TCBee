@@ -66,8 +66,9 @@ RECORDER=$!
 sleep 1.5
 
 in_client python3 "$HERE/traffic.py" send 10.31.1.2 "$MPTCP_PORT" mptcp "$SECONDS_TRAFFIC" &
+SENDER=$!
 in_client python3 "$HERE/traffic.py" send 10.31.1.2 "$TCP_PORT" tcp "$SECONDS_TRAFFIC"
-wait %3 2>/dev/null || true
+wait "$SENDER"
 wait "$RECORDER"
 
 TRACE=$(ls -d "$OUT"/tcbee_* | tail -1)
