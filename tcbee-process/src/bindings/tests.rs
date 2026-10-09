@@ -2,6 +2,7 @@
 
 use std::{fs, net::IpAddr, path::PathBuf};
 
+use tcbee_common::records::RECORD_DELIMITER;
 use tcbee_trace::TraceFile;
 use ts_storage::{ColType, ColumnData, Dir, EventBatch, IpTuple};
 
@@ -76,7 +77,6 @@ fn check<E: Event + Default>(x: &Expect) {
     let mut batch = EventBatch::new(table, x.records);
     for (i, rec) in bytes.chunks(x.entry_size).enumerate() {
         let e = E::decode(rec).unwrap();
-        assert!(e.check_divider());
         batch.push_header(0, Dir::None, e.ts_ns(), i as i64);
         e.push_row(&mut batch);
     }
@@ -154,7 +154,7 @@ fn tcp_probe() {
             0, 0, 3795928409, 3795926500, 10, 2147483647, 42600, 24196, 64512, 12292,
         ],
     };
-    check::<TcpProbe>(&x);
+    check::<tcp_probe_entry>(&x);
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn cubic() {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3517337537, 3795926500, 3517337537, 4294967295,
         ],
     };
-    check::<CubicEvent>(&x);
+    check::<cubic_trace_entry>(&x);
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn bbr() {
         key0: tuple("10.0.0.1", "10.0.0.2", 40000, 5201),
         row0: &[300, 1000, 2000, 0, 0, MAX, 5000, 0, 4000, 0, 20, 90000],
     };
-    check::<BbrEvent>(&x);
+    check::<bbr_trace_entry>(&x);
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn tcp4_send() {
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[3795926499, 0, 64240, 2],
     };
-    check::<Tcp4Packet>(&x);
+    check::<tcp4_packet_trace>(&x);
 }
 
 #[test]
@@ -237,7 +237,7 @@ fn tcp4_receive() {
         key0: tuple("37.51.193.149", "192.168.1.22", 8080, 50290),
         row0: &[478884330, 3795926500, 42600, 18],
     };
-    check::<Tcp4Packet>(&x);
+    check::<tcp4_packet_trace>(&x);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn tcp6_send() {
         key0: tuple("2001:db8::1", "2001:db8::2", 40000, 5201),
         row0: &[5000, 0, 1000, 16],
     };
-    check::<Tcp6Packet>(&x);
+    check::<tcp6_packet_trace>(&x);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn tcp6_receive() {
         key0: tuple("2001:db8::2", "2001:db8::1", 5201, 40000),
         row0: &[5000, 0, 1000, 16],
     };
-    check::<Tcp6Packet>(&x);
+    check::<tcp6_packet_trace>(&x);
 }
 
 /// Expected `flow_key` (as "src>dst") for crafted records, in the loop order of the test below:
@@ -420,14 +420,14 @@ fn flow_key_branches() {
                     dst_v6: d,
                     ..Default::default()
                 })));
-                cubic.push(k(Event::flow_key(&CubicEvent {
+                cubic.push(k(Event::flow_key(&cubic_trace_entry {
                     family,
                     addr_v4,
                     src_v6: s,
                     dst_v6: d,
                     ..Default::default()
                 })));
-                bbr.push(k(Event::flow_key(&BbrEvent {
+                bbr.push(k(Event::flow_key(&bbr_trace_entry {
                     family,
                     addr_v4,
                     src_v6: s,
@@ -440,16 +440,16 @@ fn flow_key_branches() {
                 b28[4..8].copy_from_slice(&[10, 0, 0, 2]);
                 a28[8..24].copy_from_slice(&s);
                 b28[8..24].copy_from_slice(&d);
-                probe.push(k(Event::flow_key(&TcpProbe {
+                probe.push(k(Event::flow_key(&tcp_probe_entry {
                     family,
                     saddr: a28,
                     daddr: b28,
                     ..Default::default()
                 })));
                 if family == 0 && addr_v4 == 0 {
-                    tcp6.push(k(Event::flow_key(&Tcp6Packet {
-                        saddr: s,
-                        daddr: d,
+                    tcp6.push(k(Event::flow_key(&tcp6_packet_trace {
+                        saddr_v6: s,
+                        daddr_v6: d,
                         ..Default::default()
                     })));
                 }
@@ -464,7 +464,7 @@ fn flow_key_branches() {
     assert_eq!(tcp6, EXPECT_TCP6);
 
     // tcp4 reads the u32 as is (host order), ports as read, l4proto 6.
-    let t4 = Tcp4Packet {
+    let t4 = tcp4_packet_trace {
         saddr: 0x0A00_0001,
         daddr: 0x0A00_0002,
         sport: 7,
@@ -519,7 +519,19 @@ fn file_table_maps_every_trace_file() {
     let mut names: Vec<_> = tables.iter().map(|t| t.source).collect();
     names.sort();
     names.dedup();
+    assert_eq!(names.len(), tables.len());
     assert_eq!(names.len(), 7);
+}
+
+/// Every binding's entry size is its record's bincode encoding plus the divider.
+#[test]
+fn entry_sizes_match_the_record_encoding() {
+    for file in TraceFile::all() {
+        if let Some(b) = binding(*file) {
+            let expected = (b.encoded_size)() + RECORD_DELIMITER.len();
+            assert_eq!(b.entry_size, expected, "{file:?}");
+        }
+    }
 }
 
 /// Decoding a record through the file table reaches the same row as the typed path.

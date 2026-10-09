@@ -14,13 +14,12 @@ mod generate {
     };
 
     use serde::Serialize;
-
-    use crate::bindings::{
-        bbr::BbrEvent, cwnd::cwnd_trace_entry, sock::sock_trace_entry, tcp6_packet::Tcp6Packet,
+    use tcbee_common::records::{
+        bbr_trace_entry, cwnd_trace_entry, sock_trace_entry, tcp6_packet_trace, RECORD_DELIMITER,
     };
+
     use crate::event::Event;
 
-    const DIV: [u8; 4] = 0xFFFF_FFFFu32.to_be_bytes();
     const T0: u64 = 1_000_000_000_000;
     const AF_INET: u16 = 2;
 
@@ -60,8 +59,13 @@ mod generate {
         let mut out = Vec::new();
         for r in recs {
             let b = bincode::serialize(&r).unwrap();
-            assert_eq!(b.len(), T::ENTRY_SIZE, "{name}: ENTRY_SIZE mismatch");
+            assert_eq!(
+                b.len() + RECORD_DELIMITER.len(),
+                T::ENTRY_SIZE,
+                "{name}: ENTRY_SIZE mismatch"
+            );
             out.extend_from_slice(&b);
+            out.extend_from_slice(&RECORD_DELIMITER);
         }
         fs::write(dir.join(name), out).unwrap();
     }
@@ -75,14 +79,13 @@ mod generate {
             dport: 5201,
             family: AF_INET,
             snd_cwnd: 10 + (i / 2) as u32,
-            div: DIV,
             ..Default::default()
         }
     }
 
-    fn bbr(i: u64) -> BbrEvent {
+    fn bbr(i: u64) -> bbr_trace_entry {
         let n = i as u32;
-        BbrEvent {
+        bbr_trace_entry {
             time: ts(i, true),
             hook_seq: hook_seq(i),
             addr_v4: addr_v4(SRC, DST),
@@ -101,29 +104,27 @@ mod generate {
             lt_last_lost: n / 10,
             prior_cwnd: 20 + n,
             full_bw: 90_000 + n,
-            div: DIV,
             ..Default::default()
         }
     }
 
-    fn tcp6(i: u64, recv: bool) -> Tcp6Packet {
+    fn tcp6(i: u64, recv: bool) -> tcp6_packet_trace {
         let (saddr, daddr, sport, dport) = if recv {
             (V6_DST, V6_SRC, 5201, sport(i))
         } else {
             (V6_SRC, V6_DST, sport(i), 5201)
         };
-        Tcp6Packet {
+        tcp6_packet_trace {
             time: ts(i, true),
             hook_seq: hook_seq(i),
-            saddr,
-            daddr,
+            saddr_v6: saddr,
+            daddr_v6: daddr,
             sport,
             dport,
             seq: 5000 + 1440 * i as u32,
             ack: 7 * i as u32,
             window: 1000 + i as u16,
             flags: 0x10,
-            div: DIV,
         }
     }
 
@@ -154,13 +155,12 @@ mod generate {
 mod checks {
     use std::{collections::HashSet, fs, path::PathBuf};
 
-    use tcbee_trace::{TCBeeTrace, TraceFile};
-
-    use crate::bindings::{
-        bbr::BbrEvent, cubic::CubicEvent, cwnd::cwnd_trace_entry, sock::sock_trace_entry,
-        tcp4_packet::Tcp4Packet, tcp6_packet::Tcp6Packet, tcp_probe::TcpProbe,
-    };
     use crate::event::Event;
+    use tcbee_common::records::{
+        bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, sock_trace_entry, tcp4_packet_trace,
+        tcp6_packet_trace, tcp_probe_entry,
+    };
+    use tcbee_trace::{TCBeeTrace, TraceFile};
 
     fn dir(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -168,17 +168,13 @@ mod checks {
             .join(name)
     }
 
-    /// Decode every whole record of a fixture file and check its divider.
+    /// Decode every whole record of a fixture file, which checks its divider.
     fn load<T: Event>(d: &str, file: &str) -> Vec<T> {
         let bytes = fs::read(dir(d).join(file)).unwrap();
         assert_eq!(bytes.len() % T::ENTRY_SIZE, 0, "{file}");
         bytes
             .chunks(T::ENTRY_SIZE)
-            .map(|c| {
-                let r = T::decode(c).unwrap();
-                assert!(r.check_divider(), "{file}: bad divider");
-                r
-            })
+            .map(|c| T::decode(c).unwrap_or_else(|e| panic!("{file}: {e}")))
             .collect()
     }
 
@@ -199,14 +195,14 @@ mod checks {
             .sum();
         assert!(total < 2 * 1024 * 1024, "fixtures too large: {total}");
 
-        check::<BbrEvent>("bbr.tcp", 500);
-        check::<CubicEvent>("cubic.tcp", 2000);
-        check::<TcpProbe>("tcp_probe.tcp", 2000);
+        check::<bbr_trace_entry>("bbr.tcp", 500);
+        check::<cubic_trace_entry>("cubic.tcp", 2000);
+        check::<tcp_probe_entry>("tcp_probe.tcp", 2000);
         check::<sock_trace_entry>("recv_sock.tcp", 2000);
         check::<cwnd_trace_entry>("recv_cwnd.tcp", 0);
-        check::<Tcp4Packet>("tcp4_receive.tcp", 2000);
-        check::<Tcp4Packet>("tcp4_send.tcp", 2000);
-        check::<Tcp6Packet>("tcp6_receive.tcp", 500);
+        check::<tcp4_packet_trace>("tcp4_receive.tcp", 2000);
+        check::<tcp4_packet_trace>("tcp4_send.tcp", 2000);
+        check::<tcp6_packet_trace>("tcp6_receive.tcp", 500);
         for empty in ["tcp_retransmit_synack.tcp", "tcp_bad_csum.tcp"] {
             assert_eq!(
                 fs::metadata(dir("tcbee_small").join(empty)).unwrap().len(),
@@ -227,10 +223,10 @@ mod checks {
         assert_eq!(cw[0].flow_key().src.to_string(), "10.0.0.1");
         assert_eq!(cw[0].flow_key().dst.to_string(), "10.0.0.2");
 
-        let t6 = check::<Tcp6Packet>("tcp6_send.tcp", 500);
+        let t6 = check::<tcp6_packet_trace>("tcp6_send.tcp", 500);
         assert_eq!(t6[0].flow_key().src.to_string(), "2001:db8::1");
         assert_eq!(t6[1].sport, 40001);
-        let bbr = check::<BbrEvent>("bbr.tcp", 500);
+        let bbr = check::<bbr_trace_entry>("bbr.tcp", 500);
         assert_eq!(bbr[0].cycle_mstamp, u64::MAX);
     }
 
@@ -250,7 +246,6 @@ mod checks {
     fn load_bytes(b: &[u8]) -> usize {
         b.chunks(sock_trace_entry::ENTRY_SIZE)
             .map(|c| sock_trace_entry::decode(c).unwrap())
-            .inspect(|r| assert!(r.check_divider()))
             .count()
     }
 }

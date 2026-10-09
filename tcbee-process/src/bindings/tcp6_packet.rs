@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use ts_storage::IpTuple;
 
 use crate::{
@@ -6,25 +5,10 @@ use crate::{
     ip::{flow_tuple, ip_addr_from_16_bytes},
 };
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
-pub struct Tcp6Packet {
-    pub time: u64,
-    pub hook_seq: u64,
-    pub saddr: [u8; 16usize],
-    pub daddr: [u8; 16usize],
-    pub sport: u16,
-    pub dport: u16,
-    pub seq: u32,
-    pub ack: u32,
-    pub window: u16,
-    pub flags: u8,
-    pub div: [u8; 4usize],
-}
+use tcbee_common::records::tcp6_packet_trace;
 
 event_schema! {
-    Tcp6Packet => "tcp6", 67 {
+    tcp6_packet_trace => "tcp6", 67 {
         seq => "SEQ_NUM": U32,
         ack => "ACK_NUM": U32,
         window => "WINDOW": U16,
@@ -33,8 +17,8 @@ event_schema! {
     {
         fn flow_key(&self) -> IpTuple {
             flow_tuple(
-                ip_addr_from_16_bytes(self.saddr),
-                ip_addr_from_16_bytes(self.daddr),
+                ip_addr_from_16_bytes(self.saddr_v6),
+                ip_addr_from_16_bytes(self.daddr_v6),
                 self.sport,
                 self.dport,
             )

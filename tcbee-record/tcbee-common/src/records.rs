@@ -7,6 +7,9 @@
 
 include!("records_gen.rs");
 
+/// Written after every record in a trace file. Readers check it to detect misaligned files.
+pub const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
+
 use core::mem::size_of;
 
 const _: () = assert!(size_of::<tcp4_packet_trace>() == 40);

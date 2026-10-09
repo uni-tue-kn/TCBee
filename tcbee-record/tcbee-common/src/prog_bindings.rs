@@ -3,8 +3,6 @@ use crate::records::{
     tcp6_packet_trace, tcp_bad_csum_entry, tcp_probe_entry, tcp_retransmit_synack_entry,
 };
 
-// FIXME: We currently need to manually copy these bindings to tcbee-process as it cannot import tcbee-common
-//   (There is some problem with the repr(C) that causes a segfault on DB start, dont know why ...
 pub trait TracePointProbe {
     const CATEGORY: &'static str;
     const NAME: &'static str;

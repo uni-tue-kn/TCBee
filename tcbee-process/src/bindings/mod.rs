@@ -1,7 +1,6 @@
 //! Trace record bindings and the table that maps trace files to them.
 
 pub mod bbr;
-pub mod ctypes;
 pub mod cubic;
 pub mod cwnd;
 pub mod sock;
@@ -9,19 +8,15 @@ pub mod tcp4_packet;
 pub mod tcp6_packet;
 pub mod tcp_probe;
 
+use tcbee_common::records::{
+    bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, sock_trace_entry, tcp4_packet_trace,
+    tcp6_packet_trace, tcp_probe_entry,
+};
 use tcbee_trace::TraceFile;
 use ts_storage::{Dir, EventTable};
 
 use crate::decode::{decode_dyn, DecodeFn};
 use crate::event::Event;
-
-use bbr::BbrEvent;
-use cubic::CubicEvent;
-use cwnd::cwnd_trace_entry;
-use sock::sock_trace_entry;
-use tcp4_packet::Tcp4Packet;
-use tcp6_packet::Tcp6Packet;
-use tcp_probe::TcpProbe;
 
 /// How one trace file is decoded and where its rows go.
 #[derive(Clone, Copy)]
@@ -30,14 +25,19 @@ pub struct Binding {
     pub table: &'static EventTable,
     pub entry_size: usize,
     pub decode: DecodeFn,
+    /// Size of the record's bincode encoding, to check `entry_size` against
+    #[cfg(test)]
+    pub encoded_size: fn() -> usize,
 }
 
-fn binding_of<E: Event>(dir: Dir) -> Binding {
+fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
     Binding {
         dir,
         table: E::TABLE,
         entry_size: E::ENTRY_SIZE,
         decode: decode_dyn::<E>,
+        #[cfg(test)]
+        encoded_size: || bincode::serialized_size(&E::default()).unwrap() as usize,
     }
 }
 
@@ -49,28 +49,26 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::RecvSock => binding_of::<sock_trace_entry>(Dir::Recv),
         TraceFile::SendCwnd => binding_of::<cwnd_trace_entry>(Dir::Send),
         TraceFile::RecvCwnd => binding_of::<cwnd_trace_entry>(Dir::Recv),
-        TraceFile::Tcp4Send => binding_of::<Tcp4Packet>(Dir::Send),
-        TraceFile::Tcp4Receive => binding_of::<Tcp4Packet>(Dir::Recv),
-        TraceFile::Tcp6Send => binding_of::<Tcp6Packet>(Dir::Send),
-        TraceFile::Tcp6Receive => binding_of::<Tcp6Packet>(Dir::Recv),
-        TraceFile::TcpProbe => binding_of::<TcpProbe>(Dir::None),
-        TraceFile::Cubic => binding_of::<CubicEvent>(Dir::None),
-        TraceFile::Bbr => binding_of::<BbrEvent>(Dir::None),
+        TraceFile::Tcp4Send => binding_of::<tcp4_packet_trace>(Dir::Send),
+        TraceFile::Tcp4Receive => binding_of::<tcp4_packet_trace>(Dir::Recv),
+        TraceFile::Tcp6Send => binding_of::<tcp6_packet_trace>(Dir::Send),
+        TraceFile::Tcp6Receive => binding_of::<tcp6_packet_trace>(Dir::Recv),
+        TraceFile::TcpProbe => binding_of::<tcp_probe_entry>(Dir::None),
+        TraceFile::Cubic => binding_of::<cubic_trace_entry>(Dir::None),
+        TraceFile::Bbr => binding_of::<bbr_trace_entry>(Dir::None),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
 }
 
-/// Every event table: sock, tcp_probe, cwnd, cubic, bbr, tcp4, tcp6.
-pub fn event_tables() -> [&'static EventTable; 7] {
-    [
-        sock_trace_entry::TABLE,
-        TcpProbe::TABLE,
-        cwnd_trace_entry::TABLE,
-        CubicEvent::TABLE,
-        BbrEvent::TABLE,
-        Tcp4Packet::TABLE,
-        Tcp6Packet::TABLE,
-    ]
+/// Every event table, once, in the order of `TraceFile::all()`.
+pub fn event_tables() -> Vec<&'static EventTable> {
+    let mut tables: Vec<&'static EventTable> = Vec::new();
+    for binding in TraceFile::all().iter().filter_map(|file| binding(*file)) {
+        if !tables.iter().any(|t| t.source == binding.table.source) {
+            tables.push(binding.table);
+        }
+    }
+    tables
 }
 
 #[cfg(test)]

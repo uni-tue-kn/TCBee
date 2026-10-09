@@ -12,6 +12,7 @@ license = "MIT"
 [workspace.dependencies]
 ts_storage = { path = "ts-storage", default-features = false }
 tcbee-trace = { path = "tcbee-record/tcbee-trace" }
+tcbee-common = { path = "tcbee-record/tcbee-common" }
 duckdb-cache = { path = "duckdb-cache" }
 tempfile = "3"
 anyhow = "1"

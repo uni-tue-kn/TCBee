@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use tcbee_common::records::RECORD_DELIMITER;
 use ts_storage::{EventBatch, EventTable, IpTuple};
 
 /// Why a record could not be decoded.
@@ -37,10 +38,10 @@ impl std::error::Error for DecodeError {}
 pub trait Event: Sized {
     /// Table of this binding: `source` and one column per field, in field order.
     const TABLE: &'static EventTable;
-    /// Size of one record in the trace file (the bincode encoding).
+    /// Size of one record in the trace file: the bincode encoding and the 4 byte divider.
     const ENTRY_SIZE: usize;
 
-    /// Decodes exactly `ENTRY_SIZE` bytes. Does not check the divider (see `check_divider`).
+    /// Decodes exactly `ENTRY_SIZE` bytes, checking the divider at the end.
     fn decode(buf: &[u8]) -> Result<Self, DecodeError>;
     /// Flow identity of the record. The address decoding differs per binding on purpose (family
     /// vs `addr_v4 != 0`, host vs network byte order), so it is written out for each one.
@@ -50,8 +51,6 @@ pub trait Event: Sized {
     /// Position among the records of the same flow direction and hook, from 1. The recorder's
     /// ring buffers are per CPU, so this and not the file order is the order of the hook.
     fn hook_seq(&self) -> i64;
-    /// Whether the 4 byte divider at the end of the record is intact.
-    fn check_divider(&self) -> bool;
     /// Appends the field values to the column vectors of `batch`; the caller has already pushed
     /// the header (flow, dir, ts, seq).
     fn push_row(&self, batch: &mut EventBatch);
@@ -81,8 +80,9 @@ impl<E: Event> Row for E {
     }
 }
 
-/// bincode decoding shared by all bindings. A failure is an error, not a `Default` record.
-pub fn decode_bincode<T: serde::de::DeserializeOwned>(
+/// Decoding shared by all bindings: the record's bincode encoding followed by the divider. A
+/// failure is an error, not a `Default` record.
+pub fn decode_record<T: serde::de::DeserializeOwned>(
     buf: &[u8],
     entry_size: usize,
 ) -> Result<T, DecodeError> {
@@ -92,7 +92,11 @@ pub fn decode_bincode<T: serde::de::DeserializeOwned>(
             got: buf.len(),
         });
     }
-    bincode::deserialize(buf).map_err(|e| DecodeError::Bincode(e.to_string()))
+    let (record, divider) = buf.split_at(entry_size - RECORD_DELIMITER.len());
+    if divider != RECORD_DELIMITER {
+        return Err(DecodeError::Divider);
+    }
+    bincode::deserialize(record).map_err(|e| DecodeError::Bincode(e.to_string()))
 }
 
 // Typed accessors (not a generic push) so that a field whose type differs from its declared
@@ -140,7 +144,7 @@ pub(crate) use col_name;
 ///
 /// ```ignore
 /// event_schema! {
-///     TcpProbe => "tcp_probe", 116 {
+///     tcp_probe_entry => "tcp_probe", 116 {
 ///         mark => "MARK": U32,
 ///         ssthresh => "SSTRESH": U32,
 ///     }
@@ -148,10 +152,10 @@ pub(crate) use col_name;
 /// }
 /// ```
 ///
-/// The struct needs the fields `time` (u64, ns), `hook_seq` (u64) and `div` (`[u8; 4]`) and a
-/// `Deserialize` impl.
-/// The number after the source is the record size in the trace file (the bincode encoding; the
-/// binding tests check it against the fixtures). The block after the columns holds the
+/// The struct is a record type of `tcbee_common::records`, with the fields `time` (u64, ns) and
+/// `hook_seq` (u64).
+/// The number after the source is the record size in the trace file (the bincode encoding plus
+/// the divider; the binding tests check it). The block after the columns holds the
 /// hand-written `flow_key`.
 macro_rules! event_schema {
     (
@@ -173,7 +177,7 @@ macro_rules! event_schema {
             const ENTRY_SIZE: usize = $size;
 
             fn decode(buf: &[u8]) -> Result<Self, $crate::event::DecodeError> {
-                $crate::event::decode_bincode::<$ty>(
+                $crate::event::decode_record::<$ty>(
                     buf,
                     <Self as $crate::event::Event>::ENTRY_SIZE,
                 )
@@ -183,9 +187,6 @@ macro_rules! event_schema {
             }
             fn hook_seq(&self) -> i64 {
                 self.hook_seq as i64
-            }
-            fn check_divider(&self) -> bool {
-                self.div == 0xFFFFFFFFu32.to_be_bytes()
             }
             fn push_row(&self, b: &mut ::ts_storage::EventBatch) {
                 $crate::event::event_schema!(@push b, self, 0usize; $( $field : $ct ),+);

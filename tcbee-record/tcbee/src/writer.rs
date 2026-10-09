@@ -19,10 +19,9 @@ use libbpf_rs::{MapHandle, RingBufferBuilder};
 use log::{debug, error, info, trace};
 use memmap2::MmapMut;
 use serde::Serialize;
+use tcbee_common::records::RECORD_DELIMITER;
 
 use crate::config::WRITER_BUFFER_SIZE;
-
-const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 
 /// How writer threads wait for new records
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

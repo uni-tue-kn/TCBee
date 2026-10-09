@@ -69,12 +69,6 @@ pub fn decode_range<E: Event, Err>(
                 offset: rec_offset,
                 source,
             })?;
-            if !event.check_divider() {
-                return Err(RangeError::Decode {
-                    offset: rec_offset,
-                    source: DecodeError::Divider,
-                });
-            }
             f(next + i as u64, event).map_err(RangeError::Callback)?;
         }
         if whole < n {
@@ -123,7 +117,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::*;
-    use crate::bindings::{sock::sock_trace_entry, tcp4_packet::Tcp4Packet};
+    use tcbee_common::records::{sock_trace_entry, tcp4_packet_trace};
 
     fn fixture(dir: &str, file: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -156,11 +150,11 @@ mod tests {
     #[test]
     fn decodes_ranges_with_sequence_numbers() {
         let file = File::open(fixture("tcbee_small", "tcp4_send.tcp")).unwrap();
-        let all = collect::<Tcp4Packet>(&file, 0..2000).unwrap();
+        let all = collect::<tcp4_packet_trace>(&file, 0..2000).unwrap();
         assert_eq!(all.len(), 2000);
         assert!(all.iter().enumerate().all(|(i, (s, _))| *s == i as u64));
 
-        let mid = collect::<Tcp4Packet>(&file, 700..703).unwrap();
+        let mid = collect::<tcp4_packet_trace>(&file, 700..703).unwrap();
         assert_eq!(
             mid.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
             [700, 701, 702]
@@ -168,7 +162,9 @@ mod tests {
         assert_eq!(mid[1].1.time, all[701].1.time);
         assert_eq!(mid[1].1.seq, all[701].1.seq);
 
-        assert!(collect::<Tcp4Packet>(&file, 5..5).unwrap().is_empty());
+        assert!(collect::<tcp4_packet_trace>(&file, 5..5)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -204,13 +200,13 @@ mod tests {
     #[test]
     fn corrupted_divider_reports_the_record_offset() {
         let mut bytes = fs::read(fixture("tcbee_small", "tcp4_send.tcp")).unwrap();
-        let size = Tcp4Packet::ENTRY_SIZE;
+        let size = tcp4_packet_trace::ENTRY_SIZE;
         bytes.truncate(5 * size);
         bytes[3 * size + size - 1] ^= 0xFF; // last divider byte of record 3
         let file = temp_file("div", &bytes);
 
         let mut seen = Vec::new();
-        let res = decode_range::<Tcp4Packet, ()>(&file, 0..5, |seq, _| {
+        let res = decode_range::<tcp4_packet_trace, ()>(&file, 0..5, |seq, _| {
             seen.push(seq);
             Ok(())
         });
@@ -227,9 +223,9 @@ mod tests {
     #[test]
     fn wrong_buffer_size_is_an_error_not_a_default_record() {
         assert_eq!(
-            Tcp4Packet::decode(&[0u8; 10]).unwrap_err(),
+            tcp4_packet_trace::decode(&[0u8; 10]).unwrap_err(),
             DecodeError::Size {
-                expected: Tcp4Packet::ENTRY_SIZE,
+                expected: tcp4_packet_trace::ENTRY_SIZE,
                 got: 10
             }
         );
@@ -239,7 +235,7 @@ mod tests {
     fn callback_error_stops_decoding() {
         let file = File::open(fixture("tcbee_small", "tcp4_send.tcp")).unwrap();
         let mut calls = 0;
-        let res = decode_range::<Tcp4Packet, &str>(&file, 0..100, |seq, _| {
+        let res = decode_range::<tcp4_packet_trace, &str>(&file, 0..100, |seq, _| {
             calls += 1;
             if seq == 4 {
                 Err("stop")
@@ -255,7 +251,7 @@ mod tests {
     /// the fixture record it was copied from.
     #[test]
     fn chunk_boundaries() {
-        let size = Tcp4Packet::ENTRY_SIZE;
+        let size = tcp4_packet_trace::ENTRY_SIZE;
         let src = fs::read(fixture("tcbee_small", "tcp4_send.tcp")).unwrap();
         let src_recs = src.len() / size;
         let per_chunk = CHUNK_BYTES / size;
@@ -265,7 +261,8 @@ mod tests {
             let r = i % src_recs;
             bytes.extend_from_slice(&src[r * size..(r + 1) * size]);
         }
-        let expect = collect::<Tcp4Packet>(&temp_file("src", &src), 0..src_recs as u64).unwrap();
+        let expect =
+            collect::<tcp4_packet_trace>(&temp_file("src", &src), 0..src_recs as u64).unwrap();
         let file = temp_file("chunks", &bytes);
 
         let pc = per_chunk as u64;
@@ -281,7 +278,7 @@ mod tests {
         ];
         for r in ranges {
             let mut next = r.start;
-            decode_range::<Tcp4Packet, ()>(&file, r.clone(), |seq, e| {
+            decode_range::<tcp4_packet_trace, ()>(&file, r.clone(), |seq, e| {
                 assert_eq!(seq, next);
                 let want = &expect[seq as usize % src_recs].1;
                 assert_eq!((e.time, e.seq), (want.time, want.seq));

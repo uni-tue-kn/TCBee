@@ -22,19 +22,19 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 
 | File | Binding | Record size (bytes) | Records | Origin |
 | --- | --- | --- | --- | --- |
-| `bbr.tcp` | `BbrEvent` | 118 | 500 | generated |
-| `cubic.tcp` | `CubicEvent` | 122 | 2000 | real |
-| `tcp_probe.tcp` | `TcpProbe` | 124 | 2000 | real |
+| `bbr.tcp` | `bbr_trace_entry` | 118 | 500 | generated |
+| `cubic.tcp` | `cubic_trace_entry` | 122 | 2000 | real |
+| `tcp_probe.tcp` | `tcp_probe_entry` | 124 | 2000 | real |
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |
 | `tcp_bad_csum.tcp` | none | | 0 | generated |
 | `send_sock.tcp` | `sock_trace_entry` | 168 | 2000 | real |
 | `recv_sock.tcp` | `sock_trace_entry` | 168 | 2000 | real |
 | `send_cwnd.tcp` | `cwnd_trace_entry` | 70 | 1000 | generated |
 | `recv_cwnd.tcp` | `cwnd_trace_entry` | 70 | 0 | generated |
-| `tcp4_receive.tcp` | `Tcp4Packet` | 43 | 2000 | real |
-| `tcp4_send.tcp` | `Tcp4Packet` | 43 | 2000 | real |
-| `tcp6_receive.tcp` | `Tcp6Packet` | 67 | 500 | generated |
-| `tcp6_send.tcp` | `Tcp6Packet` | 67 | 500 | generated |
+| `tcp4_receive.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
+| `tcp4_send.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
+| `tcp6_receive.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
+| `tcp6_send.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
 
 ## `tcbee_truncated/`
 

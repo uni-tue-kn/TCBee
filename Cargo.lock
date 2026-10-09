@@ -3892,6 +3892,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tcbee-common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "tcbee-process"
 version = "0.1.0"
 dependencies = [
@@ -3903,6 +3910,7 @@ dependencies = [
  "indicatif",
  "log",
  "serde",
+ "tcbee-common",
  "tcbee-trace",
  "tempfile",
  "ts_storage",
