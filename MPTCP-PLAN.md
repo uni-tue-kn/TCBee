@@ -1,12 +1,22 @@
 # MPTCP support for TCBee: research summary and implementation plan
 
-Status: plan for discussion. Nothing is implemented. Written 2026-10-09 from three agent investigations: a literature/community survey, a fact check against primary sources, and a code + local-kernel (6.8.0-146) study. Supersedes the rough MPTCP section in `EXTENSION.md` §1. Scratch artifacts from the kernel study (struct dumps for 6.8 and 7.2.6, list of attachable functions) live in the session scratchpad and are not part of the repo. The facts they gave are copied in here.
+Status: implemented on branch `mptcp` (see "As implemented" below); the rest of this document is the plan as discussed. Written 2026-10-09 from three agent investigations: a literature/community survey, a fact check against primary sources, and a code + local-kernel (6.8.0-146) study. Supersedes the rough MPTCP section in `EXTENSION.md` §1. Scratch artifacts from the kernel study (struct dumps for 6.8 and 7.2.6, list of attachable functions) live in the session scratchpad and are not part of the repo. The facts they gave are copied in here.
 
 **Framing constraint.** TCBee is a *general* TCP analysis tool. MPTCP is the first user of two general mechanisms: (a) grouping flows under a parent connection, and (b) protocol-level record types next to the TCP socket records. The paper should present MPTCP as a case study of extensibility, not as the headline.
 
 **Hook policy.** We are not limited to tracepoints. fentry/fexit can attach to any function that is not inlined and has BTF, without performance problems. The limits are about portability:
 - Functions may be inlined on some kernels. Every hook therefore lists a fallback, chosen with `retarget()` (`tcbee-record/tcbee/src/eBPF/probes/mod.rs:36-61`).
 - Arguments change between kernels, while struct fields are CO-RE relocated. Prefer reading state from the socket structs over relying on argument layouts.
+
+## As implemented (branch `mptcp`)
+
+Differences to the plan below:
+- **Recording.** `-M` records path manager and lifecycle events (`mptcp_pm.tcp`) and, with `-k` or `-w`, tags sock and cwnd records with the local token (`conn_id`, always present, 0 without `-M`). `--mptcp-modes tag,pm` selects parts. No trace format manifest: compatibility with older recordings was not needed.
+- **Hooks.** `mptcp_event`, `mptcp_event_addr_announced`, `mptcp_event_addr_removed`, `mptcp_token_destroy`, fexit `__mptcp_subflow_connect`, `mptcp_pm_mp_fail_received`. Fallback is not recorded yet.
+- **Connections.** Schema version 3 has `connections(id, kind, key, flow_id, start_ts, end_ts)` and `connection_flows(connection_id, flow_id, subflow_id, first_ts, last_ts)` instead of `flow_parent`. Token lifetimes end at `TOKEN_DESTROYED`, not at CLOSED (the token is set before CREATED and subflows flush after CLOSED). `connections.flow_id` stays empty until connection-level records exist (no pseudo-flow yet).
+- **Viewer.** An MPTCP tab (greyed out without MPTCP) and a Conn column with `conn:` filter in the flow table. Derived series are not stored at process time.
+- **Not done yet.** The opt-in sub-modes (ack, sched, rcv with head-of-line delay, retrans), fallback and MP_PRIO details.
+- **Future work.** Joining the client and server recordings of one connection (local and remote token) across hosts.
 
 ---
 

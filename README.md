@@ -39,7 +39,7 @@ The examples call the script as `./tcbee` from the unzipped release. After a sou
 
 ### tcbee-record
 
-Written in C with libbpf. Loads the eBPF programs and writes the raw events. A source flag picks what to record: `-h IFACE` for headers, `-t` for tracepoints, `-k` for fentry hooks, `-w` for the congestion window only, `-a` for Cubic and BBR internals, `-M` to group MPTCP subflows by connection. Filters (`-p`, `--ports`, `--ips`) limit the recording to some flows. Flags, kernel requirements and the static release build are in [tcbee-record/README.md](tcbee-record/README.md).
+Written in C with libbpf. Loads the eBPF programs and writes the raw events. A source flag picks what to record: `-h IFACE` for headers, `-t` for tracepoints, `-k` for fentry hooks, `-w` for the congestion window only, `-a` for Cubic and BBR internals, `-M` for MPTCP (path manager events, and with `-k` or `-w` the connection of every subflow record). Filters (`-p`, `--ports`, `--ips`) limit the recording to some flows. Flags, kernel requirements and the static release build are in [tcbee-record/README.md](tcbee-record/README.md).
 
 ```bash
 sudo ./tcbee record -h eth0 -k -p 5001 --duration 60
@@ -55,7 +55,7 @@ Converts a recording into a database. The extension of `-o` picks the engine: `.
 
 ### tcbee-viz
 
-A desktop viewer built with egui. It plots single flows, compares two flows, and runs plugins that add derived series such as retransmissions. It opens a database given as argument, or you load one from the Home tab.
+A desktop viewer built with egui. It plots single flows, compares two flows, and runs plugins that add derived series such as retransmissions. For recordings made with `-M`, the MPTCP tab plots a metric of all subflows of a connection together with the path manager events, and the flow table shows the connection of each flow. It opens a database given as argument, or you load one from the Home tab.
 
 ```bash
 ./tcbee viz /tmp/myflow.duck
