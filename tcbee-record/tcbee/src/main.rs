@@ -179,7 +179,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut poll).add_option(
             &["--poll"],
             Store,
-            "How writer threads wait for records: 'busy' spins and uses one core per output file, 'wait' blocks until the kernel signals new records. Default is busy.",
+            "How writer threads wait for records: 'busy' polls the rings and sleeps 50 µs when a poll returns fewer than 256 records, 'wait' blocks until the kernel signals new records. Default is busy.",
         );
         argparser.refer(&mut writer_cpus).add_option(
             &["--writer-cpus"],
@@ -350,7 +350,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Keeps the calling thread off the CPUs the writer threads are pinned to, so that the
-/// control and UI threads don't take time from a spinning writer. Does nothing if no
+/// control and UI threads don't take time from a busy writer. Does nothing if no
 /// writer CPUs are set or they cover every CPU.
 fn avoid_cpus(writer_cpus: &[usize]) {
     if writer_cpus.is_empty() {

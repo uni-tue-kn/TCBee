@@ -26,7 +26,8 @@ use crate::config::WRITER_BUFFER_SIZE;
 /// How writer threads wait for new records
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PollMode {
-    /// Spin on the ring buffers. Lowest latency, but every writer thread uses a full core.
+    /// Spin on the ring buffers while records arrive, then sleep 50 µs whenever a poll
+    /// returns fewer than 256 records, so that several writer threads can share a core.
     #[default]
     Busy,
     /// Block in poll() until the kernel signals new records.
@@ -45,6 +46,13 @@ impl PollMode {
 
 /// Upper bound for a blocking wait, so that a stop request is noticed
 const WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Busy mode: a poll that consumed at least this many records means a backlog, so poll again
+/// at once; a smaller batch means the writer keeps up and can sleep.
+const BACKLOG_RECORDS: i32 = 256;
+/// Busy mode: sleep between polls of light or idle rings. Far below the time a per-CPU ring takes
+/// to fill, so it costs no records, and writer threads sharing a core leave it to the loaded one.
+const IDLE_SLEEP: Duration = Duration::from_micros(50);
 
 /// Serializes entries pulled from eBPF maps and writes them to files.
 ///
@@ -240,9 +248,13 @@ where
         while running.load(Ordering::Relaxed) {
             match poll_mode {
                 PollMode::Busy => {
-                    // consume drains the ring, spin (no syscall) instead of yielding
-                    check(&job, rb.consume_raw())?;
-                    std::hint::spin_loop();
+                    // consume drains the rings. Poll again at once (no syscall) while there is a
+                    // backlog, otherwise sleep briefly so other writers on the same core get it.
+                    if check(&job, rb.consume_raw())? >= BACKLOG_RECORDS {
+                        std::hint::spin_loop();
+                    } else {
+                        thread::sleep(IDLE_SLEEP);
+                    }
                 }
                 PollMode::Wait => {
                     check(&job, rb.poll_raw(WAIT_TIMEOUT))?;

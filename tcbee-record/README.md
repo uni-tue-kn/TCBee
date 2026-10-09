@@ -73,7 +73,7 @@ At least one metric source is required.
 | `-m` | | Write a `metrics.json` summary file |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
 | `--tui-observation-window-s N` | `0` | Sliding window of the TUI graphs in seconds; 0 shows the whole recording |
-| `--poll busy\|wait` | `busy` | Writer threads spin (one core per output file) or block until the kernel signals records |
+| `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 | `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-M` records, comma-separated: `tag`, `pm` |
