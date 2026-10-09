@@ -3,7 +3,9 @@
 //! The recorder tags the sock and cwnd records of a subflow with the local token of its
 //! connection (`conn_id`) and writes the path manager events of the connection with the same
 //! token. The workers collect the tagged flows from `Event::connection_key` of every record,
-//! path manager events included; the events themselves are read once more afterwards. A token is only unique while its connection lives: the kernel may hand it to a new
+//! path manager events included; the events themselves are read once more afterwards.
+//!
+//! A token is only unique while its connection lives: the kernel may hand it to a new
 //! connection once it is destroyed (TOKEN_DESTROYED). So the events of a token are cut into
 //! lifetimes at each TOKEN_DESTROYED, and every lifetime is one connection. A subflow belongs to
 //! the lifetime of its token that has not ended before the subflow's first record. Without path
@@ -25,7 +27,6 @@ use ts_storage::{ConnectionFlow, ConnectionInfo, Flow, IpTuple};
 use crate::decode::decode_range;
 use crate::event::Event;
 
-pub const KIND_MPTCP: &str = "mptcp";
 /// The trace file whose events cut tokens into connections
 pub const EVENT_FILE: TraceFile = TraceFile::MptcpPm;
 
@@ -192,7 +193,7 @@ fn connection_rows(
                 .unwrap_or(start);
             let info = ConnectionInfo {
                 id: 0,
-                kind: KIND_MPTCP.to_string(),
+                kind: ConnectionInfo::KIND_MPTCP.to_string(),
                 key: token.into(),
                 flow_id: None,
                 start_ts: start,

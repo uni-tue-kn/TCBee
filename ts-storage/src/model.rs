@@ -41,6 +41,11 @@ pub struct ConnectionInfo {
     pub end_ts: i64,
 }
 
+impl ConnectionInfo {
+    /// `kind` of an MPTCP connection
+    pub const KIND_MPTCP: &'static str = "mptcp";
+}
+
 /// A flow that belonged to a connection from `first_ts` to `last_ts`. A flow tuple can be
 /// reused, so it may belong to several connections, one after the other.
 #[derive(Debug, Clone, PartialEq)]
