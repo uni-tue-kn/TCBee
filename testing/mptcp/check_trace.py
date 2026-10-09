@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Checks the sock records of a recording made by run.sh.
 
-    check_trace.py TRACE_DIR MPTCP_PORT TCP_PORT
+    check_trace.py TRACE_DIR MPTCP_PORT TCP_PORT [DB]
+
+DB is the recording processed into a SQLite database; its MPTCP connections are checked too.
 
 Every MPTCP connection must show up with two subflows on each side under one conn_id, the plain
 TCP connection must have conn_id 0, and the path manager events of each side must describe the
@@ -10,6 +12,7 @@ connection's life. Exits with 1 on a failed check.
 
 import collections
 import ipaddress
+import sqlite3
 import struct
 import sys
 from pathlib import Path
@@ -103,6 +106,18 @@ def main() -> int:
         life = [e for e in seq if e in (CREATED, ESTABLISHED, CLOSED, TOKEN_DESTROYED)]
         check(life == [CREATED, ESTABLISHED, CLOSED, TOKEN_DESTROYED], f"{token:#010x} lifecycle in order")
         check(seq.count(SUB_ESTABLISHED) == 1, f"{token:#010x} established its second subflow")
+
+    if len(sys.argv) > 4:
+        db = sqlite3.connect(sys.argv[4])
+        conns = dict(db.execute("SELECT key, id FROM connections WHERE kind = 'mptcp'").fetchall())
+        check(set(conns) == set(subflows), f"database has one connection per conn_id: {len(conns)}")
+        for token, conn_id in conns.items():
+            rows = db.execute(
+                "SELECT f.src, f.sport, f.dst, f.dport FROM connection_flows c "
+                "JOIN flows f ON f.id = c.flow_id WHERE c.conn_id = ?",
+                (conn_id,),
+            ).fetchall()
+            check(set(rows) == subflows[token], f"database connection {token:#010x} has its subflows")
     return 1 if failed else 0
 
 

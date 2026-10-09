@@ -20,13 +20,14 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
-use tcbee_trace::TCBeeTrace;
+use tcbee_trace::{TCBeeTrace, TraceFile};
 use ts_storage::{
     BatchWriter, Catalog, CreateOptions, Dir, EventBatch, IngestSession, StatsAccumulator,
 };
 
 use crate::{
     bindings::{binding, event_tables, Binding},
+    connections::{self, TaggedFlows},
     decode::{RangeError, RowError},
     registry::FlowRegistry,
     Args,
@@ -51,6 +52,8 @@ pub struct Summary {
     pub rows_by_table: BTreeMap<&'static str, u64>,
     /// Distinct flows.
     pub flows: usize,
+    /// Connections that group flows (MPTCP).
+    pub connections: usize,
     /// Rows of the `series` catalog table.
     pub series: usize,
     /// One entry per trace file that has a decoder and at least one record.
@@ -82,10 +85,12 @@ impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} records, {} rows, {} flows, {} series in {:.2} s (finish {:.2} s), output {}",
+            "{} records, {} rows, {} flows, {} connections, {} series in {:.2} s (finish {:.2} s), \
+             output {}",
             self.records,
             self.rows,
             self.flows,
+            self.connections,
             self.series,
             self.elapsed.as_secs_f64(),
             self.finish.as_secs_f64(),
@@ -111,6 +116,7 @@ fn human_bytes(b: u64) -> String {
 
 /// One trace file that will be read.
 struct FilePlan {
+    file: TraceFile,
     name: String,
     path: PathBuf,
     binding: Binding,
@@ -211,6 +217,7 @@ fn plan(
             records,
         });
         files.push(FilePlan {
+            file,
             name,
             path,
             binding,
@@ -244,6 +251,7 @@ const ABORT_CHECK_RECORDS: u64 = 4096;
 struct WorkerOutput {
     stats: StatsAccumulator,
     rows_by_table: BTreeMap<&'static str, u64>,
+    tagged: TaggedFlows,
 }
 
 struct Shared<'a> {
@@ -351,6 +359,10 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
                 return Err(Box::new(Aborted) as RowError);
             }
             let flow = cache.id(row.flow_key());
+            let conn_key = row.conn_key();
+            if conn_key != 0 {
+                output.tagged.observe(flow, conn_key, row.ts_ns());
+            }
             // A series is read in (ts, seq) order. hook_seq is the exact hook order, ts sorts
             // first, so the two only differ if a CPU's clock read went backwards
             batch.push_header(flow, binding.dir, row.ts_ns(), row.hook_seq());
@@ -406,6 +418,7 @@ fn run_workers(shared: &Shared<'_>, threads: usize) -> Result<WorkerOutput> {
             match handle.join() {
                 Ok(Some(output)) => {
                     total.stats.merge(output.stats);
+                    total.tagged.merge(output.tagged);
                     for (table, rows) in output.rows_by_table {
                         *total.rows_by_table.entry(table).or_default() += rows;
                     }
@@ -421,9 +434,19 @@ fn run_workers(shared: &Shared<'_>, threads: usize) -> Result<WorkerOutput> {
     }
 }
 
-fn build_catalog(registry: FlowRegistry, stats: StatsAccumulator, trace: &TCBeeTrace) -> Catalog {
+fn build_catalog(
+    registry: FlowRegistry,
+    stats: StatsAccumulator,
+    tagged: TaggedFlows,
+    pm_events: &[connections::PmEvent],
+    trace: &TCBeeTrace,
+) -> Catalog {
+    let flows = registry.into_flows();
+    let (connections, connection_flows) = connections::assemble(tagged, pm_events, &flows);
     Catalog {
-        flows: registry.into_flows(),
+        flows,
+        connections,
+        connection_flows,
         series: stats.into_series(1),
         meta: vec![
             (
@@ -432,7 +455,6 @@ fn build_catalog(registry: FlowRegistry, stats: StatsAccumulator, trace: &TCBeeT
             ),
             ("trace_dir".to_string(), trace.dir().display().to_string()),
         ],
-        ..Catalog::default()
     }
 }
 
@@ -500,7 +522,13 @@ pub fn run(args: &Args) -> Result<Summary> {
     }
 
     let finish_start = Instant::now();
-    let catalog = build_catalog(registry, output.stats, &trace);
+    // The path manager events once more, in full: they cut tokens into connections
+    let pm_events = match files.iter().find(|f| f.file == TraceFile::MptcpPm) {
+        Some(f) => connections::read_pm_events(&f.path, 0..f.records)?,
+        None => Vec::new(),
+    };
+    let catalog = build_catalog(registry, output.stats, output.tagged, &pm_events, &trace);
+    summary.connections = catalog.connections.len();
     summary.flows = catalog.flows.len();
     summary.series = catalog.series.len();
     session

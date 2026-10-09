@@ -6,12 +6,14 @@
 #   sudo testing/mptcp/run.sh [SECONDS]
 #
 # TCBEE_RECORD overrides the recorder binary. The recording stays in $OUT (default
-# /tmp/tcbee-mptcp-test).
+# /tmp/tcbee-mptcp-test). If the SQLite build of tcbee-process exists (TCBEE_PROCESS, default
+# target/release/tcbee-process), the recording is also processed and the database checked.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 RECORD=${TCBEE_RECORD:-$ROOT/tcbee-record/target/release/tcbee-record}
+PROCESS=${TCBEE_PROCESS:-$ROOT/target/release/tcbee-process}
 OUT=${OUT:-/tmp/tcbee-mptcp-test}
 SECONDS_TRAFFIC=${1:-3}
 CLIENT=tcbee-mptcp-client
@@ -70,4 +72,9 @@ wait "$RECORDER"
 
 TRACE=$(ls -d "$OUT"/tcbee_* | tail -1)
 echo "Recording: $TRACE"
-python3 "$HERE/check_trace.py" "$TRACE" "$MPTCP_PORT" "$TCP_PORT"
+DB=()
+if [ -x "$PROCESS" ]; then
+    "$PROCESS" -s "$TRACE" -o "$OUT/mptcp.sqlite" -f
+    DB=("$OUT/mptcp.sqlite")
+fi
+python3 "$HERE/check_trace.py" "$TRACE" "$MPTCP_PORT" "$TCP_PORT" "${DB[@]}"

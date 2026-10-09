@@ -314,6 +314,36 @@ fn small_fixture_decodes_to_the_golden_digests() {
     }
 }
 
+/// The two generated MPTCP connections of tcbee_small, one per flow, with the flow as subflow 1.
+#[test]
+fn small_fixture_groups_mptcp_connections() {
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, summary) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
+        assert_eq!(summary.connections, 2);
+        let store = ts_storage::open(&out).unwrap();
+        let flows = store.flows().unwrap();
+        let sport = |flow_id| flows.iter().find(|f| f.id == flow_id).unwrap().tuple.sport;
+        let conns = store.connections().unwrap();
+        let keys: Vec<(String, i64)> = conns.iter().map(|c| (c.kind.clone(), c.key)).collect();
+        assert_eq!(keys, [("mptcp".into(), 0x1000), ("mptcp".into(), 0x1001)]);
+        assert!(conns
+            .iter()
+            .all(|c| c.flow_id.is_none() && c.start_ts < c.end_ts));
+        let members: Vec<(i64, i64, Option<i64>)> = store
+            .connection_flows()
+            .unwrap()
+            .iter()
+            .map(|m| (m.conn_id, sport(m.flow_id), m.subflow_id))
+            .collect();
+        assert_eq!(
+            members,
+            [(1, 40000, Some(1)), (2, 40001, Some(1))],
+            "{engine:?}"
+        );
+    }
+}
+
 #[test]
 fn u64_max_is_saturated_and_stats_describe_read_values() {
     for (engine, ext) in engines() {

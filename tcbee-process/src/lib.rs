@@ -5,6 +5,7 @@
 
 mod bindings;
 mod cli;
+mod connections;
 mod decode;
 mod event;
 #[cfg(test)]

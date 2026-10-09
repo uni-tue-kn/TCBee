@@ -48,6 +48,10 @@ pub trait Event: Sized {
     fn flow_key(&self) -> IpTuple;
     /// Recorder timestamp, nanoseconds since boot.
     fn ts_ns(&self) -> i64;
+    /// Token of the MPTCP connection the record belongs to, 0 for none (see `connections`).
+    fn conn_key(&self) -> u32 {
+        0
+    }
     /// Position among the records of the same flow direction and hook, from 1. The recorder's
     /// ring buffers are per CPU, so this and not the file order is the order of the hook.
     fn hook_seq(&self) -> i64;
@@ -61,6 +65,7 @@ pub trait Event: Sized {
 pub trait Row {
     fn flow_key(&self) -> IpTuple;
     fn ts_ns(&self) -> i64;
+    fn conn_key(&self) -> u32;
     fn hook_seq(&self) -> i64;
     fn push_row(&self, batch: &mut EventBatch);
 }
@@ -71,6 +76,9 @@ impl<E: Event> Row for E {
     }
     fn ts_ns(&self) -> i64 {
         Event::ts_ns(self)
+    }
+    fn conn_key(&self) -> u32 {
+        Event::conn_key(self)
     }
     fn hook_seq(&self) -> i64 {
         Event::hook_seq(self)

@@ -45,5 +45,8 @@ event_schema! {
             );
             flow_tuple(src, dst, self.sport, self.dport)
         }
+        fn conn_key(&self) -> u32 {
+            self.conn_id
+        }
     }
 }
