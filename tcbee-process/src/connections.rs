@@ -1,14 +1,15 @@
-//! Groups flows into MPTCP connections.
+//! Groups flows into connections. MPTCP is the only kind so far.
 //!
 //! The recorder tags the sock and cwnd records of a subflow with the local token of its
 //! connection (`conn_id`) and writes the path manager events of the connection with the same
-//! token. A token is only unique while its connection lives: the kernel may hand it to a new
+//! token. The workers collect the tagged flows from `Event::connection_key` of every record,
+//! path manager events included; the events themselves are read once more afterwards. A token is only unique while its connection lives: the kernel may hand it to a new
 //! connection once it is destroyed (TOKEN_DESTROYED). So the events of a token are cut into
 //! lifetimes at each TOKEN_DESTROYED, and every lifetime is one connection. A subflow belongs to
 //! the lifetime of its token that has not ended before the subflow's first record. Without path
 //! manager events (`-M tag` alone), a token is one connection.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::fs::File;
 use std::ops::Range;
@@ -18,12 +19,15 @@ use anyhow::{anyhow, Result};
 use tcbee_common::records::{
     mptcp_pm_entry, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_SUB_ESTABLISHED, TCBEE_MPTCP_TOKEN_DESTROYED,
 };
+use tcbee_trace::TraceFile;
 use ts_storage::{ConnectionFlow, ConnectionInfo, Flow, IpTuple};
 
 use crate::decode::decode_range;
 use crate::event::Event;
 
 pub const KIND_MPTCP: &str = "mptcp";
+/// The trace file whose events cut tokens into connections
+pub const EVENT_FILE: TraceFile = TraceFile::MptcpPm;
 
 /// First and last timestamp of the tagged records of each (flow, token), collected by the
 /// workers.
@@ -78,8 +82,8 @@ pub fn read_pm_events(path: &Path, records: Range<u64>) -> Result<Vec<PmEvent>> 
 /// One lifetime of a token
 #[derive(Debug)]
 struct Lifetime {
-    token: u32,
-    start: i64,
+    /// First path manager event, none if there are only tagged records
+    start: Option<i64>,
     /// TOKEN_DESTROYED, if recorded
     end: Option<i64>,
 }
@@ -93,8 +97,7 @@ fn lifetimes(events: &[PmEvent]) -> BTreeMap<u32, Vec<Lifetime>> {
         let lives = by_token.entry(e.token).or_default();
         if lives.last().is_none_or(|l| l.end.is_some()) {
             lives.push(Lifetime {
-                token: e.token,
-                start: e.ts,
+                start: Some(e.ts),
                 end: None,
             });
         }
@@ -124,62 +127,64 @@ fn reversed(t: &IpTuple) -> IpTuple {
     }
 }
 
-/// The connections and their flows. A flow without a token of its own whose reversed tuple is a
-/// member (the receive side of packet header records) belongs to the same connection. Flows
-/// with a token keep their own: both ends of a connection may be recorded on one host.
-pub fn assemble(
-    mut tagged: TaggedFlows,
-    events: &[PmEvent],
-    flows: &[Flow],
-) -> (Vec<ConnectionInfo>, Vec<ConnectionFlow>) {
-    let flow_ids: HashMap<&IpTuple, i64> = flows.iter().map(|f| (&f.tuple, f.id)).collect();
-    let mut subflow_ids: HashMap<(i64, u32), i64> = HashMap::new();
-    for e in events.iter().filter(|e| e.token != 0) {
-        let Some(&flow_id) = flow_ids.get(&e.flow) else {
-            continue;
-        };
-        tagged.observe(flow_id, e.token, e.ts);
+/// A flow of a connection: its first and last tagged record
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Member {
+    flow_id: i64,
+    first_ts: i64,
+    last_ts: i64,
+}
+
+/// Subflow ids from the events that name one, per (flow, token)
+fn subflow_ids(events: &[PmEvent], flow_ids: &HashMap<&IpTuple, i64>) -> HashMap<(i64, u32), i64> {
+    let mut ids = HashMap::new();
+    for e in events {
         let names_subflow =
             e.event == TCBEE_MPTCP_CREATED || e.event == TCBEE_MPTCP_SUB_ESTABLISHED;
-        if names_subflow && e.subflow_id != 0 {
-            subflow_ids
-                .entry((flow_id, e.token))
-                .or_insert(e.subflow_id.into());
+        if !names_subflow || e.token == 0 || e.subflow_id == 0 {
+            continue;
+        }
+        if let Some(&flow_id) = flow_ids.get(&e.flow) {
+            ids.entry((flow_id, e.token)).or_insert(e.subflow_id.into());
         }
     }
+    ids
+}
 
-    let mut by_token = lifetimes(events);
-    for &(_, token) in tagged.spans.keys() {
-        by_token.entry(token).or_insert_with(|| {
-            // Tagged records only: one connection over all of them
-            vec![Lifetime {
-                token,
-                start: i64::MAX,
-                end: None,
-            }]
+/// The members of each lifetime, keyed by (token, index into the token's lifetimes)
+fn members_per_lifetime(
+    tagged: TaggedFlows,
+    lifetimes: &BTreeMap<u32, Vec<Lifetime>>,
+) -> BTreeMap<(u32, usize), Vec<Member>> {
+    let mut members: BTreeMap<(u32, usize), Vec<Member>> = BTreeMap::new();
+    for ((flow_id, token), (first_ts, last_ts)) in tagged.spans {
+        let life = lifetime_of(&lifetimes[&token], first_ts);
+        members.entry((token, life)).or_default().push(Member {
+            flow_id,
+            first_ts,
+            last_ts,
         });
     }
-
-    // Members per (token, lifetime index), sorted for deterministic output
-    let mut spans: Vec<((i64, u32), (i64, i64))> = tagged.spans.into_iter().collect();
-    let mut seen: Vec<i64> = spans.iter().map(|((flow_id, _), _)| *flow_id).collect();
-    spans.sort();
-    let mut members: BTreeMap<(u32, usize), Vec<(i64, i64, i64)>> = BTreeMap::new();
-    for ((flow_id, token), (first, last)) in spans {
-        let life = lifetime_of(&by_token[&token], first);
-        members
-            .entry((token, life))
-            .or_default()
-            .push((flow_id, first, last));
+    for list in members.values_mut() {
+        list.sort();
     }
+    members
+}
 
-    let mut connections: Vec<(ConnectionInfo, Vec<(i64, i64, i64)>)> = Vec::new();
-    for (token, lives) in by_token {
+/// One connection per lifetime, ordered by start, with ids from 1
+fn connection_rows(
+    lifetimes: BTreeMap<u32, Vec<Lifetime>>,
+    mut members: BTreeMap<(u32, usize), Vec<Member>>,
+) -> Vec<(ConnectionInfo, Vec<Member>)> {
+    let mut connections = Vec::new();
+    for (token, lives) in lifetimes {
         for (index, life) in lives.into_iter().enumerate() {
             let flows = members.remove(&(token, index)).unwrap_or_default();
-            let first = flows.iter().map(|m| m.1).min();
-            let last = flows.iter().map(|m| m.2).max();
-            let start = first.map_or(life.start, |f| f.min(life.start));
+            let first = flows.iter().map(|m| m.first_ts).min();
+            let last = flows.iter().map(|m| m.last_ts).max();
+            let Some(start) = [life.start, first].into_iter().flatten().min() else {
+                continue;
+            };
             let end = [life.end, last]
                 .into_iter()
                 .flatten()
@@ -188,7 +193,7 @@ pub fn assemble(
             let info = ConnectionInfo {
                 id: 0,
                 kind: KIND_MPTCP.to_string(),
-                key: life.token.into(),
+                key: token.into(),
                 flow_id: None,
                 start_ts: start,
                 end_ts: end,
@@ -197,30 +202,56 @@ pub fn assemble(
         }
     }
     connections.sort_by_key(|(c, _)| (c.start_ts, c.key));
+    for (index, (info, _)) in connections.iter_mut().enumerate() {
+        info.id = index as i64 + 1;
+    }
+    connections
+}
 
+/// The connections and their flows. A flow without a token of its own whose reversed tuple is a
+/// member (the receive side of packet header records) belongs to the same connection. Flows
+/// with a token keep their own: both ends of a connection may be recorded on one host.
+pub fn assemble(
+    tagged: TaggedFlows,
+    events: &[PmEvent],
+    flows: &[Flow],
+) -> (Vec<ConnectionInfo>, Vec<ConnectionFlow>) {
+    let flow_ids: HashMap<&IpTuple, i64> = flows.iter().map(|f| (&f.tuple, f.id)).collect();
     let tuples: HashMap<i64, &IpTuple> = flows.iter().map(|f| (f.id, &f.tuple)).collect();
+    let subflow_ids = subflow_ids(events, &flow_ids);
+    let mut has_connection: HashSet<i64> = tagged.spans.keys().map(|(flow, _)| *flow).collect();
+
+    let mut lifetimes = lifetimes(events);
+    for &(_, token) in tagged.spans.keys() {
+        // A token with tagged records but no events is one connection over all of them
+        lifetimes.entry(token).or_insert_with(|| {
+            vec![Lifetime {
+                start: None,
+                end: None,
+            }]
+        });
+    }
+    let members = members_per_lifetime(tagged, &lifetimes);
+
     let mut infos = Vec::new();
     let mut connection_flows = Vec::new();
-    for (index, (mut info, flows)) in connections.into_iter().enumerate() {
-        info.id = index as i64 + 1;
+    for (info, members) in connection_rows(lifetimes, members) {
         let token = info.key as u32;
-        for (flow_id, first_ts, last_ts) in flows {
-            let subflow_id = subflow_ids.get(&(flow_id, token)).copied();
-            let member = |flow_id| ConnectionFlow {
+        for m in members {
+            let row = |flow_id| ConnectionFlow {
                 connection_id: info.id,
                 flow_id,
-                subflow_id,
-                first_ts,
-                last_ts,
+                subflow_id: subflow_ids.get(&(m.flow_id, token)).copied(),
+                first_ts: m.first_ts,
+                last_ts: m.last_ts,
             };
-            connection_flows.push(member(flow_id));
+            connection_flows.push(row(m.flow_id));
             let reverse = tuples
-                .get(&flow_id)
+                .get(&m.flow_id)
                 .and_then(|t| flow_ids.get(&reversed(t)));
             if let Some(&reverse) = reverse {
-                if !seen.contains(&reverse) {
-                    seen.push(reverse);
-                    connection_flows.push(member(reverse));
+                if has_connection.insert(reverse) {
+                    connection_flows.push(row(reverse));
                 }
             }
         }

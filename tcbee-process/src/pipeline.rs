@@ -359,9 +359,9 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
                 return Err(Box::new(Aborted) as RowError);
             }
             let flow = cache.id(row.flow_key());
-            let conn_key = row.conn_key();
-            if conn_key != 0 {
-                output.tagged.observe(flow, conn_key, row.ts_ns());
+            let connection_key = row.connection_key();
+            if connection_key != 0 {
+                output.tagged.observe(flow, connection_key, row.ts_ns());
             }
             // A series is read in (ts, seq) order. hook_seq is the exact hook order, ts sorts
             // first, so the two only differ if a CPU's clock read went backwards
@@ -523,7 +523,7 @@ pub fn run(args: &Args) -> Result<Summary> {
 
     let finish_start = Instant::now();
     // The path manager events once more, in full: they cut tokens into connections
-    let pm_events = match files.iter().find(|f| f.file == TraceFile::MptcpPm) {
+    let pm_events = match files.iter().find(|f| f.file == connections::EVENT_FILE) {
         Some(f) => connections::read_pm_events(&f.path, 0..f.records)?,
         None => Vec::new(),
     };
