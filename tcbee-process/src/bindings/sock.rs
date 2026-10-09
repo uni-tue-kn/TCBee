@@ -11,6 +11,7 @@ use crate::{
 #[cfg_attr(feature = "fixture-gen", derive(serde::Serialize))]
 pub struct sock_trace_entry {
     pub time: u64,
+    pub hook_seq: u64,
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
@@ -51,7 +52,7 @@ pub struct sock_trace_entry {
 }
 
 event_schema! {
-    sock_trace_entry => "sock", 160 {
+    sock_trace_entry => "sock", 168 {
         pacing_rate: U64,
         max_pacing_rate: U64,
         backoff: U8,

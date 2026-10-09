@@ -8,10 +8,14 @@ use std::{
 
 use libbpf_rs::{
     skel::{OpenSkel, Skel, SkelBuilder},
-    Link, MapCore, MapFlags, MapMut, PrintLevel,
+    Link, MapCore, MapFlags, MapHandle, MapMut, PrintLevel,
 };
 use log::{debug, error, info, warn};
-use tcbee_common::stats::RINGBUFS;
+use tcbee_common::stats::{
+    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_RETRANSMIT_SYNACK, RB_SOCK_RECV,
+    RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE,
+    RINGBUFS,
+};
 use tokio::{
     task::{spawn_blocking, JoinHandle},
     time::sleep,
@@ -30,9 +34,10 @@ use crate::{
             kernel::KernelTracer,
             tracepoints::TracepointTracer,
         },
+        rings,
         skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
     },
-    metrics::{program_stats, ringbuf_sizes, Metrics, ProgramStats},
+    metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats},
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
@@ -51,7 +56,12 @@ pub struct EbpfRunner {
     tc: Option<TcAttachment>,
     writer: Option<Writer>,
     stats: Option<Arc<Stats>>,
+    /// The hook_seq counters, read for the metrics after the programs are detached
+    hook_seq: Option<MapHandle>,
+    /// Size of each CPU's ring buffer, indexed like `RINGBUFS`, None if not created
     ringbuf_sizes: Vec<Option<u32>>,
+    /// CPUs with a ring buffer per probe output
+    ring_cpus: u32,
     started: Option<Instant>,
 }
 
@@ -146,6 +156,34 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, String> {
     })
 }
 
+/// Ring buffers that the enabled probe groups write to
+fn enabled_ringbufs(config: &EbpfRunnerConfig, bbr: bool) -> Vec<u32> {
+    let groups: [(bool, &[u32]); 6] = [
+        (
+            config.headers,
+            &[
+                RB_TCP4_EGRESS,
+                RB_TCP4_INGRESS,
+                RB_TCP6_EGRESS,
+                RB_TCP6_INGRESS,
+            ],
+        ),
+        (config.kernel, &[RB_SOCK_SEND, RB_SOCK_RECV]),
+        (config.cwnd, &[RB_CWND_SEND, RB_CWND_RECV]),
+        (
+            config.tracepoints,
+            &[RB_TCP_PROBE, RB_RETRANSMIT_SYNACK, RB_BAD_CSUM],
+        ),
+        (config.algorithms, &[RB_CUBIC]),
+        (config.algorithms && bbr, &[RB_BBR]),
+    ];
+    groups
+        .into_iter()
+        .filter(|(enabled, _)| *enabled)
+        .flat_map(|(_, rbs)| rbs.iter().copied())
+        .collect()
+}
+
 impl EbpfRunner {
     // Load eBPF program and setup references
     pub fn new(stop_token: CancellationToken, config: EbpfRunnerConfig) -> EbpfRunner {
@@ -159,7 +197,9 @@ impl EbpfRunner {
             tc: None,
             writer: None,
             stats: None,
+            hook_seq: None,
             ringbuf_sizes: Vec::new(),
+            ring_cpus: 0,
             started: None,
         }
     }
@@ -242,13 +282,20 @@ impl EbpfRunner {
                 return;
             }
         };
+        let hook_seq = self.hook_seq.as_ref().and_then(|map| {
+            HookSeqTotals::read(map)
+                .inspect_err(|err| error!("Could not read the hook_seq counters: {}", err))
+                .ok()
+        });
 
         let metrics = Metrics::new(
             duration_s,
             &snapshot,
             reports,
             &self.ringbuf_sizes,
+            self.ring_cpus,
             programs,
+            hook_seq.as_ref(),
         );
         let path = Path::new(&self.config.dir).join("metrics.json");
         match metrics.write(&path) {
@@ -257,14 +304,15 @@ impl EbpfRunner {
         }
     }
 
-    /// Opens the skeleton and configures it from the config: rodata constants, ring
-    /// buffer sizes and which programs are loaded. BBR is only loaded if `with_bbr` is
+    /// Opens the skeleton and configures it from the config: rodata constants, one ring
+    /// buffer slot per CPU and which programs are loaded. BBR is only loaded if `with_bbr` is
     /// set. Returns the skeleton and whether BBR is enabled.
     fn open_configured(
         &self,
         tcx: bool,
         with_bbr: bool,
         btf: &mut KernelBtf,
+        cpus: &rings::Cpus,
     ) -> Result<(OpenTcbeeSkel<'static>, bool), Box<dyn Error>> {
         let mut open = open_skel()?;
 
@@ -280,14 +328,7 @@ impl EbpfRunner {
         rodata.FLOW_TRACKING = self.config.do_tui as u8;
         rodata.RB_SUBMIT_FLAGS = self.config.poll_mode.submit_flags();
 
-        for (name, size) in &self.config.ringbuf_sizes {
-            let mut map = open
-                .open_object_mut()
-                .maps_mut()
-                .find(|map| map.name() == *name)
-                .ok_or_else(|| format!("Ring buffer {} not found", name))?;
-            map.set_max_entries(*size)?;
-        }
+        rings::set_slots(open.open_object_mut(), cpus)?;
 
         // A skeleton loads all programs, the ones of disabled groups must be switched off.
         // Their attach targets may not even exist on this kernel.
@@ -319,15 +360,16 @@ impl EbpfRunner {
         // fails all of them. BBR is optional (it may be an out-of-tree variant with other
         // struct fields), so if loading fails with BBR, it is tried once more without.
         let tcx = self.config.headers && uses_tcx();
+        let cpus = rings::Cpus::get()?;
         let mut btf = KernelBtf::default();
-        let (open, mut bbr) = self.open_configured(tcx, true, &mut btf)?;
+        let (open, mut bbr) = self.open_configured(tcx, true, &mut btf, &cpus)?;
         let skel = match load(open) {
             Ok(skel) => skel,
             Err(err) if bbr => {
                 error!("{}\nRetrying without the BBR programs", err);
                 // The failed object was closed when load() returned, its programs and
                 // maps are gone
-                let (open, _) = self.open_configured(tcx, false, &mut btf)?;
+                let (open, _) = self.open_configured(tcx, false, &mut btf, &cpus)?;
                 bbr = false;
                 load(open)?
             }
@@ -336,9 +378,18 @@ impl EbpfRunner {
         drop(btf);
         let skel = self.skel.insert(skel);
         configure_filter(skel, &self.config.filter)?;
-        self.ringbuf_sizes = ringbuf_sizes(skel.object());
-        for ((name, _), size) in RINGBUFS.iter().zip(&self.ringbuf_sizes) {
-            debug!("Ring buffer {} has {:?} bytes", name, size);
+
+        // The ring buffers exist before any program is attached, so no event finds its
+        // CPU's ring missing. Records submitted before a writer starts wait in the ring.
+        let enabled = enabled_ringbufs(&self.config, bbr);
+        let size = |rb: u32| self.config.ringbuf_size(rb);
+        rings::create(skel.object(), &enabled, size, &cpus)?;
+        self.ring_cpus = cpus.online.len() as u32;
+        self.ringbuf_sizes = (0..RINGBUFS.len() as u32)
+            .map(|rb| enabled.contains(&rb).then(|| size(rb)))
+            .collect();
+        for (ringbuf, size) in RINGBUFS.iter().zip(&self.ringbuf_sizes) {
+            debug!("Ring buffer {} has {:?} bytes per CPU", ringbuf.map, size);
         }
 
         info!("Starting eBPF probes!");
@@ -409,6 +460,7 @@ impl EbpfRunner {
         // Start watcher thread
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(handle(&skel.maps.STATS)?));
+        self.hook_seq = Some(handle(&skel.maps.HOOK_SEQ)?);
         self.stats = Some(stats.clone());
         let bytes_written = writer.bytes_written();
         let mut watcher = EBPFWatcher::new(

@@ -9,41 +9,68 @@
 #include "records.h"
 
 /* Mirrors tcbee_common::stats::STATS_LEN, see counters.h */
-#define TCBEE_STATS_LEN 54
+#define TCBEE_STATS_LEN 39
 #define TCBEE_MAX_FLOWS 100
 #define TCBEE_FILTER_MAX_ENTRIES 1024
 
 /*
- * Default ring buffer sizes in bytes, as many records as before. libbpf rounds them up to
- * a power-of-two multiple of the page size. --ringbuf-size overrides them before load.
+ * Ring buffers, one per CPU: a probe reserves its record in the ring buffer of the CPU it
+ * runs on, so producers on different CPUs never wait for each other on a ring buffer's
+ * lock. Each map below is an array indexed by CPU id. Userspace sets the number of slots
+ * to the number of possible CPUs before load and creates the rings with their real size
+ * after load (tcbee_common::stats::RINGBUF_SIZES); the inner definition is only the
+ * template, its size is not part of the type check.
  */
-#define RINGBUF(name, record, count)                                                       \
+struct tcbee_ringbuf {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 4096);
+};
+
+#define RINGBUFS_PER_CPU(name)                                                             \
 	struct {                                                                           \
-		__uint(type, BPF_MAP_TYPE_RINGBUF);                                        \
-		__uint(max_entries, sizeof(struct record) * (count));                      \
+		__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);                                  \
+		__uint(max_entries, 1);                                                    \
+		__type(key, __u32);                                                        \
+		__array(values, struct tcbee_ringbuf);                                     \
 	} name SEC(".maps")
 
-RINGBUF(TCP4_PACKETS_EGRESS, tcp4_packet_trace, 10000);
-RINGBUF(TCP4_PACKETS_INGRESS, tcp4_packet_trace, 10000);
-RINGBUF(TCP6_PACKETS_EGRESS, tcp6_packet_trace, 10000);
-RINGBUF(TCP6_PACKETS_INGRESS, tcp6_packet_trace, 10000);
-RINGBUF(TCP_SEND_SOCK_EVENTS, sock_trace_entry, 100000);
-RINGBUF(TCP_RECV_SOCK_EVENTS, sock_trace_entry, 100000);
-RINGBUF(TCP_SEND_CWND_EVENTS, cwnd_trace_entry, 100000);
-RINGBUF(TCP_RECEIVE_CWND_EVENTS, cwnd_trace_entry, 100000);
-RINGBUF(TCP_PROBE_QUEUE, tcp_probe_entry, 10000);
-RINGBUF(TCP_RETRANSMIT_SYNACK_QUEUE, tcp_retransmit_synack_entry, 10000);
-RINGBUF(TCP_BAD_CSUM_QUEUE, tcp_bad_csum_entry, 10000);
-RINGBUF(CUBIC_EVENTS, cubic_trace_entry, 100000);
-RINGBUF(BBR_EVENTS, bbr_trace_entry, 100000);
+RINGBUFS_PER_CPU(TCP4_PACKETS_EGRESS);
+RINGBUFS_PER_CPU(TCP4_PACKETS_INGRESS);
+RINGBUFS_PER_CPU(TCP6_PACKETS_EGRESS);
+RINGBUFS_PER_CPU(TCP6_PACKETS_INGRESS);
+RINGBUFS_PER_CPU(TCP_SEND_SOCK_EVENTS);
+RINGBUFS_PER_CPU(TCP_RECV_SOCK_EVENTS);
+RINGBUFS_PER_CPU(TCP_SEND_CWND_EVENTS);
+RINGBUFS_PER_CPU(TCP_RECEIVE_CWND_EVENTS);
+RINGBUFS_PER_CPU(TCP_PROBE_QUEUE);
+RINGBUFS_PER_CPU(TCP_RETRANSMIT_SYNACK_QUEUE);
+RINGBUFS_PER_CPU(TCP_BAD_CSUM_QUEUE);
+RINGBUFS_PER_CPU(CUBIC_EVENTS);
+RINGBUFS_PER_CPU(BBR_EVENTS);
 
-/* Per ring buffer [attempted, handled, dropped, error] counters plus byte counters */
+/* Per ring buffer [handled, dropped, error] counters */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, TCBEE_STATS_LEN);
 	__type(key, __u32);
 	__type(value, __u64);
 } STATS SEC(".maps");
+
+/*
+ * hook_seq counters, see hook_seq.h. Shared by all CPUs: the counter of a flow direction at a
+ * hook has to be one. Entries are only ever inserted with BPF_NOEXIST and never updated or
+ * deleted while programs run, an update would replace the element under a concurrent
+ * fetch-add. Entries are never freed either, every flow direction a probe records takes
+ * one per hook for the whole recording.
+ */
+#define TCBEE_HOOK_SEQ_ENTRIES 262144
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, TCBEE_HOOK_SEQ_ENTRIES);
+	__type(key, struct hook_seq_key);
+	__type(value, __u64);
+} HOOK_SEQ SEC(".maps");
 
 /* Flows seen by any probe, key and value are the canonical tuple */
 struct {

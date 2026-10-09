@@ -69,18 +69,25 @@ At least one metric source is required.
 | `-m` | | Write a `metrics.json` summary file |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
 | `--tui-observation-window-s N` | `0` | Sliding window of the TUI graphs in seconds; 0 shows the whole recording |
-| `--poll busy\|wait` | `busy` | Writer threads spin (one core per ring buffer) or block until the kernel signals records |
+| `--poll busy\|wait` | `busy` | Writer threads spin (one core per output file) or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
-| `--ringbuf-size SIZE` | | Ring buffer size (K, M, G suffixes), one value or per group, see `--help` |
+| `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
+
+Every probe output has one ring buffer per online CPU, so a probe never waits for another
+CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
+8 MiB, tcp6 and tcp_probe 4 MiB) need about 40 MiB per CPU with `-h` and 110 MiB per CPU with
+all probes; the log at startup prints the total. Records of one flow come from several CPUs,
+so their file order is not their order at the hook: every record carries `hook_seq`, its
+position among the events of its flow direction at its hook.
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
 
 ## Kernel requirements
 
 - BTF of the running kernel (`/sys/kernel/btf/vmlinux`, `CONFIG_DEBUG_INFO_BTF=y`)
-- BPF ring buffers: 5.8, enough for `-h` and `-t` (the `tcp_bad_csum` tracepoint of `-t`
-  appeared in 5.11)
-- `-k`, `-w`, `-a` use fentry programs and `bpf_skc_to_tcp_sock`: 5.9
+- 5.12: every probe numbers its events per flow with a fetch-and-add atomic (`hook_seq`).
+  Ring buffers (5.8), fentry programs and `bpf_skc_to_tcp_sock` (5.9) are older; the
+  `tcp_bad_csum` tracepoint of `-t` appeared in 5.11.
 - `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
   `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
   and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.

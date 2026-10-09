@@ -106,7 +106,7 @@ const SOCK_COLS: &str = "pacing_rate:U64 max_pacing_rate:U64 backoff:U8 rto:U32 
 fn sock_send() {
     let x = Expect {
         source: "sock",
-        entry_size: 160,
+        entry_size: 168,
         columns: SOCK_COLS,
         file: "send_sock.tcp",
         records: 2000,
@@ -124,7 +124,7 @@ fn sock_send() {
 fn sock_recv() {
     let x = Expect {
         source: "sock",
-        entry_size: 160,
+        entry_size: 168,
         columns: SOCK_COLS,
         file: "recv_sock.tcp",
         records: 2000,
@@ -142,7 +142,7 @@ fn sock_recv() {
 fn tcp_probe() {
     let x = Expect {
         source: "tcp_probe",
-        entry_size: 116,
+        entry_size: 124,
         // SSTRESH: the typo is today's series name.
         columns: "MARK:U32 DATA_LEN:U16 SND_NXT:U32 SND_UNA:U32 SND_CWND:U32 SSTRESH:U32 \
             SND_WND:U32 SRTT:U32 RCV_WND:U32 SOCK_COOKIE:U64",
@@ -161,7 +161,7 @@ fn tcp_probe() {
 fn cubic() {
     let x = Expect {
         source: "cubic",
-        entry_size: 114,
+        entry_size: 122,
         columns: "cnt:U32 last_max_cwnd:U32 last_cwnd:U32 last_time:U32 bic_origin_point:U32 \
             bic_K:U32 delay_min:U32 epoch_start:U32 ack_cnt:U32 tcp_cwnd:U32 round_start:U32 \
             end_seq:U32 last_ack:U32 curr_rtt:U32",
@@ -180,7 +180,7 @@ fn cubic() {
 fn bbr() {
     let x = Expect {
         source: "bbr",
-        entry_size: 110,
+        entry_size: 118,
         columns: "min_rtt_us:U32 min_rtt_stamp:U32 probe_rtt_done_stamp:U32 rtt_cnt:U32 \
             next_rtt_delivered:U32 cycle_mstamp:U64 lt_bw:U32 lt_last_delivered:U32 \
             lt_last_stamp:U32 lt_last_lost:U32 prior_cwnd:U32 full_bw:U32",
@@ -197,7 +197,7 @@ fn bbr() {
 fn cwnd() {
     let x = Expect {
         source: "cwnd",
-        entry_size: 62,
+        entry_size: 70,
         columns: "perf_snd_cwnd:U32",
         file: "send_cwnd.tcp",
         records: 1000,
@@ -214,7 +214,7 @@ const PKT_COLS: &str = "SEQ_NUM:U32 ACK_NUM:U32 WINDOW:U16 FLAGS:U8";
 fn tcp4_send() {
     let x = Expect {
         source: "tcp4",
-        entry_size: 35,
+        entry_size: 43,
         columns: PKT_COLS,
         file: "tcp4_send.tcp",
         records: 2000,
@@ -229,7 +229,7 @@ fn tcp4_send() {
 fn tcp4_receive() {
     let x = Expect {
         source: "tcp4",
-        entry_size: 35,
+        entry_size: 43,
         columns: PKT_COLS,
         file: "tcp4_receive.tcp",
         records: 2000,
@@ -244,7 +244,7 @@ fn tcp4_receive() {
 fn tcp6_send() {
     let x = Expect {
         source: "tcp6",
-        entry_size: 59,
+        entry_size: 67,
         columns: PKT_COLS,
         file: "tcp6_send.tcp",
         records: 500,
@@ -259,7 +259,7 @@ fn tcp6_send() {
 fn tcp6_receive() {
     let x = Expect {
         source: "tcp6",
-        entry_size: 59,
+        entry_size: 67,
         columns: PKT_COLS,
         file: "tcp6_receive.tcp",
         records: 500,
@@ -505,13 +505,13 @@ fn file_table_maps_every_trace_file() {
         .filter_map(|f| binding(*f).map(|b| (b.table.source, b.entry_size, b.table.columns.len())))
         .collect();
     for (s, size, n) in [
-        ("sock", 160, 25),
-        ("tcp_probe", 116, 10),
-        ("cubic", 114, 14),
-        ("bbr", 110, 12),
-        ("cwnd", 62, 1),
-        ("tcp6", 59, 4),
-        ("tcp4", 35, 4),
+        ("sock", 168, 25),
+        ("tcp_probe", 124, 10),
+        ("cubic", 122, 14),
+        ("bbr", 118, 12),
+        ("cwnd", 70, 1),
+        ("tcp6", 67, 4),
+        ("tcp4", 43, 4),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }

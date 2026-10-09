@@ -8,13 +8,16 @@ use std::{
 
 use libbpf_rs::{
     libbpf_sys::{self, bpf_prog_info},
-    MapCore, Object,
+    MapCore, MapFlags, MapHandle, Object,
 };
 use serde::Serialize;
-use tcbee_common::stats::{
-    slot, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RINGBUFS, SLOT_TCP_BYTES_RECEIVED, SLOT_TCP_BYTES_SENT,
-    STAT_ATTEMPTED, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+use tcbee_common::{
+    records::hook_seq_key,
+    stats::{
+        RB_COUNT, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS,
+        RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RINGBUFS, STAT_DROPPED, STAT_ERROR,
+        STAT_HANDLED,
+    },
 };
 
 use crate::{stats::Snapshot, writer::WriterReport};
@@ -35,7 +38,8 @@ pub struct ProgramStats {
 pub struct RingBufMetrics {
     pub name: &'static str,
     pub file: Option<String>,
-    pub size_bytes: Option<u32>,
+    /// Size of each CPU's ring buffer, None if the ring buffers were not created
+    pub size_per_cpu_bytes: Option<u32>,
     pub attempted: u64,
     pub handled: u64,
     pub dropped: u64,
@@ -43,11 +47,45 @@ pub struct RingBufMetrics {
     /// None if no writer was registered for this ring buffer
     pub records_written: Option<u64>,
     pub writer_error: Option<String>,
+    /// Sum of the last hook_seq of every flow direction at this ring buffer's hook. Equals
+    /// handled + dropped + the errors after the filter, so it also covers drops at the end
+    /// of a flow, which leave no gap. None if the counters could not be read.
+    pub hook_seq_issued: Option<u64>,
+}
+
+/// The final hook_seq counters, read after the programs are detached
+pub struct HookSeqTotals {
+    /// Flow directions times hooks that got a counter
+    pub keys: u64,
+    pub capacity: u32,
+    /// Sum of the counters per ring buffer, indexed like `RINGBUFS`
+    pub issued: [u64; RB_COUNT as usize],
+}
+
+impl HookSeqTotals {
+    pub fn read(map: &MapHandle) -> libbpf_rs::Result<HookSeqTotals> {
+        let mut totals = HookSeqTotals {
+            keys: 0,
+            capacity: map.max_entries(),
+            issued: [0; RB_COUNT as usize],
+        };
+        for key in map.keys() {
+            let Some(value) = map.lookup(&key, MapFlags::ANY)? else {
+                continue;
+            };
+            let rb = key[mem::offset_of!(hook_seq_key, rb)] as usize;
+            totals.keys += 1;
+            totals.issued[rb] += u64::from_ne_bytes(value[..8].try_into().expect("u64 value"));
+        }
+        Ok(totals)
+    }
 }
 
 #[derive(Serialize)]
 pub struct Metrics {
     pub duration_s: f64,
+    /// CPUs with a ring buffer per probe output (the online ones)
+    pub ring_cpus: u32,
     pub attempted: u64,
     pub handled: u64,
     pub dropped: u64,
@@ -57,10 +95,12 @@ pub struct Metrics {
     pub egress: u64,
     pub ingress_calls: u64,
     pub egress_calls: u64,
-    pub tcp_bytes_sent: u64,
-    pub tcp_bytes_received: u64,
     pub ringbufs: Vec<RingBufMetrics>,
     pub programs: Vec<ProgramStats>,
+    /// Entries in use and capacity of the hook_seq counter map. A full map turns the
+    /// events of new flows into errors.
+    pub hook_seq_keys: Option<u64>,
+    pub hook_seq_capacity: Option<u32>,
 }
 
 impl Metrics {
@@ -69,36 +109,36 @@ impl Metrics {
         snapshot: &Snapshot,
         reports: &[WriterReport],
         ringbuf_sizes: &[Option<u32>],
+        ring_cpus: u32,
         programs: Vec<ProgramStats>,
+        hook_seq: Option<&HookSeqTotals>,
     ) -> Metrics {
-        let attempts = |rbs: &[u32]| {
-            rbs.iter()
-                .map(|rb| snapshot.get(slot(*rb, STAT_ATTEMPTED)))
-                .sum()
-        };
+        let attempts = |rbs: &[u32]| rbs.iter().map(|rb| snapshot.invocations(*rb)).sum();
 
         let ringbufs: Vec<RingBufMetrics> = RINGBUFS
             .iter()
             .enumerate()
-            .map(|(rb, (name, _))| {
+            .map(|(rb, ringbuf)| {
                 let rb = rb as u32;
                 let report = reports.iter().find(|r| r.rb == rb);
                 RingBufMetrics {
-                    name,
+                    name: ringbuf.map,
                     file: report.map(|r| r.file.to_string_lossy().into_owned()),
-                    size_bytes: ringbuf_sizes.get(rb as usize).copied().flatten(),
-                    attempted: snapshot.rb(rb, STAT_ATTEMPTED),
+                    size_per_cpu_bytes: ringbuf_sizes.get(rb as usize).copied().flatten(),
+                    attempted: snapshot.invocations(rb),
                     handled: snapshot.rb(rb, STAT_HANDLED),
                     dropped: snapshot.rb(rb, STAT_DROPPED),
                     error: snapshot.rb(rb, STAT_ERROR),
                     records_written: report.map(|r| r.records),
                     writer_error: report.and_then(|r| r.error.clone()),
+                    hook_seq_issued: hook_seq.map(|totals| totals.issued[rb as usize]),
                 }
             })
             .collect();
 
         Metrics {
             duration_s,
+            ring_cpus,
             attempted: snapshot.attempted(),
             handled: snapshot.handled(),
             dropped: snapshot.dropped(),
@@ -108,10 +148,10 @@ impl Metrics {
             egress: attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]),
             ingress_calls: attempts(&[RB_SOCK_RECV, RB_CWND_RECV]),
             egress_calls: attempts(&[RB_SOCK_SEND, RB_CWND_SEND]),
-            tcp_bytes_sent: snapshot.get(SLOT_TCP_BYTES_SENT),
-            tcp_bytes_received: snapshot.get(SLOT_TCP_BYTES_RECEIVED),
             ringbufs,
             programs,
+            hook_seq_keys: hook_seq.map(|totals| totals.keys),
+            hook_seq_capacity: hook_seq.map(|totals| totals.capacity),
         }
     }
 
@@ -120,19 +160,6 @@ impl Metrics {
         serde_json::to_writer_pretty(&mut writer, self)?;
         writer.flush()
     }
-}
-
-/// Effective byte size of every ring buffer, indexed like `RINGBUFS`.
-pub fn ringbuf_sizes(object: &Object) -> Vec<Option<u32>> {
-    RINGBUFS
-        .iter()
-        .map(|(name, _)| {
-            object
-                .maps()
-                .find(|map| map.name() == *name)
-                .map(|map| map.max_entries())
-        })
-        .collect()
 }
 
 /// Reads the kernel statistics of all loaded programs

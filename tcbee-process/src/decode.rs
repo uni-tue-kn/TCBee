@@ -40,8 +40,8 @@ impl<E: fmt::Debug + fmt::Display> std::error::Error for RangeError<E> {}
 /// Error type of the type erased callback of `DecodeFn`.
 pub type RowError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Decodes records `records` (indices, not bytes) of `file` and calls `f(seq, event)` for each,
-/// where `seq` is the record's index in the file. Every record's divider is checked.
+/// Decodes records `records` (indices, not bytes) of `file` and calls `f(index, event)` for
+/// each, where `index` is the record's index in the file. Every record's divider is checked.
 ///
 /// If the file ends early, the complete records before the end are still delivered, then the
 /// error is `Io` with the byte offset of the first missing record.
@@ -115,7 +115,7 @@ pub fn decode_dyn<E: Event>(
     records: Range<u64>,
     f: &mut RowFn<'_>,
 ) -> Result<(), RangeError<RowError>> {
-    decode_range::<E, RowError>(file, records, |seq, e| f(seq, &e))
+    decode_range::<E, RowError>(file, records, |index, e| f(index, &e))
 }
 
 #[cfg(test)]
@@ -184,7 +184,7 @@ mod tests {
         });
         match res {
             Err(RangeError::Io { offset, source }) => {
-                assert_eq!(offset, 1600);
+                assert_eq!(offset, 1680);
                 assert_eq!(source.kind(), io::ErrorKind::UnexpectedEof);
             }
             other => panic!("expected an I/O error, got {other:?}"),
@@ -192,11 +192,11 @@ mod tests {
         assert_eq!(seen, (0..10).collect::<Vec<_>>());
 
         match collect::<sock_trace_entry>(&file, 10..11) {
-            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 1600),
+            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 1680),
             other => panic!("expected an I/O error, got {other:?}"),
         }
         match collect::<sock_trace_entry>(&file, 12..14) {
-            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 12 * 160),
+            Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 12 * 168),
             other => panic!("expected an I/O error, got {other:?}"),
         }
     }

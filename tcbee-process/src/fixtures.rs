@@ -51,6 +51,11 @@ mod generate {
         T0 + pair * 1_000_000
     }
 
+    /// hook_seq of record `i`: its position within its flow, from 1.
+    fn hook_seq(i: u64) -> u64 {
+        i / 2 + 1
+    }
+
     fn write<T: Serialize + Event>(dir: &Path, name: &str, recs: impl Iterator<Item = T>) {
         let mut out = Vec::new();
         for r in recs {
@@ -64,6 +69,7 @@ mod generate {
     fn cwnd(i: u64) -> cwnd_trace_entry {
         cwnd_trace_entry {
             time: ts(i, true),
+            hook_seq: hook_seq(i),
             addr_v4: addr_v4(SRC, DST),
             sport: sport(i),
             dport: 5201,
@@ -78,6 +84,7 @@ mod generate {
         let n = i as u32;
         BbrEvent {
             time: ts(i, true),
+            hook_seq: hook_seq(i),
             addr_v4: addr_v4(SRC, DST),
             sport: sport(i),
             dport: 5201,
@@ -107,6 +114,7 @@ mod generate {
         };
         Tcp6Packet {
             time: ts(i, true),
+            hook_seq: hook_seq(i),
             saddr,
             daddr,
             sport,

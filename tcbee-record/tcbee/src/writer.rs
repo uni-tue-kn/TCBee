@@ -24,15 +24,10 @@ use crate::config::WRITER_BUFFER_SIZE;
 
 const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 
-/// Serializes entries pulled from eBPF maps and writes them to files.
-///
-/// Each registered ring buffer gets its own dedicated OS thread so that a busy
-/// probe cannot starve others. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so
-/// one thread per buffer is both the safe and the optimal arrangement.
 /// How writer threads wait for new records
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PollMode {
-    /// Spin on the ring buffer. Lowest latency, but every writer thread uses a full core.
+    /// Spin on the ring buffers. Lowest latency, but every writer thread uses a full core.
     #[default]
     Busy,
     /// Block in poll() until the kernel signals new records.
@@ -52,6 +47,12 @@ impl PollMode {
 /// Upper bound for a blocking wait, so that a stop request is noticed
 const WAIT_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Serializes entries pulled from eBPF maps and writes them to files.
+///
+/// Each output file gets its own dedicated OS thread so that a busy probe cannot starve
+/// others. The thread reads all ring buffers of its file (one per CPU) through one libbpf
+/// ring buffer manager. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so a ring buffer is never
+/// shared between threads.
 pub struct Writer {
     poll_mode: PollMode,
     running: Arc<AtomicBool>,
@@ -88,13 +89,13 @@ impl Writer {
         self.bytes_written.clone()
     }
 
-    /// Register a ring buffer map. Spawns a dedicated worker thread immediately.
-    /// `rb` is the ring buffer index from `tcbee_common::stats`. The handle keeps the map
-    /// open, so the thread can drain it after the eBPF object is closed.
+    /// Register the ring buffer maps of one output file. Spawns a dedicated worker thread
+    /// immediately. `rb` is the ring buffer index from `tcbee_common::stats`. The handles
+    /// keep the maps open, so the thread can drain them after the eBPF object is closed.
     pub fn register<T>(
         &mut self,
         rb: u32,
-        map: MapHandle,
+        maps: Vec<MapHandle>,
         file_path: impl Into<PathBuf>,
     ) -> Result<(), WriterError>
     where
@@ -124,10 +125,10 @@ impl Writer {
             error: None,
         };
         let poll_mode = self.poll_mode;
-        // The ring buffer is set up inside the thread, which then reports whether that
+        // The ring buffers are set up inside the thread, which then reports whether that
         // worked, so a broken map fails here and not only at shutdown
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let handle = thread::spawn(move || job_loop(job, map, running, cpu, poll_mode, ready_tx));
+        let handle = thread::spawn(move || job_loop(job, maps, running, cpu, poll_mode, ready_tx));
         match ready_rx.recv() {
             Ok(Ok(())) => {
                 self.handles.push((report, handle));
@@ -193,7 +194,7 @@ fn pin_to_cpu(cpu_id: usize) {
 
 fn job_loop<T>(
     job: MapWriterJob<T>,
-    map: MapHandle,
+    maps: Vec<MapHandle>,
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
     poll_mode: PollMode,
@@ -206,15 +207,16 @@ where
         pin_to_cpu(cpu_id);
     }
 
-    // libbpf calls the callback for every record while consuming the ring buffer. The
-    // loop below needs the job too, so the callback only borrows it.
+    // libbpf calls the callback for every record while consuming the ring buffers. The
+    // loop below needs the job too, so the callbacks only borrow it.
     let job = RefCell::new(job);
-    let rb = {
+    let rb = (|| {
         let mut builder = RingBufferBuilder::new();
-        builder
-            .add(&map, |data| job.borrow_mut().write(data))
-            .and_then(|builder| mem::take(builder).build())
-    };
+        for map in &maps {
+            builder.add(map, |data| job.borrow_mut().write(data))?;
+        }
+        builder.build()
+    })();
     let rb = match rb {
         Ok(rb) => {
             let _ = ready.send(Ok(()));
@@ -236,8 +238,9 @@ where
         while running.load(Ordering::Relaxed) {
             match poll_mode {
                 PollMode::Busy => {
+                    // consume drains the ring, spin (no syscall) instead of yielding
                     check(&job, rb.consume_raw())?;
-                    thread::yield_now();
+                    std::hint::spin_loop();
                 }
                 PollMode::Wait => {
                     check(&job, rb.poll_raw(WAIT_TIMEOUT))?;
@@ -316,20 +319,28 @@ fn allocate(file: &File, offset: usize, len: usize) -> io::Result<()> {
     if len == 0 {
         return Ok(());
     }
-    let ret = unsafe { libc::fallocate(file.as_raw_fd(), 0, offset as i64, len as i64) };
-    if ret == 0 {
-        return Ok(());
-    }
-    let err = io::Error::last_os_error();
-    match err.raw_os_error() {
-        // Not every file system supports it, fall back to a sparse file
-        Some(libc::EOPNOTSUPP) => Ok(()),
-        _ => Err(err),
+    loop {
+        let ret = unsafe { libc::fallocate(file.as_raw_fd(), 0, offset as i64, len as i64) };
+        if ret == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            // tmpfs gives up a long allocation when a signal arrives (SIGSTOP/SIGCONT, for
+            // example) and frees what it had allocated. Giving up here would stop the writer.
+            Some(libc::EINTR) => continue,
+            // Not every file system supports it, fall back to a sparse file
+            Some(libc::EOPNOTSUPP) => return Ok(()),
+            _ => return Err(err),
+        }
     }
 }
 
 const MIN_MMAP_GROWTH: usize = 64 * 1024;
 const MAX_MMAP_GROWTH: usize = 1 << 30;
+/// Smallest step when growing in the background, so that small files do not spawn a
+/// helper every few kilobytes
+const MIN_BACKGROUND_GROWTH: usize = 16 << 20;
 
 struct MmapBackedFile {
     file: File,
@@ -337,6 +348,8 @@ struct MmapBackedFile {
     position: usize,
     capacity: usize,
     growth: usize,
+    /// Background growth in flight: the new mapping and the capacity it covers
+    pending: Option<mpsc::Receiver<io::Result<(MmapMut, usize)>>>,
 }
 
 impl MmapBackedFile {
@@ -369,7 +382,52 @@ impl MmapBackedFile {
             position: existing_len,
             capacity,
             growth,
+            pending: None,
         })
+    }
+
+    /// Next capacity when the file has to grow to hold `required` bytes. Grows
+    /// geometrically so that remapping stays rare at high record rates.
+    fn next_capacity(&self, required: usize) -> usize {
+        let step = self
+            .capacity
+            .clamp(self.growth.max(MIN_BACKGROUND_GROWTH), MAX_MMAP_GROWTH);
+        required
+            .max(self.capacity.saturating_add(step))
+            .next_multiple_of(self.growth)
+    }
+
+    /// Extends the file to `new_capacity` and maps all of it
+    fn grow(file: &File, old_capacity: usize, new_capacity: usize) -> io::Result<MmapMut> {
+        allocate(file, old_capacity, new_capacity - old_capacity)?;
+        file.set_len(new_capacity as u64)?;
+        unsafe { MmapMut::map_mut(file) }
+    }
+
+    /// Preallocates the next chunk on a helper thread, the writer keeps using the old
+    /// mapping until the new one is ready. fallocate can block for a long time and the
+    /// ring buffer would overflow meanwhile.
+    fn start_growth(&mut self, new_capacity: usize) -> io::Result<()> {
+        let file = self.file.try_clone()?;
+        let old_capacity = self.capacity;
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("tcbee-grow".into())
+            .spawn(move || {
+                let _ = tx
+                    .send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
+            })?;
+        self.pending = Some(rx);
+        Ok(())
+    }
+
+    fn adopt(&mut self, map: MmapMut, capacity: usize) {
+        self.capacity = capacity;
+        if let Some(old) = self.map.replace(map) {
+            // Unmapping a large dirty mapping is slow, keep it off the writer thread.
+            // The written pages stay in the page cache.
+            thread::spawn(move || drop(old));
+        }
     }
 
     fn ensure_capacity(&mut self, additional: usize) -> io::Result<()> {
@@ -382,25 +440,42 @@ impl MmapBackedFile {
             .checked_add(additional)
             .ok_or_else(|| io::Error::new(ErrorKind::Other, "file size overflow"))?;
 
-        if required <= self.capacity {
-            return Ok(());
+        // Take over a finished background growth without waiting for it
+        if let Some(rx) = &self.pending {
+            match rx.try_recv() {
+                Ok(grown) => {
+                    self.pending = None;
+                    let (map, capacity) = grown?;
+                    self.adopt(map, capacity);
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.pending = None;
+                    return Err(io::Error::new(ErrorKind::Other, "file growth thread died"));
+                }
+            }
         }
 
-        // Grow geometrically so that remapping stays rare at high record rates
-        let step = self.capacity.clamp(self.growth, MAX_MMAP_GROWTH);
-        let new_capacity = required
-            .max(self.capacity.saturating_add(step))
-            .next_multiple_of(self.growth);
+        if required > self.capacity {
+            // Out of room: the helper was too slow or not started, wait for it
+            if let Some(rx) = self.pending.take() {
+                let (map, capacity) = rx
+                    .recv()
+                    .map_err(|_| io::Error::new(ErrorKind::Other, "file growth thread died"))??;
+                self.adopt(map, capacity);
+            }
+            if required > self.capacity {
+                let new_capacity = self.next_capacity(required);
+                let map = Self::grow(&self.file, self.capacity, new_capacity)?;
+                self.adopt(map, new_capacity);
+            }
+        }
 
-        allocate(&self.file, self.capacity, new_capacity - self.capacity)?;
-
-        // Unmapping a shared mapping keeps the written pages in the page cache
-        drop(self.map.take());
-
-        self.file.set_len(new_capacity as u64)?;
-        let map = unsafe { MmapMut::map_mut(&self.file)? };
-        self.map = Some(map);
-        self.capacity = new_capacity;
+        // Start the next growth while half of the file is still free
+        if self.pending.is_none() && required > self.capacity / 2 {
+            let new_capacity = self.next_capacity(required);
+            self.start_growth(new_capacity)?;
+        }
 
         Ok(())
     }
@@ -418,6 +493,10 @@ impl MmapBackedFile {
     }
 
     fn finish(mut self) -> io::Result<()> {
+        // Let a running growth end, it must not extend the file after the final set_len
+        if let Some(rx) = self.pending.take() {
+            let _ = rx.recv();
+        }
         if let Some(map) = self.map.take() {
             map.flush_range(0, self.position)?;
         }
@@ -763,6 +842,25 @@ mod tests {
         let mut rng = Rng(42);
         for _ in 0..20_000 {
             let record = rng.bytes(37);
+            file.reserve(record.len()).unwrap().copy_from_slice(&record);
+            expected.extend_from_slice(&record);
+        }
+        file.finish().unwrap();
+        let written = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(written == expected);
+    }
+
+    /// Writing faster than the helper can grow forces several background and blocking growths
+    #[test]
+    fn mmap_file_grows_in_background() {
+        let path = env::temp_dir().join(format!("tcbee-grow-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut file = MmapBackedFile::new(&path, 1000).unwrap();
+        let mut expected = Vec::new();
+        let mut rng = Rng(7);
+        for _ in 0..50_000 {
+            let record = rng.bytes(1000);
             file.reserve(record.len()).unwrap().copy_from_slice(&record);
             expected.extend_from_slice(&record);
         }

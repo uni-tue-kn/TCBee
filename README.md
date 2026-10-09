@@ -15,7 +15,7 @@ You record on a live system, convert the recording into a database, and open the
 
 The binaries need:
 
-- Linux on x86_64 with BTF (`/sys/kernel/btf/vmlinux`) and kernel 5.9 or newer. Root is needed for `tcbee-record`.
+- Linux on x86_64 with BTF (`/sys/kernel/btf/vmlinux`) and kernel 5.12 or newer. Root is needed for `tcbee-record`.
 - A glibc system. The release is built on Ubuntu (`ubuntu-latest`). On much older distributions, [build from source](#building-from-source).
 - For `tcbee-viz`, a display with OpenGL. It loads the GL, EGL, X11 or Wayland libraries at runtime. On Debian/Ubuntu these are the runtime counterparts of the build packages: `libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libx11-6 libxcursor1 libxi6 libxrandr2`. The Open dialog uses `xdg-desktop-portal` with a desktop backend, or `zenity` if no portal answers.
 

@@ -8,7 +8,8 @@ use tcbee_common::stats::{RB_SOCK_RECV, RB_SOCK_SEND};
 use crate::{
     eBPF::{
         ebpf_runner::prepend_string,
-        probes::{attach, handle},
+        probes::attach,
+        rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
     },
     writer::Writer,
@@ -35,12 +36,12 @@ impl KernelTracer {
 
         writer.register::<sock_trace_entry>(
             RB_SOCK_SEND,
-            handle(&skel.maps.TCP_SEND_SOCK_EVENTS)?,
+            rings::of(&skel.maps.TCP_SEND_SOCK_EVENTS)?,
             prepend_string(sock_trace_entry::OUT_FILE.to_string(), dir),
         )?;
         writer.register::<sock_trace_entry>(
             RB_SOCK_RECV,
-            handle(&skel.maps.TCP_RECV_SOCK_EVENTS)?,
+            rings::of(&skel.maps.TCP_RECV_SOCK_EVENTS)?,
             prepend_string(sock_trace_entry::IN_FILE.to_string(), dir),
         )?;
 

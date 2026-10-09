@@ -55,6 +55,7 @@ enum {
 	BPF_MAP_TYPE_HASH = 1,
 	BPF_MAP_TYPE_PERCPU_HASH = 5,
 	BPF_MAP_TYPE_PERCPU_ARRAY = 6,
+	BPF_MAP_TYPE_ARRAY_OF_MAPS = 12,
 	BPF_MAP_TYPE_RINGBUF = 27,
 };
 
@@ -173,11 +174,6 @@ struct tcp_sock {
 	} rcvq_space;
 	u8 keepalive_probes;
 	u32 total_retrans;
-};
-
-/* Only the field existence is tested by tcbee.bpf.c. */
-struct bpf_prog {
-	u8 *active;
 };
 
 #ifndef BPF_NO_PRESERVE_ACCESS_INDEX

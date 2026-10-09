@@ -18,6 +18,7 @@ const RECORDS: &[&str] = &[
     "tcp_retransmit_synack_entry",
     "tcp_bad_csum_entry",
     "ip_tuple",
+    "hook_seq_key",
     "filter_ip",
 ];
 

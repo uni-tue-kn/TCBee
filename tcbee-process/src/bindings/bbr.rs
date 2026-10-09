@@ -12,6 +12,7 @@ use crate::{
 pub struct BbrEvent {
     // Shared ID
     pub time: u64,
+    pub hook_seq: u64,
     pub addr_v4: u64,
     pub src_v6: [u8; 16usize],
     pub dst_v6: [u8; 16usize],
@@ -35,7 +36,7 @@ pub struct BbrEvent {
 }
 
 event_schema! {
-    BbrEvent => "bbr", 110 {
+    BbrEvent => "bbr", 118 {
         min_rtt_us: U32,
         min_rtt_stamp: U32,
         probe_rtt_done_stamp: U32,

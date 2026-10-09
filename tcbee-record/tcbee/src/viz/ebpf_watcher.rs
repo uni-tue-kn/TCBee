@@ -8,7 +8,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-
 use crate::{
     eBPF::ebpf_runner_config::EbpfWatcherConfig,
     stats::{Snapshot, Stats},
@@ -30,10 +29,9 @@ use ratatui::{
     DefaultTerminal,
 };
 use tcbee_common::stats::{
-    slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND,
+    invocation_slots, slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND,
     RB_RETRANSMIT_SYNACK, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, SLOT_TCP_BYTES_RECEIVED, SLOT_TCP_BYTES_SENT,
-    STAT_ATTEMPTED, STAT_DROPPED, STAT_HANDLED,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, STAT_DROPPED, STAT_HANDLED,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -49,8 +47,6 @@ pub struct EBPFWatcher {
     egress_counter: RateWatcher,
     tcp_sock_send: RateWatcher,
     tcp_sock_recv: RateWatcher,
-    tcp_bytes_recv: RateWatcher,
-    tcp_bytes_sent: RateWatcher,
     cubic_events: RateWatcher,
     bbr_events: RateWatcher,
     tracepoint_events: RateWatcher,
@@ -75,7 +71,7 @@ impl EBPFWatcher {
         let all = |stat: u32| (0..RB_COUNT).map(|rb| slot(rb, stat)).collect::<Vec<u32>>();
         let attempts = |rbs: &[u32]| {
             rbs.iter()
-                .map(|rb| slot(*rb, STAT_ATTEMPTED))
+                .flat_map(|rb| invocation_slots(*rb))
                 .collect::<Vec<u32>>()
         };
 
@@ -86,8 +82,6 @@ impl EBPFWatcher {
         let egress_counter = RateWatcher::new(attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]), "pps");
         let tcp_sock_send = RateWatcher::new(attempts(&[RB_SOCK_SEND, RB_CWND_SEND]), "Calls/s");
         let tcp_sock_recv = RateWatcher::new(attempts(&[RB_SOCK_RECV, RB_CWND_RECV]), "Calls/s");
-        let tcp_bytes_recv = RateWatcher::new(vec![SLOT_TCP_BYTES_RECEIVED], "Bytes/s");
-        let tcp_bytes_sent = RateWatcher::new(vec![SLOT_TCP_BYTES_SENT], "Bytes/s");
         let cubic_events = RateWatcher::new(attempts(&[RB_CUBIC]), "Calls/s");
         let bbr_events = RateWatcher::new(attempts(&[RB_BBR]), "Calls/s");
         let tracepoint_events = RateWatcher::new(
@@ -116,8 +110,6 @@ impl EBPFWatcher {
             egress_counter,
             tcp_sock_send,
             tcp_sock_recv,
-            tcp_bytes_sent,
-            tcp_bytes_recv,
             cubic_events,
             bbr_events,
             tracepoint_events,
@@ -494,8 +486,6 @@ impl EBPFWatcher {
                         event_rate,
                         files_size,
                         file_rate,
-                        self.tcp_bytes_recv.get_counter_sum_string(snap),
-                        self.tcp_bytes_sent.get_counter_sum_string(snap),
                         Color::Reset,
                     )
                     .into_iter()

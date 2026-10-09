@@ -5,6 +5,11 @@
  * Single source of truth for the kernel/user layout: tcbee-common runs bindgen on this
  * file. The trace files are written with bincode field by field, so the field order and
  * types below define the on-disk format read by tcbee-process. Do not reorder.
+ *
+ * Every record starts with time and hook_seq. hook_seq numbers the events of one flow
+ * direction at one hook (output file) from 1, see hook_seq.h. A file's records come from the ring
+ * buffers of several CPUs, so their order in the file is not their order at the hook;
+ * sorting one flow's records of one file by hook_seq restores it exactly.
  */
 #ifndef __TCBEE_RECORDS_H
 #define __TCBEE_RECORDS_H
@@ -20,6 +25,7 @@ typedef __UINT64_TYPE__ uint64_t;
 /* TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}. Addresses in host byte order. */
 struct tcp4_packet_trace {
 	uint64_t time;
+	uint64_t hook_seq;
 	uint32_t saddr;
 	uint32_t daddr;
 	uint16_t sport;
@@ -33,6 +39,7 @@ struct tcp4_packet_trace {
 /* TC, ring buffers TCP6_PACKETS_{EGRESS,INGRESS} */
 struct tcp6_packet_trace {
 	uint64_t time;
+	uint64_t hook_seq;
 	uint8_t saddr_v6[16];
 	uint8_t daddr_v6[16];
 	uint16_t sport;
@@ -50,6 +57,7 @@ struct tcp6_packet_trace {
  */
 #define TCBEE_SOCK_HEADER                                                                  \
 	uint64_t time;                                                                     \
+	uint64_t hook_seq;                                                                 \
 	uint64_t addr_v4;                                                                  \
 	uint8_t src_v6[16];                                                                \
 	uint8_t dst_v6[16];                                                                \
@@ -136,6 +144,7 @@ struct bbr_trace_entry {
 /* tracepoint tcp/tcp_probe, TCP_PROBE_QUEUE. saddr/daddr hold a sockaddr_in(6). */
 struct tcp_probe_entry {
 	uint64_t time;
+	uint64_t hook_seq;
 	uint8_t saddr[28];
 	uint8_t daddr[28];
 	uint16_t sport;
@@ -156,6 +165,7 @@ struct tcp_probe_entry {
 /* tracepoint tcp/tcp_retransmit_synack, TCP_RETRANSMIT_SYNACK_QUEUE */
 struct tcp_retransmit_synack_entry {
 	uint64_t time;
+	uint64_t hook_seq;
 	uint16_t sport;
 	uint16_t dport;
 	uint16_t family;
@@ -168,6 +178,7 @@ struct tcp_retransmit_synack_entry {
 /* tracepoint tcp/tcp_bad_csum, TCP_BAD_CSUM_QUEUE. IPv4 addresses only. */
 struct tcp_bad_csum_entry {
 	uint64_t time;
+	uint64_t hook_seq;
 	uint8_t saddr[4];
 	uint8_t daddr[4];
 };
@@ -184,23 +195,36 @@ struct ip_tuple {
 	uint8_t protocol;
 };
 
+/*
+ * Key of the HOOK_SEQ map: one counter per flow direction (the tuple as the hook sees it,
+ * not canonical) and ring buffer id. family keeps an IPv4 tuple apart from the IPv6 address with
+ * the same leading bytes on the socket ring buffers, which carry both. 40 bytes without
+ * padding; the padding byte inside ip_tuple is zeroed like for FLOWS.
+ */
+struct hook_seq_key {
+	struct ip_tuple tuple;
+	uint8_t rb;
+	uint8_t family;
+};
+
 /* Key of the FILTER_*_IPS maps, same address encoding as ip_tuple */
 struct filter_ip {
 	uint8_t addr[16];
 };
 
 /* Sizes are mirrored by const asserts in tcbee-common */
-_Static_assert(sizeof(struct tcp4_packet_trace) == 32, "tcp4_packet_trace size");
-_Static_assert(sizeof(struct tcp6_packet_trace) == 56, "tcp6_packet_trace size");
-_Static_assert(sizeof(struct sock_trace_entry) == 176, "sock_trace_entry size");
-_Static_assert(sizeof(struct cwnd_trace_entry) == 64, "cwnd_trace_entry size");
-_Static_assert(sizeof(struct cubic_trace_entry) == 112, "cubic_trace_entry size");
-_Static_assert(sizeof(struct bbr_trace_entry) == 112, "bbr_trace_entry size");
-_Static_assert(sizeof(struct tcp_probe_entry) == 120, "tcp_probe_entry size");
-_Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 56,
+_Static_assert(sizeof(struct tcp4_packet_trace) == 40, "tcp4_packet_trace size");
+_Static_assert(sizeof(struct tcp6_packet_trace) == 64, "tcp6_packet_trace size");
+_Static_assert(sizeof(struct sock_trace_entry) == 184, "sock_trace_entry size");
+_Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
+_Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
+_Static_assert(sizeof(struct bbr_trace_entry) == 120, "bbr_trace_entry size");
+_Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
+_Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");
-_Static_assert(sizeof(struct tcp_bad_csum_entry) == 16, "tcp_bad_csum_entry size");
+_Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
 _Static_assert(sizeof(struct ip_tuple) == 38, "ip_tuple size");
+_Static_assert(sizeof(struct hook_seq_key) == 40, "hook_seq_key size");
 _Static_assert(sizeof(struct filter_ip) == 16, "filter_ip size");
 
 #endif /* __TCBEE_RECORDS_H */
