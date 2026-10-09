@@ -434,6 +434,27 @@ struct DuckStore {
     conn: Connection,
 }
 
+fn row_to_connection(r: &Row) -> Result<ConnectionInfo, ::duckdb::Error> {
+    Ok(ConnectionInfo {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        key: r.get(2)?,
+        flow_id: r.get(3)?,
+        start_ts: r.get(4)?,
+        end_ts: r.get(5)?,
+    })
+}
+
+fn row_to_connection_flow(r: &Row) -> Result<ConnectionFlow, ::duckdb::Error> {
+    Ok(ConnectionFlow {
+        connection_id: r.get(0)?,
+        flow_id: r.get(1)?,
+        subflow_id: r.get(2)?,
+        first_ts: r.get(3)?,
+        last_ts: r.get(4)?,
+    })
+}
+
 fn row_to_flow(r: &Row) -> Result<Flow, StoreError> {
     flow_from_parts(
         r.get(0)?,
@@ -586,30 +607,13 @@ impl Store for DuckStore {
 
     fn connections(&self) -> Result<Vec<ConnectionInfo>, StoreError> {
         let mut st = self.conn.prepare(sql::SELECT_CONNECTIONS)?;
-        let rows = st.query_map([], |r| {
-            Ok(ConnectionInfo {
-                id: r.get(0)?,
-                kind: r.get(1)?,
-                key: r.get(2)?,
-                flow_id: r.get(3)?,
-                start_ts: r.get(4)?,
-                end_ts: r.get(5)?,
-            })
-        })?;
+        let rows = st.query_map([], row_to_connection)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
     fn connection_flows(&self) -> Result<Vec<ConnectionFlow>, StoreError> {
         let mut st = self.conn.prepare(sql::SELECT_CONNECTION_FLOWS)?;
-        let rows = st.query_map([], |r| {
-            Ok(ConnectionFlow {
-                connection_id: r.get(0)?,
-                flow_id: r.get(1)?,
-                subflow_id: r.get(2)?,
-                first_ts: r.get(3)?,
-                last_ts: r.get(4)?,
-            })
-        })?;
+        let rows = st.query_map([], row_to_connection_flow)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
