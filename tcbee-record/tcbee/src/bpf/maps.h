@@ -78,9 +78,12 @@ struct {
  * (mptcp_pm_nl_subflow_chk_stale), key the subflow's struct sock. The check runs on every
  * retransmission timeout of an MPTCP connection and returns early for a stale subflow, so only
  * the state at its start tells a new transition from a repeated one.
+ *
+ * This and the other entry state maps below are plain hash maps, not LRU: the exit program
+ * deletes every entry, and an LRU map may evict an entry of another CPU between entry and exit.
  */
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, __u64);
 	__type(value, __u8);
@@ -92,7 +95,7 @@ struct {
  * state at its start tells the SYN-ACK apart.
  */
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, __u64);
 	__type(value, __u8);
@@ -105,7 +108,7 @@ struct mptcp_retrans_start {
 };
 
 struct {
-	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, __u64);
 	__type(value, struct mptcp_retrans_start);

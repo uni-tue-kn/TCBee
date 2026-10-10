@@ -828,8 +828,10 @@ int BPF_PROG(mptcp_pm_stale_check, const struct mptcp_sock *msk, struct sock *ss
 	__u64 key = (__u64)ssk;
 	__u8 one = 1;
 
-	if (subflow && !BPF_CORE_READ_BITFIELD_PROBED(subflow, stale))
-		bpf_map_update_elem(&MPTCP_STALE_CHECK, &key, &one, BPF_ANY);
+	/* A full map would lose the event: count it as an error of the ring */
+	if (subflow && !BPF_CORE_READ_BITFIELD_PROBED(subflow, stale) &&
+	    bpf_map_update_elem(&MPTCP_STALE_CHECK, &key, &one, BPF_ANY))
+		count_error(RB_MPTCP_PM);
 	return 0;
 }
 
@@ -875,7 +877,8 @@ int BPF_PROG(mptcp_pm_retrans_start, struct sock *sk)
 	};
 	__u64 key = (__u64)sk;
 
-	bpf_map_update_elem(&MPTCP_RETRANS_START, &key, &start, BPF_ANY);
+	if (bpf_map_update_elem(&MPTCP_RETRANS_START, &key, &start, BPF_ANY))
+		count_error(RB_MPTCP_PM);
 	return 0;
 }
 
@@ -922,8 +925,9 @@ int BPF_PROG(mptcp_pm_connect_check, struct sock *sk, const struct sk_buff *skb)
 	__u8 one = 1;
 
 	if (subflow && BPF_CORE_READ_BITFIELD_PROBED(subflow, request_mptcp) &&
-	    !BPF_CORE_READ_BITFIELD_PROBED(subflow, conn_finished))
-		bpf_map_update_elem(&MPTCP_CONNECT_CHECK, &key, &one, BPF_ANY);
+	    !BPF_CORE_READ_BITFIELD_PROBED(subflow, conn_finished) &&
+	    bpf_map_update_elem(&MPTCP_CONNECT_CHECK, &key, &one, BPF_ANY))
+		count_error(RB_MPTCP_PM);
 	return 0;
 }
 
