@@ -53,6 +53,11 @@ pub trait Event: Sized {
     fn connection_key(&self) -> u32 {
         0
     }
+    /// Whether the record comes from the socket itself (sock, cwnd), which carries the token
+    /// of its own connection, rather than from a packet header.
+    fn socket_level(&self) -> bool {
+        false
+    }
     /// Position among the records of the same flow direction and hook, from 1. The recorder's
     /// ring buffers are per CPU, so this and not the file order is the order of the hook.
     fn hook_seq(&self) -> i64;
@@ -67,6 +72,7 @@ pub trait Row {
     fn flow_key(&self) -> IpTuple;
     fn ts_ns(&self) -> i64;
     fn connection_key(&self) -> u32;
+    fn socket_level(&self) -> bool;
     fn hook_seq(&self) -> i64;
     fn push_row(&self, batch: &mut EventBatch);
 }
@@ -80,6 +86,9 @@ impl<E: Event> Row for E {
     }
     fn connection_key(&self) -> u32 {
         Event::connection_key(self)
+    }
+    fn socket_level(&self) -> bool {
+        Event::socket_level(self)
     }
     fn hook_seq(&self) -> i64 {
         Event::hook_seq(self)

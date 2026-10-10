@@ -362,6 +362,8 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
             let connection_key = row.connection_key();
             if connection_key != 0 {
                 output.tagged.observe(flow, connection_key, row.ts_ns());
+            } else if row.socket_level() {
+                output.tagged.untagged_socket(flow);
             }
             // A series is read in (ts, seq) order. hook_seq is the exact hook order, ts sorts
             // first, so the two only differ if a CPU's clock read went backwards

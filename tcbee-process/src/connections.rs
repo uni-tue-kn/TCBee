@@ -35,6 +35,8 @@ pub const EVENT_FILE: TraceFile = TraceFile::MptcpPm;
 #[derive(Default, Debug)]
 pub struct TaggedFlows {
     spans: HashMap<(i64, u32), (i64, i64)>,
+    /// Flows with socket records (sock, cwnd) without a token: plain TCP sockets
+    untagged_sockets: HashSet<i64>,
 }
 
 impl TaggedFlows {
@@ -44,11 +46,16 @@ impl TaggedFlows {
         span.1 = span.1.max(ts);
     }
 
+    pub fn untagged_socket(&mut self, flow_id: i64) {
+        self.untagged_sockets.insert(flow_id);
+    }
+
     pub fn merge(&mut self, other: TaggedFlows) {
         for ((flow_id, token), (first, last)) in other.spans {
             self.observe(flow_id, token, first);
             self.observe(flow_id, token, last);
         }
+        self.untagged_sockets.extend(other.untagged_sockets);
     }
 }
 
@@ -211,7 +218,9 @@ fn connection_rows(
 
 /// The connections and their flows. A flow without a token of its own whose reversed tuple is a
 /// member (the receive side of packet header records) belongs to the same connection. Flows
-/// with a token keep their own: both ends of a connection may be recorded on one host.
+/// with a token keep their own: both ends of a connection may be recorded on one host. So does
+/// a flow whose socket records carry no token: the plain TCP end of a connection that fell
+/// back on one side only.
 pub fn assemble(
     tagged: TaggedFlows,
     events: &[PmEvent],
@@ -221,6 +230,7 @@ pub fn assemble(
     let tuples: HashMap<i64, &IpTuple> = flows.iter().map(|f| (f.id, &f.tuple)).collect();
     let subflow_ids = subflow_ids(events, &flow_ids);
     let mut has_connection: HashSet<i64> = tagged.spans.keys().map(|(flow, _)| *flow).collect();
+    has_connection.extend(tagged.untagged_sockets.iter().copied());
 
     let mut lifetimes = lifetimes(events);
     for &(_, token) in tagged.spans.keys() {
@@ -396,6 +406,17 @@ mod tests {
         let (_, cf) = assemble(tagged, &[], &fl);
         assert_eq!(members(&cf, 1), vec![(1, None)]);
         assert_eq!(members(&cf, 2), vec![(2, None)]);
+    }
+
+    #[test]
+    fn plain_tcp_socket_keeps_out_of_the_reversed_connection() {
+        let a = tuple(40000, 5201);
+        let fl = flows(&[a.clone(), reversed(&a)]);
+        let mut tagged = TaggedFlows::default();
+        tagged.observe(1, 7, 10);
+        tagged.untagged_socket(2);
+        let (_, cf) = assemble(tagged, &[], &fl);
+        assert_eq!(members(&cf, 1), vec![(1, None)]);
     }
 
     #[test]

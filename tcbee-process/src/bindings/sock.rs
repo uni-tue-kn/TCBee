@@ -48,5 +48,8 @@ event_schema! {
         fn connection_key(&self) -> u32 {
             self.conn_id
         }
+        fn socket_level(&self) -> bool {
+            true
+        }
     }
 }

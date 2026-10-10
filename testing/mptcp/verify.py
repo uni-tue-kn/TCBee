@@ -365,9 +365,9 @@ def main() -> int:
     ring = next(r for r in metrics["ringbufs"] if r["name"] == "MPTCP_PM_EVENTS")
     R, D, E = len(pm), ring["dropped"], ring["error"]
     progs = json.loads((rep / "progs.json").read_text()) if (rep / "progs.json").exists() else {}
-    m_tcbee = sum(p.get("recursion_misses", 0) for p in progs.get("tcbee", [])
+    m_tcbee = sum((p.get("recursion_misses") or 0) for p in progs.get("tcbee", [])
                   if p.get("name", "").startswith("mptcp_pm"))
-    m_truth = sum(p.get("recursion_misses", 0) for p in progs.get("truth", []))
+    m_truth = sum((p.get("recursion_misses") or 0) for p in progs.get("truth", []))
     truth_p = rep / "truth.txt"
     if truth_p.exists():
         tc = truth_counts(truth_p)
