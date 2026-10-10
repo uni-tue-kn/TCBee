@@ -143,7 +143,6 @@ TRUTH_MAPS = {"@announced": ANNOUNCED, "@removed": REMOVED, "@token_destroyed": 
 def truth_counts(path: Path) -> dict:
     """{tcbee event type: count} from bpftrace -f json output"""
     counts = collections.Counter()
-    single = TRUTH_MAPS
     for line in path.read_text(errors="replace").splitlines():
         try:
             o = json.loads(line)
@@ -155,8 +154,8 @@ def truth_counts(path: Path) -> dict:
             if name == "@ev":
                 for k, n in val.items():
                     counts[int(k)] += n
-            elif name in single:
-                counts[single[name]] += val
+            elif name in TRUTH_MAPS:
+                counts[TRUTH_MAPS[name]] += val
     return dict(counts)
 
 
