@@ -172,6 +172,16 @@ def main() -> int:
     def check(name, ok, value=None):
         inv[name] = {"ok": bool(ok), "value": value}
 
+    # Checks that do not apply to this run, with the reason: no stimulus (nothing to compare),
+    # or SIGSTOP (the recorder drops events on purpose)
+    not_applicable: dict = {}
+
+    def check_if(name, applies, why, ok, value=None):
+        if applies:
+            check(name, ok, value)
+        else:
+            not_applicable[name] = why
+
     # ---- applications (oracle) -------------------------------------------------------------
     apps = []
     for side in ("client", "server"):
@@ -320,8 +330,7 @@ def main() -> int:
     # different token; both monitors only report their own namespace's connections
     if sigstop:
         chars["monitor_diff"] = diff
-    else:
-        check("monitor_diff", not diff, diff)
+    check_if("monitor_diff", not sigstop, "SIGSTOP", not diff, diff)
     chars["monitor_events"] = sum(mon_counts.values())
     chars["pm_records"] = len(pm)
     chars["pm_by_type"] = dict(collections.Counter(NAMES.get(r["event"], r["event"]) for r in pm))
@@ -334,16 +343,16 @@ def main() -> int:
     n_mon_tokens = len({t for s in mon for _, t in mon[s]})
     chars["tokens_with_identical_sequence"] = f"{seq_equal}/{n_mon_tokens}"
     check("monitor_events", sum(mon_counts.values()) > 0, sum(mon_counts.values()))
-    if not sigstop:
-        # E2: TCBee's events of a token in ktime order equal the monitor's sequence
-        check("monitor_order", seq_equal == n_mon_tokens, chars["tokens_with_identical_sequence"])
+    # E2: TCBee's events of a token in ktime order equal the monitor's sequence
+    check_if("monitor_order", not sigstop, "SIGSTOP", seq_equal == n_mon_tokens,
+             chars["tokens_with_identical_sequence"])
 
     created = collections.Counter(t for t, v in tb.items() for _, ev, _, _ in v if ev == CREATED)
     destroyed = collections.Counter(t for t, v in tb.items() for _, ev, _, _ in v if ev == TOKEN_DESTROYED)
     bad_td = {f"{t:#010x}": (created[t], destroyed[t]) for t in set(created) | set(destroyed)
               if created[t] != destroyed[t] or created[t] != 1}
-    if not sigstop and not fallback_mode:
-        check("token_destroy", not bad_td, bad_td)
+    check_if("token_destroy", not sigstop and not fallback_mode,
+             "SIGSTOP" if sigstop else "fallback: no CREATED (see e8 checks)", not bad_td, bad_td)
     order_bad = []
     for tok, v in tb.items():
         evs = [ev for _, ev, _, _ in v]
@@ -399,8 +408,8 @@ def main() -> int:
                         "size_per_cpu_bytes": ring["size_per_cpu_bytes"]}
     if sigstop:
         chars["pm_dropped"] = D
-    else:
-        check("no_drops", metrics["dropped"] == 0, {"all_rings": metrics["dropped"], "pm": D})
+    check_if("no_drops", not sigstop, "SIGSTOP", metrics["dropped"] == 0,
+             {"all_rings": metrics["dropped"], "pm": D})
     rec_bad = []
     if run.get("record_rc") != 0:
         rec_bad.append(f"rc {run.get('record_rc')}")
@@ -444,8 +453,10 @@ def main() -> int:
             mib_seen[f"{side} {mib}"] = (got, want)
             if got != want:
                 mib_bad[f"{side} {mib}"] = (got, want)
-    if not sigstop:
-        check("events_vs_mib", not mib_bad, mib_bad)
+    stimulus = any(g or w for g, w in mib_seen.values())
+    check_if("events_vs_mib", stimulus and not sigstop,
+             "SIGSTOP" if sigstop else "no stale subflow or fallback (all counters 0)",
+             not mib_bad, mib_bad)
     chars["events_vs_mib"] = mib_seen
     # Reinjected bytes per connection equal the connection's own count (MPTCP_INFO
     # mptcpi_bytes_retrans, read by the application at close); MPTCPRetrans moves with them
@@ -460,15 +471,19 @@ def main() -> int:
             got = sum(r["data_len"] for _, ev, _, r in tb.get(a["token"], []) if ev == REINJECTED)
             if got != a["bytes_retrans"]:
                 reinj_bad[f"{a['side']} {a['token']:#010x}"] = (got, a["bytes_retrans"])
-    if not sigstop:
-        check("reinjected_bytes", not reinj_bad, reinj_bad)
+    resent = any(a.get("bytes_retrans") for a in mp_apps) or any(
+        ev == REINJECTED for v in tb.values() for _, ev, _, _ in v)
+    check_if("reinjected_bytes", resent and not sigstop,
+             "SIGSTOP" if sigstop else "no data-level retransmission (all bytes_retrans 0)",
+             not reinj_bad, reinj_bad)
     for side in ("client", "server"):
         n = sum(1 for t, s in tokens_side.items() if s == side for _, ev, _, _ in tb.get(t, [])
                 if ev == REINJECTED)
         mib = chars.get(f"mib_{side}", {}).get("MPTCPRetrans", 0)
         chars[f"reinjected_{side}"] = {"events": n, "MPTCPRetrans": mib}
-        if not sigstop:
-            check(f"reinjected_iff_mib_{side}", (n > 0) == (mib > 0), (n, mib))
+        check_if(f"reinjected_iff_mib_{side}", (n or mib) and not sigstop,
+                 "SIGSTOP" if sigstop else "no reinjection and MPTCPRetrans 0",
+                 (n > 0) == (mib > 0), (n, mib))
     if scenario == "dynamic":
         # The client marks endpoint 1 backup once: one MP_PRIO for its address, with the flag
         # set, and the kernel sends it on the subflows of that address (MPPrioTx counts those)
@@ -492,6 +507,7 @@ def main() -> int:
     failed = [k for k, v in inv.items() if not v["ok"]]
     status = "invalid" if invalid else ("fail" if failed else "ok")
     out = {"status": status, "failed": failed, "invalid": invalid, "invariants": inv,
+           "not_applicable": not_applicable,
            "characteristics": chars,
            "verify_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     (rep / "verify.json").write_text(json.dumps(out, indent=1, default=str))
