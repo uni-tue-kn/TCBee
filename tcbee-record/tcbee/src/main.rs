@@ -189,7 +189,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
-            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr.",
+            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, mptcp_pm.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -199,7 +199,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_mptcp).add_option(
             &["-M", "--mptcp"],
             StoreTrue,
-            "Record MPTCP: path manager and connection lifecycle events, and with -k or -w the token of its MPTCP connection in the records of each subflow.",
+            "Record MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake, and with -k or -w the token of its MPTCP connection in the records of each subflow.",
         );
         argparser.refer(&mut mptcp_modes).add_option(
             &["--mptcp-modes"],

@@ -12,10 +12,15 @@ Status: implemented on branch `mptcp` (see "As implemented" below); the rest of 
 
 Differences to the plan below:
 - **Recording.** `-M` records path manager and lifecycle events (`mptcp_pm.tcp`) and, with `-k` or `-w`, tags sock and cwnd records with the local token (`conn_id`, always present, 0 without `-M`). `--mptcp-modes tag,pm` selects parts. No trace format manifest: compatibility with older recordings was not needed.
-- **Hooks.** `mptcp_event`, `mptcp_event_addr_announced`, `mptcp_event_addr_removed`, `mptcp_token_destroy`, fexit `__mptcp_subflow_connect`, `mptcp_pm_mp_fail_received`. Fallback is not recorded yet.
+- **Hooks.** `mptcp_event`, `mptcp_event_addr_announced`, `mptcp_event_addr_removed`, `mptcp_token_destroy`, fexit `__mptcp_subflow_connect`, `mptcp_pm_mp_fail_received` (with the reported data sequence). Since branch `mptcp-events` also, all on the same low-rate ring:
+  - stale subflows: fentry+fexit `mptcp_pm_nl_subflow_chk_stale`, only the transition (it runs on every MPTCP retransmission timeout); the count equals `SubflowStale`. Becoming active again is not recorded: `mptcp_subflow_set_active` also runs inlined on 6.8 (the kernel counted a recovery that no fentry saw).
+  - sent MP_PRIO: fexit `mptcp_pm_nl_mp_prio_send_ack` (new backup flag, result).
+  - data-level reinjection: fentry+fexit `__mptcp_retrans`, only calls that resent bytes (`bytes_retrans` grew; the bytes add up to `mptcpi_bytes_retrans`), and fexit `__mptcp_retransmit_pending_data` (data of a stale or closing subflow queued again).
+  - fallback in the handshake, client side: fentry+fexit `subflow_finish_connect`, only the SYN-ACK of a subflow that requested MPTCP; the count equals `MPCapableFallbackSYNACK`. The server side is not recorded (the context is dropped in inlined code).
+  - `mptcp_pm_entry` gained `data_seq` and `data_len` (136 bytes).
 - **Connections.** Schema version 3 has `connections(id, kind, key, flow_id, start_ts, end_ts)` and `connection_flows(connection_id, flow_id, subflow_id, first_ts, last_ts)` instead of `flow_parent`. Token lifetimes end at `TOKEN_DESTROYED`, not at CLOSED (the token is set before CREATED and subflows flush after CLOSED). `connections.flow_id` stays empty until connection-level records exist (no pseudo-flow yet).
 - **Viewer.** An MPTCP tab (greyed out without MPTCP) and a Conn column with `conn:` filter in the flow table. Derived series are not stored at process time.
-- **Not done yet.** The opt-in sub-modes (ack, sched, rcv with head-of-line delay, retrans), fallback and MP_PRIO details.
+- **Not done yet.** The opt-in sub-modes (ack, sched, rcv with head-of-line delay), listener events, the server side of the fallback and the return of a stale subflow.
 - **Future work.** Joining the client and server recordings of one connection (local and remote token) across hosts.
 
 ---

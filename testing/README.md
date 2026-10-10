@@ -81,3 +81,15 @@ build of `tcbee-record` (`TCBEE_RECORD` overrides it):
 ```bash
 sudo testing/mptcp/run.sh [SECONDS]
 ```
+
+`mptcp/eval.py` repeats such runs with independent oracles: the applications' own view of
+their connections (token and subflows from `MPTCP_INFO` and `MPTCP_SUBFLOW_ADDRS`), `ip mptcp
+monitor` and the MPTcpExt counters of each namespace, and bpftrace counters on the same hooks.
+Scenarios: `static`, `churn` (many short connections), `dynamic` (endpoints added, changed and
+removed mid-connection), `e6` and `stale` (a path that fails silently), `fallback` (the
+MPTCP option stripped from the SYNs). `mptcp/verify.py` checks one repetition and writes
+`verify.json`:
+
+```bash
+sudo testing/mptcp/eval.py dynamic --reps 3 --out /tmp/mptcp-runs
+```
