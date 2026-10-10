@@ -53,8 +53,9 @@ pub trait Event: Sized {
     fn connection_key(&self) -> u32 {
         0
     }
-    /// Whether the record comes from the socket itself (sock, cwnd), which carries the token
-    /// of its own connection, rather than from a packet header.
+    /// Whether the record comes from the socket itself (sock, cwnd, tcp_probe, cubic, bbr)
+    /// rather than from a packet header. A socket's flow keeps out of the connection of its
+    /// reversed tuple unless its own records carry that connection's token.
     fn socket_level(&self) -> bool {
         false
     }

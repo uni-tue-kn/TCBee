@@ -32,5 +32,8 @@ event_schema! {
             );
             flow_tuple(src, dst, self.sport, self.dport)
         }
+        fn socket_level(&self) -> bool {
+            true
+        }
     }
 }

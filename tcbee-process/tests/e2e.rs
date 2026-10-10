@@ -379,6 +379,99 @@ fn truncated_tail_is_a_warning() {
     }
 }
 
+/// Writes `recs` as the trace file `file` (bincode plus divider, as the recorder does).
+fn write_records<T: serde::Serialize>(trace: &Path, file: &str, recs: &[T]) {
+    let mut bytes = Vec::new();
+    for r in recs {
+        bytes.extend_from_slice(&bincode::serialize(r).unwrap());
+        bytes.extend_from_slice(&tcbee_common::records::RECORD_DELIMITER);
+    }
+    fs::write(trace.join(file), bytes).unwrap();
+}
+
+/// Both ends of one connection recorded on one host: the client's MPTCP subflow carries its
+/// token, the server end is a plain TCP socket (it fell back). The server's flow is the
+/// reversed tuple of the subflow and must not join the client's connection, whichever socket
+/// records describe it.
+#[test]
+fn plain_tcp_socket_on_the_reversed_tuple_stays_out_of_the_connection() {
+    use tcbee_common::records::{sock_trace_entry, tcp_probe_entry};
+    const AF_INET: u16 = 2;
+    let (client, server) = ([10, 0, 0, 1], [10, 0, 0, 2]);
+    // addr_v4 as the recorder stores it: local address in the high half
+    let addr_v4 = |local: [u8; 4], remote: [u8; 4]| {
+        ((u32::from_le_bytes(local) as u64) << 32) | u32::from_le_bytes(remote) as u64
+    };
+    let sock = |i: u64, local, remote, sport, dport, conn_id| sock_trace_entry {
+        time: 1_000 + i,
+        hook_seq: i + 1,
+        addr_v4: addr_v4(local, remote),
+        sport,
+        dport,
+        family: AF_INET,
+        conn_id,
+        ..Default::default()
+    };
+    let subflow: Vec<_> = (0..3)
+        .map(|i| sock(i, client, server, 40000, 5201, 7))
+        .collect();
+    // sockaddr_in in the first bytes of saddr/daddr: family, port, address
+    let sockaddr = |addr: [u8; 4]| {
+        let mut a = [0u8; 28];
+        a[4..8].copy_from_slice(&addr);
+        a
+    };
+    let probe = |i: u64| tcp_probe_entry {
+        time: 1_000 + i,
+        hook_seq: i + 1,
+        saddr: sockaddr(server),
+        daddr: sockaddr(client),
+        sport: 5201,
+        dport: 40000,
+        family: AF_INET,
+        ..Default::default()
+    };
+    let server_socks: Vec<_> = (0..3)
+        .map(|i| sock(i, server, client, 5201, 40000, 0))
+        .collect();
+    let server_probes: Vec<_> = (0..3).map(probe).collect();
+    for (name, server_file) in [("sock", "recv_sock.tcp"), ("tcp_probe", "tcp_probe.tcp")] {
+        for (engine, ext) in engines() {
+            let tmp = tempfile::tempdir().unwrap();
+            let trace = tmp.path().join("tcbee_fallback");
+            fs::create_dir_all(&trace).unwrap();
+            write_records(&trace, "send_sock.tcp", &subflow);
+            if name == "sock" {
+                write_records(&trace, server_file, &server_socks);
+            } else {
+                write_records(&trace, server_file, &server_probes);
+            }
+            let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+            assert_eq!(summary.connections, 1, "{name} {engine:?}");
+            let store = ts_storage::open(&out).unwrap();
+            let flows = store.flows().unwrap();
+            let members: Vec<i64> = store
+                .connection_flows()
+                .unwrap()
+                .iter()
+                .map(|m| {
+                    flows
+                        .iter()
+                        .find(|f| f.id == m.flow_id)
+                        .unwrap()
+                        .tuple
+                        .sport
+                })
+                .collect();
+            assert_eq!(
+                members,
+                [40000],
+                "{name} {engine:?}: only the client subflow"
+            );
+        }
+    }
+}
+
 /// Writes a `tcp4_send.tcp` of `total` records of one flow into a new trace directory. Record `i`
 /// has `seq = i` and a timestamp that repeats three times (so ordering needs the record index),
 /// built from the first fixture record. `corrupt` lists records whose divider is broken.
