@@ -466,9 +466,9 @@ def main():
     p.add_argument("--pm-ring", help="per-CPU size of the mptcp_pm ring, e.g. 4K")
     p.add_argument("--no-truth", action="store_true")
     p.add_argument("--record", default=str(ROOT / "install" / "tcbee-record"))
-    # tcbee-process with evaluation/patches/0002 (plain TCP sockets keep out of reversed
-    # connections), built from edc9d88 + the patch
-    p.add_argument("--process", default=str(ROOT.parent / "mptcp-eval" / "bin" / "tcbee-process-patched"))
+    # tcbee-process with "Keep plain TCP sockets out of the connection of their reversed tuple"
+    # (194661a), frozen for the campaign
+    p.add_argument("--process", default=str(ROOT.parent / "mptcp-eval" / "bin" / "tcbee-process-194661a"))
     a = p.parse_args()
     if os.geteuid():
         sys.exit("needs root")
