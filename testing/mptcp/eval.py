@@ -462,6 +462,9 @@ def truth_script(ports: list[int]) -> str:
     s += ("fentry:vmlinux:mptcp_pm_mp_fail_received {\n"
           "  $sk = (struct sock *)args.sk;\n"
           f"  {cond('$sk')} {{ @mp_fail = count(); }}\n}}\n")
+    s += ("fexit:vmlinux:mptcp_pm_nl_mp_prio_send_ack {\n"
+          "  $sk = (struct sock *)args.msk;\n"
+          f"  {cond('$sk')} {{ @prio_sent = count(); }}\n}}\n")
     # stale: only a transition counts, the check returns early for a stale subflow
     stale = """fentry:vmlinux:mptcp_pm_nl_subflow_chk_stale {{
   $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.ssk)->icsk_ulp_data;

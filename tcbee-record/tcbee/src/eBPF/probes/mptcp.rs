@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// The path manager programs and the kernel functions they attach to
-pub const PM_HOOKS: [(&str, &str); 8] = [
+pub const PM_HOOKS: [(&str, &str); 9] = [
     ("mptcp_pm_event", "mptcp_event"),
     ("mptcp_pm_announced", "mptcp_event_addr_announced"),
     ("mptcp_pm_removed", "mptcp_event_addr_removed"),
@@ -19,6 +19,7 @@ pub const PM_HOOKS: [(&str, &str); 8] = [
     ("mptcp_pm_mp_fail", "mptcp_pm_mp_fail_received"),
     ("mptcp_pm_stale_check", "mptcp_pm_nl_subflow_chk_stale"),
     ("mptcp_pm_stale", "mptcp_pm_nl_subflow_chk_stale"),
+    ("mptcp_pm_prio_sent", "mptcp_pm_nl_mp_prio_send_ack"),
 ];
 
 pub struct MptcpPmTracer {}

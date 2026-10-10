@@ -716,12 +716,13 @@ static __always_inline void mptcp_pm_addr(struct mptcp_pm_entry *rec,
 /*
  * The record's tuple is the one of ssk if given, else the one of the connection. addr is the
  * address of the event if there is one, addr_id the address id of events that only have an id,
- * data_seq a data-level sequence number of events that have one.
+ * data_seq a data-level sequence number of events that have one, backup the backup flag of
+ * events about a priority change (-1: the flag of ssk).
  */
 static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *msk,
 					  const struct sock *ssk,
 					  const struct mptcp_addr_info *addr, __u8 addr_id,
-					  __s64 error, __u64 data_seq)
+					  __s64 error, __u64 data_seq, int backup)
 {
 	struct sock *sk = ssk ? (struct sock *)ssk : (struct sock *)msk;
 	struct mptcp_pm_entry *rec;
@@ -759,6 +760,8 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 		mptcp_pm_addr(rec, addr);
 	else
 		rec->addr_id = addr_id;
+	if (backup >= 0)
+		rec->backup = backup;
 	commit(rec, RB_MPTCP_PM);
 	return 0;
 }
@@ -767,21 +770,21 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 SEC("fentry/mptcp_event")
 int BPF_PROG(mptcp_pm_event, int type, const struct mptcp_sock *msk, const struct sock *ssk)
 {
-	return trace_mptcp_pm(type, msk, ssk, NULL, 0, 0, 0);
+	return trace_mptcp_pm(type, msk, ssk, NULL, 0, 0, 0, -1);
 }
 
 /* The peer announced an address */
 SEC("fentry/mptcp_event_addr_announced")
 int BPF_PROG(mptcp_pm_announced, const struct sock *ssk, const struct mptcp_addr_info *info)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, 0, 0, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, 0, 0, 0, -1);
 }
 
 /* The peer removed the address with this id */
 SEC("fentry/mptcp_event_addr_removed")
 int BPF_PROG(mptcp_pm_removed, const struct mptcp_sock *msk, __u8 id)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_REMOVED, msk, NULL, NULL, id, 0, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_REMOVED, msk, NULL, NULL, id, 0, 0, -1);
 }
 
 /* End of the token's life: a later connection may get the same token */
@@ -790,7 +793,7 @@ int BPF_PROG(mptcp_pm_token_destroy, struct mptcp_sock *msk)
 {
 	if (!BPF_CORE_READ(msk, token))
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, 0, 0, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, 0, 0, 0, -1);
 }
 
 /* A subflow the path manager tried to open to the address remote */
@@ -799,7 +802,7 @@ int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_
 	     const struct mptcp_addr_info *remote, int ret)
 {
 	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_CONNECT, (const struct mptcp_sock *)sk, NULL,
-			      remote, 0, ret, 0);
+			      remote, 0, ret, 0, -1);
 }
 
 /* Stale subflows: remember at the start of the check which subflows were not stale yet */
@@ -826,11 +829,22 @@ int BPF_PROG(mptcp_pm_stale, const struct mptcp_sock *msk, struct sock *ssk)
 	bpf_map_delete_elem(&MPTCP_STALE_CHECK, &key);
 	if (!subflow || !BPF_CORE_READ_BITFIELD_PROBED(subflow, stale))
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_STALE, msk, ssk, NULL, 0, 0, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_STALE, msk, ssk, NULL, 0, 0, 0, -1);
+}
+
+/*
+ * This host asks the peer to change the priority of the subflows on a local address (MP_PRIO),
+ * from ip mptcp endpoint change ... [no]backup or a userspace path manager
+ */
+SEC("fexit/mptcp_pm_nl_mp_prio_send_ack")
+int BPF_PROG(mptcp_pm_prio_sent, struct mptcp_sock *msk, struct mptcp_addr_info *addr,
+	     struct mptcp_addr_info *rem, __u8 bkup, int ret)
+{
+	return trace_mptcp_pm(TCBEE_MPTCP_MP_PRIO_SENT, msk, NULL, addr, 0, ret, 0, bkup);
 }
 
 SEC("fentry/mptcp_pm_mp_fail_received")
 int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk, __u64 fail_seq)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL, 0, 0, fail_seq);
+	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL, 0, 0, fail_seq, -1);
 }

@@ -207,6 +207,11 @@ enum tcbee_mptcp_event {
 	 * retransmission timeouts while another subflow could take its data
 	 */
 	TCBEE_MPTCP_SUBFLOW_STALE = 103,
+	/*
+	 * This host sent MP_PRIO for the subflows on a local address (addr): backup holds the new
+	 * flag, error 0 or the negative error (no subflow uses the address)
+	 */
+	TCBEE_MPTCP_MP_PRIO_SENT = 104,
 };
 
 /*
@@ -222,7 +227,7 @@ struct mptcp_pm_entry {
 	uint32_t remote_token;
 	/* Subflow number within the connection, kernel 6.5 and newer */
 	uint32_t subflow_id;
-	/* TCBEE_MPTCP_SUBFLOW_CONNECT: 0 or the negative error */
+	/* SUBFLOW_CONNECT, MP_PRIO_SENT: 0 or the negative error */
 	int64_t error;
 	/* enum tcbee_mptcp_event */
 	uint8_t event;
@@ -231,7 +236,8 @@ struct mptcp_pm_entry {
 	uint8_t remote_id;
 	uint8_t backup;
 	/*
-	 * ANNOUNCED, REMOVED, SUBFLOW_CONNECT: the address (id, AF_INET(6), port in host order).
+	 * ANNOUNCED, REMOVED, SUBFLOW_CONNECT, MP_PRIO_SENT: the address (id, AF_INET(6), port in
+	 * host order).
 	 * addr_0 to addr_3 hold its bytes in network order, 4 each, an IPv4 address only addr_0;
 	 * words and not bytes, so that every part is a database column.
 	 */

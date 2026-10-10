@@ -61,7 +61,7 @@ EXPECTED_APPS = {"static": (1, 1, 1), "churn": (50, 50, 50), "dynamic": (1, 1, 0
 CREATED, ESTABLISHED, CLOSED, ANNOUNCED, REMOVED = 1, 2, 3, 6, 7
 SUB_ESTABLISHED, SUB_CLOSED, SUB_PRIORITY = 10, 11, 13
 TOKEN_DESTROYED, SUBFLOW_CONNECT, MP_FAIL = 100, 101, 102
-SUBFLOW_STALE = 103
+SUBFLOW_STALE, MP_PRIO_SENT = 103, 104
 MONITOR_TYPES = {
     "CREATED": CREATED, "ESTABLISHED": ESTABLISHED, "CLOSED": CLOSED,
     "ANNOUNCED": ANNOUNCED, "REMOVED": REMOVED, "SF_ESTABLISHED": SUB_ESTABLISHED,
@@ -69,7 +69,7 @@ MONITOR_TYPES = {
 }
 NAMES = {v: k for k, v in MONITOR_TYPES.items()} | {
     TOKEN_DESTROYED: "TOKEN_DESTROYED", SUBFLOW_CONNECT: "SUBFLOW_CONNECT", MP_FAIL: "MP_FAIL",
-    SUBFLOW_STALE: "SUBFLOW_STALE"}
+    SUBFLOW_STALE: "SUBFLOW_STALE", MP_PRIO_SENT: "MP_PRIO_SENT"}
 # TCBee event types that a kernel MIB counter (MPTcpExt) counts exactly, per namespace
 MIB_EXACT = {SUBFLOW_STALE: "SubflowStale"}
 
@@ -136,7 +136,7 @@ def truth_counts(path: Path) -> dict:
     counts = collections.Counter()
     single = {"@announced": ANNOUNCED, "@removed": REMOVED, "@token_destroyed": TOKEN_DESTROYED,
               "@subflow_connect": SUBFLOW_CONNECT, "@mp_fail": MP_FAIL,
-              "@stale": SUBFLOW_STALE}
+              "@stale": SUBFLOW_STALE, "@prio_sent": MP_PRIO_SENT}
     for line in path.read_text(errors="replace").splitlines():
         try:
             o = json.loads(line)
@@ -436,6 +436,15 @@ def main() -> int:
     if not sigstop:
         check("events_vs_mib", not mib_bad, mib_bad)
     chars["events_vs_mib"] = mib_seen
+    if scenario == "dynamic":
+        # The client marks endpoint 1 backup once: one MP_PRIO for its address, with the flag
+        # set, and the kernel sends it on the subflows of that address (MPPrioTx counts those)
+        client_tokens = {t for t, s in tokens_side.items() if s == "client"}
+        prio = [r for t in client_tokens for _, ev, _, r in tb.get(t, []) if ev == MP_PRIO_SENT]
+        prio_tx = chars.get("mib_client", {}).get("MPPrioTx", 0)
+        check("prio_sent", len(prio) == 1 and prio[0]["backup"] == 1 and prio[0]["error"] == 0
+              and prio_tx >= 1, {"events": [(r["backup"], r["error"]) for r in prio],
+                                 "MPPrioTx": prio_tx})
     if scenario in ("e6", "stale"):
         # the blackholed path must be marked stale on the client
         check("stale_seen", mib_seen["client SubflowStale"][1] > 0, mib_seen["client SubflowStale"])
