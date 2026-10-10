@@ -727,6 +727,21 @@ struct mptcp_pm_extra {
 };
 
 /*
+ * The ports of sk, and whether its path manager events are recorded: not for a socket without
+ * ports (a connect that fails right away destroys the token before the connection got its
+ * addresses; such a connection never had a subflow worth a record), else as the filter says
+ */
+static __always_inline bool mptcp_pm_wanted(const struct sock *sk, __u16 *sport, __u16 *dport)
+{
+	/* Not sk_ports(): sk may be a struct mptcp_sock, which allows no direct socket loads */
+	*sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+	*dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
+	if (!*sport && !*dport)
+		return false;
+	return filter_sock((struct sock *)sk, *sport, *dport);
+}
+
+/*
  * The record's tuple is the one of ssk if given, else the one of the connection. addr is the
  * address of the event if there is one, extra the fields that only some events have (or NULL).
  */
@@ -740,18 +755,7 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 	__u16 sport, dport;
 	__u64 hook_seq;
 
-	if (!sk)
-		return 0;
-	/* Not sk_ports(): sk may be a struct mptcp_sock, which allows no direct socket loads */
-	sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-	dport = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
-	/*
-	 * A connect that fails right away destroys the token before the connection got its
-	 * addresses; such a connection never had a subflow worth a record
-	 */
-	if (!sport && !dport)
-		return 0;
-	if (!filter_sock(sk, sport, dport))
+	if (!sk || !mptcp_pm_wanted(sk, &sport, &dport))
 		return 0;
 	if (!hook_seq_sk(sk, sport, dport, RB_MPTCP_PM, &hook_seq))
 		return 0;
@@ -824,13 +828,24 @@ int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_
 SEC("fentry/mptcp_pm_nl_subflow_chk_stale")
 int BPF_PROG(mptcp_pm_stale_check, const struct mptcp_sock *msk, struct sock *ssk)
 {
-	struct mptcp_subflow_context *subflow = mptcp_subflow_of(ssk);
+	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)ssk;
+	__u16 sport, dport;
 	__u8 one = 1;
 
+	if (!mptcp_pm_wanted(ssk, &sport, &dport))
+		return 0;
+	subflow = mptcp_subflow_of(ssk);
+	/*
+	 * Drop the state of an earlier call whose exit program did not run (recursion guard), so
+	 * that this call's exit does not take it for its own
+	 */
+	if (!subflow || BPF_CORE_READ_BITFIELD_PROBED(subflow, stale)) {
+		bpf_map_delete_elem(&MPTCP_STALE_CHECK, &key);
+		return 0;
+	}
 	/* A full map would lose the event: count it as an error of the ring */
-	if (subflow && !BPF_CORE_READ_BITFIELD_PROBED(subflow, stale) &&
-	    bpf_map_update_elem(&MPTCP_STALE_CHECK, &key, &one, BPF_ANY))
+	if (bpf_map_update_elem(&MPTCP_STALE_CHECK, &key, &one, BPF_ANY))
 		count_error(RB_MPTCP_PM);
 	return 0;
 }
@@ -860,7 +875,10 @@ int BPF_PROG(mptcp_pm_prio_sent, struct mptcp_sock *msk, struct mptcp_addr_info 
 {
 	return trace_mptcp_pm(TCBEE_MPTCP_MP_PRIO_SENT, msk, NULL, addr,
 			      &(struct mptcp_pm_extra){
-				      .error = ret, .set_backup = true, .backup = bkup });
+				      .error = ret,
+				      .set_backup = true,
+				      .backup = bkup,
+			      });
 }
 
 /*
@@ -876,7 +894,10 @@ int BPF_PROG(mptcp_pm_retrans_start, struct sock *sk)
 		.snd_una = BPF_CORE_READ(msk, snd_una),
 	};
 	__u64 key = (__u64)sk;
+	__u16 sport, dport;
 
+	if (!mptcp_pm_wanted(sk, &sport, &dport))
+		return 0;
 	if (bpf_map_update_elem(&MPTCP_RETRANS_START, &key, &start, BPF_ANY))
 		count_error(RB_MPTCP_PM);
 	return 0;
@@ -920,13 +941,21 @@ int BPF_PROG(mptcp_pm_requeue, struct sock *sk, bool ret)
 SEC("fentry/subflow_finish_connect")
 int BPF_PROG(mptcp_pm_connect_check, struct sock *sk, const struct sk_buff *skb)
 {
-	struct mptcp_subflow_context *subflow = mptcp_subflow_of(sk);
+	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)sk;
+	__u16 sport, dport;
 	__u8 one = 1;
 
-	if (subflow && BPF_CORE_READ_BITFIELD_PROBED(subflow, request_mptcp) &&
-	    !BPF_CORE_READ_BITFIELD_PROBED(subflow, conn_finished) &&
-	    bpf_map_update_elem(&MPTCP_CONNECT_CHECK, &key, &one, BPF_ANY))
+	if (!mptcp_pm_wanted(sk, &sport, &dport))
+		return 0;
+	subflow = mptcp_subflow_of(sk);
+	/* As for stale subflows: no state of an earlier call survives a call that stores none */
+	if (!subflow || !BPF_CORE_READ_BITFIELD_PROBED(subflow, request_mptcp) ||
+	    BPF_CORE_READ_BITFIELD_PROBED(subflow, conn_finished)) {
+		bpf_map_delete_elem(&MPTCP_CONNECT_CHECK, &key);
+		return 0;
+	}
+	if (bpf_map_update_elem(&MPTCP_CONNECT_CHECK, &key, &one, BPF_ANY))
 		count_error(RB_MPTCP_PM);
 	return 0;
 }
