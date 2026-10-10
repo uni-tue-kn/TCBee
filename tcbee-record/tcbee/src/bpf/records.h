@@ -267,8 +267,9 @@ struct mptcp_pm_entry {
 	uint32_t addr_3;
 	/*
 	 * A data-level (MPTCP) sequence number: MP_FAIL the sequence the peer reported,
-	 * REINJECTED and PENDING_REQUEUED the connection's oldest unacknowledged byte when the
-	 * kernel function started (ACKs may move it on before the first byte is resent)
+	 * REINJECTED and PENDING_REQUEUED the connection's oldest unacknowledged byte, for
+	 * REINJECTED when the retransmission started (ACKs may move it on before the first byte
+	 * is resent), for PENDING_REQUEUED when the requeue ended
 	 */
 	uint64_t data_seq;
 	/* REINJECTED: the bytes that the connection retransmitted at the data level */
