@@ -202,6 +202,11 @@ enum tcbee_mptcp_event {
 	TCBEE_MPTCP_SUBFLOW_CONNECT = 101,
 	/* The peer sent MP_FAIL on a subflow, data_seq holds the sequence it reported */
 	TCBEE_MPTCP_MP_FAIL = 102,
+	/*
+	 * The path manager marked a subflow stale: it made no progress over several
+	 * retransmission timeouts while another subflow could take its data
+	 */
+	TCBEE_MPTCP_SUBFLOW_STALE = 103,
 };
 
 /*

@@ -30,6 +30,8 @@ Scenarios:
             blackholed, t=10 s its endpoint deleted, t=13 s restored and re-added (E6)
   fallback  10 MPTCP connections whose SYNs lose the MPTCP option at the server's
             ingress (nft), plus one TCP connection                             (E8)
+  stale     as e6 without the operator: path 2 blackholed from t=5 s to t=11 s, so its
+            subflow is marked stale (and recovers, which TCBee does not record)
 
 --sigstop stops tcbee-record (SIGSTOP) while the traffic runs and continues it afterwards; with
 a small --pm-ring this forces drops on the path manager ring (E3, D > 0).
@@ -230,6 +232,8 @@ class Rep:
             self.dynamic()
         elif scenario == "e6":
             self.e6()
+        elif scenario == "stale":
+            self.e6(operator=False)
         elif scenario == "fallback":
             ns(CLIENT, "ip", "mptcp", "endpoint", "add", "10.31.2.1", "dev", "c2", "subflow")
             # nft 1.0.9 rejects this on one line
@@ -271,7 +275,7 @@ class Rep:
             self.act(what, fn)
         p.wait()
 
-    def e6(self):
+    def e6(self, operator: bool = True):
         ns(CLIENT, "ip", "mptcp", "endpoint", "add", "10.31.2.1", "dev", "c2", "id", "1",
            "subflow")
         t0 = time.monotonic()
@@ -294,6 +298,9 @@ class Rep:
              lambda: ns(CLIENT, "ip", "mptcp", "endpoint", "add", "10.31.2.1", "dev", "c2",
                         "id", "1", "subflow")),
         ]
+        if not operator:
+            steps = [(5, "path 2 blackholed (both directions)", lambda: loss(100)),
+                     (11, "path 2 restored", lambda: loss(0))]
         for at, what, fn in steps:
             time.sleep(max(0, t0 + at - time.monotonic()))
             self.act(what, fn)
@@ -307,7 +314,7 @@ class Rep:
         delays, rate = (0, 0), None
         if scenario == "churn":
             delays = (5, 15)
-        elif scenario == "e6":
+        elif scenario in ("e6", "stale"):
             delays, rate = (10, 40), "1gbit"
         info = {
             "scenario": scenario, "args": vars(a), "start": time.time(),
@@ -322,8 +329,11 @@ class Rep:
             self.start_monitors()
             truth = self.start_truth() if not a.no_truth else None
             self.netstat("pre")
-            duration = {"static": 5, "churn": 8, "dynamic": 12, "e6": 20, "fallback": 4}[scenario]
-            duration = (a.seconds or duration) + 6
+            duration = {"static": 5, "churn": 8, "dynamic": 12, "e6": 20, "stale": 20,
+                        "fallback": 4}[scenario]
+            # A safety net only: the recorder is stopped with SIGINT once the connections are
+            # closed and the program statistics are read
+            duration = (a.seconds or duration) + 30
             self.start_record(duration)
             info["record_cmd"] = self.record_cmd
             self.start_servers()
@@ -452,12 +462,27 @@ def truth_script(ports: list[int]) -> str:
     s += ("fentry:vmlinux:mptcp_pm_mp_fail_received {\n"
           "  $sk = (struct sock *)args.sk;\n"
           f"  {cond('$sk')} {{ @mp_fail = count(); }}\n}}\n")
+    # stale: only a transition counts, the check returns early for a stale subflow
+    stale = """fentry:vmlinux:mptcp_pm_nl_subflow_chk_stale {{
+  $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.ssk)->icsk_ulp_data;
+  if ($sf != 0 && $sf->stale == 0) {{ @stalecheck[args.ssk] = 1; }}
+}}
+fexit:vmlinux:mptcp_pm_nl_subflow_chk_stale {{
+  if (@stalecheck[args.ssk] == 1) {{
+    delete(@stalecheck[args.ssk]);
+    $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.ssk)->icsk_ulp_data;
+    $sk = (struct sock *)args.ssk;
+    if ($sf->stale) {{ COND {{ @STALE = count(); }} }}
+  }}
+}}
+"""
+    s += stale.format().replace("COND", cond("$sk")).replace("@STALE", "@stale")
     return s
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("scenario", choices=["static", "churn", "dynamic", "e6", "fallback"])
+    p.add_argument("scenario", choices=["static", "churn", "dynamic", "e6", "stale", "fallback"])
     p.add_argument("--reps", type=int, default=1)
     p.add_argument("--first", type=int, default=0, help="number of the first repetition")
     p.add_argument("--out", required=True)

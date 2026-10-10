@@ -670,16 +670,19 @@ int BPF_PROG(bbr_cwnd_event, struct sock *sk)
  * first subflow.
  */
 
+/* Subflow context of an MPTCP subflow, in the ULP data of its socket; NULL for other sockets */
+static __always_inline struct mptcp_subflow_context *mptcp_subflow_of(const struct sock *ssk)
+{
+	struct tcp_sock *tp = bpf_skc_to_tcp_sock((struct sock *)ssk);
+
+	return tp ? tp->inet_conn.icsk_ulp_data : NULL;
+}
+
 /* Subflow fields, from the subflow context in the ULP data of ssk */
 static __always_inline void mptcp_pm_subflow(struct mptcp_pm_entry *rec, const struct sock *ssk)
 {
-	struct mptcp_subflow_context *subflow;
-	struct tcp_sock *tp;
+	struct mptcp_subflow_context *subflow = mptcp_subflow_of(ssk);
 
-	tp = bpf_skc_to_tcp_sock((struct sock *)ssk);
-	if (!tp)
-		return;
-	subflow = tp->inet_conn.icsk_ulp_data;
 	if (!subflow)
 		return;
 	if (!rec->token) {
@@ -797,6 +800,33 @@ int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_
 {
 	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_CONNECT, (const struct mptcp_sock *)sk, NULL,
 			      remote, 0, ret, 0);
+}
+
+/* Stale subflows: remember at the start of the check which subflows were not stale yet */
+SEC("fentry/mptcp_pm_nl_subflow_chk_stale")
+int BPF_PROG(mptcp_pm_stale_check, const struct mptcp_sock *msk, struct sock *ssk)
+{
+	struct mptcp_subflow_context *subflow = mptcp_subflow_of(ssk);
+	__u64 key = (__u64)ssk;
+	__u8 one = 1;
+
+	if (subflow && !BPF_CORE_READ_BITFIELD_PROBED(subflow, stale))
+		bpf_map_update_elem(&MPTCP_STALE_CHECK, &key, &one, BPF_ANY);
+	return 0;
+}
+
+SEC("fexit/mptcp_pm_nl_subflow_chk_stale")
+int BPF_PROG(mptcp_pm_stale, const struct mptcp_sock *msk, struct sock *ssk)
+{
+	struct mptcp_subflow_context *subflow = mptcp_subflow_of(ssk);
+	__u64 key = (__u64)ssk;
+
+	if (!bpf_map_lookup_elem(&MPTCP_STALE_CHECK, &key))
+		return 0;
+	bpf_map_delete_elem(&MPTCP_STALE_CHECK, &key);
+	if (!subflow || !BPF_CORE_READ_BITFIELD_PROBED(subflow, stale))
+		return 0;
+	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_STALE, msk, ssk, NULL, 0, 0, 0);
 }
 
 SEC("fentry/mptcp_pm_mp_fail_received")

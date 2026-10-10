@@ -56,18 +56,22 @@ MPTCP_PORT, TCP_PORT = 5501, 5502
 # Connections each scenario of eval.py opens: (MPTCP client, MPTCP server, TCP client). A
 # different count in the application logs means the oracle is incomplete: the run is invalid.
 EXPECTED_APPS = {"static": (1, 1, 1), "churn": (50, 50, 50), "dynamic": (1, 1, 0),
-                 "e6": (1, 1, 0), "fallback": (10, 10, 1)}
+                 "e6": (1, 1, 0), "stale": (1, 1, 0), "fallback": (10, 10, 1)}
 
 CREATED, ESTABLISHED, CLOSED, ANNOUNCED, REMOVED = 1, 2, 3, 6, 7
 SUB_ESTABLISHED, SUB_CLOSED, SUB_PRIORITY = 10, 11, 13
 TOKEN_DESTROYED, SUBFLOW_CONNECT, MP_FAIL = 100, 101, 102
+SUBFLOW_STALE = 103
 MONITOR_TYPES = {
     "CREATED": CREATED, "ESTABLISHED": ESTABLISHED, "CLOSED": CLOSED,
     "ANNOUNCED": ANNOUNCED, "REMOVED": REMOVED, "SF_ESTABLISHED": SUB_ESTABLISHED,
     "SF_CLOSED": SUB_CLOSED, "SF_PRIO": SUB_PRIORITY,
 }
 NAMES = {v: k for k, v in MONITOR_TYPES.items()} | {
-    TOKEN_DESTROYED: "TOKEN_DESTROYED", SUBFLOW_CONNECT: "SUBFLOW_CONNECT", MP_FAIL: "MP_FAIL"}
+    TOKEN_DESTROYED: "TOKEN_DESTROYED", SUBFLOW_CONNECT: "SUBFLOW_CONNECT", MP_FAIL: "MP_FAIL",
+    SUBFLOW_STALE: "SUBFLOW_STALE"}
+# TCBee event types that a kernel MIB counter (MPTcpExt) counts exactly, per namespace
+MIB_EXACT = {SUBFLOW_STALE: "SubflowStale"}
 
 
 def ipv4(word: int) -> str:
@@ -131,7 +135,8 @@ def truth_counts(path: Path) -> dict:
     """{tcbee event type: count} from bpftrace -f json output"""
     counts = collections.Counter()
     single = {"@announced": ANNOUNCED, "@removed": REMOVED, "@token_destroyed": TOKEN_DESTROYED,
-              "@subflow_connect": SUBFLOW_CONNECT, "@mp_fail": MP_FAIL}
+              "@subflow_connect": SUBFLOW_CONNECT, "@mp_fail": MP_FAIL,
+              "@stale": SUBFLOW_STALE}
     for line in path.read_text(errors="replace").splitlines():
         try:
             o = json.loads(line)
@@ -393,6 +398,11 @@ def main() -> int:
     rec_bad = []
     if run.get("record_rc") != 0:
         rec_bad.append(f"rc {run.get('record_rc')}")
+    # tcbee-record goes on without a probe group that fails to load or attach, with a warning
+    err = rep / "record.err"
+    for line in (err.read_text(errors="replace").splitlines() if err.exists() else []):
+        if re.search(r"Retrying without|not recorded|Could not load|failed to load", line):
+            rec_bad.append(line.strip()[:200])
     for r in metrics["ringbufs"]:
         if r.get("writer_error"):
             rec_bad.append(f"{r['name']}: {r['writer_error']}")
@@ -412,6 +422,23 @@ def main() -> int:
         if pre.exists() and post.exists():
             a, b = netstat_mptcp(pre), netstat_mptcp(post)
             chars[f"mib_{side}"] = {k: b[k] - a.get(k, 0) for k in b if b[k] - a.get(k, 0)}
+
+    # Events that a MIB counter counts exactly: per side, TCBee's count equals the counter delta
+    mib_bad, mib_seen = {}, {}
+    for typ, mib in MIB_EXACT.items():
+        for side in ("client", "server"):
+            got = sum(1 for t, s in tokens_side.items() if s == side for _, ev, _, _ in tb.get(t, [])
+                      if ev == typ)
+            want = chars.get(f"mib_{side}", {}).get(mib, 0)
+            mib_seen[f"{side} {mib}"] = (got, want)
+            if got != want:
+                mib_bad[f"{side} {mib}"] = (got, want)
+    if not sigstop:
+        check("events_vs_mib", not mib_bad, mib_bad)
+    chars["events_vs_mib"] = mib_seen
+    if scenario in ("e6", "stale"):
+        # the blackholed path must be marked stale on the client
+        check("stale_seen", mib_seen["client SubflowStale"][1] > 0, mib_seen["client SubflowStale"])
 
     if fallback_mode:
         chars["fallback_facts"] = fallback_facts(by_flow, tb, mp_apps)

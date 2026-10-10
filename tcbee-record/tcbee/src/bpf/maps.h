@@ -73,6 +73,19 @@ struct {
 	__type(value, __u64);
 } HOOK_SEQ SEC(".maps");
 
+/*
+ * Subflows that were not stale when the path manager started to check them
+ * (mptcp_pm_nl_subflow_chk_stale), key the subflow's struct sock. The check runs on every
+ * retransmission timeout of an MPTCP connection and returns early for a stale subflow, so only
+ * the state at its start tells a new transition from a repeated one.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u8);
+} MPTCP_STALE_CHECK SEC(".maps");
+
 /* Flows seen by any probe, key and value are the canonical tuple */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);

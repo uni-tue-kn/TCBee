@@ -51,12 +51,14 @@ typedef __u64 u64;
 typedef __u64 __addrpair;
 
 enum {
+	BPF_ANY = 0,
 	BPF_NOEXIST = 1,
 	BPF_RB_NO_WAKEUP = 1,
 	IPPROTO_TCP = 6,
 	BPF_MAP_TYPE_HASH = 1,
 	BPF_MAP_TYPE_PERCPU_HASH = 5,
 	BPF_MAP_TYPE_PERCPU_ARRAY = 6,
+	BPF_MAP_TYPE_LRU_HASH = 9,
 	BPF_MAP_TYPE_ARRAY_OF_MAPS = 12,
 	BPF_MAP_TYPE_RINGBUF = 27,
 };
@@ -187,8 +189,10 @@ struct in_addr {
 struct mptcp_subflow_context {
 	u32 remote_token;
 	u32 backup: 1;
+	u32 stale: 1;
 	s16 local_id;
 	u8 remote_id;
+	u8 stale_count;
 	u32 subflow_id;
 	struct sock *conn;
 };
