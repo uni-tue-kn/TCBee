@@ -893,6 +893,34 @@ int BPF_PROG(mptcp_pm_requeue, struct sock *sk, bool ret)
 			      BPF_CORE_READ(msk, snd_una), -1, 0);
 }
 
+/* Fallback in the handshake: remember the subflows that requested MPTCP and wait for the SYN-ACK */
+SEC("fentry/subflow_finish_connect")
+int BPF_PROG(mptcp_pm_connect_check, struct sock *sk, const struct sk_buff *skb)
+{
+	struct mptcp_subflow_context *subflow = mptcp_subflow_of(sk);
+	__u64 key = (__u64)sk;
+	__u8 one = 1;
+
+	if (subflow && BPF_CORE_READ_BITFIELD_PROBED(subflow, request_mptcp) &&
+	    !BPF_CORE_READ_BITFIELD_PROBED(subflow, conn_finished))
+		bpf_map_update_elem(&MPTCP_CONNECT_CHECK, &key, &one, BPF_ANY);
+	return 0;
+}
+
+SEC("fexit/subflow_finish_connect")
+int BPF_PROG(mptcp_pm_fallback, struct sock *sk, const struct sk_buff *skb)
+{
+	struct mptcp_subflow_context *subflow = mptcp_subflow_of(sk);
+	__u64 key = (__u64)sk;
+
+	if (!bpf_map_lookup_elem(&MPTCP_CONNECT_CHECK, &key))
+		return 0;
+	bpf_map_delete_elem(&MPTCP_CONNECT_CHECK, &key);
+	if (!subflow || BPF_CORE_READ_BITFIELD_PROBED(subflow, mp_capable))
+		return 0;
+	return trace_mptcp_pm(TCBEE_MPTCP_FALLBACK, NULL, sk, NULL, 0, 0, 0, -1, 0);
+}
+
 SEC("fentry/mptcp_pm_mp_fail_received")
 int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk, __u64 fail_seq)
 {

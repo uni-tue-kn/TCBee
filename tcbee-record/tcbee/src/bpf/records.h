@@ -219,6 +219,12 @@ enum tcbee_mptcp_event {
 	TCBEE_MPTCP_REINJECTED = 105,
 	/* Data that waited on a subflow (stale or closing) is queued again for the other subflows */
 	TCBEE_MPTCP_PENDING_REQUEUED = 106,
+	/*
+	 * The connection fell back to plain TCP in the handshake: this host requested MPTCP and
+	 * the peer's SYN-ACK did not carry MP_CAPABLE. Client side only: the server side's plain
+	 * TCP socket shows as a flow without a token.
+	 */
+	TCBEE_MPTCP_FALLBACK = 107,
 };
 
 /*

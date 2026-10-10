@@ -86,6 +86,18 @@ struct {
 	__type(value, __u8);
 } MPTCP_STALE_CHECK SEC(".maps");
 
+/*
+ * Subflows that requested MPTCP and had not finished connecting when subflow_finish_connect
+ * started, key the subflow's struct sock. The function also runs for later packets, so only the
+ * state at its start tells the SYN-ACK apart.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u8);
+} MPTCP_CONNECT_CHECK SEC(".maps");
+
 /* MPTCP connections in __mptcp_retrans, key the connection's struct sock */
 struct mptcp_retrans_start {
 	__u64 bytes_retrans;

@@ -61,7 +61,7 @@ EXPECTED_APPS = {"static": (1, 1, 1), "churn": (50, 50, 50), "dynamic": (1, 1, 0
 CREATED, ESTABLISHED, CLOSED, ANNOUNCED, REMOVED = 1, 2, 3, 6, 7
 SUB_ESTABLISHED, SUB_CLOSED, SUB_PRIORITY = 10, 11, 13
 TOKEN_DESTROYED, SUBFLOW_CONNECT, MP_FAIL = 100, 101, 102
-SUBFLOW_STALE, MP_PRIO_SENT, REINJECTED, PENDING_REQUEUED = 103, 104, 105, 106
+SUBFLOW_STALE, MP_PRIO_SENT, REINJECTED, PENDING_REQUEUED, FALLBACK = 103, 104, 105, 106, 107
 MONITOR_TYPES = {
     "CREATED": CREATED, "ESTABLISHED": ESTABLISHED, "CLOSED": CLOSED,
     "ANNOUNCED": ANNOUNCED, "REMOVED": REMOVED, "SF_ESTABLISHED": SUB_ESTABLISHED,
@@ -70,9 +70,9 @@ MONITOR_TYPES = {
 NAMES = {v: k for k, v in MONITOR_TYPES.items()} | {
     TOKEN_DESTROYED: "TOKEN_DESTROYED", SUBFLOW_CONNECT: "SUBFLOW_CONNECT", MP_FAIL: "MP_FAIL",
     SUBFLOW_STALE: "SUBFLOW_STALE", MP_PRIO_SENT: "MP_PRIO_SENT", REINJECTED: "REINJECTED",
-    PENDING_REQUEUED: "PENDING_REQUEUED"}
+    PENDING_REQUEUED: "PENDING_REQUEUED", FALLBACK: "FALLBACK"}
 # TCBee event types that a kernel MIB counter (MPTcpExt) counts exactly, per namespace
-MIB_EXACT = {SUBFLOW_STALE: "SubflowStale"}
+MIB_EXACT = {SUBFLOW_STALE: "SubflowStale", FALLBACK: "MPCapableFallbackSYNACK"}
 
 
 def ipv4(word: int) -> str:
@@ -138,7 +138,7 @@ def truth_counts(path: Path) -> dict:
     single = {"@announced": ANNOUNCED, "@removed": REMOVED, "@token_destroyed": TOKEN_DESTROYED,
               "@subflow_connect": SUBFLOW_CONNECT, "@mp_fail": MP_FAIL,
               "@stale": SUBFLOW_STALE, "@prio_sent": MP_PRIO_SENT, "@reinjected": REINJECTED,
-              "@requeued": PENDING_REQUEUED}
+              "@requeued": PENDING_REQUEUED, "@fallback": FALLBACK}
     for line in path.read_text(errors="replace").splitlines():
         try:
             o = json.loads(line)
@@ -425,12 +425,15 @@ def main() -> int:
             a, b = netstat_mptcp(pre), netstat_mptcp(post)
             chars[f"mib_{side}"] = {k: b[k] - a.get(k, 0) for k in b if b[k] - a.get(k, 0)}
 
-    # Events that a MIB counter counts exactly: per side, TCBee's count equals the counter delta
+    # Events that a MIB counter counts exactly: per side, TCBee's count equals the counter delta.
+    # The side of a record is the one of its tuple (the server's port), which also holds for
+    # connections without a token the application could read (fallback).
+    def side_of(r):
+        return "server" if r["sport"] in (MPTCP_PORT, TCP_PORT) else "client"
     mib_bad, mib_seen = {}, {}
     for typ, mib in MIB_EXACT.items():
         for side in ("client", "server"):
-            got = sum(1 for t, s in tokens_side.items() if s == side for _, ev, _, _ in tb.get(t, [])
-                      if ev == typ)
+            got = sum(1 for r in pm if r["event"] == typ and side_of(r) == side)
             want = chars.get(f"mib_{side}", {}).get(mib, 0)
             mib_seen[f"{side} {mib}"] = (got, want)
             if got != want:
@@ -490,7 +493,8 @@ def fallback_checks(check, by_flow, tb, pm, mp_apps, chars, dbp):
     """E8 expectation, fixed after the pilot of 2026-10-09: the server's SYN lost its MPTCP
     option, so the server has a plain TCP socket (conn_id 0, no path manager records); the
     client falls back at the SYN-ACK and keeps its token: one flow tagged with it, path
-    manager records CLOSED and TOKEN_DESTROYED only."""
+    manager records FALLBACK (since the fallback event, 2026-10-10), CLOSED and
+    TOKEN_DESTROYED only."""
     server = [tuple(a["first"]) for a in mp_apps if a["side"] == "server"]
     client = [tuple(a["first"]) for a in mp_apps if a["side"] == "client"]
     bad = {str(t): dict(by_flow.get(t, {})) for t in server if set(by_flow.get(t, {})) - {0}}
@@ -509,7 +513,7 @@ def fallback_checks(check, by_flow, tb, pm, mp_apps, chars, dbp):
           {"bad": bad, "shared": sorted(shared), "other_flows": sorted(map(str, others))})
     ev_bad = {f"{tok:#010x}": [NAMES.get(ev, ev) for _, ev, _, _ in tb.get(tok, [])]
               for tok in tokens.values()
-              if [ev for _, ev, _, _ in tb.get(tok, [])] != [CLOSED, TOKEN_DESTROYED]}
+              if [ev for _, ev, _, _ in tb.get(tok, [])] != [FALLBACK, CLOSED, TOKEN_DESTROYED]}
     check("e8_client_events", not ev_bad, ev_bad)
     fb = chars.get("mib_client", {}).get("MPCapableFallbackSYNACK", 0)
     check("e8_mib_fallback", fb == len(client) == 10, {"MPCapableFallbackSYNACK": fb, "conns": len(client)})

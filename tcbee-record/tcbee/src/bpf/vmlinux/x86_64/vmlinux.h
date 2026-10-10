@@ -188,6 +188,9 @@ struct in_addr {
 
 struct mptcp_subflow_context {
 	u32 remote_token;
+	u32 request_mptcp: 1;
+	u32 mp_capable: 1;
+	u32 conn_finished: 1;
 	u32 backup: 1;
 	u32 stale: 1;
 	s16 local_id;

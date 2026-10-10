@@ -498,6 +498,20 @@ fexit:vmlinux:__mptcp_retransmit_pending_data {
 }
 """.replace("COND", cond("$sk")).replace("@REINJ", "@reinjected").replace(
         "@REQUEUE", "@requeued")
+    # fallback in the handshake: only the SYN-ACK of a subflow that requested MPTCP
+    s += """fentry:vmlinux:subflow_finish_connect {
+  $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.sk)->icsk_ulp_data;
+  if ($sf != 0 && $sf->request_mptcp && !$sf->conn_finished) { @connectcheck[args.sk] = 1; }
+}
+fexit:vmlinux:subflow_finish_connect {
+  if (@connectcheck[args.sk] == 1) {
+    delete(@connectcheck[args.sk]);
+    $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.sk)->icsk_ulp_data;
+    $sk = (struct sock *)args.sk;
+    if (!$sf->mp_capable) { COND { @FALLBACK = count(); } }
+  }
+}
+""".replace("COND", cond("$sk")).replace("@FALLBACK", "@fallback")
     return s
 
 
