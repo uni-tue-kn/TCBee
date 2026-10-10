@@ -132,13 +132,18 @@ def netstat_mptcp(path: Path) -> dict:
     return {}
 
 
-def truth_counts(path: Path) -> dict:
-    """{tcbee event type: count} from bpftrace -f json output"""
-    counts = collections.Counter()
-    single = {"@announced": ANNOUNCED, "@removed": REMOVED, "@token_destroyed": TOKEN_DESTROYED,
+# bpftrace maps of eval.py's TRUTH_SCRIPT that count one TCBee event type each (besides @ev,
+# which counts the kernel's event types by key)
+TRUTH_MAPS = {"@announced": ANNOUNCED, "@removed": REMOVED, "@token_destroyed": TOKEN_DESTROYED,
               "@subflow_connect": SUBFLOW_CONNECT, "@mp_fail": MP_FAIL,
               "@stale": SUBFLOW_STALE, "@prio_sent": MP_PRIO_SENT, "@reinjected": REINJECTED,
               "@requeued": PENDING_REQUEUED, "@fallback": FALLBACK}
+
+
+def truth_counts(path: Path) -> dict:
+    """{tcbee event type: count} from bpftrace -f json output"""
+    counts = collections.Counter()
+    single = TRUTH_MAPS
     for line in path.read_text(errors="replace").splitlines():
         try:
             o = json.loads(line)
@@ -400,7 +405,9 @@ def main() -> int:
     rec_bad = []
     if run.get("record_rc") != 0:
         rec_bad.append(f"rc {run.get('record_rc')}")
-    # tcbee-record goes on without a probe group that fails to load or attach, with a warning
+    # tcbee-record goes on without a probe group that fails to load or attach, with a warning:
+    # "Retrying without ..." and "Could not load ..." (eBPF/ebpf_runner.rs), "... not recorded"
+    # (a missing kernel function, eBPF/probes)
     err = rep / "record.err"
     for line in (err.read_text(errors="replace").splitlines() if err.exists() else []):
         if re.search(r"Retrying without|not recorded|Could not load|failed to load", line):
@@ -444,6 +451,11 @@ def main() -> int:
     # Reinjected bytes per connection equal the connection's own count (MPTCP_INFO
     # mptcpi_bytes_retrans, read by the application at close); MPTCPRetrans moves with them
     reinj_bad = {}
+    if not fallback_mode:
+        # every MPTCP connection reports its retransmitted bytes (MPTCP_INFO, 6.5 and newer)
+        missing_br = [a["first"] for a in mp_apps
+                      if a["token"] and not a["fallback"] and a.get("bytes_retrans") is None]
+        check("apps_report_bytes_retrans", not missing_br, missing_br[:5])
     for a in mp_apps:
         if a["token"] and a.get("bytes_retrans") is not None:
             got = sum(r["data_len"] for _, ev, _, r in tb.get(a["token"], []) if ev == REINJECTED)
@@ -468,8 +480,11 @@ def main() -> int:
               and prio_tx >= 1, {"events": [(r["backup"], r["error"]) for r in prio],
                                  "MPPrioTx": prio_tx})
     if scenario in ("e6", "stale"):
-        # the blackholed path must be marked stale on the client
+        # the blackholed path must be marked stale on the client, and the connection must
+        # reinject its data
         check("stale_seen", mib_seen["client SubflowStale"][1] > 0, mib_seen["client SubflowStale"])
+        rc = chars["reinjected_client"]
+        check("reinjection_seen", rc["events"] > 0 and rc["MPTCPRetrans"] > 0, rc)
 
     if fallback_mode:
         chars["fallback_facts"] = fallback_facts(by_flow, tb, mp_apps)
@@ -493,8 +508,7 @@ def fallback_checks(check, by_flow, tb, pm, mp_apps, chars, dbp):
     """E8 expectation, fixed after the pilot of 2026-10-09: the server's SYN lost its MPTCP
     option, so the server has a plain TCP socket (conn_id 0, no path manager records); the
     client falls back at the SYN-ACK and keeps its token: one flow tagged with it, path
-    manager records FALLBACK (since the fallback event, 2026-10-10), CLOSED and
-    TOKEN_DESTROYED only."""
+    manager records FALLBACK, CLOSED and TOKEN_DESTROYED only."""
     server = [tuple(a["first"]) for a in mp_apps if a["side"] == "server"]
     client = [tuple(a["first"]) for a in mp_apps if a["side"] == "client"]
     bad = {str(t): dict(by_flow.get(t, {})) for t in server if set(by_flow.get(t, {})) - {0}}

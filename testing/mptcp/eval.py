@@ -427,61 +427,56 @@ def prog_stats(pid: int) -> list:
     return [p for p in progs if p.get("id") in ids]
 
 
-def truth_script(ports: list[int]) -> str:
-    """count() per hook (and per event type) with TCBee's path manager filter: the socket is
-    the subflow if the hook has one, else the connection; no record for a socket without
-    ports; sport or dport in the port list (tcbee.bpf.c trace_mptcp_pm)"""
-    def cond(sk: str) -> str:
-        sp = f"{sk}->__sk_common.skc_num"
-        # skc_dport is in network order: compare with the byte-swapped port
-        dp = f"{sk}->__sk_common.skc_dport"
-        ports_c = " || ".join(f"$sp == {p} || $dp == {((p & 0xFF) << 8) | (p >> 8)}"
-                              for p in ports)
-        return (f"$sp = (uint16){sp}; $dp = (uint16){dp};\n"
-                f"  if (($sp != 0 || $dp != 0) && ({ports_c}))")
-
-    s = "// truth for tcbee -M pm: same hooks, separate programs, count() only\n"
-    s += ("fentry:vmlinux:mptcp_event {\n"
-          "  $sk = (struct sock *)args.msk;\n"
-          "  if (args.ssk != 0) { $sk = (struct sock *)args.ssk; }\n"
-          "  if ($sk == 0) { return; }\n"
-          f"  {cond('$sk')} {{ @ev[args.type] = count(); }}\n}}\n")
-    s += ("fentry:vmlinux:mptcp_event_addr_announced {\n"
-          "  $sk = (struct sock *)args.ssk;\n"
-          f"  {cond('$sk')} {{ @announced = count(); }}\n}}\n")
-    s += ("fentry:vmlinux:mptcp_event_addr_removed {\n"
-          "  $sk = (struct sock *)args.msk;\n"
-          f"  {cond('$sk')} {{ @removed = count(); }}\n}}\n")
-    s += ("fentry:vmlinux:mptcp_token_destroy {\n"
-          "  if (args.msk->token == 0) { return; }\n"
-          "  $sk = (struct sock *)args.msk;\n"
-          f"  {cond('$sk')} {{ @token_destroyed = count(); }}\n}}\n")
-    s += ("fexit:vmlinux:__mptcp_subflow_connect {\n"
-          "  $sk = (struct sock *)args.sk;\n"
-          f"  {cond('$sk')} {{ @subflow_connect = count(); }}\n}}\n")
-    s += ("fentry:vmlinux:mptcp_pm_mp_fail_received {\n"
-          "  $sk = (struct sock *)args.sk;\n"
-          f"  {cond('$sk')} {{ @mp_fail = count(); }}\n}}\n")
-    s += ("fexit:vmlinux:mptcp_pm_nl_mp_prio_send_ack {\n"
-          "  $sk = (struct sock *)args.msk;\n"
-          f"  {cond('$sk')} {{ @prio_sent = count(); }}\n}}\n")
-    # stale: only a transition counts, the check returns early for a stale subflow
-    stale = """fentry:vmlinux:mptcp_pm_nl_subflow_chk_stale {{
+# bpftrace counters on TCBee's path manager hooks, with TCBee's conditions: the socket is the
+# subflow if the hook has one, else the connection; COND is TCBee's filter on $sk (cond()).
+# Hooks with an entry and an exit program count only what TCBee records: a new stale
+# transition, a retransmission that resent bytes (+1: a map value of 0 means unset), the SYN-ACK
+# of a subflow that requested MPTCP and fell back.
+TRUTH_SCRIPT = """// truth for tcbee -M pm: same hooks, separate programs, count() only
+fentry:vmlinux:mptcp_event {
+  $sk = (struct sock *)args.msk;
+  if (args.ssk != 0) { $sk = (struct sock *)args.ssk; }
+  if ($sk == 0) { return; }
+  COND { @ev[args.type] = count(); }
+}
+fentry:vmlinux:mptcp_event_addr_announced {
+  $sk = (struct sock *)args.ssk;
+  COND { @announced = count(); }
+}
+fentry:vmlinux:mptcp_event_addr_removed {
+  $sk = (struct sock *)args.msk;
+  COND { @removed = count(); }
+}
+fentry:vmlinux:mptcp_token_destroy {
+  if (args.msk->token == 0) { return; }
+  $sk = (struct sock *)args.msk;
+  COND { @token_destroyed = count(); }
+}
+fexit:vmlinux:__mptcp_subflow_connect {
+  $sk = (struct sock *)args.sk;
+  COND { @subflow_connect = count(); }
+}
+fentry:vmlinux:mptcp_pm_mp_fail_received {
+  $sk = (struct sock *)args.sk;
+  COND { @mp_fail = count(); }
+}
+fexit:vmlinux:mptcp_pm_nl_mp_prio_send_ack {
+  $sk = (struct sock *)args.msk;
+  COND { @prio_sent = count(); }
+}
+fentry:vmlinux:mptcp_pm_nl_subflow_chk_stale {
   $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.ssk)->icsk_ulp_data;
-  if ($sf != 0 && $sf->stale == 0) {{ @stalecheck[args.ssk] = 1; }}
-}}
-fexit:vmlinux:mptcp_pm_nl_subflow_chk_stale {{
-  if (@stalecheck[args.ssk] == 1) {{
+  if ($sf != 0 && $sf->stale == 0) { @stalecheck[args.ssk] = 1; }
+}
+fexit:vmlinux:mptcp_pm_nl_subflow_chk_stale {
+  if (@stalecheck[args.ssk] == 1) {
     delete(@stalecheck[args.ssk]);
     $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.ssk)->icsk_ulp_data;
     $sk = (struct sock *)args.ssk;
-    if ($sf->stale) {{ COND {{ @STALE = count(); }} }}
-  }}
-}}
-"""
-    s += stale.format().replace("COND", cond("$sk")).replace("@STALE", "@stale")
-    # reinjection: only a call after which the retransmitted bytes grew (+1: 0 means unset)
-    s += """fentry:vmlinux:__mptcp_retrans {
+    if ($sf->stale) { COND { @stale = count(); } }
+  }
+}
+fentry:vmlinux:__mptcp_retrans {
   @rtxstart[args.sk] = ((struct mptcp_sock *)args.sk)->bytes_retrans + 1;
 }
 fexit:vmlinux:__mptcp_retrans {
@@ -489,17 +484,14 @@ fexit:vmlinux:__mptcp_retrans {
   if ($start != 0) {
     delete(@rtxstart[args.sk]);
     $sk = (struct sock *)args.sk;
-    if (((struct mptcp_sock *)args.sk)->bytes_retrans + 1 > $start) { COND { @REINJ = count(); } }
+    if (((struct mptcp_sock *)args.sk)->bytes_retrans + 1 > $start) { COND { @reinjected = count(); } }
   }
 }
 fexit:vmlinux:__mptcp_retransmit_pending_data {
   $sk = (struct sock *)args.sk;
-  if (retval) { COND { @REQUEUE = count(); } }
+  if (retval) { COND { @requeued = count(); } }
 }
-""".replace("COND", cond("$sk")).replace("@REINJ", "@reinjected").replace(
-        "@REQUEUE", "@requeued")
-    # fallback in the handshake: only the SYN-ACK of a subflow that requested MPTCP
-    s += """fentry:vmlinux:subflow_finish_connect {
+fentry:vmlinux:subflow_finish_connect {
   $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.sk)->icsk_ulp_data;
   if ($sf != 0 && $sf->request_mptcp && !$sf->conn_finished) { @connectcheck[args.sk] = 1; }
 }
@@ -508,11 +500,20 @@ fexit:vmlinux:subflow_finish_connect {
     delete(@connectcheck[args.sk]);
     $sf = (struct mptcp_subflow_context *)((struct inet_connection_sock *)args.sk)->icsk_ulp_data;
     $sk = (struct sock *)args.sk;
-    if (!$sf->mp_capable) { COND { @FALLBACK = count(); } }
+    if (!$sf->mp_capable) { COND { @fallback = count(); } }
   }
 }
-""".replace("COND", cond("$sk")).replace("@FALLBACK", "@fallback")
-    return s
+"""
+
+
+def truth_script(ports: list[int]) -> str:
+    """TRUTH_SCRIPT with TCBee's port filter: no record for a socket without ports, sport or
+    dport in the port list (tcbee.bpf.c trace_mptcp_pm)"""
+    # skc_dport is in network order: compare with the byte-swapped port
+    ports_c = " || ".join(f"$sp == {p} || $dp == {((p & 0xFF) << 8) | (p >> 8)}" for p in ports)
+    cond = ("$sp = (uint16)$sk->__sk_common.skc_num; $dp = (uint16)$sk->__sk_common.skc_dport;\n"
+            f"  if (($sp != 0 || $dp != 0) && ({ports_c}))")
+    return TRUTH_SCRIPT.replace("COND", cond)
 
 
 def main():
