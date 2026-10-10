@@ -9,9 +9,11 @@ use egui::{RichText, ScrollArea};
 use egui_plot::{Corner, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
-    TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED, TCBEE_MPTCP_MP_FAIL,
-    TCBEE_MPTCP_REMOVED, TCBEE_MPTCP_SUBFLOW_CONNECT, TCBEE_MPTCP_SUB_CLOSED,
-    TCBEE_MPTCP_SUB_ESTABLISHED, TCBEE_MPTCP_SUB_PRIORITY, TCBEE_MPTCP_TOKEN_DESTROYED,
+    TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
+    TCBEE_MPTCP_MP_FAIL, TCBEE_MPTCP_MP_PRIO_SENT, TCBEE_MPTCP_PENDING_REQUEUED,
+    TCBEE_MPTCP_REINJECTED, TCBEE_MPTCP_REMOVED, TCBEE_MPTCP_SUBFLOW_CONNECT,
+    TCBEE_MPTCP_SUBFLOW_STALE, TCBEE_MPTCP_SUB_CLOSED, TCBEE_MPTCP_SUB_ESTABLISHED,
+    TCBEE_MPTCP_SUB_PRIORITY, TCBEE_MPTCP_TOKEN_DESTROYED,
 };
 use ts_storage::{ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind};
 
@@ -76,6 +78,11 @@ fn pm_event_name(event: i64) -> &'static str {
         TCBEE_MPTCP_TOKEN_DESTROYED => "token destroyed",
         TCBEE_MPTCP_SUBFLOW_CONNECT => "subflow connect",
         TCBEE_MPTCP_MP_FAIL => "MP_FAIL",
+        TCBEE_MPTCP_SUBFLOW_STALE => "subflow stale",
+        TCBEE_MPTCP_MP_PRIO_SENT => "MP_PRIO sent",
+        TCBEE_MPTCP_REINJECTED => "reinjected",
+        TCBEE_MPTCP_PENDING_REQUEUED => "pending data requeued",
+        TCBEE_MPTCP_FALLBACK => "fallback to TCP",
         _ => "event",
     }
 }
@@ -126,7 +133,16 @@ fn subflow_events(
             .unwrap_or_default()
     };
     let events = column("event");
-    let others = ["token", "error", "addr_id", "addr_family", "addr_port"].map(|n| column(n));
+    let others = [
+        "token",
+        "error",
+        "addr_id",
+        "addr_family",
+        "addr_port",
+        "backup",
+        "data_len",
+    ]
+    .map(|n| column(n));
     let words = ["addr_0", "addr_1", "addr_2", "addr_3"].map(|n| column(n));
     // Columns of one table, read in the same (ts, seq) order: rows line up unless the reads
     // disagree, then only the event names are shown
@@ -134,7 +150,7 @@ fn subflow_events(
         .iter()
         .chain(&words)
         .all(|c| c.len() == events.len() && c.iter().zip(&events).all(|(a, b)| a.0 == b.0));
-    let [token, error, addr_id, family, port] = others;
+    let [token, error, addr_id, family, port, backup, data_len] = others;
     let span = connection.start_ts as f64..=connection.end_ts as f64;
     let subflow = sub.member.subflow_id.map(|id| format!(" (subflow {id})"));
     let mut out = Vec::new();
@@ -157,6 +173,16 @@ fn subflow_events(
         }
         if int(&error) != 0 {
             label.push_str(&format!(" failed ({})", int(&error)));
+        }
+        if event == TCBEE_MPTCP_MP_PRIO_SENT as i64 {
+            label.push_str(if int(&backup) != 0 {
+                " backup"
+            } else {
+                " not backup"
+            });
+        }
+        if event == TCBEE_MPTCP_REINJECTED as i64 {
+            label.push_str(&format!(" {} B", int(&data_len)));
         }
         label.push_str(subflow.as_deref().unwrap_or(""));
         out.push((*t, label));
@@ -582,6 +608,8 @@ mod tests {
         assert_eq!(pm_event_name(1), "created");
         assert_eq!(pm_event_name(10), "subflow established");
         assert_eq!(pm_event_name(100), "token destroyed");
+        assert_eq!(pm_event_name(105), "reinjected");
+        assert_eq!(pm_event_name(107), "fallback to TCP");
         assert_eq!(pm_event_name(-1), "event");
     }
 
