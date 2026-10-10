@@ -197,15 +197,15 @@ fn bbr() {
 fn mptcp_pm() {
     let x = Expect {
         source: "mptcp_pm",
-        entry_size: 111,
+        entry_size: 119,
         columns: "event:U8 token:U32 remote_token:U32 subflow_id:U32 error:I64 local_id:U8 \
             remote_id:U8 backup:U8 addr_id:U8 addr_family:U16 addr_port:U16 addr_0:U32 addr_1:U32 \
-            addr_2:U32 addr_3:U32",
+            addr_2:U32 addr_3:U32 data_seq:U64",
         file: "mptcp_pm.tcp",
         records: 12,
         ts0: 1_000_000_000_000,
         key0: tuple("10.0.0.1", "10.0.0.2", 40000, 5201),
-        row0: &[1, 0x1000, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        row0: &[1, 0x1000, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     };
     check::<mptcp_pm_entry>(&x);
 }
@@ -530,7 +530,7 @@ fn file_table_maps_every_trace_file() {
         ("cwnd", 74, 1),
         ("tcp6", 67, 4),
         ("tcp4", 43, 4),
-        ("mptcp_pm", 111, 15),
+        ("mptcp_pm", 119, 16),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }

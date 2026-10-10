@@ -44,11 +44,11 @@ SOCK_FIELDS = (
     "bytes_received segs_out segs_in snd_wscale rcv_wscale conn_id"
 ).split()
 CWND = struct.Struct(HEADER + "II")
-PM = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHHIIII")
+PM = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHHIIIIQ")
 PM_FIELDS = (
     "time hook_seq addr_v4 src_v6 dst_v6 sport dport family token remote_token subflow_id "
     "error event local_id remote_id backup addr_id addr_family addr_port addr_0 addr_1 addr_2 "
-    "addr_3"
+    "addr_3 data_seq"
 ).split()
 DELIM = 4
 AF_INET = 2

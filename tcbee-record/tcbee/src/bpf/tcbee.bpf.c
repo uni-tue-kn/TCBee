@@ -712,12 +712,13 @@ static __always_inline void mptcp_pm_addr(struct mptcp_pm_entry *rec,
 
 /*
  * The record's tuple is the one of ssk if given, else the one of the connection. addr is the
- * address of the event if there is one, addr_id the address id of events that only have an id.
+ * address of the event if there is one, addr_id the address id of events that only have an id,
+ * data_seq a data-level sequence number of events that have one.
  */
 static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *msk,
 					  const struct sock *ssk,
 					  const struct mptcp_addr_info *addr, __u8 addr_id,
-					  __s64 error)
+					  __s64 error, __u64 data_seq)
 {
 	struct sock *sk = ssk ? (struct sock *)ssk : (struct sock *)msk;
 	struct mptcp_pm_entry *rec;
@@ -746,6 +747,7 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 	fill_header(rec, sk, sport, dport, hook_seq);
 	rec->event = event;
 	rec->error = error;
+	rec->data_seq = data_seq;
 	if (msk)
 		rec->token = BPF_CORE_READ(msk, token);
 	if (ssk)
@@ -762,21 +764,21 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 SEC("fentry/mptcp_event")
 int BPF_PROG(mptcp_pm_event, int type, const struct mptcp_sock *msk, const struct sock *ssk)
 {
-	return trace_mptcp_pm(type, msk, ssk, NULL, 0, 0);
+	return trace_mptcp_pm(type, msk, ssk, NULL, 0, 0, 0);
 }
 
 /* The peer announced an address */
 SEC("fentry/mptcp_event_addr_announced")
 int BPF_PROG(mptcp_pm_announced, const struct sock *ssk, const struct mptcp_addr_info *info)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, 0, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, 0, 0, 0);
 }
 
 /* The peer removed the address with this id */
 SEC("fentry/mptcp_event_addr_removed")
 int BPF_PROG(mptcp_pm_removed, const struct mptcp_sock *msk, __u8 id)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_REMOVED, msk, NULL, NULL, id, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_REMOVED, msk, NULL, NULL, id, 0, 0);
 }
 
 /* End of the token's life: a later connection may get the same token */
@@ -785,7 +787,7 @@ int BPF_PROG(mptcp_pm_token_destroy, struct mptcp_sock *msk)
 {
 	if (!BPF_CORE_READ(msk, token))
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, 0, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, 0, 0, 0);
 }
 
 /* A subflow the path manager tried to open to the address remote */
@@ -794,11 +796,11 @@ int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_
 	     const struct mptcp_addr_info *remote, int ret)
 {
 	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_CONNECT, (const struct mptcp_sock *)sk, NULL,
-			      remote, 0, ret);
+			      remote, 0, ret, 0);
 }
 
 SEC("fentry/mptcp_pm_mp_fail_received")
-int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk)
+int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk, __u64 fail_seq)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL, 0, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL, 0, 0, fail_seq);
 }

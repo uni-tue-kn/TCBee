@@ -200,7 +200,7 @@ enum tcbee_mptcp_event {
 	TCBEE_MPTCP_TOKEN_DESTROYED = 100,
 	/* The path manager tried to open a subflow, error holds the result */
 	TCBEE_MPTCP_SUBFLOW_CONNECT = 101,
-	/* The peer sent MP_FAIL on a subflow */
+	/* The peer sent MP_FAIL on a subflow, data_seq holds the sequence it reported */
 	TCBEE_MPTCP_MP_FAIL = 102,
 };
 
@@ -237,6 +237,8 @@ struct mptcp_pm_entry {
 	uint32_t addr_1;
 	uint32_t addr_2;
 	uint32_t addr_3;
+	/* A data-level (MPTCP) sequence number: MP_FAIL the sequence the peer reported */
+	uint64_t data_seq;
 };
 
 /* tracepoint tcp/tcp_bad_csum, TCP_BAD_CSUM_QUEUE. IPv4 addresses only. */
@@ -287,7 +289,7 @@ _Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
 _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");
 _Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
-_Static_assert(sizeof(struct mptcp_pm_entry) == 120, "mptcp_pm_entry size");
+_Static_assert(sizeof(struct mptcp_pm_entry) == 128, "mptcp_pm_entry size");
 /* The address is read into addr_0 to addr_3 at once */
 _Static_assert(__builtin_offsetof(struct mptcp_pm_entry, addr_3) ==
 		       __builtin_offsetof(struct mptcp_pm_entry, addr_0) + 12,
