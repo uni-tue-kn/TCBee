@@ -7,7 +7,7 @@ use crate::{
 };
 
 event_schema! {
-    mptcp_pm_entry => "mptcp_pm", 119 {
+    mptcp_pm_entry => "mptcp_pm", 123 {
         event: U8,
         token: U32,
         remote_token: U32,
@@ -24,6 +24,7 @@ event_schema! {
         addr_2: U32,
         addr_3: U32,
         data_seq: U64,
+        data_len: U32,
     }
     {
         fn flow_key(&self) -> IpTuple {

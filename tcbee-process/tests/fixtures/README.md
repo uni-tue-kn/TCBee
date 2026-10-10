@@ -23,7 +23,7 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | File | Binding | Record size (bytes) | Records | Origin |
 | --- | --- | --- | --- | --- |
 | `bbr.tcp` | `bbr_trace_entry` | 118 | 500 | generated |
-| `mptcp_pm.tcp` | `mptcp_pm_entry` | 119 | 12 | generated |
+| `mptcp_pm.tcp` | `mptcp_pm_entry` | 123 | 12 | generated |
 | `cubic.tcp` | `cubic_trace_entry` | 122 | 2000 | real |
 | `tcp_probe.tcp` | `tcp_probe_entry` | 124 | 2000 | real |
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |

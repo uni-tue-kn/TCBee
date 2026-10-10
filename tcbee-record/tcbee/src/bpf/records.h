@@ -212,6 +212,13 @@ enum tcbee_mptcp_event {
 	 * flag, error 0 or the negative error (no subflow uses the address)
 	 */
 	TCBEE_MPTCP_MP_PRIO_SENT = 104,
+	/*
+	 * The connection retransmitted data at the data level (MPTCP) after its retransmission
+	 * timeout, on a subflow the scheduler chose, possibly another than the one that lost it
+	 */
+	TCBEE_MPTCP_REINJECTED = 105,
+	/* Data that waited on a subflow (stale or closing) is queued again for the other subflows */
+	TCBEE_MPTCP_PENDING_REQUEUED = 106,
 };
 
 /*
@@ -248,8 +255,13 @@ struct mptcp_pm_entry {
 	uint32_t addr_1;
 	uint32_t addr_2;
 	uint32_t addr_3;
-	/* A data-level (MPTCP) sequence number: MP_FAIL the sequence the peer reported */
+	/*
+	 * A data-level (MPTCP) sequence number: MP_FAIL the sequence the peer reported,
+	 * REINJECTED and PENDING_REQUEUED the connection's oldest unacknowledged byte
+	 */
 	uint64_t data_seq;
+	/* REINJECTED: the bytes that the connection retransmitted at the data level */
+	uint32_t data_len;
 };
 
 /* tracepoint tcp/tcp_bad_csum, TCP_BAD_CSUM_QUEUE. IPv4 addresses only. */
@@ -300,7 +312,7 @@ _Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
 _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");
 _Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
-_Static_assert(sizeof(struct mptcp_pm_entry) == 128, "mptcp_pm_entry size");
+_Static_assert(sizeof(struct mptcp_pm_entry) == 136, "mptcp_pm_entry size");
 /* The address is read into addr_0 to addr_3 at once */
 _Static_assert(__builtin_offsetof(struct mptcp_pm_entry, addr_3) ==
 		       __builtin_offsetof(struct mptcp_pm_entry, addr_0) + 12,

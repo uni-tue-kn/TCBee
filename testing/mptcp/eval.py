@@ -480,6 +480,24 @@ fexit:vmlinux:mptcp_pm_nl_subflow_chk_stale {{
 }}
 """
     s += stale.format().replace("COND", cond("$sk")).replace("@STALE", "@stale")
+    # reinjection: only a call after which the retransmitted bytes grew (+1: 0 means unset)
+    s += """fentry:vmlinux:__mptcp_retrans {
+  @rtxstart[args.sk] = ((struct mptcp_sock *)args.sk)->bytes_retrans + 1;
+}
+fexit:vmlinux:__mptcp_retrans {
+  $start = @rtxstart[args.sk];
+  if ($start != 0) {
+    delete(@rtxstart[args.sk]);
+    $sk = (struct sock *)args.sk;
+    if (((struct mptcp_sock *)args.sk)->bytes_retrans + 1 > $start) { COND { @REINJ = count(); } }
+  }
+}
+fexit:vmlinux:__mptcp_retransmit_pending_data {
+  $sk = (struct sock *)args.sk;
+  if (retval) { COND { @REQUEUE = count(); } }
+}
+""".replace("COND", cond("$sk")).replace("@REINJ", "@reinjected").replace(
+        "@REQUEUE", "@requeued")
     return s
 
 

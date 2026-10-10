@@ -44,11 +44,11 @@ SOCK_FIELDS = (
     "bytes_received segs_out segs_in snd_wscale rcv_wscale conn_id"
 ).split()
 CWND = struct.Struct(HEADER + "II")
-PM = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHHIIIIQ")
+PM = struct.Struct("<QQQ16s16sHHHIIIqBBBBBHHIIIIQI")
 PM_FIELDS = (
     "time hook_seq addr_v4 src_v6 dst_v6 sport dport family token remote_token subflow_id "
     "error event local_id remote_id backup addr_id addr_family addr_port addr_0 addr_1 addr_2 "
-    "addr_3 data_seq"
+    "addr_3 data_seq data_len"
 ).split()
 DELIM = 4
 AF_INET = 2
@@ -61,7 +61,7 @@ EXPECTED_APPS = {"static": (1, 1, 1), "churn": (50, 50, 50), "dynamic": (1, 1, 0
 CREATED, ESTABLISHED, CLOSED, ANNOUNCED, REMOVED = 1, 2, 3, 6, 7
 SUB_ESTABLISHED, SUB_CLOSED, SUB_PRIORITY = 10, 11, 13
 TOKEN_DESTROYED, SUBFLOW_CONNECT, MP_FAIL = 100, 101, 102
-SUBFLOW_STALE, MP_PRIO_SENT = 103, 104
+SUBFLOW_STALE, MP_PRIO_SENT, REINJECTED, PENDING_REQUEUED = 103, 104, 105, 106
 MONITOR_TYPES = {
     "CREATED": CREATED, "ESTABLISHED": ESTABLISHED, "CLOSED": CLOSED,
     "ANNOUNCED": ANNOUNCED, "REMOVED": REMOVED, "SF_ESTABLISHED": SUB_ESTABLISHED,
@@ -69,7 +69,8 @@ MONITOR_TYPES = {
 }
 NAMES = {v: k for k, v in MONITOR_TYPES.items()} | {
     TOKEN_DESTROYED: "TOKEN_DESTROYED", SUBFLOW_CONNECT: "SUBFLOW_CONNECT", MP_FAIL: "MP_FAIL",
-    SUBFLOW_STALE: "SUBFLOW_STALE", MP_PRIO_SENT: "MP_PRIO_SENT"}
+    SUBFLOW_STALE: "SUBFLOW_STALE", MP_PRIO_SENT: "MP_PRIO_SENT", REINJECTED: "REINJECTED",
+    PENDING_REQUEUED: "PENDING_REQUEUED"}
 # TCBee event types that a kernel MIB counter (MPTcpExt) counts exactly, per namespace
 MIB_EXACT = {SUBFLOW_STALE: "SubflowStale"}
 
@@ -136,7 +137,8 @@ def truth_counts(path: Path) -> dict:
     counts = collections.Counter()
     single = {"@announced": ANNOUNCED, "@removed": REMOVED, "@token_destroyed": TOKEN_DESTROYED,
               "@subflow_connect": SUBFLOW_CONNECT, "@mp_fail": MP_FAIL,
-              "@stale": SUBFLOW_STALE, "@prio_sent": MP_PRIO_SENT}
+              "@stale": SUBFLOW_STALE, "@prio_sent": MP_PRIO_SENT, "@reinjected": REINJECTED,
+              "@requeued": PENDING_REQUEUED}
     for line in path.read_text(errors="replace").splitlines():
         try:
             o = json.loads(line)
@@ -436,6 +438,23 @@ def main() -> int:
     if not sigstop:
         check("events_vs_mib", not mib_bad, mib_bad)
     chars["events_vs_mib"] = mib_seen
+    # Reinjected bytes per connection equal the connection's own count (MPTCP_INFO
+    # mptcpi_bytes_retrans, read by the application at close); MPTCPRetrans moves with them
+    reinj_bad = {}
+    for a in mp_apps:
+        if a["token"] and a.get("bytes_retrans") is not None:
+            got = sum(r["data_len"] for _, ev, _, r in tb.get(a["token"], []) if ev == REINJECTED)
+            if got != a["bytes_retrans"]:
+                reinj_bad[f"{a['side']} {a['token']:#010x}"] = (got, a["bytes_retrans"])
+    if not sigstop:
+        check("reinjected_bytes", not reinj_bad, reinj_bad)
+    for side in ("client", "server"):
+        n = sum(1 for t, s in tokens_side.items() if s == side for _, ev, _, _ in tb.get(t, [])
+                if ev == REINJECTED)
+        mib = chars.get(f"mib_{side}", {}).get("MPTCPRetrans", 0)
+        chars[f"reinjected_{side}"] = {"events": n, "MPTCPRetrans": mib}
+        if not sigstop:
+            check(f"reinjected_iff_mib_{side}", (n > 0) == (mib > 0), (n, mib))
     if scenario == "dynamic":
         # The client marks endpoint 1 backup once: one MP_PRIO for its address, with the flag
         # set, and the kernel sends it on the subflows of that address (MPPrioTx counts those)

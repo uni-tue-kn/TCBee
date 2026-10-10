@@ -32,8 +32,11 @@ MPTCP_SUBFLOW_ADDRS = 3
 CHUNK = 16384
 SAMPLE_S = 0.05
 
-# struct mptcp_info: 6 x u8, then u32 flags at 8 and u32 token at 12
+# struct mptcp_info: 6 x u8, then u32 flags at 8 and u32 token at 12; u32 retransmits at 44 and
+# u64 bytes_retrans at 48 (6.5 and newer)
 MPTCP_INFO_HEAD = struct.Struct("<6B2xII")
+MPTCP_INFO_RETRANS = struct.Struct("<IQ")
+MPTCP_INFO_RETRANS_OFFSET = 44
 MPTCP_INFO_FLAG_FALLBACK = 1
 # struct mptcp_subflow_data (4 x u32), then struct mptcp_subflow_addrs per subflow: the local
 # and the remote address, each a sockaddr_storage (128 bytes)
@@ -50,13 +53,17 @@ def protocol(name: str) -> int:
 
 
 def mptcp_info(sock: socket.socket):
-    """(token, fallback) or None if the socket answers no MPTCP_INFO (plain TCP, fallback)"""
+    """(token, fallback, bytes_retrans) or None if the socket answers no MPTCP_INFO (plain TCP,
+    fallback); bytes_retrans is None on kernels whose mptcp_info ends earlier"""
     try:
         raw = sock.getsockopt(SOL_MPTCP, MPTCP_INFO, 256)
     except OSError:
         return None
     *_, flags, token = MPTCP_INFO_HEAD.unpack_from(raw)
-    return token, bool(flags & MPTCP_INFO_FLAG_FALLBACK)
+    bytes_retrans = None
+    if len(raw) >= MPTCP_INFO_RETRANS_OFFSET + MPTCP_INFO_RETRANS.size:
+        _, bytes_retrans = MPTCP_INFO_RETRANS.unpack_from(raw, MPTCP_INFO_RETRANS_OFFSET)
+    return token, bool(flags & MPTCP_INFO_FLAG_FALLBACK), bytes_retrans
 
 
 def _sockaddr_in(raw: bytes, off: int):
@@ -97,6 +104,7 @@ class ConnLog:
         self.first = (local[0], local[1], remote[0], remote[1])
         self.token = None
         self.fallback = None
+        self.bytes_retrans = None
         self.info_error = False
         self.subflows = set()
         self.next_sample = 0.0
@@ -112,7 +120,7 @@ class ConnLog:
         if info is None:
             self.info_error = True
             return
-        self.token, self.fallback = info
+        self.token, self.fallback, self.bytes_retrans = info
         self.subflows.update(subflow_addrs(self.sock))
 
     def write(self, path: str | None) -> None:
@@ -121,6 +129,7 @@ class ConnLog:
         line = json.dumps({
             "side": self.side, "proto": self.proto, "first": self.first,
             "token": self.token, "fallback": self.fallback, "info_error": self.info_error,
+            "bytes_retrans": self.bytes_retrans,
             "subflows": sorted(self.subflows), "start_ns": self.start,
             "end_ns": time.monotonic_ns(),
         })

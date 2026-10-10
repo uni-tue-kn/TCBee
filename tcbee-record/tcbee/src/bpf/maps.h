@@ -86,6 +86,19 @@ struct {
 	__type(value, __u8);
 } MPTCP_STALE_CHECK SEC(".maps");
 
+/* MPTCP connections in __mptcp_retrans, key the connection's struct sock */
+struct mptcp_retrans_start {
+	__u64 bytes_retrans;
+	__u64 snd_una;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, struct mptcp_retrans_start);
+} MPTCP_RETRANS_START SEC(".maps");
+
 /* Flows seen by any probe, key and value are the canonical tuple */
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);

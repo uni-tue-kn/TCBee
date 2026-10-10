@@ -198,6 +198,8 @@ struct mptcp_subflow_context {
 };
 
 struct mptcp_sock {
+	u64 snd_una;
+	u64 bytes_retrans;
 	u32 token;
 };
 
