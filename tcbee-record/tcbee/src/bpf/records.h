@@ -204,7 +204,8 @@ enum tcbee_mptcp_event {
 	TCBEE_MPTCP_MP_FAIL = 102,
 	/*
 	 * The path manager marked a subflow stale: it made no progress over several
-	 * retransmission timeouts while another subflow could take its data
+	 * retransmission timeouts while another subflow could take its data. Its time is the end
+	 * of the check, which already requeued the subflow's pending data (PENDING_REQUEUED).
 	 */
 	TCBEE_MPTCP_SUBFLOW_STALE = 103,
 	/*
@@ -244,7 +245,10 @@ struct mptcp_pm_entry {
 	int64_t error;
 	/* enum tcbee_mptcp_event */
 	uint8_t event;
-	/* Address ids of the subflow's two ends (255: not set yet), and its backup flag */
+	/*
+	 * Address ids of the subflow's two ends (255: not set yet), and its backup flag;
+	 * MP_PRIO_SENT has no subflow, backup is the new flag of addr
+	 */
 	uint8_t local_id;
 	uint8_t remote_id;
 	uint8_t backup;
@@ -263,7 +267,8 @@ struct mptcp_pm_entry {
 	uint32_t addr_3;
 	/*
 	 * A data-level (MPTCP) sequence number: MP_FAIL the sequence the peer reported,
-	 * REINJECTED and PENDING_REQUEUED the connection's oldest unacknowledged byte
+	 * REINJECTED and PENDING_REQUEUED the connection's oldest unacknowledged byte when the
+	 * kernel function started (ACKs may move it on before the first byte is resent)
 	 */
 	uint64_t data_seq;
 	/* REINJECTED: the bytes that the connection retransmitted at the data level */

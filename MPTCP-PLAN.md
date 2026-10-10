@@ -12,7 +12,7 @@ Status: implemented on branch `mptcp` (see "As implemented" below); the rest of 
 
 Differences to the plan below:
 - **Recording.** `-M` records path manager and lifecycle events (`mptcp_pm.tcp`) and, with `-k` or `-w`, tags sock and cwnd records with the local token (`conn_id`, always present, 0 without `-M`). `--mptcp-modes tag,pm` selects parts. No trace format manifest: compatibility with older recordings was not needed.
-- **Hooks.** `mptcp_event`, `mptcp_event_addr_announced`, `mptcp_event_addr_removed`, `mptcp_token_destroy`, fexit `__mptcp_subflow_connect`, `mptcp_pm_mp_fail_received` (with the reported data sequence). Since branch `mptcp-events` also, all on the same low-rate ring:
+- **Hooks.** `mptcp_event`, `mptcp_event_addr_announced`, `mptcp_event_addr_removed`, `mptcp_token_destroy`, fexit `__mptcp_subflow_connect`, `mptcp_pm_mp_fail_received` (with the reported data sequence). Also, all on the same low-rate ring:
   - stale subflows: fentry+fexit `mptcp_pm_nl_subflow_chk_stale`, only the transition (it runs on every MPTCP retransmission timeout); the count equals `SubflowStale`. Becoming active again is not recorded: `mptcp_subflow_set_active` also runs inlined on 6.8 (the kernel counted a recovery that no fentry saw).
   - sent MP_PRIO: fexit `mptcp_pm_nl_mp_prio_send_ack` (new backup flag, result).
   - data-level reinjection: fentry+fexit `__mptcp_retrans`, only calls that resent bytes (`bytes_retrans` grew; the bytes add up to `mptcpi_bytes_retrans`), and fexit `__mptcp_retransmit_pending_data` (data of a stale or closing subflow queued again).
