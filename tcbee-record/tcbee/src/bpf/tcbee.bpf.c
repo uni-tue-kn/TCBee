@@ -713,16 +713,27 @@ static __always_inline void mptcp_pm_addr(struct mptcp_pm_entry *rec,
 		bpf_core_read(&rec->addr_0, 16, &addr->addr6);
 }
 
+/* Fields of a path manager record that only some events have, 0 where not given */
+struct mptcp_pm_extra {
+	/* SUBFLOW_CONNECT, MP_PRIO_SENT: 0 or the negative error */
+	__s64 error;
+	__u64 data_seq;
+	__u32 data_len;
+	/* The address id of events that have an id but no address */
+	__u8 addr_id;
+	/* A priority change sets the backup flag, else it is the one of ssk */
+	bool set_backup;
+	__u8 backup;
+};
+
 /*
  * The record's tuple is the one of ssk if given, else the one of the connection. addr is the
- * address of the event if there is one, addr_id the address id of events that only have an id,
- * data_seq a data-level sequence number of events that have one, backup the backup flag of
- * events about a priority change (-1: the flag of ssk), data_len the bytes of events about data.
+ * address of the event if there is one, extra the fields that only some events have (or NULL).
  */
 static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *msk,
 					  const struct sock *ssk,
-					  const struct mptcp_addr_info *addr, __u8 addr_id,
-					  __s64 error, __u64 data_seq, int backup, __u32 data_len)
+					  const struct mptcp_addr_info *addr,
+					  const struct mptcp_pm_extra *extra)
 {
 	struct sock *sk = ssk ? (struct sock *)ssk : (struct sock *)msk;
 	struct mptcp_pm_entry *rec;
@@ -750,19 +761,21 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 
 	fill_header(rec, sk, sport, dport, hook_seq);
 	rec->event = event;
-	rec->error = error;
-	rec->data_seq = data_seq;
-	rec->data_len = data_len;
 	if (msk)
 		rec->token = BPF_CORE_READ(msk, token);
 	if (ssk)
 		mptcp_pm_subflow(rec, ssk);
 	if (addr)
 		mptcp_pm_addr(rec, addr);
-	else
-		rec->addr_id = addr_id;
-	if (backup >= 0)
-		rec->backup = backup;
+	if (extra) {
+		rec->error = extra->error;
+		rec->data_seq = extra->data_seq;
+		rec->data_len = extra->data_len;
+		if (!addr)
+			rec->addr_id = extra->addr_id;
+		if (extra->set_backup)
+			rec->backup = extra->backup;
+	}
 	commit(rec, RB_MPTCP_PM);
 	return 0;
 }
@@ -771,21 +784,22 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 SEC("fentry/mptcp_event")
 int BPF_PROG(mptcp_pm_event, int type, const struct mptcp_sock *msk, const struct sock *ssk)
 {
-	return trace_mptcp_pm(type, msk, ssk, NULL, 0, 0, 0, -1, 0);
+	return trace_mptcp_pm(type, msk, ssk, NULL, NULL);
 }
 
 /* The peer announced an address */
 SEC("fentry/mptcp_event_addr_announced")
 int BPF_PROG(mptcp_pm_announced, const struct sock *ssk, const struct mptcp_addr_info *info)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, 0, 0, 0, -1, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, NULL);
 }
 
 /* The peer removed the address with this id */
 SEC("fentry/mptcp_event_addr_removed")
 int BPF_PROG(mptcp_pm_removed, const struct mptcp_sock *msk, __u8 id)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_REMOVED, msk, NULL, NULL, id, 0, 0, -1, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_REMOVED, msk, NULL, NULL,
+			      &(struct mptcp_pm_extra){ .addr_id = id });
 }
 
 /* End of the token's life: a later connection may get the same token */
@@ -794,7 +808,7 @@ int BPF_PROG(mptcp_pm_token_destroy, struct mptcp_sock *msk)
 {
 	if (!BPF_CORE_READ(msk, token))
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, 0, 0, 0, -1, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, NULL);
 }
 
 /* A subflow the path manager tried to open to the address remote */
@@ -803,7 +817,7 @@ int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_
 	     const struct mptcp_addr_info *remote, int ret)
 {
 	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_CONNECT, (const struct mptcp_sock *)sk, NULL,
-			      remote, 0, ret, 0, -1, 0);
+			      remote, &(struct mptcp_pm_extra){ .error = ret });
 }
 
 /* Stale subflows: remember at the start of the check which subflows were not stale yet */
@@ -822,15 +836,16 @@ int BPF_PROG(mptcp_pm_stale_check, const struct mptcp_sock *msk, struct sock *ss
 SEC("fexit/mptcp_pm_nl_subflow_chk_stale")
 int BPF_PROG(mptcp_pm_stale, const struct mptcp_sock *msk, struct sock *ssk)
 {
-	struct mptcp_subflow_context *subflow = mptcp_subflow_of(ssk);
+	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)ssk;
 
 	if (!bpf_map_lookup_elem(&MPTCP_STALE_CHECK, &key))
 		return 0;
 	bpf_map_delete_elem(&MPTCP_STALE_CHECK, &key);
+	subflow = mptcp_subflow_of(ssk);
 	if (!subflow || !BPF_CORE_READ_BITFIELD_PROBED(subflow, stale))
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_STALE, msk, ssk, NULL, 0, 0, 0, -1, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_STALE, msk, ssk, NULL, NULL);
 }
 
 /*
@@ -841,7 +856,9 @@ SEC("fexit/mptcp_pm_nl_mp_prio_send_ack")
 int BPF_PROG(mptcp_pm_prio_sent, struct mptcp_sock *msk, struct mptcp_addr_info *addr,
 	     struct mptcp_addr_info *rem, __u8 bkup, int ret)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_MP_PRIO_SENT, msk, NULL, addr, 0, ret, 0, bkup, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_MP_PRIO_SENT, msk, NULL, addr,
+			      &(struct mptcp_pm_extra){
+				      .error = ret, .set_backup = true, .backup = bkup });
 }
 
 /*
@@ -877,8 +894,11 @@ int BPF_PROG(mptcp_pm_retrans, struct sock *sk)
 	bytes = BPF_CORE_READ(msk, bytes_retrans);
 	if (bytes <= start.bytes_retrans)
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_REINJECTED, msk, NULL, NULL, 0, 0, start.snd_una, -1,
-			      bytes - start.bytes_retrans);
+	return trace_mptcp_pm(TCBEE_MPTCP_REINJECTED, msk, NULL, NULL,
+			      &(struct mptcp_pm_extra){
+				      .data_seq = start.snd_una,
+				      .data_len = bytes - start.bytes_retrans,
+			      });
 }
 
 /* The data waiting on a subflow is queued again for the others (returns whether there was any) */
@@ -889,8 +909,8 @@ int BPF_PROG(mptcp_pm_requeue, struct sock *sk, bool ret)
 
 	if (!ret)
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_PENDING_REQUEUED, msk, NULL, NULL, 0, 0,
-			      BPF_CORE_READ(msk, snd_una), -1, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_PENDING_REQUEUED, msk, NULL, NULL,
+			      &(struct mptcp_pm_extra){ .data_seq = BPF_CORE_READ(msk, snd_una) });
 }
 
 /* Fallback in the handshake: remember the subflows that requested MPTCP and wait for the SYN-ACK */
@@ -910,19 +930,21 @@ int BPF_PROG(mptcp_pm_connect_check, struct sock *sk, const struct sk_buff *skb)
 SEC("fexit/subflow_finish_connect")
 int BPF_PROG(mptcp_pm_fallback, struct sock *sk, const struct sk_buff *skb)
 {
-	struct mptcp_subflow_context *subflow = mptcp_subflow_of(sk);
+	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)sk;
 
 	if (!bpf_map_lookup_elem(&MPTCP_CONNECT_CHECK, &key))
 		return 0;
 	bpf_map_delete_elem(&MPTCP_CONNECT_CHECK, &key);
+	subflow = mptcp_subflow_of(sk);
 	if (!subflow || BPF_CORE_READ_BITFIELD_PROBED(subflow, mp_capable))
 		return 0;
-	return trace_mptcp_pm(TCBEE_MPTCP_FALLBACK, NULL, sk, NULL, 0, 0, 0, -1, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_FALLBACK, NULL, sk, NULL, NULL);
 }
 
 SEC("fentry/mptcp_pm_mp_fail_received")
 int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk, __u64 fail_seq)
 {
-	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL, 0, 0, fail_seq, -1, 0);
+	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL,
+			      &(struct mptcp_pm_extra){ .data_seq = fail_seq });
 }
