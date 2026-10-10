@@ -9,7 +9,10 @@ use crate::{
     writer::Writer,
 };
 
-/// The path manager programs and the kernel functions they attach to
+/// The path manager programs and the kernel functions they attach to, in attach order. Of a
+/// pair on one function the exit program comes first: it does nothing without the state its
+/// entry program stores, while an entry program attached alone could leave state that a later
+/// exit takes for its own.
 pub const PM_HOOKS: [(&str, &str); 14] = [
     ("mptcp_pm_event", "mptcp_event"),
     ("mptcp_pm_announced", "mptcp_event_addr_announced"),
@@ -17,14 +20,14 @@ pub const PM_HOOKS: [(&str, &str); 14] = [
     ("mptcp_pm_token_destroy", "mptcp_token_destroy"),
     ("mptcp_pm_subflow_connect", "__mptcp_subflow_connect"),
     ("mptcp_pm_mp_fail", "mptcp_pm_mp_fail_received"),
-    ("mptcp_pm_stale_check", "mptcp_pm_nl_subflow_chk_stale"),
     ("mptcp_pm_stale", "mptcp_pm_nl_subflow_chk_stale"),
+    ("mptcp_pm_stale_check", "mptcp_pm_nl_subflow_chk_stale"),
     ("mptcp_pm_prio_sent", "mptcp_pm_nl_mp_prio_send_ack"),
-    ("mptcp_pm_retrans_start", "__mptcp_retrans"),
     ("mptcp_pm_retrans", "__mptcp_retrans"),
+    ("mptcp_pm_retrans_start", "__mptcp_retrans"),
     ("mptcp_pm_requeue", "__mptcp_retransmit_pending_data"),
-    ("mptcp_pm_connect_check", "subflow_finish_connect"),
     ("mptcp_pm_fallback", "subflow_finish_connect"),
+    ("mptcp_pm_connect_check", "subflow_finish_connect"),
 ];
 
 pub struct MptcpPmTracer {}
@@ -56,9 +59,12 @@ impl MptcpPmTracer {
         writer: &mut Writer,
         links: &mut Vec<Link>,
     ) -> Result<(), Box<dyn Error>> {
-        for program in skel.object().progs_mut() {
-            let name = program.name().to_string_lossy();
-            if program.autoload() && PM_HOOKS.iter().any(|(prog, _)| *prog == name) {
+        for (name, _) in PM_HOOKS {
+            let program = skel
+                .object()
+                .progs_mut()
+                .find(|p| p.name().to_string_lossy() == name);
+            if let Some(program) = program.filter(|p| p.autoload()) {
                 attach(&program, links)?;
             }
         }
