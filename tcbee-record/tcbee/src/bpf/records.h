@@ -289,6 +289,49 @@ struct mptcp_pm_entry {
 	uint32_t data_len;
 };
 
+/* Kind of a tcp_event_entry */
+enum tcbee_tcp_event {
+	/* A segment was retransmitted: seq and len are the ones of the segment */
+	TCBEE_TCP_RETRANSMIT = 1,
+	/* This host sent a RST; without a full socket the tuple comes from the packet it answers */
+	TCBEE_TCP_RST_SENT = 2,
+	TCBEE_TCP_RST_RECEIVED = 3,
+	/* TCP state change from old_state to new_state (TCP_ESTABLISHED = 1, ...) */
+	TCBEE_TCP_STATE = 4,
+	/* Congestion state change from old_state to new_state (TCP_CA_Open = 0, ... Loss = 4) */
+	TCBEE_TCP_CA_STATE = 5,
+	/* The retransmission timer fired and the socket entered loss */
+	TCBEE_TCP_RTO = 6,
+	/* The sender reduced its window for ECN or local congestion (CWR); only recorded on
+	 * kernels without the tcp_cong_state_set tracepoint (before 5.19), else a CA_STATE */
+	TCBEE_TCP_CWR = 7,
+	/* The kernel dropped a packet of the flow: reason is the kernel's skb_drop_reason */
+	TCBEE_TCP_DROP = 8,
+};
+
+/*
+ * Discrete TCP events (-e, --drops), TCP_EVENTS. The header holds the tuple local -> remote.
+ * The socket fields are read at the event, 0 where there is no full socket. Fields that do
+ * not apply to a kind are 0.
+ */
+struct tcp_event_entry {
+	TCBEE_SOCK_HEADER
+	/* enum tcbee_tcp_event */
+	uint8_t kind;
+	uint8_t old_state;
+	uint8_t new_state;
+	uint8_t ca_state;
+	uint8_t backoff;
+	uint32_t reason;
+	/* Sequence number and length of the segment: RETRANSMIT, DROP, RST_SENT without socket */
+	uint32_t seq;
+	uint32_t len;
+	uint32_t snd_una;
+	uint32_t snd_cwnd;
+	uint32_t packets_out;
+	uint32_t total_retrans;
+};
+
 /* tracepoint tcp/tcp_bad_csum, TCP_BAD_CSUM_QUEUE. IPv4 addresses only. */
 struct tcp_bad_csum_entry {
 	uint64_t time;
@@ -337,6 +380,7 @@ _Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
 _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");
 _Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
+_Static_assert(sizeof(struct tcp_event_entry) == 96, "tcp_event_entry size");
 _Static_assert(sizeof(struct mptcp_pm_entry) == 136, "mptcp_pm_entry size");
 /* The address is read into addr_0 to addr_3 at once */
 _Static_assert(__builtin_offsetof(struct mptcp_pm_entry, addr_3) ==

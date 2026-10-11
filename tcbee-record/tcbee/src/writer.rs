@@ -845,6 +845,7 @@ mod tests {
         assert_packed_matches_bincode::<tcp_retransmit_synack_entry>();
         assert_packed_matches_bincode::<tcp_bad_csum_entry>();
         assert_packed_matches_bincode::<mptcp_pm_entry>();
+        assert_packed_matches_bincode::<tcp_event_entry>();
     }
 
     /// Records written across several remaps all end up in the file

@@ -20,6 +20,7 @@ ASSERT_SOCK_HEADER(sock_trace_entry);
 ASSERT_SOCK_HEADER(cwnd_trace_entry);
 ASSERT_SOCK_HEADER(cubic_trace_entry);
 ASSERT_SOCK_HEADER(bbr_trace_entry);
+ASSERT_SOCK_HEADER(tcp_event_entry);
 
 /*
  * Socket fields are read with direct loads from the BTF typed fentry arguments, still
@@ -157,6 +158,33 @@ static __always_inline void fill_header(void *rec, struct sock *sk, __u16 sport,
 	h->sport = sport;
 	h->dport = dport;
 	h->family = sk->__sk_common.skc_family;
+}
+
+/*
+ * Fill the shared header from a tuple local -> remote, for events without a socket. addr_v4
+ * gets the layout of skc_addrpair: the remote address in the low half, the local one in the
+ * high half.
+ */
+static __always_inline void fill_header_tuple(void *rec, const struct ip_tuple *t, __u16 family,
+					      __u64 hook_seq)
+{
+	struct tcbee_sock_header *h = rec;
+
+	h->time = bpf_ktime_get_ns();
+	h->hook_seq = hook_seq;
+	if (family == AF_INET) {
+		__u32 local, remote;
+
+		__builtin_memcpy(&local, t->src_ip, sizeof(local));
+		__builtin_memcpy(&remote, t->dst_ip, sizeof(remote));
+		h->addr_v4 = ((__u64)local << 32) | remote;
+	} else {
+		__builtin_memcpy(h->src_v6, t->src_ip, 16);
+		__builtin_memcpy(h->dst_v6, t->dst_ip, 16);
+	}
+	h->sport = t->sport;
+	h->dport = t->dport;
+	h->family = family;
 }
 
 #endif /* __TCBEE_FLOW_H */

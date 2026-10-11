@@ -73,6 +73,7 @@ fn main() -> anyhow::Result<()> {
     let mut trace_algorithms: bool = false;
     let mut trace_cwnd: bool = false;
     let mut trace_mptcp: bool = false;
+    let mut trace_events: bool = false;
     let mut mptcp_modes: String = String::new();
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
@@ -196,12 +197,17 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
-            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, mptcp_pm.",
+            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, mptcp_pm, tcp_events.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
             StoreTrue,
             "Record behaviour of congestion algorithms: Cubic and BBR.",
+        );
+        argparser.refer(&mut trace_events).add_option(
+            &["-e", "--events"],
+            StoreTrue,
+            "Record discrete TCP events: retransmissions, RSTs sent and received, state and congestion state changes, retransmission timeouts.",
         );
         argparser.refer(&mut trace_mptcp).add_option(
             &["-M", "--mptcp"],
@@ -264,6 +270,7 @@ fn main() -> anyhow::Result<()> {
         && !trace_kernel
         && !trace_cwnd
         && !trace_algorithms
+        && !trace_events
         && !mptcp.pm
     {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
@@ -297,6 +304,7 @@ fn main() -> anyhow::Result<()> {
         .metrics(metrics)
         .metadata(metadata)
         .algorithms(trace_algorithms)
+        .events(trace_events)
         .mptcp(mptcp)
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)

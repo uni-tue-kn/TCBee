@@ -30,6 +30,7 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `tcp_probe.tcp` | `tcp_probe_entry` | 124 | 2000 | real |
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |
 | `tcp_bad_csum.tcp` | none | | 0 | generated |
+| `tcp_events.tcp` | none | | 0 | generated |
 | `send_sock.tcp` | `OldSockEntry` | 172 | 2000 | real |
 | `recv_sock.tcp` | `OldSockEntry` | 172 | 2000 | real |
 | `send_cwnd.tcp` | `cwnd_trace_entry` | 74 | 1000 | generated |

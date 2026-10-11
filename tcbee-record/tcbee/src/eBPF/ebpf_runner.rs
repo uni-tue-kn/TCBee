@@ -16,7 +16,7 @@ use log::{debug, error, info, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
     RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
-    RB_TCP_PROBE, RINGBUFS, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+    RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -36,6 +36,7 @@ use crate::{
             headers::{uses_tcx, TCTracer, TcAttachment},
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
+            tcp_events::TcpEventTracer,
             tracepoints::TracepointTracer,
         },
         rings,
@@ -178,7 +179,10 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
 
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
-    let groups: [(bool, &[u32]); 7] = [
+    let tcp_events = optional
+        .iter()
+        .any(|group| matches!(group, OptionalGroup::TcpEvent(_)));
+    let groups: [(bool, &[u32]); 8] = [
         (
             config.headers,
             &[
@@ -197,6 +201,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         (config.algorithms, &[RB_CUBIC]),
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
+        (tcp_events, &[RB_TCP_EVENTS]),
     ];
     groups
         .into_iter()
@@ -397,14 +402,16 @@ impl EbpfRunner {
 
     /// Opens the skeleton and configures it from the config: rodata constants, one ring
     /// buffer slot per CPU and which programs are loaded. The optional groups in `disabled`
-    /// are not loaded. Returns the skeleton and the enabled optional groups.
+    /// are not loaded. Returns the skeleton, the enabled optional groups and the requested
+    /// hooks that the kernel lacks.
     fn open_configured(
         &self,
         tcx: bool,
         disabled: &BTreeSet<OptionalGroup>,
         btf: &mut KernelBtf,
         cpus: &rings::Cpus,
-    ) -> Result<(OpenTcbeeSkel<'static>, BTreeSet<OptionalGroup>), Box<dyn Error>> {
+    ) -> Result<(OpenTcbeeSkel<'static>, BTreeSet<OptionalGroup>, Vec<String>), Box<dyn Error>>
+    {
         let mut open = open_skel()?;
 
         // Configuration is read-only for the programs, so the verifier sees constants
@@ -442,7 +449,21 @@ impl EbpfRunner {
         if MptcpPmTracer::configure(open.open_object_mut(), pm, btf) {
             optional.insert(OptionalGroup::MptcpPm);
         }
-        Ok((open, optional))
+        let disabled_hooks: Vec<usize> = disabled
+            .iter()
+            .filter_map(|group| match group {
+                OptionalGroup::TcpEvent(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let (hooks, missing) = TcpEventTracer::configure(
+            open.open_object_mut(),
+            self.config.events,
+            &disabled_hooks,
+            btf,
+        );
+        optional.extend(hooks.into_iter().map(OptionalGroup::TcpEvent));
+        Ok((open, optional, missing))
     }
 
     /// Without MPTCP in the kernel, -M records nothing: a warning, or an error if it is the
@@ -454,7 +475,7 @@ impl EbpfRunner {
             return Ok(());
         }
         let c = &self.config;
-        if !(c.headers || c.tracepoints || c.kernel || c.cwnd || c.algorithms) {
+        if !(c.headers || c.tracepoints || c.kernel || c.cwnd || c.algorithms || c.events) {
             return Err("The kernel has no MPTCP (CONFIG_MPTCP), -M has nothing to record".into());
         }
         warn!("The kernel has no MPTCP (CONFIG_MPTCP), -M records nothing");
@@ -484,10 +505,11 @@ impl EbpfRunner {
         let mut btf = KernelBtf::default();
         self.check_kernel_mptcp(&mut btf)?;
         let mut disabled = BTreeSet::new();
-        let (skel, optional) = loop {
-            let (open, optional) = self.open_configured(tcx, &disabled, &mut btf, &cpus)?;
+        let (skel, optional, missing) = loop {
+            let (open, optional, missing) =
+                self.open_configured(tcx, &disabled, &mut btf, &cpus)?;
             match load(open) {
-                Ok(skel) => break (skel, optional),
+                Ok(skel) => break (skel, optional, missing),
                 Err(err) => match optional::to_disable(&optional, &err.warnings) {
                     Some(groups) => {
                         // The failed object was closed when load() returned, its programs
@@ -500,6 +522,7 @@ impl EbpfRunner {
             }
         };
         drop(btf);
+        self.skipped.extend(missing);
         for group in &disabled {
             self.skipped.push(format!(
                 "{}: the kernel rejected its programs",
@@ -593,6 +616,13 @@ impl EbpfRunner {
 
         if optional.contains(&OptionalGroup::MptcpPm) {
             MptcpPmTracer::spawn(skel, dir, writer, links)?;
+        }
+
+        if optional
+            .iter()
+            .any(|group| matches!(group, OptionalGroup::TcpEvent(_)))
+        {
+            TcpEventTracer::spawn(skel, dir, writer, links)?;
         }
 
         // TODO: should be true by default in get_watcher_config()

@@ -59,15 +59,22 @@ impl KernelBtf {
 
     /// Whether vmlinux has a struct named `name`
     pub fn has_struct(&mut self, name: &str) -> bool {
+        self.has_kind(name, libbpf_sys::BTF_KIND_STRUCT)
+    }
+
+    /// Whether vmlinux has the tracepoint `name`. Every tracepoint has a typedef
+    /// `btf_trace_<name>` of its probe function, which BTF enabled tracepoint programs
+    /// (tp_btf) attach through.
+    pub fn has_tracepoint(&mut self, name: &str) -> bool {
+        self.has_kind(&format!("btf_trace_{name}"), libbpf_sys::BTF_KIND_TYPEDEF)
+    }
+
+    fn has_kind(&mut self, name: &str, kind: u32) -> bool {
         let Ok(name) = CString::new(name) else {
             return false;
         };
         self.vmlinux().is_some_and(|btf| unsafe {
-            libbpf_sys::btf__find_by_name_kind(
-                btf.as_ptr(),
-                name.as_ptr(),
-                libbpf_sys::BTF_KIND_STRUCT,
-            ) > 0
+            libbpf_sys::btf__find_by_name_kind(btf.as_ptr(), name.as_ptr(), kind) > 0
         })
     }
 

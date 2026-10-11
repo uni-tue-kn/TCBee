@@ -195,7 +195,12 @@ mod generate {
         write(&small, "send_cwnd.tcp", (0..1000).map(cwnd));
         write(&small, "tcp6_receive.tcp", (0..500).map(|i| tcp6(i, true)));
         write(&small, "tcp6_send.tcp", (0..500).map(|i| tcp6(i, false)));
-        for empty in ["tcp_retransmit_synack", "tcp_bad_csum", "recv_cwnd"] {
+        for empty in [
+            "tcp_retransmit_synack",
+            "tcp_bad_csum",
+            "recv_cwnd",
+            "tcp_events",
+        ] {
             fs::write(small.join(format!("{empty}.tcp")), b"").unwrap();
         }
 

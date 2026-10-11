@@ -64,7 +64,9 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::Cubic => binding_of::<cubic_trace_entry>(Dir::None),
         TraceFile::Bbr => binding_of::<bbr_trace_entry>(Dir::None),
         TraceFile::MptcpPm => binding_of::<mptcp_pm_entry>(Dir::None),
-        TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
+        TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum | TraceFile::TcpEvents => {
+            return None
+        }
     })
 }
 

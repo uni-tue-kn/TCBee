@@ -132,6 +132,7 @@ struct sock_common {
 	__be16 skc_dport;
 	__u16 skc_num;
 	unsigned short skc_family;
+	volatile unsigned char skc_state;
 	struct in6_addr skc_v6_daddr;
 	struct in6_addr skc_v6_rcv_saddr;
 };
@@ -140,10 +141,18 @@ struct sock {
 	struct sock_common __sk_common;
 	unsigned long sk_pacing_rate;
 	unsigned long sk_max_pacing_rate;
+	u16 sk_protocol;
 };
 
 struct sk_buff {
+	struct sock *sk;
+	char cb[48];
 	unsigned int len;
+	__u8 pkt_type: 3;
+	__be16 protocol;
+	__u16 transport_header;
+	__u16 network_header;
+	unsigned char *head;
 };
 
 struct inet_connection_sock {
@@ -181,6 +190,7 @@ struct tcp_sock {
 	u8 keepalive_probes;
 	u32 total_retrans;
 	bool is_mptcp;
+	u32 snd_una;
 	u32 packets_out;
 	u32 delivered;
 	u32 delivered_ce;
