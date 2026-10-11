@@ -734,3 +734,47 @@ fn tcp_event_round_trip() {
     assert_eq!(cell(&batch, 7, 0), 77);
     assert_eq!(cell(&batch, 10, 0), 10);
 }
+
+/// The old sock layout is the current one without the added columns: an old record is the
+/// prefix of a current one up to rcv_wscale, followed by conn_id. When the sock layout changes
+/// again, freeze the current one in another struct like `OldSockEntry`.
+#[test]
+fn old_sock_layout_is_the_current_one_without_the_added_columns() {
+    let mut rec = sock_trace_entry {
+        time: 1,
+        hook_seq: 2,
+        addr_v4: 3,
+        sport: 4,
+        dport: 5,
+        family: 2,
+        pacing_rate: 6,
+        backoff: 7,
+        snd_cwnd: 8,
+        bytes_received: 9,
+        rcv_wscale: 10,
+        conn_id: 11,
+        ..Default::default()
+    };
+    let current = bincode::serialize(&rec).unwrap();
+    let old_len = sock::OldSockEntry::ENTRY_SIZE - RECORD_DELIMITER.len();
+    let mut old = current[..old_len - 4].to_vec();
+    old.extend_from_slice(&rec.conn_id.to_le_bytes());
+    old.extend_from_slice(&RECORD_DELIMITER);
+    let decoded = sock::OldSockEntry::decode(&old).unwrap();
+
+    let mut want = EventBatch::new(sock_trace_entry::TABLE, 1);
+    want.push_header(0, Dir::Send, 1, 2);
+    rec.push_row(&mut want);
+    let mut got = EventBatch::new(sock_trace_entry::TABLE, 1);
+    got.push_header(0, Dir::Send, 1, 2);
+    decoded.push_row(&mut got);
+    assert_eq!(got.columns(), want.columns());
+    assert_eq!(Event::flow_key(&decoded), Event::flow_key(&rec));
+
+    // The added columns stay 0 for old records
+    rec.ca_state = 4;
+    let mut changed = EventBatch::new(sock_trace_entry::TABLE, 1);
+    changed.push_header(0, Dir::Send, 1, 2);
+    rec.push_row(&mut changed);
+    assert_ne!(got.columns(), changed.columns());
+}

@@ -67,7 +67,8 @@ fn drop_label(reason: u32) -> String {
     })
 }
 
-/// The marker text of an event
+/// The marker text of an event. Drops are named with the table `set_drop_reasons` set on
+/// this thread.
 pub fn label(e: &tcp_event_entry) -> String {
     match u32::from(e.kind) {
         TCBEE_TCP_RETRANSMIT => "retransmit".to_string(),
@@ -107,6 +108,7 @@ static COLUMNS: [Column; 13] = [
     col("total_retrans", ColType::U32),
 ];
 
+// Written out instead of event_schema!, which has no computed columns like `event`
 impl Event for tcp_event_entry {
     const TABLE: &'static EventTable = &EventTable {
         source: "tcp_event",

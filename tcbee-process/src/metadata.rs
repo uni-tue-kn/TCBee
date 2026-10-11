@@ -1,11 +1,10 @@
-//! The run metadata that tcbee-record writes with `--metadata`, stored as `run.*` rows of the
-//! meta table. The JSON is flattened: object members become dotted keys, array elements their
+//! The files tcbee-record writes next to the records: the run metadata (`--metadata`), stored
+//! as `run.*` rows of the meta table, and the names of the kernel's drop reasons (`--drops`).
+//! The metadata JSON is flattened: object members become dotted keys, array elements their
 //! index (`run.interfaces.0.name`), nulls are left out. Rows can be read with plain SQL and need
 //! no JSON support in the reader.
 
-use std::{fs, io, path::Path};
-
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs, io, path::Path};
 
 use serde_json::Value;
 use tcbee_trace::{DROP_REASONS_FILE, METADATA_FILE};
@@ -17,10 +16,8 @@ pub const PREFIX: &str = "run";
 /// that cannot be read or parsed is an error the caller reports as a warning.
 pub fn read(trace_dir: &Path) -> Result<Vec<(String, String)>, String> {
     let path = trace_dir.join(METADATA_FILE);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    let Some(text) = read_optional(&path)? else {
+        return Ok(Vec::new());
     };
     let value: Value = serde_json::from_str(&text)
         .map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
@@ -33,10 +30,8 @@ pub fn read(trace_dir: &Path) -> Result<Vec<(String, String)>, String> {
 /// writes; empty if there is none. Errors as for `read`.
 pub fn drop_reasons(trace_dir: &Path) -> Result<BTreeMap<u32, String>, String> {
     let path = trace_dir.join(DROP_REASONS_FILE);
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    let Some(text) = read_optional(&path)? else {
+        return Ok(BTreeMap::new());
     };
     let names: BTreeMap<String, String> = serde_json::from_str(&text)
         .map_err(|e| format!("{} is not a JSON object of names: {e}", path.display()))?;
@@ -47,6 +42,15 @@ pub fn drop_reasons(trace_dir: &Path) -> Result<BTreeMap<u32, String>, String> {
             Err(_) => Err(format!("{}: {value} is no drop reason", path.display())),
         })
         .collect()
+}
+
+/// The file's text, None if it does not exist
+fn read_optional(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
 }
 
 fn flatten(key: String, value: &Value, rows: &mut Vec<(String, String)>) {

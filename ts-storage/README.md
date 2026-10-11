@@ -21,7 +21,7 @@ One table per recorded event type, one row per record, one typed column per fiel
 
 | Table | Content |
 |---|---|
-| `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at`, and for recordings made with `--metadata` the run metadata as `run.*` rows (the JSON of `metadata.json` flattened to dotted keys, array elements by index, e.g. `run.kernel.release`, `run.interfaces.0.mtu`) |
+| `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at`, and for recordings made with `--metadata` the run metadata as `run.*` rows (the JSON of `metadata.json` flattened to dotted keys, array elements by index, e.g. `run.kernel.release`, `run.interfaces.0.mtu`), and for recordings made with `--drops` the names of the kernel's drop reasons as `drop_reason.<value>` rows |
 | `flows(id, src, dst, sport, dport, l4proto)` | one row per TCP flow (IP 5-tuple) |
 | `connections(id, kind, key, flow_id, start_ts, end_ts)` | connections that group flows, e.g. an MPTCP connection (`kind` `mptcp`, `key` its token); `flow_id` holds the connection's own series |
 | `connection_flows(connection_id, flow_id, subflow_id, first_ts, last_ts)` | the flows of each connection, e.g. the subflows of an MPTCP connection |
@@ -37,6 +37,7 @@ Every `ev_*` table starts with `flow_id`, `dir`, `ts` and `seq`, followed by one
 - A **series** is one column of one `(flow, source, dir)` group. `series.kind` is 0 for raw series and 1 for derived ones, `tbl` and `col` name the event table and column of a raw series, `n`, `t_min`, `t_max`, `v_min` and `v_max` describe its values, so bounds and counts need no scan. `value_type` is 0 bool, 1 u8, 2 u16, 3 u32, 4 u64, 5 i64, 6 f64, 7 text.
 - There are no foreign keys and no unique keys on event tables. DuckDB files have no indexes on them; SQLite files get one on `(flow_id, dir, ts, seq)` after the load.
 - Unsigned 64-bit columns (`pacing_rate`, `max_pacing_rate`, `SOCK_COOKIE`, ...) are stored as unsigned in DuckDB and as their two's complement `i64` bit pattern in SQLite, so SQLite shows `max_pacing_rate = u64::MAX` as `-1`. The read API of this crate converts back and saturates values above `i64::MAX` to `i64::MAX` on both engines.
+- `ev_tcp_event` also has a text column `event` with a label of each event (`retransmit`, `Open → Recovery`, `drop NO_SOCKET`, ...), which the visualizer draws as markers. Its TCP sequence number column is `tcp_seq`, as `seq` is taken.
 - Databases written by older TCBee versions (`time_series`, `time_series_data`) are not supported. Opening one fails with "reprocess the trace with tcbee-process".
 
 ## Features and engines
