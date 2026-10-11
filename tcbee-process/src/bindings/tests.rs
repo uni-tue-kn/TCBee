@@ -508,6 +508,7 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::Cubic, "cubic", Dir::None),
         (TraceFile::Bbr, "bbr", Dir::None),
         (TraceFile::MptcpPm, "mptcp_pm", Dir::None),
+        (TraceFile::TcpEvents, "tcp_event", Dir::None),
     ];
     for (file, source, dir) in want {
         let b = binding(file).unwrap();
@@ -516,7 +517,6 @@ fn file_table_maps_every_trace_file() {
     }
     assert!(binding(TraceFile::TcpRetransmitSynack).is_none());
     assert!(binding(TraceFile::TcpBadCsum).is_none());
-    assert!(binding(TraceFile::TcpEvents).is_none());
     // Every trace file is either mapped or explicitly skipped.
     for f in TraceFile::all() {
         let _ = binding(*f);
@@ -534,6 +534,7 @@ fn file_table_maps_every_trace_file() {
         ("tcp6", 67, 4),
         ("tcp4", 43, 4),
         ("mptcp_pm", 123, 17),
+        ("tcp_event", 99, 13),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -542,7 +543,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 8);
+    assert_eq!(names.len(), 9);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.
@@ -660,4 +661,76 @@ fn sock_layout_is_detected_per_file() {
     );
     // Other files are not looked at
     assert!(binding_for(TraceFile::TcpBadCsum, &path).unwrap().is_none());
+}
+
+/// Event labels name the kind and, for state changes, both states.
+#[test]
+fn tcp_event_labels() {
+    use tcbee_common::records::{
+        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_RETRANSMIT, TCBEE_TCP_RTO, TCBEE_TCP_STATE,
+    };
+    let e = |kind, old_state, new_state, backoff| tcp_event_entry {
+        kind: kind as u8,
+        old_state,
+        new_state,
+        backoff,
+        ..Default::default()
+    };
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_RETRANSMIT, 0, 0, 0)),
+        "retransmit"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_STATE, 1, 4, 0)),
+        "ESTABLISHED → FIN_WAIT1"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_CA_STATE, 0, 3, 0)),
+        "Open → Recovery"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_CA_STATE, 0, 9, 0)),
+        "Open → 9"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_RTO, 0, 0, 2)),
+        "RTO, backoff 2"
+    );
+    assert_eq!(tcp_event::label(&e(200, 0, 0, 0)), "event 200");
+}
+
+/// A TCP event decodes, keys its flow local -> remote like the sock records and fills every
+/// column.
+#[test]
+fn tcp_event_round_trip() {
+    use tcbee_common::records::{tcp_event_entry, TCBEE_TCP_RETRANSMIT};
+    let rec = tcp_event_entry {
+        time: 9,
+        hook_seq: 2,
+        // local 10.0.0.1 in the high half, remote 10.0.0.2 in the low half
+        addr_v4: (u64::from(u32::from_le_bytes([10, 0, 0, 1])) << 32)
+            | u64::from(u32::from_le_bytes([10, 0, 0, 2])),
+        sport: 40000,
+        dport: 5201,
+        family: 2,
+        kind: TCBEE_TCP_RETRANSMIT as u8,
+        seq: 77,
+        snd_cwnd: 10,
+        ..Default::default()
+    };
+    let mut bytes = bincode::serialize(&rec).unwrap();
+    bytes.extend_from_slice(&RECORD_DELIMITER);
+    assert_eq!(bytes.len(), tcp_event_entry::ENTRY_SIZE);
+    let e = tcp_event_entry::decode(&bytes).unwrap();
+    assert_eq!(e.flow_key(), tuple("10.0.0.1", "10.0.0.2", 40000, 5201));
+    let mut batch = EventBatch::new(tcp_event_entry::TABLE, 1);
+    batch.push_header(0, Dir::None, e.ts_ns(), e.hook_seq());
+    e.push_row(&mut batch);
+    batch.validate().unwrap();
+    match &batch.columns()[0] {
+        ColumnData::Text(v) => assert_eq!(v, &["retransmit"]),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(cell(&batch, 7, 0), 77);
+    assert_eq!(cell(&batch, 10, 0), 10);
 }

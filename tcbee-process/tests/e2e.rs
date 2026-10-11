@@ -292,6 +292,60 @@ fn added_sock_fields_are_series_only_where_recorded() {
     }
 }
 
+/// TCP events become rows of their flow with a text series of labels, the markers of the
+/// visualizer.
+#[test]
+fn tcp_events_become_labelled_series() {
+    use tcbee_common::records::{
+        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_RETRANSMIT, TCBEE_TCP_RTO,
+    };
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_events");
+        fs::create_dir_all(&trace).unwrap();
+        let ev = |i: u64, kind, old_state, new_state| tcp_event_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: 0x0200_000A_0100_000A,
+            sport: 40000,
+            dport: 5201,
+            family: 2,
+            kind: kind as u8,
+            old_state,
+            new_state,
+            ..Default::default()
+        };
+        let recs = [
+            ev(0, TCBEE_TCP_RETRANSMIT, 0, 0),
+            ev(1, TCBEE_TCP_CA_STATE, 0, 4),
+            ev(2, TCBEE_TCP_RTO, 0, 0),
+        ];
+        write_records(&trace, "tcp_events.tcp", &recs);
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+        assert_eq!(summary.rows, 3);
+        let store = ts_storage::open(&out).unwrap();
+        let flows = store.flows().unwrap();
+        assert_eq!(flows.len(), 1);
+        let series = store.series(flows[0].id).unwrap();
+        let event = series
+            .iter()
+            .find(|s| s.source == "tcp_event" && s.name == "event")
+            .unwrap();
+        let mut labels = Vec::new();
+        store
+            .for_each_point(event, None, &mut |p| labels.push(format!("{:?}", p.value)))
+            .unwrap();
+        assert_eq!(
+            labels,
+            [
+                "String(\"retransmit\")",
+                "String(\"Open → Loss\")",
+                "String(\"RTO\")"
+            ]
+        );
+    }
+}
+
 #[test]
 fn engines_and_thread_counts_agree_point_by_point() {
     let mut dumps = Vec::new();
