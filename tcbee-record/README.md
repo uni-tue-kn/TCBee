@@ -63,6 +63,7 @@ At least one metric source is required.
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
 | `-e` | Discrete TCP events (`tcp_events.tcp`): retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss) and retransmission timeouts. Each hook is optional: one the kernel lacks or rejects is left out with a warning |
+| `--drops` | Also record the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason; implies `-e`. Writes `drop_reasons.json` with the reason names of the running kernel |
 | `-M` | MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
 
 | Flag | Default | Description |
@@ -103,6 +104,9 @@ Raw data is written as `*.tcp` files to the recording directory. Filter flags ar
   instead, which may miss the CWR after ECN marks where the compiler inlined the call. RSTs that
   the stack sends without a socket and state changes before a socket has both ports (an active
   open entering SYN_SENT) are only recorded for flows that already have records.
+- `--drops` runs on every packet the kernel frees as dropped, so it costs a little on a host
+  with many drops of other traffic. Drop reasons exist from 5.17 on; before, the reason is 0.
+  Drops of packets without a socket are only recorded for flows that already have records.
 - `-M` needs MPTCP in the kernel (`CONFIG_MPTCP`, 5.6). Without it, `conn_id` stays 0 and no path
   manager events are recorded. A path manager hook whose kernel function is missing or inlined
   is left out with a warning. Not recorded: a stale subflow becoming active again and the

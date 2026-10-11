@@ -346,6 +346,58 @@ fn tcp_events_become_labelled_series() {
     }
 }
 
+/// Drops are labelled with the names of the recorder's drop reasons, which also become meta
+/// rows; a reason the recording does not name keeps its number.
+#[test]
+fn drops_are_labelled_with_the_reason_names() {
+    use tcbee_common::records::{tcp_event_entry, TCBEE_TCP_DROP};
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_drops");
+        fs::create_dir_all(&trace).unwrap();
+        let drop = |i: u64, reason| tcp_event_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: 0x0200_000A_0100_000A,
+            sport: 40000,
+            dport: 5201,
+            family: 2,
+            kind: TCBEE_TCP_DROP as u8,
+            reason,
+            ..Default::default()
+        };
+        write_records(
+            &trace,
+            "tcp_events.tcp",
+            &[drop(0, 3), drop(1, 77), drop(2, 0x10002)],
+        );
+        fs::write(
+            trace.join(tcbee_trace::DROP_REASONS_FILE),
+            r#"{"2": "NOT_SPECIFIED", "3": "NO_SOCKET"}"#,
+        )
+        .unwrap();
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, Some(2));
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let store = ts_storage::open(&out).unwrap();
+        let meta: BTreeMap<String, String> = store.meta().unwrap().into_iter().collect();
+        assert_eq!(meta["drop_reason.3"], "NO_SOCKET");
+        let series = store.series(1).unwrap();
+        let event = series.iter().find(|s| s.name == "event").unwrap();
+        let mut labels = Vec::new();
+        store
+            .for_each_point(event, None, &mut |p| labels.push(format!("{:?}", p.value)))
+            .unwrap();
+        assert_eq!(
+            labels,
+            [
+                "String(\"drop NO_SOCKET\")",
+                "String(\"drop, reason 77\")",
+                "String(\"drop, reason 0x10002\")"
+            ]
+        );
+    }
+}
+
 #[test]
 fn engines_and_thread_counts_agree_point_by_point() {
     let mut dumps = Vec::new();

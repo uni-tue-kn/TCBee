@@ -24,6 +24,8 @@ pub struct TcpEventHook {
     pub target: Target,
     /// Name for messages and the run metadata
     pub name: &'static str,
+    /// Recorded with `--drops` instead of `-e`
+    pub drops: bool,
 }
 
 const fn hook(
@@ -35,11 +37,13 @@ const fn hook(
         programs: program,
         target,
         name,
+        drops: false,
     }
 }
 
-/// The programs of `-e`. Each one is optional on its own (`OptionalGroup::TcpEvent`).
-pub const TCP_EVENT_HOOKS: [TcpEventHook; 7] = [
+/// The programs of `-e` and `--drops`. Each one is optional on its own
+/// (`OptionalGroup::TcpEvent`).
+pub const TCP_EVENT_HOOKS: [TcpEventHook; 8] = [
     hook(
         &["tcp_event_retransmit"],
         Target::Tracepoint("tcp_retransmit_skb"),
@@ -75,6 +79,14 @@ pub const TCP_EVENT_HOOKS: [TcpEventHook; 7] = [
         Target::Function("tcp_enter_cwr"),
         "TCP window reductions (CWR)",
     ),
+    TcpEventHook {
+        drops: true,
+        ..hook(
+            &["tcp_event_drop"],
+            Target::Tracepoint("kfree_skb"),
+            "TCP packet drops",
+        )
+    },
 ];
 
 /// Index of the hook whose events replace `tcp_event_cwr` where it exists
@@ -84,16 +96,18 @@ const CWR_HOOK: usize = 6;
 pub struct TcpEventTracer {}
 
 impl TcpEventTracer {
-    /// Loads the programs of the hooks that exist in the kernel and are not in `disabled`.
-    /// Returns the indices of the loaded hooks and a message for each requested hook that is
-    /// left out.
+    /// Loads the programs of the requested hooks (`-e` events, `--drops`) that exist in the
+    /// kernel and are not in `disabled`. Returns the indices of the loaded hooks and a message
+    /// for each requested hook that is left out.
     pub fn configure(
         object: &mut OpenObject,
-        enabled: bool,
+        events: bool,
+        drops: bool,
         disabled: &[usize],
         btf: &mut KernelBtf,
     ) -> (Vec<usize>, Vec<String>) {
-        let check = enabled && btf.available();
+        let requested = |hook: &TcpEventHook| if hook.drops { drops } else { events };
+        let check = (events || drops) && btf.available();
         let mut exists: Vec<bool> = TCP_EVENT_HOOKS
             .iter()
             .map(|hook| {
@@ -106,7 +120,7 @@ impl TcpEventTracer {
             .collect();
         let mut skipped = Vec::new();
         for (i, hook) in TCP_EVENT_HOOKS.iter().enumerate() {
-            if !enabled || exists[i] {
+            if !requested(hook) || exists[i] {
                 continue;
             }
             let target = match hook.target {
@@ -140,7 +154,7 @@ impl TcpEventTracer {
             else {
                 continue;
             };
-            let load = enabled && exists[i] && !disabled.contains(&i);
+            let load = requested(&TCP_EVENT_HOOKS[i]) && exists[i] && !disabled.contains(&i);
             program.set_autoload(load);
             if load {
                 loaded.push(i);

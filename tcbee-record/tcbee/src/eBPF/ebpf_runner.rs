@@ -1,7 +1,7 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt,
+    fmt, fs,
     mem::MaybeUninit,
     path::Path,
     sync::{Arc, Mutex},
@@ -334,6 +334,29 @@ impl EbpfRunner {
         }
     }
 
+    /// Writes the kernel's drop reasons, value to name without the SKB_DROP_REASON_ prefix
+    fn write_drop_reasons(&self, btf: &mut KernelBtf) {
+        let reasons: BTreeMap<String, String> = btf
+            .enum_values("skb_drop_reason")
+            .into_iter()
+            .map(|(value, name)| {
+                let name = name.strip_prefix("SKB_DROP_REASON_").unwrap_or(&name);
+                (value.to_string(), name.to_string())
+            })
+            .collect();
+        if reasons.is_empty() {
+            warn!("The kernel has no drop reasons (before 5.17), drops are recorded without");
+            return;
+        }
+        let path = Path::new(&self.config.dir).join(tcbee_trace::DROP_REASONS_FILE);
+        let written = fs::File::create(&path).and_then(|file| {
+            serde_json::to_writer_pretty(file, &reasons).map_err(std::io::Error::from)
+        });
+        if let Err(err) = written {
+            error!("Could not write {}: {}", path.display(), err);
+        }
+    }
+
     /// Collects the run metadata once everything is attached
     fn collect_metadata(&self, optional: &BTreeSet<OptionalGroup>) -> RunMetadata {
         let c = &self.config;
@@ -459,6 +482,7 @@ impl EbpfRunner {
         let (hooks, missing) = TcpEventTracer::configure(
             open.open_object_mut(),
             self.config.events,
+            self.config.drops,
             &disabled_hooks,
             btf,
         );
@@ -475,7 +499,14 @@ impl EbpfRunner {
             return Ok(());
         }
         let c = &self.config;
-        if !(c.headers || c.tracepoints || c.kernel || c.cwnd || c.algorithms || c.events) {
+        if !(c.headers
+            || c.tracepoints
+            || c.kernel
+            || c.cwnd
+            || c.algorithms
+            || c.events
+            || c.drops)
+        {
             return Err("The kernel has no MPTCP (CONFIG_MPTCP), -M has nothing to record".into());
         }
         warn!("The kernel has no MPTCP (CONFIG_MPTCP), -M records nothing");
@@ -521,6 +552,9 @@ impl EbpfRunner {
                 },
             }
         };
+        if self.config.drops {
+            self.write_drop_reasons(&mut btf);
+        }
         drop(btf);
         self.skipped.extend(missing);
         for group in &disabled {

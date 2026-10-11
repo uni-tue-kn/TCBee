@@ -937,6 +937,47 @@ int BPF_PROG(tcp_event_cwr, struct sock *sk)
 	return trace_tcp_event_sk(sk, TCBEE_TCP_CWR);
 }
 
+/* ---- TCP drops (--drops) ------------------------------------------------------------ */
+
+/*
+ * kfree_skb runs for every packet the kernel drops, on every path and without the socket
+ * lock, so the program leaves early for anything but IP. A packet of a socket that is not a
+ * full TCP socket (listener, request or TIME_WAIT socket) is keyed by its headers like one
+ * without a socket. The drop reason is an argument from 5.17 on; enum skb_drop_reason came
+ * with it, so its existence tells whether ctx[2] may be read.
+ */
+SEC("tp_btf/kfree_skb")
+int BPF_PROG(tcp_event_drop, struct sk_buff *skb, void *location)
+{
+	struct tcp_event_entry *rec;
+	__be16 proto = skb->protocol;
+	__u32 reason = 0;
+	struct sock *sk;
+	__u8 state;
+
+	if (proto != bpf_htons(ETH_P_IP) && proto != bpf_htons(ETH_P_IPV6))
+		return 0;
+	if (bpf_core_type_exists(enum skb_drop_reason))
+		reason = (__u32)((volatile __u64 *)ctx)[2];
+
+	sk = skb->sk;
+	if (sk && sk->sk_protocol == IPPROTO_TCP) {
+		state = sk->__sk_common.skc_state;
+		if (state != TCP_LISTEN && state != TCP_TIME_WAIT && state != TCP_NEW_SYN_RECV) {
+			/* sk is a pointer read from skb, not one the verifier trusts for helpers */
+			rec = tcp_event_reserve_sk(sk, TCBEE_TCP_DROP);
+			if (!rec)
+				return 0;
+			rec->reason = reason;
+			rec->len = skb->len;
+			commit(rec, RB_TCP_EVENTS);
+			return 0;
+		}
+	}
+	return trace_tcp_event_skb(skb, BPF_CORE_READ_BITFIELD_PROBED(skb, pkt_type) != PACKET_OUTGOING,
+				   TCBEE_TCP_DROP, reason);
+}
+
 /* ---- MPTCP path manager (-M pm) ---------------------------------------------------- */
 
 /*

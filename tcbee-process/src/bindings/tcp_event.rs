@@ -1,6 +1,8 @@
 //! Discrete TCP events (`tcbee-record -e`). Besides the fields, every row gets a text label
 //! in the `event` column, which the visualizer draws as a marker.
 
+use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
+
 use tcbee_common::records::{
     tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_CWR, TCBEE_TCP_DROP, TCBEE_TCP_RETRANSMIT,
     TCBEE_TCP_RST_RECEIVED, TCBEE_TCP_RST_SENT, TCBEE_TCP_RTO, TCBEE_TCP_STATE,
@@ -43,6 +45,28 @@ fn name(names: &[&'static str], value: u8) -> String {
         .map_or_else(|| value.to_string(), |n| n.to_string())
 }
 
+thread_local! {
+    /// Names of the drop reasons of the recording that this thread decodes, see
+    /// `set_drop_reasons`
+    static DROP_REASONS: RefCell<Arc<BTreeMap<u32, String>>> = RefCell::default();
+}
+
+/// Sets the drop reason names for the labels of the events this thread decodes. The values
+/// of the kernel's enum differ between kernels, so the names come with the recording; each
+/// worker thread of a run sets them before it decodes.
+pub fn set_drop_reasons(reasons: Arc<BTreeMap<u32, String>>) {
+    DROP_REASONS.with(|r| *r.borrow_mut() = reasons);
+}
+
+fn drop_label(reason: u32) -> String {
+    DROP_REASONS.with(|r| match r.borrow().get(&reason) {
+        Some(name) => format!("drop {name}"),
+        // A subsystem's reason (core, ...) has its subsystem in the upper bits
+        None if reason > 0xffff => format!("drop, reason {reason:#x}"),
+        None => format!("drop, reason {reason}"),
+    })
+}
+
 /// The marker text of an event
 pub fn label(e: &tcp_event_entry) -> String {
     match u32::from(e.kind) {
@@ -62,7 +86,7 @@ pub fn label(e: &tcp_event_entry) -> String {
         TCBEE_TCP_RTO if e.backoff > 0 => format!("RTO, backoff {}", e.backoff),
         TCBEE_TCP_RTO => "RTO".to_string(),
         TCBEE_TCP_CWR => "CWR".to_string(),
-        TCBEE_TCP_DROP => format!("drop, reason {}", e.reason),
+        TCBEE_TCP_DROP => drop_label(e.reason),
         other => format!("event {other}"),
     }
 }

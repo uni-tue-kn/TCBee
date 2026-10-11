@@ -8,6 +8,10 @@ use chrono::Local;
 /// Run metadata that tcbee-record writes with `--metadata` (JSON)
 pub const METADATA_FILE: &str = "metadata.json";
 
+/// Values and names of the kernel's drop reasons, written with `--drops` (JSON): the values
+/// differ between kernels
+pub const DROP_REASONS_FILE: &str = "drop_reasons.json";
+
 /// All trace file types produced by tcbee-record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceFile {

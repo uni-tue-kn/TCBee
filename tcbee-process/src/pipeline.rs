@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -26,7 +26,7 @@ use ts_storage::{
 };
 
 use crate::{
-    bindings::{binding_for, event_tables, Binding},
+    bindings::{binding_for, event_tables, tcp_event, Binding},
     connections::{self, TaggedFlows},
     decode::{RangeError, RowError},
     metadata,
@@ -268,6 +268,8 @@ struct Shared<'a> {
     registry: &'a FlowRegistry,
     files: &'a [FilePlan],
     units: &'a [Unit],
+    /// Names of the kernel's drop reasons for the event labels
+    drop_reasons: Arc<BTreeMap<u32, String>>,
     next_unit: AtomicUsize,
     abort: AtomicBool,
     first_error: Mutex<Option<anyhow::Error>>,
@@ -346,6 +348,7 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
         .context("cannot open a batch writer")?;
     let mut cache = shared.registry.cache();
     let mut output = WorkerOutput::default();
+    tcp_event::set_drop_reasons(shared.drop_reasons.clone());
 
     loop {
         if shared.aborted() {
@@ -521,11 +524,21 @@ pub fn run(args: &Args) -> Result<Summary> {
         .clamp(1, units.len().max(1));
 
     let registry = FlowRegistry::new();
+    let drop_reasons = metadata::drop_reasons(trace.dir()).unwrap_or_else(|msg| {
+        warn!("{msg}");
+        summary.warnings.push(msg);
+        BTreeMap::new()
+    });
+    let drop_reason_rows: Vec<(String, String)> = drop_reasons
+        .iter()
+        .map(|(value, name)| (format!("drop_reason.{value}"), name.clone()))
+        .collect();
     let shared = Shared {
         session: &*session,
         registry: &registry,
         files: &files,
         units: &units,
+        drop_reasons: Arc::new(drop_reasons),
         next_unit: AtomicUsize::new(0),
         abort: AtomicBool::new(false),
         first_error: Mutex::new(None),
@@ -560,6 +573,7 @@ pub fn run(args: &Args) -> Result<Summary> {
         summary.warnings.push(msg);
         Vec::new()
     });
+    let run_meta = run_meta.into_iter().chain(drop_reason_rows).collect();
     let catalog = build_catalog(
         registry,
         output.stats,

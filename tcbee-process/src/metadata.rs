@@ -5,8 +5,10 @@
 
 use std::{fs, io, path::Path};
 
+use std::collections::BTreeMap;
+
 use serde_json::Value;
-use tcbee_trace::METADATA_FILE;
+use tcbee_trace::{DROP_REASONS_FILE, METADATA_FILE};
 
 /// Prefix of the meta keys that come from the metadata file
 pub const PREFIX: &str = "run";
@@ -25,6 +27,26 @@ pub fn read(trace_dir: &Path) -> Result<Vec<(String, String)>, String> {
     let mut rows = Vec::new();
     flatten(PREFIX.to_string(), &value, &mut rows);
     Ok(rows)
+}
+
+/// The names of the kernel's drop reasons by value, from the file `tcbee-record --drops`
+/// writes; empty if there is none. Errors as for `read`.
+pub fn drop_reasons(trace_dir: &Path) -> Result<BTreeMap<u32, String>, String> {
+    let path = trace_dir.join(DROP_REASONS_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let names: BTreeMap<String, String> = serde_json::from_str(&text)
+        .map_err(|e| format!("{} is not a JSON object of names: {e}", path.display()))?;
+    names
+        .into_iter()
+        .map(|(value, name)| match value.parse() {
+            Ok(value) => Ok((value, name)),
+            Err(_) => Err(format!("{}: {value} is no drop reason", path.display())),
+        })
+        .collect()
 }
 
 fn flatten(key: String, value: &Value, rows: &mut Vec<(String, String)>) {
@@ -83,6 +105,21 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn drop_reasons_by_value() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(drop_reasons(dir.path()).unwrap().is_empty());
+        fs::write(
+            dir.path().join(DROP_REASONS_FILE),
+            r#"{"2": "NOT_SPECIFIED", "3": "NO_SOCKET"}"#,
+        )
+        .unwrap();
+        let reasons = drop_reasons(dir.path()).unwrap();
+        assert_eq!(reasons[&3], "NO_SOCKET");
+        fs::write(dir.path().join(DROP_REASONS_FILE), r#"{"x": "A"}"#).unwrap();
+        assert!(drop_reasons(dir.path()).is_err());
     }
 
     #[test]

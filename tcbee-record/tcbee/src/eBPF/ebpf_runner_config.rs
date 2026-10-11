@@ -191,6 +191,7 @@ pub struct EbpfRunnerConfig {
     pub metrics: bool,
     pub metadata: bool,
     pub events: bool,
+    pub drops: bool,
     pub algorithms: bool,
     pub mptcp: MptcpModes,
     pub dir: String,
@@ -289,6 +290,11 @@ impl EbpfRunnerConfig {
 
     pub fn events(mut self, set: bool) -> EbpfRunnerConfig {
         self.events = set;
+        self
+    }
+
+    pub fn drops(mut self, set: bool) -> EbpfRunnerConfig {
+        self.drops = set;
         self
     }
 

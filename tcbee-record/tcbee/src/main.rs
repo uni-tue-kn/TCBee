@@ -74,6 +74,7 @@ fn main() -> anyhow::Result<()> {
     let mut trace_cwnd: bool = false;
     let mut trace_mptcp: bool = false;
     let mut trace_events: bool = false;
+    let mut trace_drops: bool = false;
     let mut mptcp_modes: String = String::new();
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
@@ -209,6 +210,11 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "Record discrete TCP events: retransmissions, RSTs sent and received, state and congestion state changes, retransmission timeouts.",
         );
+        argparser.refer(&mut trace_drops).add_option(
+            &["--drops"],
+            StoreTrue,
+            "Also record the packets of TCP flows that the kernel drops (kfree_skb), with the drop reason. Implies -e.",
+        );
         argparser.refer(&mut trace_mptcp).add_option(
             &["-M", "--mptcp"],
             StoreTrue,
@@ -225,6 +231,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let trace_headers = !iface.is_empty();
+    let trace_events = trace_events || trace_drops;
     let filter = FilterConfig {
         single_port: port,
         any_ports: parse_csv(&ports, "port")?,
@@ -305,6 +312,7 @@ fn main() -> anyhow::Result<()> {
         .metadata(metadata)
         .algorithms(trace_algorithms)
         .events(trace_events)
+        .drops(trace_drops)
         .mptcp(mptcp)
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)

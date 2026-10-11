@@ -155,6 +155,11 @@ struct sk_buff {
 	unsigned char *head;
 };
 
+/* Only its existence is checked: 5.17 and newer */
+enum skb_drop_reason {
+	SKB_DROP_REASON_NOT_SPECIFIED = 2,
+};
+
 struct inet_connection_sock {
 	__u32 icsk_rto;
 	__u8 icsk_ca_state: 5;
