@@ -34,10 +34,16 @@ pub struct MptcpPmTracer {}
 
 impl MptcpPmTracer {
     /// Each program is loaded if its kernel function exists; a kernel may inline some or
-    /// have no MPTCP at all. Returns whether any is loaded.
-    pub fn configure(object: &mut OpenObject, enabled: bool, btf: &mut KernelBtf) -> bool {
+    /// have no MPTCP at all. Returns whether any is loaded, and a message for each missing
+    /// function.
+    pub fn configure(
+        object: &mut OpenObject,
+        enabled: bool,
+        btf: &mut KernelBtf,
+    ) -> (bool, Vec<String>) {
         let check = enabled && btf.available();
         let mut any = false;
+        let mut skipped = Vec::new();
         for mut program in object.progs_mut() {
             let name = program.name().to_string_lossy();
             let Some((_, func)) = PM_HOOKS.iter().find(|(prog, _)| *prog == name) else {
@@ -46,11 +52,16 @@ impl MptcpPmTracer {
             let load = enabled && (!check || btf.has_func(None, func));
             if enabled && !load {
                 warn!("Kernel function {func} not found, MPTCP events from it are not recorded");
+                let message = format!("MPTCP events of {func}: no kernel function {func}");
+                // Entry and exit programs of one function report it once
+                if !skipped.contains(&message) {
+                    skipped.push(message);
+                }
             }
             program.set_autoload(load);
             any |= load;
         }
-        any
+        (any, skipped)
     }
 
     pub fn spawn(

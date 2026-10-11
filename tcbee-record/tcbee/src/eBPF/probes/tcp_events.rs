@@ -29,12 +29,12 @@ pub struct TcpEventHook {
 }
 
 const fn hook(
-    program: &'static [&'static str],
+    programs: &'static [&'static str],
     target: Target,
     name: &'static str,
 ) -> TcpEventHook {
     TcpEventHook {
-        programs: program,
+        programs,
         target,
         name,
         drops: false,
@@ -89,9 +89,72 @@ pub const TCP_EVENT_HOOKS: [TcpEventHook; 8] = [
     },
 ];
 
-/// Index of the hook whose events replace `tcp_event_cwr` where it exists
-const CA_STATE_HOOK: usize = 4;
-const CWR_HOOK: usize = 6;
+/// Index of the hook running `program`
+const fn hook_index(program: &str) -> usize {
+    let mut i = 0;
+    while i < TCP_EVENT_HOOKS.len() {
+        let name = TCP_EVENT_HOOKS[i].programs[0].as_bytes();
+        let wanted = program.as_bytes();
+        if name.len() == wanted.len() {
+            let mut j = 0;
+            while j < name.len() && name[j] == wanted[j] {
+                j += 1;
+            }
+            if j == name.len() {
+                return i;
+            }
+        }
+        i += 1;
+    }
+    panic!("no such TCP event program");
+}
+
+/// The congestion state changes include the CWR state; tcp_enter_cwr is their fallback
+const CA_STATE_HOOK: usize = hook_index("tcp_event_ca_state");
+const CWR_HOOK: usize = hook_index("tcp_event_cwr");
+
+/// Which hooks to load, given which ones exist in the kernel and which ones the kernel
+/// rejected (`disabled`), and a message for each requested hook that the kernel lacks
+fn hooks_to_load(
+    events: bool,
+    drops: bool,
+    exists: &[bool],
+    disabled: &[usize],
+) -> (Vec<bool>, Vec<String>) {
+    let requested = |hook: &TcpEventHook| if hook.drops { drops } else { events };
+    let mut skipped = Vec::new();
+    for (i, hook) in TCP_EVENT_HOOKS.iter().enumerate() {
+        if !requested(hook) || exists[i] {
+            continue;
+        }
+        let target = match hook.target {
+            Target::Tracepoint(tp) => format!("tracepoint {tp}"),
+            Target::Function(func) => format!("kernel function {func}"),
+        };
+        if i == CA_STATE_HOOK {
+            warn!("The {target} does not exist (before 5.19), only RTOs and CWR are recorded");
+            skipped.push(format!(
+                "{}: no {target} in this kernel, only RTOs and CWR",
+                hook.name
+            ));
+        } else {
+            warn!(
+                "The {target} does not exist, {} are not recorded",
+                hook.name
+            );
+            skipped.push(format!("{}: no {target} in this kernel", hook.name));
+        }
+    }
+    let mut load: Vec<bool> = TCP_EVENT_HOOKS
+        .iter()
+        .enumerate()
+        .map(|(i, hook)| requested(hook) && exists[i] && !disabled.contains(&i))
+        .collect();
+    if load[CA_STATE_HOOK] {
+        load[CWR_HOOK] = false;
+    }
+    (load, skipped)
+}
 
 pub struct TcpEventTracer {}
 
@@ -106,9 +169,8 @@ impl TcpEventTracer {
         disabled: &[usize],
         btf: &mut KernelBtf,
     ) -> (Vec<usize>, Vec<String>) {
-        let requested = |hook: &TcpEventHook| if hook.drops { drops } else { events };
         let check = (events || drops) && btf.available();
-        let mut exists: Vec<bool> = TCP_EVENT_HOOKS
+        let exists: Vec<bool> = TCP_EVENT_HOOKS
             .iter()
             .map(|hook| {
                 !check
@@ -118,65 +180,43 @@ impl TcpEventTracer {
                     }
             })
             .collect();
-        let mut skipped = Vec::new();
-        for (i, hook) in TCP_EVENT_HOOKS.iter().enumerate() {
-            if !requested(hook) || exists[i] {
-                continue;
-            }
-            let target = match hook.target {
-                Target::Tracepoint(tp) => format!("tracepoint {tp}"),
-                Target::Function(func) => format!("kernel function {func}"),
-            };
-            if i == CA_STATE_HOOK {
-                warn!("The {target} does not exist (before 5.19), only RTOs and CWR are recorded");
-                skipped.push(format!(
-                    "{}: no {target} in this kernel, only RTOs and CWR",
-                    hook.name
-                ));
-            } else {
-                warn!(
-                    "The {target} does not exist, {} are not recorded",
-                    hook.name
-                );
-                skipped.push(format!("{}: no {target} in this kernel", hook.name));
-            }
-        }
-        // The congestion state changes include the CWR state; tcp_enter_cwr is the fallback
-        if check && exists[CA_STATE_HOOK] {
-            exists[CWR_HOOK] = false;
-        }
-        let mut loaded = Vec::new();
+        let (load, skipped) = hooks_to_load(events, drops, &exists, disabled);
         for mut program in object.progs_mut() {
             let name = program.name().to_string_lossy();
-            let Some(i) = TCP_EVENT_HOOKS
+            if let Some(i) = TCP_EVENT_HOOKS
                 .iter()
                 .position(|hook| hook.programs.contains(&name.as_ref()))
-            else {
-                continue;
-            };
-            let load = requested(&TCP_EVENT_HOOKS[i]) && exists[i] && !disabled.contains(&i);
-            program.set_autoload(load);
-            if load {
-                loaded.push(i);
+            {
+                program.set_autoload(load[i]);
             }
         }
-        loaded.sort_unstable();
+        let loaded = (0..load.len()).filter(|i| load[*i]).collect();
         (loaded, skipped)
     }
 
+    /// Attaches the loaded programs. A program that does not attach is left out with a
+    /// warning, like one the kernel lacks; returns a message for each.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
         writer: &mut Writer,
         links: &mut Vec<Link>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<Vec<String>, Box<dyn Error>> {
+        let mut skipped = Vec::new();
         for program in skel.object().progs_mut() {
             let name = program.name().to_string_lossy();
-            let ours = TCP_EVENT_HOOKS
+            let Some(hook) = TCP_EVENT_HOOKS
                 .iter()
-                .any(|hook| hook.programs.contains(&name.as_ref()));
-            if ours && program.autoload() {
-                attach(&program, links)?;
+                .find(|hook| hook.programs.contains(&name.as_ref()))
+            else {
+                continue;
+            };
+            if !program.autoload() {
+                continue;
+            }
+            if let Err(err) = attach(&program, links) {
+                warn!("{}, {} are not recorded", err, hook.name);
+                skipped.push(format!("{}: attaching failed: {}", hook.name, err));
             }
         }
         writer.register::<tcp_event_entry>(
@@ -184,6 +224,53 @@ impl TcpEventTracer {
             rings::of(&skel.maps.TCP_EVENTS)?,
             dir,
         )?;
-        Ok(())
+        Ok(skipped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: [bool; TCP_EVENT_HOOKS.len()] = [true; TCP_EVENT_HOOKS.len()];
+
+    fn loaded(load: &[bool]) -> Vec<&'static str> {
+        (0..load.len())
+            .filter(|i| load[*i])
+            .map(|i| TCP_EVENT_HOOKS[i].programs[0])
+            .collect()
+    }
+
+    #[test]
+    fn congestion_state_changes_replace_cwr() {
+        let (load, skipped) = hooks_to_load(true, false, &ALL, &[]);
+        let names = loaded(&load);
+        assert!(names.contains(&"tcp_event_ca_state"));
+        assert!(!names.contains(&"tcp_event_cwr"));
+        assert!(!names.contains(&"tcp_event_drop"));
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn cwr_is_the_fallback_when_congestion_states_are_missing_or_rejected() {
+        let mut exists = ALL;
+        exists[CA_STATE_HOOK] = false;
+        let (load, skipped) = hooks_to_load(true, false, &exists, &[]);
+        assert!(loaded(&load).contains(&"tcp_event_cwr"));
+        assert_eq!(skipped.len(), 1);
+
+        let (load, _) = hooks_to_load(true, false, &ALL, &[CA_STATE_HOOK]);
+        let names = loaded(&load);
+        assert!(names.contains(&"tcp_event_cwr"));
+        assert!(!names.contains(&"tcp_event_ca_state"));
+    }
+
+    #[test]
+    fn drops_alone_load_only_the_drop_hook() {
+        let (load, _) = hooks_to_load(false, true, &ALL, &[]);
+        assert_eq!(loaded(&load), ["tcp_event_drop"]);
+        let (load, skipped) = hooks_to_load(false, false, &[false; TCP_EVENT_HOOKS.len()], &[]);
+        assert!(loaded(&load).is_empty());
+        assert!(skipped.is_empty());
     }
 }

@@ -18,6 +18,8 @@ use std::{
 use log::warn;
 use serde::Serialize;
 
+use crate::metrics::RingCounters;
+
 /// Version of the file layout, increased when a field changes meaning
 const FORMAT: u32 = 1;
 
@@ -125,7 +127,7 @@ struct Sample {
     interface_drops: Vec<InterfaceDrops>,
     softnet: Option<Softnet>,
     /// The recorder's own event counters, only in the stop sample
-    tcbee: Option<Vec<RingCounters>>,
+    tcbee: Option<Vec<NamedRingCounters>>,
 }
 
 /// One reading of all clocks. The offsets map a CLOCK_MONOTONIC timestamp, which is what
@@ -169,20 +171,18 @@ struct Softnet {
     time_squeeze: u64,
 }
 
+/// The counters of one ring buffer, by its map name
 #[derive(Serialize)]
-pub struct RingCounters {
+pub struct NamedRingCounters {
     pub name: String,
-    pub attempted: u64,
-    pub handled: u64,
-    pub dropped: u64,
-    pub error: u64,
+    #[serde(flatten)]
+    pub counters: RingCounters,
 }
 
 impl RunMetadata {
     /// Collects everything. `interface` is the `-h` interface; without it all interfaces that
     /// are up are described, except loopback.
     pub fn collect(recorder: Recorder) -> RunMetadata {
-        let uts = uname();
         let interfaces = interface_names(recorder.interface.as_deref());
         RunMetadata {
             format: FORMAT,
@@ -194,11 +194,7 @@ impl RunMetadata {
                     .map(|link| link.to_string_lossy().into_owned()),
                 cpus_online: read_trimmed("/sys/devices/system/cpu/online"),
             },
-            kernel: Kernel {
-                release: uts.as_ref().map(|u| u.0.clone()),
-                version: uts.as_ref().map(|u| u.1.clone()),
-                machine: uts.as_ref().map(|u| u.2.clone()),
-            },
+            kernel: Kernel::read(),
             recorder,
             sysctls: SYSCTLS
                 .iter()
@@ -217,7 +213,7 @@ impl RunMetadata {
     }
 
     /// Adds the stop sample with the recorder's final counters
-    pub fn finish(&mut self, tcbee: Option<Vec<RingCounters>>) {
+    pub fn finish(&mut self, tcbee: Option<Vec<NamedRingCounters>>) {
         let names: Vec<String> = self.interfaces.iter().map(|i| i.name.clone()).collect();
         self.stop = Some(Sample::take(&names, tcbee));
     }
@@ -249,7 +245,7 @@ impl Interface {
 }
 
 impl Sample {
-    fn take(interfaces: &[String], tcbee: Option<Vec<RingCounters>>) -> Sample {
+    fn take(interfaces: &[String], tcbee: Option<Vec<NamedRingCounters>>) -> Sample {
         let mut tcp = BTreeMap::new();
         for file in ["/proc/net/snmp", "/proc/net/netstat"] {
             if let Ok(text) = fs::read_to_string(file) {
@@ -505,22 +501,27 @@ fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// (release, version, machine)
-fn uname() -> Option<(String, String, String)> {
-    let mut uts: libc::utsname = unsafe { mem::zeroed() };
-    if unsafe { libc::uname(&mut uts) } != 0 {
-        return None;
+impl Kernel {
+    /// From uname; all fields None if it fails
+    fn read() -> Kernel {
+        let mut uts: libc::utsname = unsafe { mem::zeroed() };
+        if unsafe { libc::uname(&mut uts) } != 0 {
+            return Kernel {
+                release: None,
+                version: None,
+                machine: None,
+            };
+        }
+        let field = |f: &[libc::c_char]| {
+            let text = unsafe { CStr::from_ptr(f.as_ptr()) }.to_string_lossy();
+            Some(text.into_owned())
+        };
+        Kernel {
+            release: field(&uts.release),
+            version: field(&uts.version),
+            machine: field(&uts.machine),
+        }
     }
-    let field = |f: &[libc::c_char]| {
-        unsafe { CStr::from_ptr(f.as_ptr()) }
-            .to_string_lossy()
-            .into_owned()
-    };
-    Some((
-        field(&uts.release),
-        field(&uts.version),
-        field(&uts.machine),
-    ))
 }
 
 #[cfg(test)]

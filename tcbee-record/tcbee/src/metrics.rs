@@ -34,16 +34,34 @@ pub struct ProgramStats {
     pub run_time_ns: u64,
 }
 
+/// Event counters of one ring buffer, see counters.h
+#[derive(Serialize, Clone, Copy)]
+pub struct RingCounters {
+    pub attempted: u64,
+    pub handled: u64,
+    pub dropped: u64,
+    pub error: u64,
+}
+
+impl RingCounters {
+    pub fn of(snapshot: &Snapshot, rb: u32) -> RingCounters {
+        RingCounters {
+            attempted: snapshot.invocations(rb),
+            handled: snapshot.rb(rb, STAT_HANDLED),
+            dropped: snapshot.rb(rb, STAT_DROPPED),
+            error: snapshot.rb(rb, STAT_ERROR),
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct RingBufMetrics {
     pub name: &'static str,
     pub file: Option<String>,
     /// Size of each CPU's ring buffer, None if the ring buffers were not created
     pub size_per_cpu_bytes: Option<u32>,
-    pub attempted: u64,
-    pub handled: u64,
-    pub dropped: u64,
-    pub error: u64,
+    #[serde(flatten)]
+    pub counters: RingCounters,
     /// None if no writer was registered for this ring buffer
     pub records_written: Option<u64>,
     pub writer_error: Option<String>,
@@ -125,10 +143,7 @@ impl Metrics {
                     name: ringbuf.map,
                     file: report.map(|r| r.file.to_string_lossy().into_owned()),
                     size_per_cpu_bytes: ringbuf_sizes.get(rb as usize).copied().flatten(),
-                    attempted: snapshot.invocations(rb),
-                    handled: snapshot.rb(rb, STAT_HANDLED),
-                    dropped: snapshot.rb(rb, STAT_DROPPED),
-                    error: snapshot.rb(rb, STAT_ERROR),
+                    counters: RingCounters::of(snapshot, rb),
                     records_written: report.map(|r| r.records),
                     writer_error: report.and_then(|r| r.error.clone()),
                     hook_seq_issued: hook_seq.map(|totals| totals.issued[rb as usize]),

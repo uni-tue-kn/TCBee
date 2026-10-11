@@ -53,6 +53,10 @@ impl OptionalGroup {
         }
     }
 
+    pub fn is_tcp_event(self) -> bool {
+        matches!(self, OptionalGroup::TcpEvent(_))
+    }
+
     /// The group's programs, as libbpf names them (the C function names)
     pub fn programs(self) -> &'static [&'static str] {
         match self {

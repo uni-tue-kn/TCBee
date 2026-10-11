@@ -16,7 +16,7 @@ use log::{debug, error, info, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
     RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
-    RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+    RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -42,8 +42,8 @@ use crate::{
         rings,
         skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
     },
-    metadata::{Recorder, RingCounters, RunMetadata},
-    metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats},
+    metadata::{NamedRingCounters, Recorder, RunMetadata},
+    metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
@@ -179,9 +179,7 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
 
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
-    let tcp_events = optional
-        .iter()
-        .any(|group| matches!(group, OptionalGroup::TcpEvent(_)));
+    let tcp_events = optional.iter().any(|group| group.is_tcp_event());
     let groups: [(bool, &[u32]); 8] = [
         (
             config.headers,
@@ -300,7 +298,7 @@ impl EbpfRunner {
     }
 
     /// The event counters of the ring buffers that were created
-    fn ring_counters(&self) -> Option<Vec<RingCounters>> {
+    fn ring_counters(&self) -> Option<Vec<NamedRingCounters>> {
         let snapshot = self
             .stats
             .as_ref()?
@@ -313,15 +311,9 @@ impl EbpfRunner {
                 .zip(&self.ringbuf_sizes)
                 .enumerate()
                 .filter(|(_, (_, size))| size.is_some())
-                .map(|(rb, (ringbuf, _))| {
-                    let rb = rb as u32;
-                    RingCounters {
-                        name: ringbuf.map.to_string(),
-                        attempted: snapshot.invocations(rb),
-                        handled: snapshot.rb(rb, STAT_HANDLED),
-                        dropped: snapshot.rb(rb, STAT_DROPPED),
-                        error: snapshot.rb(rb, STAT_ERROR),
-                    }
+                .map(|(rb, (ringbuf, _))| NamedRingCounters {
+                    name: ringbuf.map.to_string(),
+                    counters: RingCounters::of(&snapshot, rb as u32),
                 })
                 .collect(),
         )
@@ -469,7 +461,8 @@ impl EbpfRunner {
             optional.insert(OptionalGroup::Bbr);
         }
         let pm = self.config.mptcp.pm && !disabled.contains(&OptionalGroup::MptcpPm);
-        if MptcpPmTracer::configure(open.open_object_mut(), pm, btf) {
+        let (any_pm, mut missing) = MptcpPmTracer::configure(open.open_object_mut(), pm, btf);
+        if any_pm {
             optional.insert(OptionalGroup::MptcpPm);
         }
         let disabled_hooks: Vec<usize> = disabled
@@ -479,7 +472,7 @@ impl EbpfRunner {
                 _ => None,
             })
             .collect();
-        let (hooks, missing) = TcpEventTracer::configure(
+        let (hooks, missing_events) = TcpEventTracer::configure(
             open.open_object_mut(),
             self.config.events,
             self.config.drops,
@@ -487,6 +480,7 @@ impl EbpfRunner {
             btf,
         );
         optional.extend(hooks.into_iter().map(OptionalGroup::TcpEvent));
+        missing.extend(missing_events);
         Ok((open, optional, missing))
     }
 
@@ -652,11 +646,9 @@ impl EbpfRunner {
             MptcpPmTracer::spawn(skel, dir, writer, links)?;
         }
 
-        if optional
-            .iter()
-            .any(|group| matches!(group, OptionalGroup::TcpEvent(_)))
-        {
-            TcpEventTracer::spawn(skel, dir, writer, links)?;
+        if optional.iter().any(|group| group.is_tcp_event()) {
+            let not_attached = TcpEventTracer::spawn(skel, dir, writer, links)?;
+            self.skipped.extend(not_attached);
         }
 
         // TODO: should be true by default in get_watcher_config()
