@@ -148,6 +148,7 @@ struct sk_buff {
 	struct sock *sk;
 	char cb[48];
 	unsigned int len;
+	int skb_iif;
 	__be16 protocol;
 	__u16 transport_header;
 	__u16 network_header;

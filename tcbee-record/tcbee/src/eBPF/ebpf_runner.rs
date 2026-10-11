@@ -530,7 +530,7 @@ impl EbpfRunner {
         let mut btf = KernelBtf::default();
         self.check_kernel_mptcp(&mut btf)?;
         let mut disabled = BTreeSet::new();
-        let (skel, optional, missing) = loop {
+        let (skel, mut optional, missing) = loop {
             let (open, optional, missing) =
                 self.open_configured(tcx, &disabled, &mut btf, &cpus)?;
             match load(open) {
@@ -647,8 +647,10 @@ impl EbpfRunner {
         }
 
         if optional.iter().any(|group| group.is_tcp_event()) {
-            let not_attached = TcpEventTracer::spawn(skel, dir, writer, links)?;
-            self.skipped.extend(not_attached);
+            for (hook, message) in TcpEventTracer::spawn(skel, dir, writer, links)? {
+                optional.remove(&OptionalGroup::TcpEvent(hook));
+                self.skipped.push(message);
+            }
         }
 
         // TODO: should be true by default in get_watcher_config()

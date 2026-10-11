@@ -195,19 +195,19 @@ impl TcpEventTracer {
     }
 
     /// Attaches the loaded programs. A program that does not attach is left out with a
-    /// warning, like one the kernel lacks; returns a message for each.
+    /// warning, like one the kernel lacks; returns its hook index and a message for each.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
         writer: &mut Writer,
         links: &mut Vec<Link>,
-    ) -> Result<Vec<String>, Box<dyn Error>> {
-        let mut skipped = Vec::new();
+    ) -> Result<Vec<(usize, String)>, Box<dyn Error>> {
+        let mut failed = Vec::new();
         for program in skel.object().progs_mut() {
             let name = program.name().to_string_lossy();
-            let Some(hook) = TCP_EVENT_HOOKS
+            let Some(i) = TCP_EVENT_HOOKS
                 .iter()
-                .find(|hook| hook.programs.contains(&name.as_ref()))
+                .position(|hook| hook.programs.contains(&name.as_ref()))
             else {
                 continue;
             };
@@ -215,8 +215,9 @@ impl TcpEventTracer {
                 continue;
             }
             if let Err(err) = attach(&program, links) {
+                let hook = &TCP_EVENT_HOOKS[i];
                 warn!("{}, {} are not recorded", err, hook.name);
-                skipped.push(format!("{}: attaching failed: {}", hook.name, err));
+                failed.push((i, format!("{}: attaching failed: {}", hook.name, err)));
             }
         }
         writer.register::<tcp_event_entry>(
@@ -224,7 +225,7 @@ impl TcpEventTracer {
             rings::of(&skel.maps.TCP_EVENTS)?,
             dir,
         )?;
-        Ok(skipped)
+        Ok(failed)
     }
 }
 

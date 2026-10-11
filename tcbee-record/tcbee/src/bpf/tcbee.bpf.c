@@ -801,32 +801,21 @@ static __always_inline void tuple_swap(struct ip_tuple *t)
 }
 
 /*
- * An event of the packet in skb, for a flow without a full socket at the hook. owner is the
- * socket the packet belongs to (skb->sk), NULL for none. The tuple is turned local -> remote:
- * a packet without an owner was received, one whose owner has a local port (a listener, a
- * request or TIME_WAIT socket) was received if it is addressed to that port, and one of an
- * owner without ports (the control socket that sends RSTs and TIME_WAIT ACKs) was sent. Only
- * flows that already have a counter are recorded, see hook_seq_known_tuple().
+ * An event of the packet in skb, for a flow without a full socket at the hook. The tuple is
+ * turned local -> remote: the addresses and ports of a received packet are swapped. Only flows
+ * that already have a counter are recorded, see hook_seq_known_tuple().
  */
-static __always_inline int trace_tcp_event_skb(const struct sk_buff *skb, struct sock *owner,
+static __always_inline int trace_tcp_event_skb(const struct sk_buff *skb, bool received,
 					       __u8 kind, __u32 reason)
 {
 	struct tcp_event_entry *rec;
 	struct ip_tuple t;
-	bool received;
 	__u16 family;
 	__u64 hook_seq;
 	__u32 seq;
 
 	if (!tuple_from_skb(skb, &t, &family, &seq))
 		return 0;
-	if (owner) {
-		__u16 port = owner->__sk_common.skc_num;
-
-		received = port && t.dport == port;
-	} else {
-		received = true;
-	}
 	if (received)
 		tuple_swap(&t);
 	if (!filter_ports_match(t.sport, t.dport))
@@ -877,9 +866,9 @@ int BPF_PROG(tcp_event_rst_sent, const struct sock *sk, const struct sk_buff *sk
 {
 	if (sk && bpf_skc_to_tcp_sock((struct sock *)sk))
 		return trace_tcp_event_sk((struct sock *)sk, TCBEE_TCP_RST_SENT);
-	/* The answered packet was received: no owner */
+	/* skb is the packet the RST answers, which this host received */
 	if (skb)
-		return trace_tcp_event_skb(skb, NULL, TCBEE_TCP_RST_SENT, 0);
+		return trace_tcp_event_skb(skb, true, TCBEE_TCP_RST_SENT, 0);
 	return 0;
 }
 
@@ -908,7 +897,7 @@ int BPF_PROG(tcp_event_state, const struct sock *sk, int oldstate, int newstate)
 	if (oldstate == TCP_LISTEN || newstate == TCP_LISTEN)
 		return 0;
 	sk_ports(s, &sport, &dport);
-	if (!sport)
+	if (!sport && newstate == TCP_CLOSE)
 		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)s, inet_sport));
 	if (!sport || !dport)
 		return 0;
@@ -996,7 +985,7 @@ int BPF_PROG(tcp_event_drop, struct sk_buff *skb, void *location)
 	if (sk && sk->sk_protocol == IPPROTO_TCP) {
 		state = sk->__sk_common.skc_state;
 		sk_ports(sk, &sport, &dport);
-		/* Without ports it is the control socket, its packets are keyed by their headers */
+		/* The control socket that sends RSTs and TIME_WAIT ACKs has no remote port */
 		if (state != TCP_LISTEN && state != TCP_TIME_WAIT && state != TCP_NEW_SYN_RECV &&
 		    sport && dport) {
 			/* sk is a pointer read from skb, not one the verifier trusts for helpers */
@@ -1009,7 +998,8 @@ int BPF_PROG(tcp_event_drop, struct sk_buff *skb, void *location)
 			return 0;
 		}
 	}
-	return trace_tcp_event_skb(skb, sk, TCBEE_TCP_DROP, reason);
+	/* skb_iif is the interface a packet came in on, 0 for packets this host generated */
+	return trace_tcp_event_skb(skb, BPF_CORE_READ(skb, skb_iif) != 0, TCBEE_TCP_DROP, reason);
 }
 
 /* ---- MPTCP path manager (-M pm) ---------------------------------------------------- */
