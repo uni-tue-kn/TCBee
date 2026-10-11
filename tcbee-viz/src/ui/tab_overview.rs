@@ -13,6 +13,9 @@ pub const NO_METADATA_HINT: &str =
     "This recording has no run metadata. Record with tcbee-record --metadata to see the host, \
      kernel, sysctls, interfaces, clocks and drop counters here.";
 
+/// Layout of the run metadata this version reads, `format` in tcbee-record's metadata.rs
+const METADATA_FORMAT: &str = "1";
+
 /// Meta keys of the database itself, shown first
 const FILE_KEYS: [(&str, &str); 4] = [
     ("writer", "Writer"),
@@ -39,6 +42,8 @@ pub struct Table {
 pub struct Overview {
     pub file: Vec<(String, String)>,
     pub has_metadata: bool,
+    /// Set when the metadata has a layout this version does not know; rows may be missing
+    pub unknown_format: Option<String>,
     pub sections: Vec<Section>,
     pub interfaces: Table,
     /// Kernel and interface counters that changed between start and stop
@@ -117,7 +122,8 @@ fn yes_no(value: Option<&str>) -> String {
     }
 }
 
-/// UTC date and time of nanoseconds since the Unix epoch
+/// UTC date and time of nanoseconds since the Unix epoch. The visualizer has no date crate,
+/// and this is the only date it shows.
 fn format_utc(ns: i64) -> String {
     let secs = ns.div_euclid(1_000_000_000);
     let days = secs.div_euclid(86_400);
@@ -140,43 +146,22 @@ fn format_utc(ns: i64) -> String {
     )
 }
 
+/// Rows of the host section: label and key below `run.`
+const HOST_ROWS: [(&str, &str); 7] = [
+    ("Hostname", "host.hostname"),
+    ("Kernel", "kernel.release"),
+    ("Kernel build", "kernel.version"),
+    ("Machine", "kernel.machine"),
+    ("CPUs online", "host.cpus_online"),
+    ("Network namespace", "host.netns"),
+    ("Boot id", "host.boot_id"),
+];
+
 fn host_section(m: &RunMeta) -> Section {
     let mut rows = Vec::new();
-    push(
-        &mut rows,
-        "Hostname",
-        m.get("host.hostname").map(str::to_string),
-    );
-    push(
-        &mut rows,
-        "Kernel",
-        m.get("kernel.release").map(str::to_string),
-    );
-    push(
-        &mut rows,
-        "Kernel build",
-        m.get("kernel.version").map(str::to_string),
-    );
-    push(
-        &mut rows,
-        "Machine",
-        m.get("kernel.machine").map(str::to_string),
-    );
-    push(
-        &mut rows,
-        "CPUs online",
-        m.get("host.cpus_online").map(str::to_string),
-    );
-    push(
-        &mut rows,
-        "Network namespace",
-        m.get("host.netns").map(str::to_string),
-    );
-    push(
-        &mut rows,
-        "Boot id",
-        m.get("host.boot_id").map(str::to_string),
-    );
+    for (label, key) in HOST_ROWS {
+        push(&mut rows, label, m.get(key).map(str::to_string));
+    }
     Section {
         title: "Host and kernel",
         rows,
@@ -398,6 +383,10 @@ impl Overview {
         Self {
             file,
             has_metadata: true,
+            unknown_format: m
+                .get("format")
+                .filter(|format| *format != METADATA_FORMAT)
+                .map(str::to_string),
             sections: vec![
                 host_section(&m),
                 recording_section(&m),
@@ -455,6 +444,16 @@ impl TabOverview {
                         if !overview.has_metadata {
                             ui.label(RichText::new(NO_METADATA_HINT).color(muted));
                             return;
+                        }
+                        if let Some(format) = &overview.unknown_format {
+                            ui.label(
+                                RichText::new(format!(
+                                    "The run metadata has format {format}, this viewer knows \
+                                     format {METADATA_FORMAT}: some rows may be missing. All \
+                                     entries are listed at the end."
+                                ))
+                                .color(muted),
+                            );
                         }
                         for section in &overview.sections {
                             CollapsingHeader::new(RichText::new(section.title).strong())
@@ -614,6 +613,7 @@ mod tests {
             ("run.stop.tcbee.0.error", "0"),
         ]));
         assert!(o.has_metadata);
+        assert_eq!(o.unknown_format, None);
         let section = |title: &str| {
             o.sections
                 .iter()
@@ -672,6 +672,12 @@ mod tests {
             vec![vec!["TCP_SEND_SOCK_EVENTS", "10", "9", "1", "0"]]
         );
         assert_eq!(o.all.len(), 34);
+    }
+
+    #[test]
+    fn unknown_format_is_reported() {
+        let o = Overview::new(&meta(&[("run.format", "2"), ("run.kernel.release", "7.0")]));
+        assert_eq!(o.unknown_format.as_deref(), Some("2"));
     }
 
     #[test]

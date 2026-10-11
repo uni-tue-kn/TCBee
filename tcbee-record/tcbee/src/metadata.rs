@@ -20,7 +20,8 @@ use serde::Serialize;
 
 use crate::metrics::RingCounters;
 
-/// Version of the file layout, increased when a field changes meaning
+/// Version of the file layout, increased when a field changes meaning. tcbee-viz reads the
+/// fields by name in its Overview tab (tab_overview.rs).
 const FORMAT: u32 = 1;
 
 /// Sysctls that change how TCP behaves, relative to /proc/sys
