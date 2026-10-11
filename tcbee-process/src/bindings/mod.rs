@@ -9,6 +9,8 @@ pub mod tcp4_packet;
 pub mod tcp6_packet;
 pub mod tcp_probe;
 
+use std::{io, path::Path};
+
 use tcbee_common::records::{
     bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry,
     tcp4_packet_trace, tcp6_packet_trace, tcp_probe_entry,
@@ -26,6 +28,9 @@ pub struct Binding {
     pub table: &'static EventTable,
     pub entry_size: usize,
     pub decode: DecodeFn,
+    /// Columns the records of this file do not have; their rows hold 0 there and their series
+    /// are left out of the catalog
+    pub missing_columns: &'static [&'static str],
     /// Size of the record's bincode encoding, to check `entry_size` against
     #[cfg(test)]
     pub encoded_size: fn() -> usize,
@@ -37,6 +42,7 @@ fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
         table: E::TABLE,
         entry_size: E::ENTRY_SIZE,
         decode: decode_dyn::<E>,
+        missing_columns: &[],
         #[cfg(test)]
         encoded_size: || bincode::serialized_size(&E::default()).unwrap() as usize,
     }
@@ -60,6 +66,21 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::MptcpPm => binding_of::<mptcp_pm_entry>(Dir::None),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
+}
+
+/// The binding of the trace file at `path`: `binding(file)`, except for sock files in the old
+/// layout, which get the binding of `OldSockEntry`.
+pub fn binding_for(file: TraceFile, path: &Path) -> io::Result<Option<Binding>> {
+    let Some(current) = binding(file) else {
+        return Ok(None);
+    };
+    if current.table.source == sock_trace_entry::TABLE.source && sock::has_old_layout(path)? {
+        return Ok(Some(Binding {
+            missing_columns: sock::ADDED_COLUMNS,
+            ..binding_of::<sock::OldSockEntry>(current.dir)
+        }));
+    }
+    Ok(Some(current))
 }
 
 /// Every event table, once, in the order of `TraceFile::all()`.

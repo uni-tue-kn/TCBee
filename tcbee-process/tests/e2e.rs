@@ -232,6 +232,66 @@ fn send_and_receive_sock_are_separate_series() {
     }
 }
 
+/// Sock records in the current layout have series for the added fields; the old-layout
+/// fixture has none of them, as its records hold 0 there.
+#[test]
+fn added_sock_fields_are_series_only_where_recorded() {
+    use tcbee_common::records::sock_trace_entry;
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_current");
+        fs::create_dir_all(&trace).unwrap();
+        let recs: Vec<_> = (0..4u64)
+            .map(|i| sock_trace_entry {
+                time: 1_000 + i,
+                hook_seq: i + 1,
+                addr_v4: 0x0200_000A_0100_000A,
+                sport: 40000,
+                dport: 5201,
+                family: 2,
+                ca_state: if i == 2 { 4 } else { 0 },
+                delivered: 10 * i as u32,
+                ..Default::default()
+            })
+            .collect();
+        write_records(&trace, "send_sock.tcp", &recs);
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let store = ts_storage::open(&out).unwrap();
+        let series = store.series(1).unwrap();
+        let ca = series.iter().find(|s| s.name == "ca_state").unwrap();
+        assert_eq!((ca.n, ca.v_max), (4, Some(4.0)));
+        let delivered = series.iter().find(|s| s.name == "delivered").unwrap();
+        assert_eq!(delivered.v_max, Some(30.0));
+
+        let old = tempfile::tempdir().unwrap();
+        let (out, _) = process(engine, ext, old.path(), &fixture("tcbee_small"), None);
+        let store = ts_storage::open(&out).unwrap();
+        for f in store.flows().unwrap() {
+            let names: Vec<String> = store
+                .series(f.id)
+                .unwrap()
+                .into_iter()
+                .filter(|s| s.source == "sock")
+                .map(|s| s.name)
+                .collect();
+            assert!(!names.iter().any(|n| n == "ca_state" || n == "delivered"));
+            assert!(names.is_empty() || names.iter().any(|n| n == "snd_cwnd"));
+        }
+        // The ids stay dense after leaving series out
+        let all: Vec<i64> = store
+            .flows()
+            .unwrap()
+            .iter()
+            .flat_map(|f| store.series(f.id).unwrap())
+            .map(|s| s.id)
+            .collect();
+        let mut sorted = all.clone();
+        sorted.sort();
+        assert_eq!(sorted, (1..=all.len() as i64).collect::<Vec<_>>());
+    }
+}
+
 #[test]
 fn engines_and_thread_counts_agree_point_by_point() {
     let mut dumps = Vec::new();

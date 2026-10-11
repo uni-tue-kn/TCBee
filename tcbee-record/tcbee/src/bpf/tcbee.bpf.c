@@ -500,6 +500,15 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 		/* struct tcp_options_received, not read yet */
 		rec->snd_wscale = 0;
 		rec->rcv_wscale = 0;
+		rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+		rec->packets_out = tp->packets_out;
+		rec->delivered = tp->delivered;
+		rec->delivered_ce = tp->delivered_ce;
+		rec->app_limited = tp->app_limited;
+		rec->chrono_type = BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
+		rec->chrono_busy = tp->chrono_stat[0];
+		rec->chrono_rwnd_limited = tp->chrono_stat[1];
+		rec->chrono_sndbuf_limited = tp->chrono_stat[2];
 		rec->conn_id = mptcp_conn_id(tp);
 		commit(rec, rb);
 	}

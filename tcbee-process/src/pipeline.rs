@@ -26,7 +26,7 @@ use ts_storage::{
 };
 
 use crate::{
-    bindings::{binding, event_tables, Binding},
+    bindings::{binding_for, event_tables, Binding},
     connections::{self, TaggedFlows},
     decode::{RangeError, RowError},
     metadata,
@@ -177,7 +177,9 @@ fn plan(
         let len = std::fs::metadata(&path)
             .with_context(|| format!("cannot stat {}", path.display()))?
             .len();
-        let Some(binding) = binding(file) else {
+        let binding =
+            binding_for(file, &path).with_context(|| format!("cannot read {}", path.display()))?;
+        let Some(binding) = binding else {
             info!("Skipping {name}: {NO_DECODER}");
             if len > 0 {
                 summary.skipped.push(name);
@@ -197,6 +199,12 @@ fn plan(
         }
         if records == 0 {
             continue;
+        }
+        if !binding.missing_columns.is_empty() {
+            info!(
+                "{name}: older record layout without {}; their series are left out",
+                binding.missing_columns.join(", ")
+            );
         }
         let bar = bars.add(ProgressBar::new(records));
         bar.set_style(bar_style());
@@ -444,14 +452,27 @@ fn build_catalog(
     pm_events: &[connections::PmEvent],
     trace: &TCBeeTrace,
     run_meta: Vec<(String, String)>,
+    files: &[FilePlan],
 ) -> Catalog {
     let flows = registry.into_flows();
     let (connections, connection_flows) = connections::assemble(tagged, pm_events, &flows);
+    // Columns a file's records do not have hold 0; a series of them would look recorded
+    let mut series = stats.into_series(1);
+    series.retain(|s| {
+        !files.iter().any(|f| {
+            f.binding.table.source == s.source
+                && f.binding.dir == s.dir
+                && f.binding.missing_columns.contains(&s.name.as_str())
+        })
+    });
+    for (id, s) in (1..).zip(series.iter_mut()) {
+        s.id = id;
+    }
     Catalog {
         flows,
         connections,
         connection_flows,
-        series: stats.into_series(1),
+        series,
         meta: vec![
             (
                 "writer".to_string(),
@@ -546,6 +567,7 @@ pub fn run(args: &Args) -> Result<Summary> {
         &pm_events,
         &trace,
         run_meta,
+        &files,
     );
     summary.connections = catalog.connections.len();
     summary.flows = catalog.flows.len();

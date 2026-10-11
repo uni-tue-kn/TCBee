@@ -14,7 +14,7 @@ use core::mem::size_of;
 
 const _: () = assert!(size_of::<tcp4_packet_trace>() == 40);
 const _: () = assert!(size_of::<tcp6_packet_trace>() == 64);
-const _: () = assert!(size_of::<sock_trace_entry>() == 184);
+const _: () = assert!(size_of::<sock_trace_entry>() == 224);
 const _: () = assert!(size_of::<cwnd_trace_entry>() == 72);
 const _: () = assert!(size_of::<cubic_trace_entry>() == 120);
 const _: () = assert!(size_of::<bbr_trace_entry>() == 120);

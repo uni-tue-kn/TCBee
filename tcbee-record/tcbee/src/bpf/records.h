@@ -98,7 +98,20 @@ struct sock_trace_entry {
 	/* struct tcp_options_received */
 	uint16_t snd_wscale;
 	uint16_t rcv_wscale;
-	/* Token of the MPTCP connection of a subflow (-M tag), 0 otherwise. In the padding. */
+	/* Congestion state (TCP_CA_Open, Disorder, CWR, Recovery, Loss) and delivery */
+	uint8_t ca_state;
+	uint32_t packets_out;
+	uint32_t delivered;
+	uint32_t delivered_ce;
+	/* Nonzero while the sender is application limited: the delivered count when it ends */
+	uint32_t app_limited;
+	/* Time limited by: TCP_CHRONO_BUSY, _RWND_LIMITED, _SNDBUF_LIMITED (1-3), 0 unspecified;
+	 * the totals in jiffies of the periods that ended */
+	uint8_t chrono_type;
+	uint32_t chrono_busy;
+	uint32_t chrono_rwnd_limited;
+	uint32_t chrono_sndbuf_limited;
+	/* Token of the MPTCP connection of a subflow (-M tag), 0 otherwise. Last field. */
 	uint32_t conn_id;
 };
 
@@ -316,7 +329,7 @@ struct filter_ip {
 /* Sizes are mirrored by const asserts in tcbee-common */
 _Static_assert(sizeof(struct tcp4_packet_trace) == 40, "tcp4_packet_trace size");
 _Static_assert(sizeof(struct tcp6_packet_trace) == 64, "tcp6_packet_trace size");
-_Static_assert(sizeof(struct sock_trace_entry) == 184, "sock_trace_entry size");
+_Static_assert(sizeof(struct sock_trace_entry) == 224, "sock_trace_entry size");
 _Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
 _Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
 _Static_assert(sizeof(struct bbr_trace_entry) == 120, "bbr_trace_entry size");

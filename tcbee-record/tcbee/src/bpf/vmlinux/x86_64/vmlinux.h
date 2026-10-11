@@ -148,6 +148,7 @@ struct sk_buff {
 
 struct inet_connection_sock {
 	__u32 icsk_rto;
+	__u8 icsk_ca_state: 5;
 	__u8 icsk_backoff;
 	struct {
 		__u16 rcv_mss;
@@ -180,6 +181,12 @@ struct tcp_sock {
 	u8 keepalive_probes;
 	u32 total_retrans;
 	bool is_mptcp;
+	u32 packets_out;
+	u32 delivered;
+	u32 delivered_ce;
+	u32 app_limited;
+	u8 chrono_type: 2;
+	u32 chrono_stat[3];
 };
 
 struct in_addr {

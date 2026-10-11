@@ -24,7 +24,7 @@ from pathlib import Path
 # sock_trace_entry on disk: the header
 # (time, hook_seq, addr_v4, src_v6, dst_v6, sport, dport, family), the socket fields, conn_id
 # last, then the 4 byte divider.
-SOCK_RECORD = 172
+SOCK_RECORD = 202
 PORTS = struct.Struct("<HHH")
 PORTS_OFFSET = 56
 ADDR_V4_OFFSET = 16
