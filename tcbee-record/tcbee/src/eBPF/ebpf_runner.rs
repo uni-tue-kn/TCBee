@@ -16,7 +16,7 @@ use log::{debug, error, info, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
     RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
-    RB_TCP_PROBE, RINGBUFS,
+    RB_TCP_PROBE, RINGBUFS, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -41,6 +41,7 @@ use crate::{
         rings,
         skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
     },
+    metadata::{Recorder, RingCounters, RunMetadata},
     metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats},
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
@@ -67,6 +68,10 @@ pub struct EbpfRunner {
     /// CPUs with a ring buffer per probe output
     ring_cpus: u32,
     started: Option<Instant>,
+    /// Requested hooks that are not recorded, with the reason, for the run metadata
+    skipped: Vec<String>,
+    /// Written at start and completed at stop with `--metadata`
+    metadata: Option<RunMetadata>,
 }
 
 /// Last libbpf warnings, shown when loading fails. They name the program, map or the
@@ -217,6 +222,8 @@ impl EbpfRunner {
             ringbuf_sizes: Vec::new(),
             ring_cpus: 0,
             started: None,
+            skipped: Vec::new(),
+            metadata: None,
         }
     }
 
@@ -280,6 +287,74 @@ impl EbpfRunner {
                 self.write_metrics(duration_s, &reports, programs);
             }
         }
+
+        if let Some(mut metadata) = self.metadata.take() {
+            metadata.finish(self.ring_counters());
+            self.write_metadata(&metadata);
+        }
+    }
+
+    /// The event counters of the ring buffers that were created
+    fn ring_counters(&self) -> Option<Vec<RingCounters>> {
+        let snapshot = self
+            .stats
+            .as_ref()?
+            .snapshot()
+            .inspect_err(|err| error!("Could not read event counters for metadata: {}", err))
+            .ok()?;
+        Some(
+            RINGBUFS
+                .iter()
+                .zip(&self.ringbuf_sizes)
+                .enumerate()
+                .filter(|(_, (_, size))| size.is_some())
+                .map(|(rb, (ringbuf, _))| {
+                    let rb = rb as u32;
+                    RingCounters {
+                        name: ringbuf.map.to_string(),
+                        attempted: snapshot.invocations(rb),
+                        handled: snapshot.rb(rb, STAT_HANDLED),
+                        dropped: snapshot.rb(rb, STAT_DROPPED),
+                        error: snapshot.rb(rb, STAT_ERROR),
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn write_metadata(&self, metadata: &RunMetadata) {
+        let path = Path::new(&self.config.dir).join(tcbee_trace::METADATA_FILE);
+        if let Err(err) = metadata.write(&path) {
+            error!("Could not write {}: {}", path.display(), err);
+        }
+    }
+
+    /// Collects the run metadata once everything is attached
+    fn collect_metadata(&self, optional: &BTreeSet<OptionalGroup>) -> RunMetadata {
+        let c = &self.config;
+        let mut groups: Vec<String> = [
+            (c.headers, "headers"),
+            (c.kernel, "kernel"),
+            (c.cwnd, "cwnd"),
+            (c.tracepoints, "tracepoints"),
+            (c.algorithms, "cubic"),
+        ]
+        .into_iter()
+        .filter(|(enabled, _)| *enabled)
+        .map(|(_, name)| name.to_string())
+        .collect();
+        groups.extend(optional.iter().map(|group| group.name().to_string()));
+        RunMetadata::collect(Recorder {
+            argv: std::env::args().collect(),
+            groups,
+            skipped: self.skipped.clone(),
+            interface: c.headers.then(|| c.iface.clone()),
+            ringbuf_sizes: RINGBUFS
+                .iter()
+                .zip(&self.ringbuf_sizes)
+                .filter_map(|(ringbuf, size)| Some((ringbuf.map.to_string(), (*size)?)))
+                .collect(),
+        })
     }
 
     fn write_metrics(
@@ -425,6 +500,18 @@ impl EbpfRunner {
             }
         };
         drop(btf);
+        for group in &disabled {
+            self.skipped.push(format!(
+                "{}: the kernel rejected its programs",
+                group.name()
+            ));
+        }
+        if self.config.algorithms
+            && !optional.contains(&OptionalGroup::Bbr)
+            && !disabled.contains(&OptionalGroup::Bbr)
+        {
+            self.skipped.push("BBR: tcp_bbr is not loaded".to_string());
+        }
         let skel = self.skel.insert(skel);
         configure_filter(skel, &self.config.filter)?;
 
@@ -494,6 +581,7 @@ impl EbpfRunner {
                     Ok(()) => watcher_config.graphs.bbr = true,
                     Err(err) => {
                         links.truncate(attached);
+                        self.skipped.push(format!("BBR: attaching failed: {}", err));
                         error!(
                             "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
                             err
@@ -531,6 +619,12 @@ impl EbpfRunner {
         }));
 
         info!("Finished starting TUI!");
+
+        if self.config.metadata {
+            let metadata = self.collect_metadata(&optional);
+            self.write_metadata(&metadata);
+            self.metadata = Some(metadata);
+        }
 
         Ok(())
     }

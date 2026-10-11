@@ -1,6 +1,7 @@
 // Crate components
 mod config;
 mod eBPF;
+mod metadata;
 mod metrics;
 mod stats;
 mod viz;
@@ -75,6 +76,7 @@ fn main() -> anyhow::Result<()> {
     let mut mptcp_modes: String = String::new();
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
+    let mut metadata: bool = false;
     let mut duration: f64 = 0.0;
     let mut ringbuf_size: String = String::new();
     let mut poll: String = "busy".to_string();
@@ -170,6 +172,11 @@ fn main() -> anyhow::Result<()> {
             &["-m", "--metrics"],
             StoreTrue,
             "Write per ring buffer event counters, records written and per program recursion misses to metrics.json in the recording directory after shutdown.",
+        );
+        argparser.refer(&mut metadata).add_option(
+            &["--metadata"],
+            StoreTrue,
+            "Write run metadata to metadata.json in the recording directory: host, kernel, TCP sysctls, interfaces with offloads and qdiscs, the command line, clock offsets and drop counters at start and stop.",
         );
         argparser.refer(&mut duration).add_option(
             &["--duration"],
@@ -288,6 +295,7 @@ fn main() -> anyhow::Result<()> {
         .interface(iface)
         .cwnd(trace_cwnd)
         .metrics(metrics)
+        .metadata(metadata)
         .algorithms(trace_algorithms)
         .mptcp(mptcp)
         .ringbuf_sizes(ringbuf_sizes)

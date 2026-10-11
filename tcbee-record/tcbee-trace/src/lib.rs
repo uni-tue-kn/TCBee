@@ -5,6 +5,9 @@ use std::{
 
 use chrono::Local;
 
+/// Run metadata that tcbee-record writes with `--metadata` (JSON)
+pub const METADATA_FILE: &str = "metadata.json";
+
 /// All trace file types produced by tcbee-record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceFile {

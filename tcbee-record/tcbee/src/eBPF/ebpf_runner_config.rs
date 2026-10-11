@@ -189,6 +189,7 @@ pub struct EbpfRunnerConfig {
     pub kernel: bool,
     pub cwnd: bool,
     pub metrics: bool,
+    pub metadata: bool,
     pub algorithms: bool,
     pub mptcp: MptcpModes,
     pub dir: String,
@@ -277,6 +278,11 @@ impl EbpfRunnerConfig {
 
     pub fn metrics(mut self, set: bool) -> EbpfRunnerConfig {
         self.metrics = set;
+        self
+    }
+
+    pub fn metadata(mut self, set: bool) -> EbpfRunnerConfig {
+        self.metadata = set;
         self
     }
 
