@@ -21,7 +21,7 @@ One table per recorded event type, one row per record, one typed column per fiel
 
 | Table | Content |
 |---|---|
-| `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at` |
+| `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at`, and for recordings made with `--metadata` the run metadata as `run.*` rows (the JSON of `metadata.json` flattened to dotted keys, array elements by index, e.g. `run.kernel.release`, `run.interfaces.0.mtu`) |
 | `flows(id, src, dst, sport, dport, l4proto)` | one row per TCP flow (IP 5-tuple) |
 | `connections(id, kind, key, flow_id, start_ts, end_ts)` | connections that group flows, e.g. an MPTCP connection (`kind` `mptcp`, `key` its token); `flow_id` holds the connection's own series |
 | `connection_flows(connection_id, flow_id, subflow_id, first_ts, last_ts)` | the flows of each connection, e.g. the subflows of an MPTCP connection |

@@ -500,6 +500,39 @@ fn write_tcp4_trace(
     trace
 }
 
+/// The metadata file of the recorder ends up as `run.*` meta rows; a broken one is a warning.
+#[test]
+fn run_metadata_becomes_meta_rows() {
+    for (engine, ext) in engines() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace = write_tcp4_trace(dir.path(), "tcbee_meta", "tcp4_send.tcp", 3, &[]);
+        fs::write(
+            trace.join(tcbee_trace::METADATA_FILE),
+            r#"{"format":1,"kernel":{"release":"6.8.0"},"interfaces":[{"name":"eth0"}]}"#,
+        )
+        .unwrap();
+        let (out, summary) = process(engine, ext, dir.path(), &trace, None);
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let meta: BTreeMap<String, String> = ts_storage::open(&out)
+            .unwrap()
+            .meta()
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(meta["run.format"], "1");
+        assert_eq!(meta["run.kernel.release"], "6.8.0");
+        assert_eq!(meta["run.interfaces.0.name"], "eth0");
+        assert!(meta.contains_key("writer"));
+
+        fs::write(trace.join(tcbee_trace::METADATA_FILE), "{").unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let (out, summary) = process(engine, ext, out_dir.path(), &trace, None);
+        assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+        let meta = ts_storage::open(&out).unwrap().meta().unwrap();
+        assert!(meta.iter().all(|(k, _)| !k.starts_with("run.")));
+    }
+}
+
 /// A trace directory with one tcp4 file whose record 3 has a broken divider.
 fn corrupt_trace(dir: &Path) -> PathBuf {
     write_tcp4_trace(dir, "tcbee_corrupt", "tcp4_send.tcp", 5, &[3])

@@ -3911,6 +3911,7 @@ dependencies = [
  "indicatif",
  "log",
  "serde",
+ "serde_json",
  "tcbee-common",
  "tcbee-trace",
  "tempfile",

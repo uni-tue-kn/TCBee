@@ -29,6 +29,7 @@ use crate::{
     bindings::{binding, event_tables, Binding},
     connections::{self, TaggedFlows},
     decode::{RangeError, RowError},
+    metadata,
     registry::FlowRegistry,
     Args,
 };
@@ -442,6 +443,7 @@ fn build_catalog(
     tagged: TaggedFlows,
     pm_events: &[connections::PmEvent],
     trace: &TCBeeTrace,
+    run_meta: Vec<(String, String)>,
 ) -> Catalog {
     let flows = registry.into_flows();
     let (connections, connection_flows) = connections::assemble(tagged, pm_events, &flows);
@@ -456,7 +458,10 @@ fn build_catalog(
                 format!("tcbee-process {}", env!("CARGO_PKG_VERSION")),
             ),
             ("trace_dir".to_string(), trace.dir().display().to_string()),
-        ],
+        ]
+        .into_iter()
+        .chain(run_meta)
+        .collect(),
     }
 }
 
@@ -529,7 +534,19 @@ pub fn run(args: &Args) -> Result<Summary> {
         Some(f) => connections::read_pm_events(&f.path, 0..f.records)?,
         None => Vec::new(),
     };
-    let catalog = build_catalog(registry, output.stats, output.tagged, &pm_events, &trace);
+    let run_meta = metadata::read(trace.dir()).unwrap_or_else(|msg| {
+        warn!("{msg}");
+        summary.warnings.push(msg);
+        Vec::new()
+    });
+    let catalog = build_catalog(
+        registry,
+        output.stats,
+        output.tagged,
+        &pm_events,
+        &trace,
+        run_meta,
+    );
     summary.connections = catalog.connections.len();
     summary.flows = catalog.flows.len();
     summary.series = catalog.series.len();
