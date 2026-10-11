@@ -55,7 +55,7 @@ Converts a recording into a database. The extension of `-o` picks the engine: `.
 
 ### tcbee-viz
 
-A desktop viewer built with egui. It plots single flows, compares two flows, and runs plugins that add derived series such as retransmissions. For recordings made with `-M`, the MPTCP tab plots a metric of all subflows of a connection together with the path manager events, and the flow table shows the connection of each flow. It opens a database given as argument, or you load one from the Home tab.
+A desktop viewer built with egui. It plots single flows, compares two flows, and runs plugins that add derived series such as retransmissions. The Overview tab shows what wrote the database and, for recordings made with `--metadata`, the host, kernel, probes, clocks, TCP sysctls, interfaces and the counters that changed during the recording. For recordings made with `-M`, the MPTCP tab plots a metric of all subflows of a connection together with the path manager events, and the flow table shows the connection of each flow. It opens a database given as argument, or you load one from the Home tab.
 
 ```bash
 ./tcbee viz /tmp/myflow.duck

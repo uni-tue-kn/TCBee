@@ -7,6 +7,7 @@ use crate::{
         tab_home::TabHome,
         tab_mptcp::{self, TabMptcp},
         tab_multi_flow::TabMultiFlow,
+        tab_overview::TabOverview,
         tab_process::TabProcess,
         tab_settings::TabSettings,
         tab_single_flow::TabSingleFlow,
@@ -17,6 +18,7 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tab {
     Home,
+    Overview,
     Single,
     Multi,
     Mptcp,
@@ -26,6 +28,7 @@ pub enum Tab {
 
 const TABS: &[(Tab, &str)] = &[
     (Tab::Home, "Home"),
+    (Tab::Overview, "Overview"),
     (Tab::Single, "Single Flow"),
     (Tab::Multi, "Multi Flow"),
     (Tab::Mptcp, "MPTCP"),
@@ -39,6 +42,7 @@ pub struct TcbeeApp {
     db: DbBackend,
 
     tab_home: TabHome,
+    tab_overview: TabOverview,
     tab_single: TabSingleFlow,
     tab_multi: TabMultiFlow,
     tab_mptcp: TabMptcp,
@@ -53,6 +57,7 @@ impl Default for TcbeeApp {
             settings: AppSettings::default(),
             db: DbBackend::default(),
             tab_home: TabHome::default(),
+            tab_overview: TabOverview::default(),
             tab_single: TabSingleFlow::default(),
             tab_multi: TabMultiFlow::default(),
             tab_mptcp: TabMptcp::default(),
@@ -135,6 +140,9 @@ impl eframe::App for TcbeeApp {
                 Tab::Home => {
                     self.tab_home.show(ui, &mut self.db, &mut self.settings);
                 }
+                Tab::Overview => {
+                    self.tab_overview.show(ui, &self.db, &self.settings);
+                }
                 Tab::Single => {
                     self.tab_single.show(ui, &self.db, &self.settings);
                 }
@@ -179,6 +187,7 @@ impl TcbeeApp {
 
     fn reset_tab(&mut self, tab: Tab) {
         match tab {
+            Tab::Overview => self.tab_overview.reset(),
             Tab::Single => self.tab_single.reset(),
             Tab::Multi => self.tab_multi.reset(),
             Tab::Mptcp => self.tab_mptcp.reset(),
