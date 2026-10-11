@@ -77,6 +77,24 @@ static __always_inline bool hook_seq_known_tuple(const struct ip_tuple *t, __u8 
 	key.rb = rb;
 	key.family = family;
 	counter = bpf_map_lookup_elem(&HOOK_SEQ, &key);
+	if (!counter && family == AF_INET) {
+		/*
+		 * An IPv4 flow of a dual-stack socket (AF_INET6, v4-mapped addresses) has its
+		 * counter under the mapped addresses, as tuple_from_sk() takes them
+		 */
+		__u8 src[4], dst[4];
+
+		__builtin_memcpy(src, t->src_ip, 4);
+		__builtin_memcpy(dst, t->dst_ip, 4);
+		__builtin_memset(key.tuple.src_ip, 0, 16);
+		__builtin_memset(key.tuple.dst_ip, 0, 16);
+		key.tuple.src_ip[10] = key.tuple.src_ip[11] = 0xff;
+		key.tuple.dst_ip[10] = key.tuple.dst_ip[11] = 0xff;
+		__builtin_memcpy(&key.tuple.src_ip[12], src, 4);
+		__builtin_memcpy(&key.tuple.dst_ip[12], dst, 4);
+		key.family = AF_INET6;
+		counter = bpf_map_lookup_elem(&HOOK_SEQ, &key);
+	}
 	if (!counter)
 		return false;
 	*hook_seq = __sync_fetch_and_add(counter, 1) + 1;

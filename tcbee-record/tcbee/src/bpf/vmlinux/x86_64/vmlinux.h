@@ -148,7 +148,6 @@ struct sk_buff {
 	struct sock *sk;
 	char cb[48];
 	unsigned int len;
-	__u8 pkt_type: 3;
 	__be16 protocol;
 	__u16 transport_header;
 	__u16 network_header;
@@ -169,6 +168,11 @@ struct inet_connection_sock {
 	} icsk_ack;
 	u64 icsk_ca_priv[13];
 	void *icsk_ulp_data;
+};
+
+struct inet_sock {
+	struct sock sk;
+	__be16 inet_sport;
 };
 
 struct tcp_sock {

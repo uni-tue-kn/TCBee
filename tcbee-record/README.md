@@ -106,7 +106,9 @@ Raw data is written as `*.tcp` files to the recording directory. Filter flags ar
   open entering SYN_SENT) are only recorded for flows that already have records.
 - `--drops` runs on every packet the kernel frees as dropped, so it costs a little on a host
   with many drops of other traffic. Drop reasons exist from 5.17 on; before, the reason is 0.
-  Drops of packets without a socket are only recorded for flows that already have records.
+  Drops of packets without a full socket are only recorded for flows that already have a TCP
+  event record, so the drops of a flow that started before the recording show up after its
+  first other event (or its first drop with a socket).
 - `-M` needs MPTCP in the kernel (`CONFIG_MPTCP`, 5.6). Without it, `conn_id` stays 0 and no path
   manager events are recorded. A path manager hook whose kernel function is missing or inlined
   is left out with a warning. Not recorded: a stale subflow becoming active again and the
