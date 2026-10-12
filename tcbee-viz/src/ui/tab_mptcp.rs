@@ -994,8 +994,9 @@ impl TabMptcp {
                                 .iter()
                                 .filter(|(i, _)| !self.subflows[*i].hidden)
                             {
-                                // Counters and states hold their value until the next record
-                                let step = matches!(s.val_type, ValueKind::Int | ValueKind::Bool);
+                                // Counters and states hold their value until the next record.
+                                // Not booleans: only their true records are loaded.
+                                let step = s.val_type == ValueKind::Int;
                                 let gap = gap_threshold(&s.points, s.loaded_sample_interval);
                                 for segment in segments(&s.points, gap, step) {
                                     if segment.len() == 1 {
