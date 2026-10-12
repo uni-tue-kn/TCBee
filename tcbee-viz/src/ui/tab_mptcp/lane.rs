@@ -10,8 +10,8 @@ use egui_plot::{
 };
 
 use super::model::{
-    event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name, lane_y,
-    place_labels, EventGroup, EventKind, PmEvent,
+    centered_x, event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name,
+    lane_y, place_labels, EventGroup, EventKind, PmEvent,
 };
 use super::{TabMptcp, Y_AXIS_WIDTH};
 use crate::{
@@ -122,11 +122,16 @@ impl TabMptcp {
             })
             .height(lane_height)
             .show(ui, |plot_ui| {
+                let (start, end) = (connection.start_ts as f64, connection.end_ts as f64);
+                let (y_min, y_max) = (-0.6, rows as f64 - 0.4);
                 if fit {
-                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                        [connection.start_ts as f64, -0.6],
-                        [connection.end_ts as f64, rows as f64 - 0.4],
-                    ));
+                    plot_ui.set_plot_bounds(PlotBounds::from_min_max([start, y_min], [end, y_max]));
+                }
+                // An event picked in the list: the plots below follow through the linked axis
+                if let Some(t) = self.focus.take() {
+                    let shown = plot_ui.plot_bounds();
+                    let (x0, x1) = centered_x(shown.min()[0], shown.max()[0], t, start, end);
+                    plot_ui.set_plot_bounds(PlotBounds::from_min_max([x0, y_min], [x1, y_max]));
                 }
                 // Each subflow's row in its colour; they span the connection, which the fit
                 // shows anyway
@@ -143,6 +148,15 @@ impl TabMptcp {
                         .fill_color(sub.color.gamma_multiply(ROW_TINT))
                         .stroke(egui::Stroke::NONE)
                         .allow_hover(false),
+                    );
+                }
+                if let Some(e) = self.selected_event.and_then(|i| self.events.get(i)) {
+                    plot_ui.points(
+                        Points::new(PlotPoints::from(vec![[e.t, lane_y(e.row, rows)]]))
+                            .shape(MarkerShape::Circle)
+                            .filled(false)
+                            .radius(MARKER_RADIUS + 4.0)
+                            .color(theme::text(dark_mode)),
                     );
                 }
                 // One marker per group, of its most severe event
@@ -316,7 +330,7 @@ pub(super) fn kind_color(kind: EventKind, dark_mode: bool) -> egui::Color32 {
 }
 
 /// Paints an egui_plot marker shape for the legend
-fn paint_marker(
+pub(super) fn paint_marker(
     painter: &egui::Painter,
     c: egui::Pos2,
     shape: MarkerShape,

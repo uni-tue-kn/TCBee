@@ -2,6 +2,7 @@
 //! chosen metric with all subflows, and a table of the subflows with their bytes and their
 //! share of the connection's bytes.
 
+mod event_list;
 mod lane;
 mod model;
 
@@ -150,6 +151,8 @@ const PANEL_MIN_ROWS: usize = 5;
 const PANEL_MAX_ROWS: usize = 10;
 /// Space above and below the table in the subflow panel
 const PANEL_MARGIN: f32 = 8.0;
+/// The tabs above the table, with their spacing
+const TAB_BAR_HEIGHT: f32 = 28.0;
 
 /// Space between the filter box, its icon and buttons
 const FILTER_GAP: f32 = 4.0;
@@ -453,6 +456,14 @@ impl Subflow {
     }
 }
 
+/// The tables below the plots
+#[derive(Clone, Copy, Default, PartialEq)]
+enum BottomTab {
+    #[default]
+    Subflows,
+    Events,
+}
+
 /// One plotted metric: a series per subflow that has it, with the subflow's index
 struct MetricPlot {
     series: Vec<(usize, SeriesData)>,
@@ -485,6 +496,13 @@ pub struct TabMptcp {
     event_keys: Vec<(i64, bool)>,
     /// Time per screen pixel of the lane in the last frame, for grouping close events
     lane_ns_per_px: std::cell::Cell<f64>,
+    /// What the panel below the plots shows
+    bottom_tab: BottomTab,
+    event_filter: String,
+    /// Index into `events` of the event picked in the event list
+    selected_event: Option<usize>,
+    /// Time to move the view to, once
+    focus: std::cell::Cell<Option<f64>>,
     needs_fit: bool,
 }
 
@@ -693,6 +711,9 @@ impl TabMptcp {
         };
         self.subflows.clear();
         self.events = Arc::default();
+        // The picked event belonged to the old connection
+        self.selected_event = None;
+        self.focus.set(None);
         let mut members: Vec<&ConnectionFlow> = db
             .list_connection_flows()
             .iter()
@@ -845,7 +866,7 @@ impl TabMptcp {
         let rows = self.subflows.len().clamp(PANEL_MIN_ROWS, PANEL_MAX_ROWS);
         egui::TopBottomPanel::bottom("mptcp_subflow_panel")
             .resizable(true)
-            .default_height(table::table_height(rows) + 2.0 * PANEL_MARGIN)
+            .default_height(table::table_height(rows) + 2.0 * PANEL_MARGIN + TAB_BAR_HEIGHT)
             .height_range(60.0..=600.0)
             .frame(
                 egui::Frame::new()
@@ -853,9 +874,21 @@ impl TabMptcp {
                     .inner_margin(egui::Margin::symmetric(0, PANEL_MARGIN as i8)),
             )
             .show_inside(ui, |ui| {
-                if let Some(index) = self.show_subflow_table(ui) {
-                    let sub = &mut self.subflows[index];
-                    sub.hidden = !sub.hidden;
+                ui.horizontal(|ui| {
+                    let subflows = format!("Subflows ({})", self.subflows.len());
+                    let events = format!("Events ({})", self.events.len());
+                    ui.selectable_value(&mut self.bottom_tab, BottomTab::Subflows, subflows);
+                    ui.selectable_value(&mut self.bottom_tab, BottomTab::Events, events);
+                });
+                ui.add_space(4.0);
+                match self.bottom_tab {
+                    BottomTab::Subflows => {
+                        if let Some(index) = self.show_subflow_table(ui) {
+                            let sub = &mut self.subflows[index];
+                            sub.hidden = !sub.hidden;
+                        }
+                    }
+                    BottomTab::Events => self.show_event_table(ui),
                 }
             });
         self.show_plots(ui, db, settings, ui.available_height());
@@ -946,6 +979,10 @@ impl TabMptcp {
             .map(|e| (e.t, kind_color(e.kind(), dark_mode)))
             .collect();
 
+        let selected_time = self
+            .selected_event
+            .and_then(|i| self.events.get(i))
+            .map(|e| e.t);
         let mut visible = None;
         ScrollArea::vertical()
             .id_salt("mptcp_plots_scroll")
@@ -1023,6 +1060,14 @@ impl TabMptcp {
                                         );
                                     }
                                 }
+                            }
+                            if let Some(t) = selected_time {
+                                plot_ui.vline(
+                                    VLine::new(t)
+                                        .color(theme::text(dark_mode))
+                                        .width(2.5)
+                                        .style(LineStyle::dashed_dense()),
+                                );
                             }
                             for &(t, color) in &event_lines {
                                 plot_ui.vline(

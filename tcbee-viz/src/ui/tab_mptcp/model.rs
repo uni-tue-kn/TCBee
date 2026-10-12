@@ -296,10 +296,7 @@ pub fn lane_row_name(y: f64, rows: usize) -> String {
     if row.fract() != 0.0 || row < 0.0 || row >= rows as f64 {
         return String::new();
     }
-    match row as usize {
-        0 => "conn".to_string(),
-        k => format!("#{k}"),
-    }
+    row_name(row as usize)
 }
 
 /// Events of one lane row that are too close to tell apart on screen, shown as one marker
@@ -401,6 +398,38 @@ pub fn place_labels(spans: &[(f32, f32)], gap: f32) -> Vec<bool> {
             free
         })
         .collect()
+}
+
+/// Name of a lane row in tables: "conn" for the connection, "#k" for subflow k
+pub fn row_name(row: usize) -> String {
+    match row {
+        0 => "conn".to_string(),
+        k => format!("#{k}"),
+    }
+}
+
+/// Whether an event matches every whitespace-separated term of a lowercase filter, in its
+/// row name, type name or label
+pub fn event_matches(event: &PmEvent, filter: &str) -> bool {
+    let text = format!(
+        "{} {} {}",
+        row_name(event.row),
+        event_type_name(event.code, event.failed),
+        event.label
+    )
+    .to_lowercase();
+    filter.split_whitespace().all(|term| text.contains(term))
+}
+
+/// The time range that shows `t` in the middle at the width of `lo..hi`, kept within
+/// `min..max`
+pub fn centered_x(lo: f64, hi: f64, t: f64, min: f64, max: f64) -> (f64, f64) {
+    let width = hi - lo;
+    if width >= max - min {
+        return (min, max);
+    }
+    let start = (t - width / 2.0).clamp(min, max - width);
+    (start, start + width)
 }
 
 /// The lane row at plot height `y`, if `y` is within a row
@@ -809,6 +838,32 @@ mod tests {
         assert_eq!(lane_row_at(1.2, 2), Some(0));
         assert_eq!(lane_row_at(-0.3, 2), Some(1));
         assert_eq!(lane_row_at(-0.7, 2), None);
+    }
+
+    #[test]
+    fn events_filter_by_row_type_and_label() {
+        let stale = PmEvent {
+            label: "subflow stale (subflow 2)".into(),
+            ..event(1.0, TCBEE_MPTCP_SUBFLOW_STALE, 2)
+        };
+        assert!(event_matches(&stale, ""));
+        assert!(event_matches(&stale, "#2 stale"));
+        assert!(!event_matches(&stale, "conn"));
+        let failed = PmEvent {
+            failed: true,
+            ..event(1.0, TCBEE_MPTCP_SUBFLOW_CONNECT, 0)
+        };
+        assert!(event_matches(&failed, "conn failed"));
+    }
+
+    #[test]
+    fn view_centres_on_an_event_within_the_connection() {
+        assert_eq!(centered_x(0.0, 4.0, 10.0, 0.0, 20.0), (8.0, 12.0));
+        // Near either end it stops at the connection
+        assert_eq!(centered_x(0.0, 4.0, 1.0, 0.0, 20.0), (0.0, 4.0));
+        assert_eq!(centered_x(10.0, 14.0, 19.5, 0.0, 20.0), (16.0, 20.0));
+        // A view wider than the connection shows all of it
+        assert_eq!(centered_x(-5.0, 30.0, 3.0, 0.0, 20.0), (0.0, 20.0));
     }
 
     #[test]
