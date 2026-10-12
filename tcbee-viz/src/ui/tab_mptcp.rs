@@ -21,8 +21,7 @@ use ts_storage::{
 use markers::kind_color;
 use model::{
     byte_shares, carries_backup, event_type, format_bytes, gap_threshold, infer_sides,
-    is_connection_event, is_structural, segments, sort_subflows, ConnectionSummary, PmEvent,
-    SideInput,
+    is_connection_event, segments, sort_subflows, ConnectionSummary, PmEvent, SideInput,
 };
 
 use crate::{
@@ -900,21 +899,14 @@ impl TabMptcp {
         self.show_plots(ui, db, settings, ui.available_height());
     }
 
-    /// Hover text of a metric plot: the value under the pointer, and the events whose lines
-    /// are within `tol` of it
+    /// Hover text of a metric plot: the value under the pointer, and the events of `marked`
+    /// (time, text) whose lines are within `tol` of it
     fn plot_label_formatter(
-        &self,
         origin: f64,
         tol: f64,
+        marked: Arc<[(f64, String)]>,
     ) -> impl Fn(&str, &egui_plot::PlotPoint) -> String + 'static {
         let value = seconds_label_formatter(origin);
-        // The events with a line, as (time, text)
-        let marked: Vec<(f64, String)> = self
-            .events
-            .iter()
-            .filter(|e| self.marks_plots(e))
-            .map(|e| (e.t, e.label.clone()))
-            .collect();
         move |name, point| {
             let mut text = value(name, point);
             for (_, label) in marked.iter().filter(|(t, _)| (t - point.x).abs() <= tol) {
@@ -927,7 +919,7 @@ impl TabMptcp {
     /// Whether an event gets a line in the metric plots: not data moves, which can be many,
     /// and not events of hidden subflows
     fn marks_plots(&self, e: &PmEvent) -> bool {
-        is_structural(e.code) && !self.is_hidden_row(e.row)
+        !e.moves_data() && !self.is_hidden_row(e.row)
     }
 
     /// Whether a lane row belongs to a subflow hidden in the plots
@@ -996,6 +988,13 @@ impl TabMptcp {
             .and_then(|i| self.events.get(i))
             .filter(|e| !self.is_hidden_row(e.row))
             .map(|e| e.t);
+        // The events with a line, for the hover text of every plot
+        let marked: Arc<[(f64, String)]> = self
+            .events
+            .iter()
+            .filter(|e| self.marks_plots(e))
+            .map(|e| (e.t, e.label.clone()))
+            .collect();
         let mut visible = None;
         ScrollArea::vertical()
             .id_salt("mptcp_plots_scroll")
@@ -1020,7 +1019,11 @@ impl TabMptcp {
                         .y_axis_formatter(time_or_compact_formatter(origin))
                         // Same width in every plot, so the time axes line up
                         .y_axis_min_width(Y_AXIS_WIDTH)
-                        .label_formatter(self.plot_label_formatter(origin, lane.tol))
+                        .label_formatter(Self::plot_label_formatter(
+                            origin,
+                            lane.tol,
+                            Arc::clone(&marked),
+                        ))
                         .height(plot_height)
                         .show(ui, |plot_ui| {
                             if fit {

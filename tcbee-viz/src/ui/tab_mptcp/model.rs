@@ -49,7 +49,9 @@ pub enum EventKind {
 /// Lane row of an event type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventRow {
-    /// The connection's own row
+    /// The connection's own row. Also for joins, sent MP_PRIOs, reinjections and requeued
+    /// data: they are recorded on the connection's socket, which carries the first
+    /// subflow's tuple, so their record does not tell the subflow.
     Connection,
     /// The row of the subflow it was recorded on
     Subflow,
@@ -65,9 +67,7 @@ pub struct EventType {
     pub kind: EventKind,
     /// Marker; unique with the kind, also for the failed variant (kind `Trouble`)
     pub shape: MarkerShape,
-    /// Joins, sent MP_PRIOs, reinjections and requeued data are recorded on the
-    /// connection's socket, which carries the first subflow's tuple, so their record does
-    /// not tell the subflow: they go to the connection row
+    /// Lane row of the type
     pub row: EventRow,
     /// Whether its record holds the subflow's backup flag
     pub carries_backup: bool,
@@ -153,6 +153,13 @@ impl PmEvent {
     pub fn kind(&self) -> EventKind {
         event_kind(self.code, self.failed)
     }
+
+    /// Whether it moves data (a reinjection) instead of changing the connection's paths.
+    /// There can be thousands, so they get no label and no line in the plots, and a group
+    /// does not count them with its other events.
+    pub fn moves_data(&self) -> bool {
+        self.kind() == EventKind::Data
+    }
 }
 
 /// Name of an event type, which tells failed events apart
@@ -173,12 +180,6 @@ pub fn carries_backup(code: i64) -> bool {
 /// Events about the whole connection go to its own lane row, the others to their subflow's
 pub fn is_connection_event(code: i64) -> bool {
     event_type(code).row == EventRow::Connection
-}
-
-/// Whether the event changes the connection's paths, as opposed to moving data, which can
-/// happen thousands of times. Only these are marked in the metric plots.
-pub fn is_structural(code: i64) -> bool {
-    event_type(code).kind != EventKind::Data
 }
 
 /// Plot height of a lane row; row 0 is at the top
@@ -207,17 +208,17 @@ pub struct EventGroup {
 }
 
 impl EventGroup {
-    /// Label next to the marker: the short name of the representative and how many more
-    /// there are. Data moves count only for a data marker, as they get no line in the plots.
+    /// Label next to the marker, in the lane and above the plots: the short name of the
+    /// representative and how many more there are. Data moves count only for a data marker,
+    /// as the plots draw no line for them; the lane's tooltip lists all members.
     pub fn label(&self, events: &[PmEvent]) -> String {
         let shown = &events[self.representative];
         let short = event_type(shown.code).short;
         let failed = if shown.failed { " failed" } else { "" };
-        let is_data = |e: &PmEvent| e.kind() == EventKind::Data;
         let more = self
             .members
             .iter()
-            .filter(|&&i| i != self.representative && is_data(&events[i]) == is_data(shown))
+            .filter(|&&i| i != self.representative && events[i].moves_data() == shown.moves_data())
             .count();
         match more {
             0 => format!("{short}{failed}"),
@@ -284,14 +285,22 @@ pub fn group_at(
         .map(|(i, _)| i)
 }
 
+/// Where a label would go on screen
+#[derive(Clone, Copy, Debug)]
+pub struct LabelSpan {
+    pub left: f32,
+    pub right: f32,
+    /// Its right end must stay left of this, e.g. the next marker
+    pub limit: f32,
+}
+
 /// Which labels to draw: greedily from the left, each label that keeps `gap` to the last one
-/// drawn and ends `gap` before its limit (e.g. the next marker). `spans` are the labels'
-/// (left, right, limit) on screen, sorted by left.
-pub fn place_labels(spans: &[(f32, f32, f32)], gap: f32) -> Vec<bool> {
+/// drawn and ends `gap` before its limit. `spans` are sorted by left.
+pub fn place_labels(spans: &[LabelSpan], gap: f32) -> Vec<bool> {
     let mut right_end = f32::NEG_INFINITY;
     spans
         .iter()
-        .map(|&(left, right, limit)| {
+        .map(|&LabelSpan { left, right, limit }| {
             let free = left >= right_end + gap && right + gap <= limit;
             if free {
                 right_end = right;
@@ -304,33 +313,39 @@ pub fn place_labels(spans: &[(f32, f32, f32)], gap: f32) -> Vec<bool> {
 /// Name of a lane row in tables: "conn" for the connection, "#k" for subflow k
 pub fn row_name(row: usize) -> String {
     match row {
-        0 => "conn".to_string(),
+        0 => CONNECTION_ROW_NAME.to_string(),
         k => format!("#{k}"),
     }
+}
+
+const CONNECTION_ROW_NAME: &str = "conn";
+
+/// The row that `row_name` gave `name`
+pub fn parse_row_name(name: &str) -> Option<usize> {
+    if name == CONNECTION_ROW_NAME {
+        return Some(0);
+    }
+    let digits = name.strip_prefix('#')?;
+    let row: usize = digits.parse().ok()?;
+    (row > 0 && digits.bytes().all(|b| b.is_ascii_digit())).then_some(row)
 }
 
 /// Whether an event matches every whitespace-separated term of a lowercase filter. A row
 /// term ("conn", "#2") must name the event's row, so "#1" does not match "#12"; other terms
 /// are looked up in its type name and label.
 pub fn event_matches(event: &PmEvent, filter: &str) -> bool {
-    let row = row_name(event.row);
     let text = format!(
         "{} {}",
         event_type_name(event.code, event.failed),
         event.label
     )
     .to_lowercase();
-    filter.split_whitespace().all(|term| {
-        let is_row_term = term == "conn"
-            || term
-                .strip_prefix('#')
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-        if is_row_term {
-            term == row
-        } else {
-            text.contains(term)
-        }
-    })
+    filter
+        .split_whitespace()
+        .all(|term| match parse_row_name(term) {
+            Some(row) => row == event.row,
+            None => text.contains(term),
+        })
 }
 
 /// The time range that shows `t` in the middle at the width of `lo..hi`, kept within
@@ -711,8 +726,14 @@ mod tests {
             assert!(is_connection_event(code as i64));
         }
         assert!(!is_connection_event(TCBEE_MPTCP_SUBFLOW_STALE as i64));
-        assert!(!is_structural(TCBEE_MPTCP_REINJECTED as i64));
-        assert!(is_structural(TCBEE_MPTCP_CLOSED as i64));
+        assert!(event(0.0, TCBEE_MPTCP_REINJECTED, 0).moves_data());
+        assert!(!event(0.0, TCBEE_MPTCP_CLOSED, 0).moves_data());
+        for row in [0, 1, 12] {
+            assert_eq!(parse_row_name(&row_name(row)), Some(row));
+        }
+        for name in ["#", "#0", "#+1", "#1a", "con"] {
+            assert_eq!(parse_row_name(name), None, "{name}");
+        }
     }
 
     #[test]
@@ -796,20 +817,18 @@ mod tests {
 
     #[test]
     fn labels_skip_what_would_overlap() {
+        let span = |left, right, limit| LabelSpan { left, right, limit };
         let none = f32::INFINITY;
-        let shown = place_labels(
-            &[
-                (0.0, 30.0, none),
-                (20.0, 40.0, none),
-                (34.0, 50.0, none),
-                (60.0, 70.0, none),
-            ],
-            4.0,
-        );
-        assert_eq!(shown, vec![true, false, true, true]);
+        let spans = [
+            span(0.0, 30.0, none),
+            span(20.0, 40.0, none),
+            span(34.0, 50.0, none),
+            span(60.0, 70.0, none),
+        ];
+        assert_eq!(place_labels(&spans, 4.0), vec![true, false, true, true]);
         // A label running into the next marker is left out
-        assert_eq!(place_labels(&[(0.0, 30.0, 32.0)], 4.0), vec![false]);
-        assert_eq!(place_labels(&[(0.0, 30.0, 34.0)], 4.0), vec![true]);
+        assert_eq!(place_labels(&[span(0.0, 30.0, 32.0)], 4.0), vec![false]);
+        assert_eq!(place_labels(&[span(0.0, 30.0, 34.0)], 4.0), vec![true]);
         assert!(place_labels(&[], 4.0).is_empty());
     }
 

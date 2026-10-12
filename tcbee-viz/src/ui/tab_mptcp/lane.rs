@@ -13,7 +13,7 @@ use egui_plot::{
 use super::markers::{key_color, kind_color, paint_marker, SMALL_MARKER_RADIUS};
 use super::model::{
     centered_x, event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name,
-    lane_y, place_labels, row_name, EventGroup, EventKind,
+    lane_y, place_labels, row_name, EventGroup, LabelSpan,
 };
 use super::{TabMptcp, Y_AXIS_WIDTH};
 use crate::{
@@ -36,6 +36,12 @@ const GROUP_PX: f64 = 10.0;
 /// Space between a marker and its label, and between labels
 const LABEL_GAP: f32 = 4.0;
 const LABEL_SIZE: f32 = 11.0;
+/// Relative change of the lane's time scale from which its events are grouped again
+const REGROUP_SCALE_CHANGE: f64 = 0.01;
+// Legend entries: the marker's box, the name's size and the space to the next entry
+const LEGEND_SWATCH: f32 = 14.0;
+const LEGEND_TEXT_SIZE: f32 = 11.5;
+const LEGEND_ENTRY_GAP: f32 = 8.0;
 /// Radius of an event marker
 const MARKER_RADIUS: f32 = 6.0;
 
@@ -172,7 +178,7 @@ impl TabMptcp {
         let frame = *response.transform.frame();
         let bounds = response.transform.bounds();
         let ns_per_px = (bounds.max()[0] - bounds.min()[0]) / f64::from(frame.width().max(1.0));
-        if (ns_per_px - self.lane_ns_per_px).abs() > 0.01 * ns_per_px {
+        if (ns_per_px - self.lane_ns_per_px).abs() > REGROUP_SCALE_CHANGE * ns_per_px {
             // Group again at the new scale without waiting for input
             ui.ctx().request_repaint();
         }
@@ -249,7 +255,7 @@ impl TabMptcp {
                 })
                 .collect();
             let labels = markers.iter().enumerate().filter_map(|(k, &(g, marker))| {
-                if self.events[g.representative].kind() == EventKind::Data {
+                if self.events[g.representative].moves_data() {
                     return None;
                 }
                 let galley = painter.layout_no_wrap(
@@ -317,7 +323,8 @@ impl TabMptcp {
     fn show_event_legend(&self, ui: &mut egui::Ui, dark_mode: bool) {
         ui.horizontal_wrapped(|ui| {
             for &(code, failed) in &self.event_keys {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::splat(LEGEND_SWATCH), egui::Sense::hover());
                 paint_marker(
                     ui.painter(),
                     rect.center(),
@@ -327,10 +334,10 @@ impl TabMptcp {
                 );
                 ui.label(
                     RichText::new(event_type_name(code, failed))
-                        .size(11.5)
+                        .size(LEGEND_TEXT_SIZE)
                         .color(theme::muted_text(dark_mode)),
                 );
-                ui.add_space(8.0);
+                ui.add_space(LEGEND_ENTRY_GAP);
             }
         });
     }
@@ -348,9 +355,13 @@ struct PlacedLabel {
 /// Draws the labels that fit, from left to right
 fn paint_placed(painter: &egui::Painter, mut labels: Vec<PlacedLabel>) {
     labels.sort_by(|a, b| a.pos.x.total_cmp(&b.pos.x));
-    let spans: Vec<(f32, f32, f32)> = labels
+    let spans: Vec<LabelSpan> = labels
         .iter()
-        .map(|l| (l.pos.x, l.pos.x + l.galley.size().x, l.limit))
+        .map(|l| LabelSpan {
+            left: l.pos.x,
+            right: l.pos.x + l.galley.size().x,
+            limit: l.limit,
+        })
         .collect();
     for (label, shown) in labels.into_iter().zip(place_labels(&spans, LABEL_GAP)) {
         if shown {
