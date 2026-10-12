@@ -76,7 +76,6 @@ impl TabMptcp {
         // An event picked in the list, shown once
         let focus = self.focus.take();
         let groups: Arc<[EventGroup]> = group_events(&self.events, tol).into();
-        let (events, hover_groups) = (Arc::clone(&self.events), Arc::clone(&groups));
         let response = Plot::new("mptcp_event_lane")
             // Only time moves; the rows stay in view
             .allow_drag([true, false])
@@ -106,22 +105,9 @@ impl TabMptcp {
                 .min_thickness(Y_AXIS_WIDTH)])
             // The tints mark the rows
             .show_grid([true, false])
-            .label_formatter(move |name, point| {
-                let seconds = |t: f64| format!("{:.3} s", (t - origin) / 1e9);
-                // Empty when the pointer is on no marker
-                let group = lane_row_at(point.y, rows)
-                    .filter(|_| !name.is_empty())
-                    .and_then(|row| group_at(&hover_groups, &events, row, point.x, tol));
-                match group {
-                    Some(g) => hover_groups[g]
-                        .members
-                        .iter()
-                        .map(|&i| format!("{}  {}", seconds(events[i].t), events[i].label))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    None => seconds(point.x),
-                }
-            })
+            // The events under the pointer go into a tooltip below, which the lane does not
+            // clip like its own hover text
+            .label_formatter(move |_, point| format!("{:.3} s", (point.x - origin) / 1e9))
             .height(lane_height)
             .show(ui, |plot_ui| {
                 let (start, end) = (connection.start_ts as f64, connection.end_ts as f64);
@@ -158,7 +144,9 @@ impl TabMptcp {
                             .shape(MarkerShape::Circle)
                             .filled(false)
                             .radius(MARKER_RADIUS + 4.0)
-                            .color(theme::text(dark_mode)),
+                            .color(theme::text(dark_mode))
+                            // Hovering shows the event under it
+                            .allow_hover(false),
                     );
                 }
                 // One marker per group, of its most severe event
@@ -181,8 +169,13 @@ impl TabMptcp {
             });
         let frame = *response.transform.frame();
         let bounds = response.transform.bounds();
-        self.lane_ns_per_px =
-            (bounds.max()[0] - bounds.min()[0]) / f64::from(frame.width().max(1.0));
+        let ns_per_px = (bounds.max()[0] - bounds.min()[0]) / f64::from(frame.width().max(1.0));
+        if (ns_per_px - self.lane_ns_per_px).abs() > 0.01 * ns_per_px {
+            // Group again at the new scale without waiting for input
+            ui.ctx().request_repaint();
+        }
+        self.lane_ns_per_px = ns_per_px;
+        self.show_hovered_group(ui, &response, &groups, rows, tol, origin);
         self.paint_lane_labels(ui, &response.transform, &groups, rows, dark_mode);
         self.show_event_legend(ui, dark_mode);
         ui.add_space(4.0);
@@ -194,6 +187,38 @@ impl TabMptcp {
             // Like on the metric plots
             reset: response.response.secondary_clicked() || response.response.double_clicked(),
         }
+    }
+
+    /// A tooltip with every event of the group under the pointer
+    fn show_hovered_group(
+        &self,
+        ui: &egui::Ui,
+        response: &egui_plot::PlotResponse<()>,
+        groups: &[EventGroup],
+        rows: usize,
+        tol: f64,
+        origin: f64,
+    ) {
+        let Some(pointer) = response.response.hover_pos() else {
+            return;
+        };
+        let at = response.transform.value_from_position(pointer);
+        let Some(g) =
+            lane_row_at(at.y, rows).and_then(|row| group_at(groups, &self.events, row, at.x, tol))
+        else {
+            return;
+        };
+        egui::show_tooltip_at_pointer(
+            ui.ctx(),
+            ui.layer_id(),
+            response.response.id.with("group"),
+            |ui| {
+                for &i in &groups[g].members {
+                    let e = &self.events[i];
+                    ui.label(format!("{:.3} s  {}", (e.t - origin) / 1e9, e.label));
+                }
+            },
+        );
     }
 
     /// The short label right of each marker, where it does not overlap the one before it.
