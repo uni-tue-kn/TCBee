@@ -1142,7 +1142,8 @@ impl TabMptcp {
         ui.add_space(4.0);
         LaneResponse {
             height: ui.cursor().top() - top,
-            reset: response.response.secondary_clicked(),
+            // Like on the metric plots
+            reset: response.response.secondary_clicked() || response.response.double_clicked(),
         }
     }
 

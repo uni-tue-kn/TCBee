@@ -77,8 +77,6 @@ impl FlowTable {
             ui.spacing_mut().item_spacing.x = 0.0;
 
             // ── Filter bar ──────────────────────────────────────────────────
-            // Use content_w - 2 so the framed clear button's 1px stroke never
-            // overflows the table frame boundary.
             table::filter_bar(
                 ui,
                 &mut self.filter,

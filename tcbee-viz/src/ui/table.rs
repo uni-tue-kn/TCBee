@@ -11,6 +11,8 @@ const NUMBER_PADDING: f32 = 8.0;
 const SEARCH_ICON_W: f32 = 18.0;
 const CLEAR_BUTTON_W: f32 = 22.0;
 const HELP_BUTTON_W: f32 = 20.0;
+/// Inner margin that egui gives a text box on each side
+const TEXT_EDIT_MARGIN: f32 = 4.0;
 
 /// Filter box `width` wide with a search icon, a "?" with `help` if given and a clear button,
 /// `gap` apart
@@ -28,12 +30,7 @@ pub fn filter_bar(
         |ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
-            let help_w = if help.is_some() {
-                HELP_BUTTON_W + gap
-            } else {
-                0.0
-            };
-            let text_w = (width - SEARCH_ICON_W - help_w - CLEAR_BUTTON_W - 2.0 * gap).max(40.0);
+            let text_w = filter_text_width(width, gap, help.is_some(), TEXT_EDIT_MARGIN);
             ui.add(
                 egui::TextEdit::singleline(filter)
                     .hint_text(hint)
@@ -56,6 +53,13 @@ pub fn filter_bar(
             }
         },
     );
+}
+
+/// Width to ask of the filter's text box so that the bar fills `width`: the rest after the
+/// icon, the buttons and the gaps, less the box's own margin on both sides, which egui adds
+fn filter_text_width(width: f32, gap: f32, help: bool, margin: f32) -> f32 {
+    let help_w = if help { HELP_BUTTON_W + gap } else { 0.0 };
+    (width - SEARCH_ICON_W - help_w - CLEAR_BUTTON_W - 2.0 * gap - 2.0 * margin).max(40.0)
 }
 
 /// The header of a table `width` wide: its background, then the cells that `add_cells` adds
@@ -178,6 +182,15 @@ pub fn row_divider(ui: &Ui, rect: egui::Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_text_box_leaves_room_for_icon_buttons_and_margin() {
+        // 18 icon + 22 clear + 2 gaps of 4 + 2 margins of 4
+        assert_eq!(filter_text_width(200.0, 4.0, false, 4.0), 144.0);
+        // The help adds its width and a gap
+        assert_eq!(filter_text_width(200.0, 20.0, true, 4.0), 72.0);
+        assert_eq!(filter_text_width(50.0, 4.0, true, 4.0), 40.0);
+    }
 
     #[test]
     fn row_fill_stripes_unless_selected_or_hovered() {
