@@ -126,7 +126,8 @@ impl SubflowColumn {
             Self::Backup => (
                 "Backup",
                 Some(54.0),
-                "Backup flag of the last path manager event that carries it",
+                "Backup flag of the subflow's last own event that carries it (established, \
+                 priority). An MP_PRIO this host sends is on the connection row; see the event list.",
             ),
             Self::Events => (
                 "Events",
