@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use egui::{RichText, Vec2};
-use egui_plot::{GridMark, MarkerShape, Plot, PlotBounds, PlotPoints, Points};
+use egui_plot::{AxisHints, GridMark, MarkerShape, Plot, PlotBounds, PlotPoints, Points, Polygon};
 
 use super::model::{
     event_type, event_type_name, lane_row_name, lane_y, nearest_event, EventKind, PmEvent,
@@ -18,9 +18,13 @@ use crate::{
     },
 };
 
-/// Height of a row of the event lane
-const LANE_ROW_HEIGHT: f32 = 18.0;
-const MIN_LANE_HEIGHT: f32 = 60.0;
+/// Smallest height of a row of the event lane; it grows with the text size, so that the row
+/// names fit (egui_plot leaves out axis labels that are closer than the text is high)
+const MIN_ROW_PITCH: f32 = 26.0;
+/// Rows the lane makes room for; more rows get narrower
+const MAX_LANE_ROWS: usize = 8;
+/// Opacity of a subflow's colour behind its row
+const ROW_TINT: f32 = 0.12;
 /// Radius of an event marker
 const MARKER_RADIUS: f32 = 6.0;
 
@@ -50,7 +54,9 @@ impl TabMptcp {
         };
         let top = ui.cursor().top();
         let rows = self.subflows.len() + 1;
-        let lane_height = ((rows + 1) as f32 * LANE_ROW_HEIGHT).max(MIN_LANE_HEIGHT);
+        let pitch = MIN_ROW_PITCH.max(ui.text_style_height(&egui::TextStyle::Body) + 6.0);
+        // The rows, half a row of margin and the (empty) time axis
+        let lane_height = (rows.min(MAX_LANE_ROWS) as f32 + 0.5) * pitch + 12.0;
         let dark_mode = settings.dark_mode;
         section_heading(ui, "Path manager events");
         let events = Arc::clone(&self.events);
@@ -76,8 +82,13 @@ impl TabMptcp {
                     })
                     .collect()
             })
-            .y_axis_formatter(move |mark, _| lane_row_name(mark.value, rows))
-            .y_axis_min_width(Y_AXIS_WIDTH)
+            .custom_y_axes(vec![AxisHints::new_y()
+                .formatter(move |mark, _| lane_row_name(mark.value, rows))
+                .label_spacing(10.0..=12.0)
+                // Same width as the metric plots, so the time axes line up
+                .min_thickness(Y_AXIS_WIDTH)])
+            // The tints mark the rows
+            .show_grid([true, false])
             .label_formatter(move |name, point| {
                 let time = format!("{:.3} s", (point.x - origin) / 1e9);
                 match nearest_event(&events, name, point.x, point.y, rows) {
@@ -92,6 +103,23 @@ impl TabMptcp {
                         [connection.start_ts as f64, -0.6],
                         [connection.end_ts as f64, rows as f64 - 0.4],
                     ));
+                }
+                // Each subflow's row in its colour; they span the connection, which the fit
+                // shows anyway
+                let (t0, t1) = (connection.start_ts as f64, connection.end_ts as f64);
+                for (index, sub) in self.subflows.iter().enumerate() {
+                    let y = lane_y(index + 1, rows);
+                    plot_ui.polygon(
+                        Polygon::new(PlotPoints::from(vec![
+                            [t0, y - 0.5],
+                            [t1, y - 0.5],
+                            [t1, y + 0.5],
+                            [t0, y + 0.5],
+                        ]))
+                        .fill_color(sub.color.gamma_multiply(ROW_TINT))
+                        .stroke(egui::Stroke::NONE)
+                        .allow_hover(false),
+                    );
                 }
                 for &(code, failed) in &self.event_keys {
                     let points: Vec<[f64; 2]> = self
@@ -144,8 +172,6 @@ impl TabMptcp {
     }
 }
 
-/// Colour of an event kind: green up, neutral end, red trouble, grey lifecycle, violet
-/// information, orange data
 /// Colour of the events of one type, failed or not
 fn key_color(code: i64, failed: bool, dark_mode: bool) -> egui::Color32 {
     let probe = PmEvent {
@@ -159,6 +185,8 @@ fn key_color(code: i64, failed: bool, dark_mode: bool) -> egui::Color32 {
     kind_color(probe.kind(), dark_mode)
 }
 
+/// Colour of an event kind: green up, neutral end, red trouble, grey lifecycle, violet
+/// information, orange data
 pub(super) fn kind_color(kind: EventKind, dark_mode: bool) -> egui::Color32 {
     match kind {
         EventKind::Up => theme::SUCCESS,
