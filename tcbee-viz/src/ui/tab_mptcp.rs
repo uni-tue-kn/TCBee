@@ -509,6 +509,15 @@ impl Subflow {
     }
 }
 
+/// What the event lane reports to the plots below it
+#[derive(Default)]
+struct LaneResponse {
+    /// Height it took, with its title and legend
+    height: f32,
+    /// Right-clicked to reset the view
+    reset: bool,
+}
+
 /// One plotted metric: a series per subflow that has it, with the subflow's index
 struct MetricPlot {
     series: Vec<(usize, SeriesData)>,
@@ -912,6 +921,15 @@ impl TabMptcp {
         let Some(connection) = &self.connection else {
             return;
         };
+        // Time 0 is the start of the connection
+        let origin = connection.start_ts as f64;
+        let (fit_x_min, fit_x_max) = (connection.start_ts as f64, connection.end_ts as f64);
+        let fit = std::mem::take(&mut self.needs_fit);
+        let width = ui.available_width().max(1.0);
+
+        let lane = self.show_event_lane(ui, settings, fit, origin);
+        let mut reset = lane.reset;
+        let height = height - lane.height;
         if self.selected.is_empty() {
             ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
                 ui.centered_and_justified(|ui| {
@@ -921,24 +939,18 @@ impl TabMptcp {
                     );
                 });
             });
+            self.needs_fit |= reset;
             return;
         }
-        // Time 0 is the start of the connection
-        let origin = connection.start_ts as f64;
-        let (fit_x_min, fit_x_max) = (connection.start_ts as f64, connection.end_ts as f64);
-        let fit = std::mem::take(&mut self.needs_fit);
-        let width = ui.available_width().max(1.0);
         // Room for the metric name above each plot
         let plot_height = (split_plot_height_with_footer(height, self.selected.len()) - 22.0)
             .max(MIN_PLOT_HEIGHT);
         let marker_color = theme::muted_text(settings.dark_mode);
 
         let mut visible = None;
-        let lane_height = self.show_event_lane(ui, settings, fit, origin);
-        let mut reset = lane_height.1;
         ScrollArea::vertical()
             .id_salt("mptcp_plots_scroll")
-            .max_height(height - lane_height.0)
+            .max_height(height)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (metric, plot) in self.selected.iter().zip(&self.plots) {
@@ -962,12 +974,13 @@ impl TabMptcp {
                         .height(plot_height)
                         .show(ui, |plot_ui| {
                             if fit {
-                                let (y_min, y_max) = plot.series.iter().fold(
-                                    (0.0_f64, 1.0_f64),
-                                    |(lo, hi), (_, s)| {
+                                let (y_min, y_max) = plot
+                                    .series
+                                    .iter()
+                                    .filter(|(i, _)| !self.subflows[*i].hidden)
+                                    .fold((0.0_f64, 1.0_f64), |(lo, hi), (_, s)| {
                                         (lo.min(s.global_y_min), hi.max(s.global_y_max))
-                                    },
-                                );
+                                    });
                                 plot_ui.set_plot_bounds(PlotBounds::from_min_max(
                                     [fit_x_min, y_min * 1.05],
                                     [fit_x_max, y_max * 1.05],
@@ -1036,17 +1049,16 @@ impl TabMptcp {
     }
 
     /// The path manager events above the metric plots: a row for the connection and one per
-    /// subflow, a marker per event, the full text on hover. Returns the height it took and
-    /// whether it was right-clicked to reset the view.
+    /// subflow, a marker per event, the full text on hover.
     fn show_event_lane(
         &self,
         ui: &mut egui::Ui,
         settings: &AppSettings,
         fit: bool,
         origin: f64,
-    ) -> (f32, bool) {
+    ) -> LaneResponse {
         let Some(connection) = &self.connection else {
-            return (0.0, false);
+            return LaneResponse::default();
         };
         let top = ui.cursor().top();
         let rows = self.subflows.len() + 1;
@@ -1115,10 +1127,10 @@ impl TabMptcp {
             });
         self.show_event_legend(ui, dark_mode);
         ui.add_space(4.0);
-        (
-            ui.cursor().top() - top,
-            response.response.secondary_clicked(),
-        )
+        LaneResponse {
+            height: ui.cursor().top() - top,
+            reset: response.response.secondary_clicked(),
+        }
     }
 
     /// Marker and name of each event type of the connection
