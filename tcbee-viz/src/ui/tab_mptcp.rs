@@ -637,10 +637,13 @@ impl TabMptcp {
                         self.plots.remove(i);
                     }
                 }
-                // Loaded by show_connection, at the width of the plots
-                None => self.selected.push(m),
+                // Loaded by show_connection, at the width of the plots. It takes the time range
+                // of the others and fits its values itself; only the first one fits the view.
+                None => {
+                    self.needs_fit |= self.selected.is_empty();
+                    self.selected.push(m);
+                }
             }
-            self.needs_fit = true;
         }
     }
 
