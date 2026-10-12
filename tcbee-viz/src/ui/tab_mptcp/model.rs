@@ -206,16 +206,20 @@ pub struct EventGroup {
 
 impl EventGroup {
     /// Label next to the marker: the short name of the representative and how many more
+    /// there are. Data moves count only for a data marker, as they get no line in the plots.
     pub fn label(&self, events: &[PmEvent]) -> String {
-        let short = event_type(events[self.representative].code).short;
-        let failed = if events[self.representative].failed {
-            " failed"
-        } else {
-            ""
-        };
-        match self.members.len() {
-            1 => format!("{short}{failed}"),
-            n => format!("{short}{failed} +{}", n - 1),
+        let shown = &events[self.representative];
+        let short = event_type(shown.code).short;
+        let failed = if shown.failed { " failed" } else { "" };
+        let is_data = |e: &PmEvent| e.kind() == EventKind::Data;
+        let more = self
+            .members
+            .iter()
+            .filter(|&&i| i != self.representative && is_data(&events[i]) == is_data(shown))
+            .count();
+        match more {
+            0 => format!("{short}{failed}"),
+            n => format!("{short}{failed} +{n}"),
         }
     }
 }
@@ -278,15 +282,15 @@ pub fn group_at(
         .map(|(i, _)| i)
 }
 
-/// Which labels to draw: greedily from the left, each label that does not overlap the last
-/// one drawn by less than `gap`. `spans` are the labels' (left, right) on screen, sorted by
-/// left.
-pub fn place_labels(spans: &[(f32, f32)], gap: f32) -> Vec<bool> {
+/// Which labels to draw: greedily from the left, each label that keeps `gap` to the last one
+/// drawn and ends `gap` before its limit (e.g. the next marker). `spans` are the labels'
+/// (left, right, limit) on screen, sorted by left.
+pub fn place_labels(spans: &[(f32, f32, f32)], gap: f32) -> Vec<bool> {
     let mut right_end = f32::NEG_INFINITY;
     spans
         .iter()
-        .map(|&(left, right)| {
-            let free = left >= right_end + gap;
+        .map(|&(left, right, limit)| {
+            let free = left >= right_end + gap && right + gap <= limit;
             if free {
                 right_end = right;
             }
@@ -716,6 +720,14 @@ mod tests {
         assert_eq!(groups[0].representative, 3);
         assert_eq!(groups[0].label(&events), "stale +2");
         assert_eq!(groups[1].label(&events), "up");
+        // Reinjections next to an event are not counted with it
+        let events = [
+            event(0.0, TCBEE_MPTCP_ESTABLISHED, 0),
+            event(0.1, TCBEE_MPTCP_REINJECTED, 0),
+            event(0.2, TCBEE_MPTCP_REINJECTED, 0),
+        ];
+        let groups = group_events(&events, 1.0);
+        assert_eq!(groups[0].label(&events), "est.");
     }
 
     #[test]
@@ -763,11 +775,20 @@ mod tests {
 
     #[test]
     fn labels_skip_what_would_overlap() {
+        let none = f32::INFINITY;
         let shown = place_labels(
-            &[(0.0, 30.0), (20.0, 40.0), (34.0, 50.0), (60.0, 70.0)],
+            &[
+                (0.0, 30.0, none),
+                (20.0, 40.0, none),
+                (34.0, 50.0, none),
+                (60.0, 70.0, none),
+            ],
             4.0,
         );
         assert_eq!(shown, vec![true, false, true, true]);
+        // A label running into the next marker is left out
+        assert_eq!(place_labels(&[(0.0, 30.0, 32.0)], 4.0), vec![false]);
+        assert_eq!(place_labels(&[(0.0, 30.0, 34.0)], 4.0), vec![true]);
         assert!(place_labels(&[], 4.0).is_empty());
     }
 

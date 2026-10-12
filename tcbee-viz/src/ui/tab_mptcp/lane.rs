@@ -11,7 +11,7 @@ use egui_plot::{
 
 use super::model::{
     centered_x, event_kind, event_type, event_type_name, group_at, group_events, lane_row_at,
-    lane_row_name, lane_y, place_labels, EventGroup, EventKind,
+    lane_row_name, lane_y, place_labels, row_name, EventGroup, EventKind,
 };
 use super::{TabMptcp, Y_AXIS_WIDTH};
 use crate::{
@@ -221,8 +221,8 @@ impl TabMptcp {
         );
     }
 
-    /// The short label right of each marker, where it does not overlap the one before it.
-    /// Data moves (reinjections) get none; there can be many.
+    /// The short label right of each marker, where it neither overlaps the label before it
+    /// nor covers the next marker. Data moves (reinjections) get none; there can be many.
     fn paint_lane_labels(
         &self,
         ui: &egui::Ui,
@@ -234,35 +234,41 @@ impl TabMptcp {
         let painter = ui.painter_at(*transform.frame());
         let color = theme::text(dark_mode);
         for row in 0..rows {
-            let labelled: Vec<&EventGroup> = groups
+            // Groups of a row follow each other in time
+            let markers: Vec<(&EventGroup, egui::Pos2)> = groups
                 .iter()
                 .filter(|g| g.row == row)
-                .filter(|g| self.events[g.representative].kind() != EventKind::Data)
-                .collect();
-            let placed: Vec<(egui::Pos2, std::sync::Arc<egui::Galley>)> = labelled
-                .iter()
                 .map(|g| {
-                    let e = &self.events[g.representative];
-                    let marker =
-                        transform.position_from_point(&PlotPoint::new(e.t, lane_y(row, rows)));
-                    let galley = painter.layout_no_wrap(
-                        g.label(&self.events),
-                        egui::FontId::proportional(LABEL_SIZE),
-                        color,
-                    );
-                    let left = marker.x + MARKER_RADIUS + LABEL_GAP;
-                    (egui::pos2(left, marker.y - galley.size().y / 2.0), galley)
+                    let t = self.events[g.representative].t;
+                    (
+                        g,
+                        transform.position_from_point(&PlotPoint::new(t, lane_y(row, rows))),
+                    )
                 })
                 .collect();
-            let spans: Vec<(f32, f32)> = placed
-                .iter()
-                .map(|(pos, galley)| (pos.x, pos.x + galley.size().x))
-                .collect();
-            for ((pos, galley), shown) in placed.into_iter().zip(place_labels(&spans, LABEL_GAP)) {
-                if shown {
-                    painter.galley(pos, galley, color);
+            let labels = markers.iter().enumerate().filter_map(|(k, &(g, marker))| {
+                if self.events[g.representative].kind() == EventKind::Data {
+                    return None;
                 }
-            }
+                let galley = painter.layout_no_wrap(
+                    g.label(&self.events),
+                    egui::FontId::proportional(LABEL_SIZE),
+                    color,
+                );
+                let next_marker = markers
+                    .get(k + 1)
+                    .map_or(f32::INFINITY, |(_, next)| next.x - MARKER_RADIUS);
+                Some(PlacedLabel {
+                    pos: egui::pos2(
+                        marker.x + MARKER_RADIUS + LABEL_GAP,
+                        marker.y - galley.size().y / 2.0,
+                    ),
+                    galley,
+                    color,
+                    limit: next_marker,
+                })
+            });
+            paint_placed(&painter, labels.collect());
         }
     }
 
@@ -277,34 +283,32 @@ impl TabMptcp {
     ) {
         let frame = *transform.frame();
         let painter = ui.painter_at(frame);
-        let mut labelled: Vec<(f32, std::sync::Arc<egui::Galley>, egui::Color32)> = groups
+        let labels = groups
             .iter()
-            .filter(|g| !self.is_hidden_row(g.row))
             .map(|g| (g, &self.events[g.representative]))
-            .filter(|(_, e)| e.kind() != EventKind::Data)
+            .filter(|(_, e)| self.marks_plots(e))
             .map(|(g, e)| {
                 let text = match g.row {
                     0 => g.label(&self.events),
-                    row => format!("#{row} {}", g.label(&self.events)),
+                    row => format!("{} {}", row_name(row), g.label(&self.events)),
                 };
-                let x = transform.position_from_point_x(e.t);
                 let color = kind_color(e.kind(), dark_mode);
-                let galley =
-                    painter.layout_no_wrap(text, egui::FontId::proportional(LABEL_SIZE), color);
-                (x + LABEL_GAP, galley, color)
+                PlacedLabel {
+                    pos: egui::pos2(
+                        transform.position_from_point_x(e.t) + LABEL_GAP,
+                        frame.top() + 2.0,
+                    ),
+                    galley: painter.layout_no_wrap(
+                        text,
+                        egui::FontId::proportional(LABEL_SIZE),
+                        color,
+                    ),
+                    color,
+                    limit: f32::INFINITY,
+                }
             })
             .collect();
-        labelled.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let spans: Vec<(f32, f32)> = labelled
-            .iter()
-            .map(|(x, galley, _)| (*x, x + galley.size().x))
-            .collect();
-        for ((x, galley, color), shown) in labelled.into_iter().zip(place_labels(&spans, LABEL_GAP))
-        {
-            if shown {
-                painter.galley(egui::pos2(x, frame.top() + 2.0), galley, color);
-            }
-        }
+        paint_placed(&painter, labels);
     }
 
     /// Marker and name of each event type of the connection
@@ -327,6 +331,29 @@ impl TabMptcp {
                 ui.add_space(8.0);
             }
         });
+    }
+}
+
+/// A label that is drawn only if there is room for it
+struct PlacedLabel {
+    pos: egui::Pos2,
+    galley: Arc<egui::Galley>,
+    color: egui::Color32,
+    /// Its right end must stay left of this
+    limit: f32,
+}
+
+/// Draws the labels that fit, from left to right
+fn paint_placed(painter: &egui::Painter, mut labels: Vec<PlacedLabel>) {
+    labels.sort_by(|a, b| a.pos.x.total_cmp(&b.pos.x));
+    let spans: Vec<(f32, f32, f32)> = labels
+        .iter()
+        .map(|l| (l.pos.x, l.pos.x + l.galley.size().x, l.limit))
+        .collect();
+    for (label, shown) in labels.into_iter().zip(place_labels(&spans, LABEL_GAP)) {
+        if shown {
+            painter.galley(label.pos, label.galley, label.color);
+        }
     }
 }
 

@@ -905,20 +905,26 @@ impl TabMptcp {
         tol: f64,
     ) -> impl Fn(&str, &egui_plot::PlotPoint) -> String + 'static {
         let value = seconds_label_formatter(origin);
-        let events = Arc::clone(&self.events);
-        let hidden: Vec<bool> = (0..=self.subflows.len())
-            .map(|row| self.is_hidden_row(row))
+        // The events with a line, as (time, text)
+        let marked: Vec<(f64, String)> = self
+            .events
+            .iter()
+            .filter(|e| self.marks_plots(e))
+            .map(|e| (e.t, e.label.clone()))
             .collect();
         move |name, point| {
             let mut text = value(name, point);
-            for e in events
-                .iter()
-                .filter(|e| is_structural(e.code) && !hidden[e.row] && (e.t - point.x).abs() <= tol)
-            {
-                text.push_str(&format!("\n{}", e.label));
+            for (_, label) in marked.iter().filter(|(t, _)| (t - point.x).abs() <= tol) {
+                text.push_str(&format!("\n{label}"));
             }
             text
         }
+    }
+
+    /// Whether an event gets a line in the metric plots: not data moves, which can be many,
+    /// and not events of hidden subflows
+    fn marks_plots(&self, e: &PmEvent) -> bool {
+        is_structural(e.code) && !self.is_hidden_row(e.row)
     }
 
     /// Whether a lane row belongs to a subflow hidden in the plots
@@ -978,7 +984,7 @@ impl TabMptcp {
         let event_lines: Vec<(f64, egui::Color32)> = self
             .events
             .iter()
-            .filter(|e| is_structural(e.code) && !self.is_hidden_row(e.row))
+            .filter(|e| self.marks_plots(e))
             .map(|e| (e.t, kind_color(e.kind(), dark_mode)))
             .collect();
 
