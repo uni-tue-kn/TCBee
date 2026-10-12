@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 
 use egui::{RichText, ScrollArea, Vec2};
-use egui_plot::{Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
+use egui_plot::{Line, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Text, VLine};
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
     TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
@@ -17,9 +17,11 @@ use tcbee_common::records::{
     TCBEE_MPTCP_SUBFLOW_STALE, TCBEE_MPTCP_SUB_CLOSED, TCBEE_MPTCP_SUB_ESTABLISHED,
     TCBEE_MPTCP_SUB_PRIORITY, TCBEE_MPTCP_TOKEN_DESTROYED,
 };
-use ts_storage::{ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind};
+use ts_storage::{
+    ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind, ValueKind,
+};
 
-use model::{infer_sides, sort_subflows, ConnectionSummary, SideInput};
+use model::{gap_threshold, infer_sides, segments, sort_subflows, ConnectionSummary, SideInput};
 
 use crate::{
     backend::db::{flow_x_bounds, format_flow, DbBackend},
@@ -774,13 +776,25 @@ impl TabMptcp {
                                 visible = Some((bounds.min()[0], bounds.max()[0]));
                             }
                             for s in &plot.series {
-                                let points: Vec<[f64; 2]> =
-                                    s.points.iter().map(|(t, v)| [*t, *v]).collect();
-                                plot_ui.line(
-                                    Line::new(PlotPoints::from(points))
-                                        .color(s.color)
-                                        .name(&s.name),
-                                );
+                                // Counters and states hold their value until the next record
+                                let step = matches!(s.val_type, ValueKind::Int | ValueKind::Bool);
+                                let gap = gap_threshold(&s.points, s.loaded_sample_interval);
+                                for segment in segments(&s.points, gap, step) {
+                                    if segment.len() == 1 {
+                                        plot_ui.points(
+                                            Points::new(PlotPoints::from(segment))
+                                                .color(s.color)
+                                                .radius(2.0)
+                                                .name(&s.name),
+                                        );
+                                    } else {
+                                        plot_ui.line(
+                                            Line::new(PlotPoints::from(segment))
+                                                .color(s.color)
+                                                .name(&s.name),
+                                        );
+                                    }
+                                }
                             }
                             let bounds = plot_ui.plot_bounds();
                             let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;

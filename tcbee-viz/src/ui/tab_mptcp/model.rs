@@ -1,5 +1,5 @@
 //! The parts of the MPTCP tab that do not draw: which end of a connection a recording shows,
-//! the sidebar rows and their filter, the order of the subflows.
+//! the sidebar rows and their filter, the order of the subflows, the line segments of a series.
 
 use ts_storage::ConnectionFlow;
 
@@ -128,6 +128,46 @@ impl ConnectionSummary {
     }
 }
 
+/// A pause between two loaded points this many times longer than usual breaks the line
+const GAP_FACTOR: f64 = 20.0;
+
+/// The pause between two loaded points from which on they are not joined: `GAP_FACTOR` times
+/// the sampling interval or the median distance of the points, whichever is larger. The median
+/// covers points that are thinned out by count instead of by time.
+pub fn gap_threshold(points: &[(f64, f64)], sample_interval: f64) -> f64 {
+    let mut distances: Vec<f64> = points.windows(2).map(|w| w[1].0 - w[0].0).collect();
+    let median = if distances.is_empty() {
+        0.0
+    } else {
+        let mid = distances.len() / 2;
+        *distances
+            .select_nth_unstable_by(mid, |a, b| a.total_cmp(b))
+            .1
+    };
+    GAP_FACTOR * sample_interval.max(median)
+}
+
+/// Splits a series where two points are more than `gap` apart. With `step`, each value holds
+/// until the next point, as for counters and states, instead of a straight line between them.
+pub fn segments(points: &[(f64, f64)], gap: f64, step: bool) -> Vec<Vec<[f64; 2]>> {
+    let mut out: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut previous: Option<(f64, f64)> = None;
+    for &(t, v) in points {
+        match previous {
+            Some((pt, pv)) if t - pt <= gap => {
+                let segment = out.last_mut().expect("a segment is open");
+                if step && v != pv {
+                    segment.push([t, pv]);
+                }
+                segment.push([t, v]);
+            }
+            _ => out.push(vec![[t, v]]),
+        }
+        previous = Some((t, v));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +227,54 @@ mod tests {
     fn unknown_or_own_token_is_ignored() {
         let sides = infer_sides(&[input(5, &[5, 77], &[]), input(6, &[], &[])]);
         assert_eq!(sides, vec![(None, None), (None, None)]);
+    }
+
+    #[test]
+    fn segments_break_at_gaps() {
+        let points = [
+            (0.0, 1.0),
+            (1.0, 2.0),
+            (2.0, 2.0),
+            (10.0, 5.0),
+            (11.0, 3.0),
+            (30.0, 4.0),
+        ];
+        let lines = segments(&points, 2.0, false);
+        assert_eq!(
+            lines,
+            vec![
+                vec![[0.0, 1.0], [1.0, 2.0], [2.0, 2.0]],
+                vec![[10.0, 5.0], [11.0, 3.0]],
+                vec![[30.0, 4.0]],
+            ]
+        );
+        assert!(segments(&[], 2.0, true).is_empty());
+    }
+
+    #[test]
+    fn steps_hold_the_value_until_the_next_point() {
+        let lines = segments(&[(0.0, 1.0), (1.0, 3.0), (2.0, 3.0), (3.0, 2.0)], 5.0, true);
+        assert_eq!(
+            lines,
+            vec![vec![
+                [0.0, 1.0],
+                [1.0, 1.0],
+                [1.0, 3.0],
+                [2.0, 3.0],
+                [3.0, 3.0],
+                [3.0, 2.0]
+            ]]
+        );
+    }
+
+    #[test]
+    fn gap_follows_sampling_or_point_distance() {
+        let points: Vec<(f64, f64)> = (0..10).map(|i| (i as f64 * 2.0, 0.0)).collect();
+        // Thinned by count: the median distance counts
+        assert_eq!(gap_threshold(&points, 0.0), 40.0);
+        // Sampled by time with a larger interval
+        assert_eq!(gap_threshold(&points, 5.0), 100.0);
+        assert_eq!(gap_threshold(&[(1.0, 1.0)], 0.0), 0.0);
     }
 
     #[test]
