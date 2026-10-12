@@ -1,10 +1,12 @@
 //! Cells, rows and frame shared by the hand-painted tables (flows, series, MPTCP).
 
-use egui::{Color32, RichText, Stroke, Ui};
+use egui::{Color32, RichText, Stroke, Ui, Vec2};
 
 use crate::ui::theme;
 
 pub const ROW_HEIGHT: f32 = 22.0;
+/// Space between a right-aligned number and the next column
+const NUMBER_PADDING: f32 = 8.0;
 
 /// Rounded, bordered frame around a table
 pub fn frame(dark_mode: bool) -> egui::Frame {
@@ -38,6 +40,20 @@ pub fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) -> egui::R
         )
         .truncate(),
     )
+}
+
+/// A data cell with its text at the right edge, for numbers
+pub fn number_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) -> egui::Response {
+    let color = cell_text(ui, selected);
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, ROW_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.add_space(NUMBER_PADDING);
+            ui.add(egui::Label::new(RichText::new(text).color(color).size(12.0)).truncate())
+        },
+    )
+    .inner
 }
 
 /// Text colour of a data cell

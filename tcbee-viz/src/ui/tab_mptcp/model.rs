@@ -233,6 +233,34 @@ pub fn segments(points: &[(f64, f64)], gap: f64, step: bool) -> Vec<Vec<[f64; 2]
     out
 }
 
+/// Bytes in binary units, e.g. "2.42 GiB"
+pub fn format_bytes(bytes: f64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes;
+    let mut unit = 0;
+    while value.abs() >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} B")
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
+/// Each subflow's share of the connection's bytes: of the acknowledged bytes on a sender, of
+/// the received bytes on a receiver, which acknowledges none
+pub fn byte_shares(acked: &[Option<f64>], received: &[Option<f64>]) -> Vec<Option<f64>> {
+    let total = |values: &[Option<f64>]| values.iter().flatten().sum::<f64>();
+    let values = if total(acked) > 0.0 { acked } else { received };
+    let sum = total(values);
+    values
+        .iter()
+        .map(|v| v.filter(|_| sum > 0.0).map(|v| v / sum))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +366,26 @@ mod tests {
             None
         );
         assert_eq!(nearest_event(&events, name_of, "", 1.0, 1.0, 2), None);
+    }
+
+    #[test]
+    fn bytes_in_binary_units() {
+        assert_eq!(format_bytes(0.0), "0 B");
+        assert_eq!(format_bytes(1023.0), "1023 B");
+        assert_eq!(format_bytes(1536.0), "1.50 KiB");
+        assert_eq!(format_bytes(2_596_458_090.0), "2.42 GiB");
+    }
+
+    #[test]
+    fn shares_of_acked_or_received_bytes() {
+        // Sender: acknowledged bytes
+        let shares = byte_shares(&[Some(3.0), Some(1.0), None], &[Some(0.0), Some(9.0), None]);
+        assert_eq!(shares, vec![Some(0.75), Some(0.25), None]);
+        // Receiver: nothing acknowledged, so the received bytes count
+        let shares = byte_shares(&[Some(0.0), Some(0.0)], &[Some(1.0), Some(3.0)]);
+        assert_eq!(shares, vec![Some(0.25), Some(0.75)]);
+        // No bytes at all
+        assert_eq!(byte_shares(&[Some(0.0)], &[None]), vec![None]);
     }
 
     #[test]

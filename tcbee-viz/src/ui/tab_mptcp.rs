@@ -22,8 +22,8 @@ use ts_storage::{
 };
 
 use model::{
-    gap_threshold, infer_sides, is_connection_event, is_structural, lane_y, nearest_event,
-    segments, sort_subflows, ConnectionSummary, PmEvent, SideInput,
+    byte_shares, format_bytes, gap_threshold, infer_sides, is_connection_event, is_structural,
+    lane_y, nearest_event, segments, sort_subflows, ConnectionSummary, PmEvent, SideInput,
 };
 
 use crate::{
@@ -39,7 +39,7 @@ use crate::{
             seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
             split_plot_height_with_footer, time_or_compact_formatter,
         },
-        table::{self, data_cell, header_cell, ROW_HEIGHT},
+        table::{self, data_cell, header_cell, number_cell, ROW_HEIGHT},
         theme,
     },
 };
@@ -57,6 +57,43 @@ const Y_AXIS_WIDTH: f32 = 56.0;
 /// Height of a row of the event lane
 const LANE_ROW_HEIGHT: f32 = 18.0;
 const MIN_LANE_HEIGHT: f32 = 60.0;
+
+/// Columns of the subflow table: header, width, hover text. "Local -> remote" takes the rest
+/// of the width and comes after the third.
+const SUBFLOW_COLUMNS: [(&str, f32, &str); 12] = [
+    (
+        "",
+        24.0,
+        "Colour in the plots; click a row to hide or show the subflow",
+    ),
+    ("#", 28.0, "Position in the event lane"),
+    (
+        "Id",
+        30.0,
+        "Subflow id of the kernel; the server does not number its joins",
+    ),
+    ("Start", 62.0, "Seconds since the connection started"),
+    ("End", 62.0, ""),
+    ("Acked", 80.0, "Bytes acknowledged by the peer"),
+    ("Received", 80.0, "Bytes received"),
+    (
+        "Share",
+        110.0,
+        "Share of the acknowledged bytes, on a receiver of the received bytes",
+    ),
+    ("Retrans", 56.0, "Retransmitted segments"),
+    (
+        "Backoff",
+        60.0,
+        "Highest RTO backoff: retransmission timeouts in a row",
+    ),
+    (
+        "Backup",
+        54.0,
+        "Backup flag of the last path manager event that carries it",
+    ),
+    ("Events", 52.0, "Path manager events of the subflow"),
+];
 
 // Columns of the connection table; the first subflow takes the rest of the width
 const COL_TOKEN: f32 = 86.0;
@@ -234,12 +271,12 @@ fn connection_tooltip(row: &ConnectionSummary) -> String {
 }
 
 /// The path manager events of one subflow that belong to `connection` (a flow tuple may be
-/// reused by another connection): (time, event code, label)
+/// reused by another connection): (time, event code, label, backup flag)
 fn subflow_events(
     db: &DbBackend,
     sub: &Subflow,
     connection: &ConnectionInfo,
-) -> Vec<(f64, i64, String)> {
+) -> Vec<(f64, i64, String, bool)> {
     let column = |name: &str| -> Vec<(f64, DataValue)> {
         sub.series
             .iter()
@@ -300,7 +337,7 @@ fn subflow_events(
             label.push_str(&format!(" {} B", int(&data_len)));
         }
         label.push_str(subflow.as_deref().unwrap_or(""));
-        out.push((*t, event, label));
+        out.push((*t, event, label, int(&backup) != 0));
     }
     out
 }
@@ -441,6 +478,12 @@ struct Subflow {
     /// Its flow, for the table
     flow: String,
     series: Vec<SeriesInfo>,
+    /// Backup flag of its last path manager event that carries one
+    backup: Option<bool>,
+    /// Its path manager events
+    events: usize,
+    /// Left out of the plots
+    hidden: bool,
 }
 
 impl Subflow {
@@ -450,16 +493,15 @@ impl Subflow {
             .find(|s| &s.source == source && s.dir == *dir && &s.name == name)
     }
 
-    /// Bytes acknowledged by the peer: the last value of the counter, its catalog maximum
-    fn bytes_acked(&self) -> Option<f64> {
-        let key = ("sock".to_string(), Dir::Send, "bytes_acked".to_string());
-        self.find(&key).and_then(|s| s.v_max)
+    /// The last value of a socket counter: its catalog maximum
+    fn counter(&self, name: &str) -> Option<f64> {
+        catalog_max(&self.series, "sock", name)
     }
 }
 
-/// One plotted metric: a series per subflow that has it
+/// One plotted metric: a series per subflow that has it, with the subflow's index
 struct MetricPlot {
-    series: Vec<SeriesData>,
+    series: Vec<(usize, SeriesData)>,
 }
 
 /// The tab is reset whenever another tab is shown, and the database only changes on the Home
@@ -717,6 +759,9 @@ impl TabMptcp {
                     .entry(m.flow_id)
                     .or_insert_with(|| db.list_series_for_flow(m.flow_id))
                     .clone(),
+                backup: None,
+                events: 0,
+                hidden: false,
             });
         }
 
@@ -746,8 +791,15 @@ impl TabMptcp {
         self.plots.clear();
         self.needs_fit = true;
 
-        for (index, sub) in self.subflows.iter().enumerate() {
-            for (t, code, label) in subflow_events(db, sub, &connection) {
+        for (index, sub) in self.subflows.iter_mut().enumerate() {
+            let events = subflow_events(db, sub, &connection);
+            sub.events = events.len();
+            sub.backup = events
+                .iter()
+                .rev()
+                .find(|e| carries_backup(e.1))
+                .map(|e| e.3);
+            for (t, code, label, _) in events {
                 let row = if is_connection_event(code) {
                     0
                 } else {
@@ -774,16 +826,17 @@ impl TabMptcp {
         width: f32,
     ) -> MetricPlot {
         let mut plot = MetricPlot { series: Vec::new() };
-        let infos: Vec<(&Subflow, &SeriesInfo)> = self
+        let infos: Vec<(usize, &Subflow, &SeriesInfo)> = self
             .subflows
             .iter()
-            .filter_map(|s| s.find(metric).map(|info| (s, info)))
+            .enumerate()
+            .filter_map(|(i, s)| s.find(metric).map(|info| (i, s, info)))
             .collect();
         let Some(connection) = &self.connection else {
             return plot;
         };
         // A flow tuple may also belong to other connections: only this one's time span
-        let Some((t_min, t_max)) = flow_x_bounds(infos.iter().map(|(_, info)| *info))
+        let Some((t_min, t_max)) = flow_x_bounds(infos.iter().map(|(_, _, info)| *info))
             .map(|(lo, hi)| {
                 (
                     lo.max(connection.start_ts as f64),
@@ -794,11 +847,11 @@ impl TabMptcp {
         else {
             return plot;
         };
-        for (sub, info) in infos {
+        for (index, sub, info) in infos {
             let mut sd = SeriesData::from_info(info, t_min, t_max, sub.color);
             sd.name = sub.label.clone();
             fetch_range(db, &mut sd, t_min, t_max, settings, Some(width));
-            plot.series.push(sd);
+            plot.series.push((index, sd));
         }
         plot
     }
@@ -818,13 +871,24 @@ impl TabMptcp {
             let plot = self.load_metric(db, settings, metric, ui.available_width());
             self.plots.push(plot);
         }
-        let table_height = ((self.subflows.len() as f32 + 2.0) * 22.0 + 16.0).min(200.0);
-        self.show_plots(ui, db, settings, ui.available_height() - table_height);
-        ui.separator();
-        ScrollArea::vertical()
-            .id_salt("mptcp_subflow_table_scroll")
-            .max_height(table_height)
-            .show(ui, |ui| self.show_subflow_table(ui));
+        // The panel takes its space first, the plots get the rest
+        let rows = self.subflows.len() as f32 + 1.0;
+        egui::TopBottomPanel::bottom("mptcp_subflow_panel")
+            .resizable(true)
+            .default_height((rows * ROW_HEIGHT + 24.0).clamp(80.0, 260.0))
+            .height_range(60.0..=600.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::panel_bg(settings.dark_mode))
+                    .inner_margin(egui::Margin::symmetric(0, 8)),
+            )
+            .show_inside(ui, |ui| {
+                if let Some(index) = self.show_subflow_table(ui) {
+                    let sub = &mut self.subflows[index];
+                    sub.hidden = !sub.hidden;
+                }
+            });
+        self.show_plots(ui, db, settings, ui.available_height());
     }
 
     /// One plot per selected metric, stacked, with a shared time axis
@@ -889,10 +953,12 @@ impl TabMptcp {
                         .height(plot_height)
                         .show(ui, |plot_ui| {
                             if fit {
-                                let (y_min, y_max) =
-                                    plot.series.iter().fold((0.0_f64, 1.0_f64), |(lo, hi), s| {
+                                let (y_min, y_max) = plot.series.iter().fold(
+                                    (0.0_f64, 1.0_f64),
+                                    |(lo, hi), (_, s)| {
                                         (lo.min(s.global_y_min), hi.max(s.global_y_max))
-                                    });
+                                    },
+                                );
                                 plot_ui.set_plot_bounds(PlotBounds::from_min_max(
                                     [fit_x_min, y_min * 1.05],
                                     [fit_x_max, y_max * 1.05],
@@ -901,7 +967,11 @@ impl TabMptcp {
                                 let bounds = plot_ui.plot_bounds();
                                 visible = Some((bounds.min()[0], bounds.max()[0]));
                             }
-                            for s in &plot.series {
+                            for (_, s) in plot
+                                .series
+                                .iter()
+                                .filter(|(i, _)| !self.subflows[*i].hidden)
+                            {
                                 // Counters and states hold their value until the next record
                                 let step = matches!(s.val_type, ValueKind::Int | ValueKind::Bool);
                                 let gap = gap_threshold(&s.points, s.loaded_sample_interval);
@@ -939,7 +1009,7 @@ impl TabMptcp {
         // Panned or zoomed in: load the visible part of the data in more detail. The plots
         // share the time axis, so one of them gives the visible range of all.
         if let Some((x_min, x_max)) = visible {
-            for sd in self.plots.iter_mut().flat_map(|p| p.series.iter_mut()) {
+            for (_, sd) in self.plots.iter_mut().flat_map(|p| p.series.iter_mut()) {
                 let lo = x_min.max(sd.global_t_min);
                 let hi = x_max.min(sd.global_t_max);
                 if lo >= hi {
@@ -1069,49 +1139,189 @@ impl TabMptcp {
         });
     }
 
-    fn show_subflow_table(&self, ui: &mut egui::Ui) {
-        let total: f64 = self.subflows.iter().filter_map(Subflow::bytes_acked).sum();
-        let origin = self
+    /// The subflows with their bytes and counters. Returns the index of a clicked row, which
+    /// shows or hides the subflow in the plots.
+    fn show_subflow_table(&self, ui: &mut egui::Ui) -> Option<usize> {
+        let dark_mode = ui.visuals().dark_mode;
+        let origin = self.connection.as_ref().map_or(0, |c| c.start_ts);
+        let acked: Vec<Option<f64>> = self
             .subflows
             .iter()
-            .map(|s| s.member.first_ts)
-            .min()
-            .unwrap_or(0);
-        egui::Grid::new("mptcp_subflow_table")
-            .striped(true)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                for header in ["Subflow", "Flow", "Seen (s)", "Acked bytes", "Share"] {
-                    ui.label(RichText::new(header).strong());
-                }
-                ui.end_row();
-                for sub in &self.subflows {
-                    let m = &sub.member;
-                    ui.label(m.subflow_id.map_or("-".to_string(), |id| id.to_string()));
-                    ui.label(&sub.flow);
-                    ui.label(format!(
-                        "{:.3} – {:.3}",
-                        (m.first_ts - origin) as f64 / 1e9,
-                        (m.last_ts - origin) as f64 / 1e9
-                    ));
-                    match sub.bytes_acked() {
-                        Some(bytes) => {
-                            ui.label(format!("{bytes:.0}"));
-                            if total > 0.0 {
-                                ui.label(format!("{:.1} %", 100.0 * bytes / total));
-                            } else {
-                                ui.label("-");
-                            }
-                        }
-                        None => {
-                            ui.label("-");
-                            ui.label("-");
-                        }
+            .map(|s| s.counter("bytes_acked"))
+            .collect();
+        let received: Vec<Option<f64>> = self
+            .subflows
+            .iter()
+            .map(|s| s.counter("bytes_received"))
+            .collect();
+        let shares = byte_shares(&acked, &received);
+        let mut clicked = None;
+        table::frame(dark_mode).show(ui, |ui| {
+            let content_w = ui.available_width().max(1.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let fixed = SUBFLOW_COLUMNS.iter().map(|c| c.1).sum::<f32>();
+            let col_flow = (content_w - fixed).max(120.0);
+            let header_rect = egui::Rect::from_min_size(
+                ui.available_rect_before_wrap().min,
+                Vec2::new(content_w, ROW_HEIGHT),
+            );
+            ui.painter()
+                .rect_filled(header_rect, 0.0, theme::table_header_bg(dark_mode));
+            ui.horizontal(|ui| {
+                ui.set_height(ROW_HEIGHT);
+                for (i, (header, width, hint)) in SUBFLOW_COLUMNS.iter().enumerate() {
+                    if i == 3 {
+                        header_cell(ui, "Local -> remote", col_flow);
                     }
-                    ui.end_row();
+                    let response = header_cell(ui, header, *width);
+                    if !hint.is_empty() {
+                        response.on_hover_text(*hint);
+                    }
                 }
             });
+            ScrollArea::vertical()
+                .id_salt("mptcp_subflow_rows")
+                .auto_shrink([false, false])
+                .show_rows(ui, ROW_HEIGHT, self.subflows.len(), |ui, range| {
+                    ui.set_width(content_w);
+                    for i in range {
+                        let sub = &self.subflows[i];
+                        let m = &sub.member;
+                        let response = ui.horizontal(|ui| {
+                            ui.set_width(content_w);
+                            ui.set_height(ROW_HEIGHT);
+                            let rect = ui.max_rect();
+                            let hovered = ui.rect_contains_pointer(rect);
+                            ui.painter().rect_filled(
+                                rect,
+                                0.0,
+                                table::row_fill(dark_mode, i, false, hovered),
+                            );
+                            let (swatch, _) = ui.allocate_exact_size(
+                                Vec2::new(SUBFLOW_COLUMNS[0].1, ROW_HEIGHT),
+                                egui::Sense::hover(),
+                            );
+                            let dot =
+                                egui::Rect::from_center_size(swatch.center(), Vec2::splat(10.0));
+                            if sub.hidden {
+                                ui.painter().rect_stroke(
+                                    dot,
+                                    2.0,
+                                    egui::Stroke::new(1.5, sub.color),
+                                    egui::StrokeKind::Inside,
+                                );
+                            } else {
+                                ui.painter().rect_filled(dot, 2.0, sub.color);
+                            }
+                            let opt =
+                                |v: Option<f64>, f: fn(f64) -> String| v.map_or("–".to_string(), f);
+                            number_cell(ui, &format!("{}", i + 1), SUBFLOW_COLUMNS[1].1, false);
+                            number_cell(
+                                ui,
+                                &m.subflow_id.map_or("–".to_string(), |id| id.to_string()),
+                                SUBFLOW_COLUMNS[2].1,
+                                false,
+                            );
+                            data_cell(ui, &sub.flow, col_flow, false).on_hover_text(&sub.flow);
+                            let seconds = |ts: i64| format!("{:.3}", (ts - origin) as f64 / 1e9);
+                            number_cell(ui, &seconds(m.first_ts), SUBFLOW_COLUMNS[3].1, false);
+                            number_cell(ui, &seconds(m.last_ts), SUBFLOW_COLUMNS[4].1, false);
+                            number_cell(
+                                ui,
+                                &opt(acked[i], format_bytes),
+                                SUBFLOW_COLUMNS[5].1,
+                                false,
+                            );
+                            number_cell(
+                                ui,
+                                &opt(received[i], format_bytes),
+                                SUBFLOW_COLUMNS[6].1,
+                                false,
+                            );
+                            share_cell(ui, shares[i], sub.color, SUBFLOW_COLUMNS[7].1);
+                            let count = |v: f64| format!("{v:.0}");
+                            number_cell(
+                                ui,
+                                &opt(sub.counter("total_retrans"), count),
+                                SUBFLOW_COLUMNS[8].1,
+                                false,
+                            );
+                            number_cell(
+                                ui,
+                                &opt(sub.counter("backoff"), count),
+                                SUBFLOW_COLUMNS[9].1,
+                                false,
+                            );
+                            data_cell(
+                                ui,
+                                sub.backup.map_or("–", |b| if b { "yes" } else { "no" }),
+                                SUBFLOW_COLUMNS[10].1,
+                                false,
+                            );
+                            number_cell(ui, &sub.events.to_string(), SUBFLOW_COLUMNS[11].1, false);
+                        });
+                        let rect = response.response.rect;
+                        let hint = if sub.hidden {
+                            "Show in the plots"
+                        } else {
+                            "Hide in the plots"
+                        };
+                        let click = ui
+                            .interact(
+                                rect,
+                                ui.id().with(("mptcp_subflow", i)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_text(hint);
+                        if click.clicked() {
+                            clicked = Some(i);
+                        }
+                        table::row_divider(ui, rect);
+                    }
+                });
+        });
+        clicked
     }
+}
+
+/// A share as a bar in the subflow's colour with the percentage on it
+fn share_cell(ui: &mut egui::Ui, share: Option<f64>, color: egui::Color32, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, ROW_HEIGHT), egui::Sense::hover());
+    let Some(share) = share else {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "–",
+            egui::FontId::proportional(12.0),
+            theme::text(ui.visuals().dark_mode),
+        );
+        return;
+    };
+    let bar = rect.shrink2(Vec2::new(6.0, 5.0));
+    ui.painter()
+        .rect_filled(bar, 2.0, theme::border(ui.visuals().dark_mode));
+    let filled =
+        egui::Rect::from_min_size(bar.min, Vec2::new(bar.width() * share as f32, bar.height()));
+    ui.painter()
+        .rect_filled(filled, 2.0, color.gamma_multiply(0.6));
+    ui.painter().text(
+        bar.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("{:.1} %", 100.0 * share),
+        egui::FontId::proportional(11.5),
+        theme::text(ui.visuals().dark_mode),
+    );
+}
+
+/// Whether an event's record holds the subflow's backup flag
+fn carries_backup(code: i64) -> bool {
+    [
+        TCBEE_MPTCP_SUB_ESTABLISHED,
+        TCBEE_MPTCP_SUB_PRIORITY,
+        TCBEE_MPTCP_MP_PRIO_SENT,
+    ]
+    .iter()
+    .any(|c| *c as i64 == code)
 }
 
 #[cfg(test)]
