@@ -361,6 +361,16 @@ fn event_address(family: i64, port: i64, words: [i64; 4]) -> Option<String> {
     })
 }
 
+/// Title above a plot, like the section headings of the sidebar
+fn plot_heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .strong()
+            .size(12.5)
+            .color(theme::muted_text(ui.visuals().dark_mode)),
+    );
+}
+
 /// Name of a row of the event lane at plot height `y`: the connection on top, then the
 /// subflows in the order they started
 fn lane_row_name(y: f64, rows: usize) -> String {
@@ -544,7 +554,7 @@ impl TabMptcp {
         if self.connections.is_empty() {
             // The tab is disabled then, this only shows if that changes
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new(NO_MPTCP_HINT).color(egui::Color32::GRAY));
+                ui.label(RichText::new(NO_MPTCP_HINT).color(theme::muted_text(settings.dark_mode)));
             });
             return;
         }
@@ -861,7 +871,7 @@ impl TabMptcp {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     RichText::new("Select an MPTCP connection from the sidebar.")
-                        .color(egui::Color32::GRAY),
+                        .color(theme::muted_text(settings.dark_mode)),
                 );
             });
             return;
@@ -932,11 +942,7 @@ impl TabMptcp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (metric, plot) in self.selected.iter().zip(&self.plots) {
-                    ui.label(
-                        RichText::new(metric_label(metric))
-                            .strong()
-                            .color(theme::muted_text(settings.dark_mode)),
-                    );
+                    plot_heading(ui, &metric_label(metric));
                     let response = Plot::new(("mptcp_metric", metric_label(metric)))
                         .allow_boxed_zoom(true)
                         .allow_drag(true)
@@ -1042,11 +1048,7 @@ impl TabMptcp {
         let rows = self.subflows.len() + 1;
         let lane_height = ((rows + 1) as f32 * LANE_ROW_HEIGHT).max(MIN_LANE_HEIGHT);
         let dark_mode = settings.dark_mode;
-        ui.label(
-            RichText::new("Path manager events")
-                .strong()
-                .color(theme::muted_text(dark_mode)),
-        );
+        plot_heading(ui, "Path manager events");
         let events = self.events.clone();
         let response = Plot::new("mptcp_event_lane")
             // Only time moves; the rows stay in view
