@@ -482,6 +482,8 @@ pub struct TabMptcp {
     events: Arc<[PmEvent]>,
     /// The event types among them: code and whether failed
     event_keys: Vec<(i64, bool)>,
+    /// Time per screen pixel of the lane in the last frame, for grouping close events
+    lane_ns_per_px: std::cell::Cell<f64>,
     needs_fit: bool,
 }
 

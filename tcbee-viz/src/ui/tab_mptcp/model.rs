@@ -232,13 +232,9 @@ impl PmEvent {
             event_type(self.code).kind
         }
     }
-
-    /// Name of its type, which tells failed events apart
-    pub fn type_name(&self) -> String {
-        event_type_name(self.code, self.failed)
-    }
 }
 
+/// Name of an event type, which tells failed events apart
 pub fn event_type_name(code: i64, failed: bool) -> String {
     let name = event_type(code).name;
     if failed {
@@ -306,22 +302,111 @@ pub fn lane_row_name(y: f64, rows: usize) -> String {
     }
 }
 
-/// The event that the pointer at (`x`, `y`) of the lane is on: of type `name`, in the row at
-/// `y`, closest in time. `name` is empty when the pointer is on no event.
-pub fn nearest_event<'a>(
-    events: &'a [PmEvent],
-    name: &str,
-    x: f64,
-    y: f64,
-    rows: usize,
-) -> Option<&'a PmEvent> {
-    if name.is_empty() {
-        return None;
+/// Events of one lane row that are too close to tell apart on screen, shown as one marker
+#[derive(Debug, PartialEq)]
+pub struct EventGroup {
+    pub row: usize,
+    /// Indices into the events, in time order
+    pub members: Vec<usize>,
+    /// The member shown: the most severe one
+    pub representative: usize,
+}
+
+impl EventGroup {
+    /// Label next to the marker: the short name of the representative and how many more
+    pub fn label(&self, events: &[PmEvent]) -> String {
+        let short = event_type(events[self.representative].code).short;
+        let failed = if events[self.representative].failed {
+            " failed"
+        } else {
+            ""
+        };
+        match self.members.len() {
+            1 => format!("{short}{failed}"),
+            n => format!("{short}{failed} +{}", n - 1),
+        }
     }
-    events
+}
+
+/// Groups the events of each row in which one follows the previous within `tol` (ns, the
+/// time a few pixels take on screen). `events` is in time order.
+pub fn group_events(events: &[PmEvent], tol: f64) -> Vec<EventGroup> {
+    let mut groups: Vec<EventGroup> = Vec::new();
+    // The open group of each row
+    let mut open: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (i, e) in events.iter().enumerate() {
+        let joined = open.get(&e.row).copied().filter(|&g| {
+            let last = *groups[g].members.last().expect("a group has members");
+            e.t - events[last].t <= tol
+        });
+        match joined {
+            Some(g) => {
+                let group = &mut groups[g];
+                group.members.push(i);
+                // Ties keep the earlier event
+                if e.kind() > events[group.representative].kind() {
+                    group.representative = i;
+                }
+            }
+            None => {
+                open.insert(e.row, groups.len());
+                groups.push(EventGroup {
+                    row: e.row,
+                    members: vec![i],
+                    representative: i,
+                });
+            }
+        }
+    }
+    groups
+}
+
+/// The group under the pointer at time `x` in lane row `row`: the one whose time span,
+/// widened by `tol`, holds `x`
+pub fn group_at(
+    groups: &[EventGroup],
+    events: &[PmEvent],
+    row: usize,
+    x: f64,
+    tol: f64,
+) -> Option<usize> {
+    groups
         .iter()
-        .filter(|e| e.type_name() == name && (lane_y(e.row, rows) - y).abs() < 0.5)
-        .min_by(|a, b| (a.t - x).abs().total_cmp(&(b.t - x).abs()))
+        .enumerate()
+        .filter(|(_, g)| g.row == row)
+        .filter(|(_, g)| {
+            let first = events[g.members[0]].t;
+            let last = events[*g.members.last().expect("a group has members")].t;
+            first - tol <= x && x <= last + tol
+        })
+        .min_by(|(_, a), (_, b)| {
+            let distance = |g: &EventGroup| (events[g.representative].t - x).abs();
+            distance(a).total_cmp(&distance(b))
+        })
+        .map(|(i, _)| i)
+}
+
+/// Which labels to draw: greedily from the left, each label that does not overlap the last
+/// one drawn by less than `gap`. `spans` are the labels' (left, right) on screen, sorted by
+/// left.
+pub fn place_labels(spans: &[(f32, f32)], gap: f32) -> Vec<bool> {
+    let mut right_end = f32::NEG_INFINITY;
+    spans
+        .iter()
+        .map(|&(left, right)| {
+            let free = left >= right_end + gap;
+            if free {
+                right_end = right;
+            }
+            free
+        })
+        .collect()
+}
+
+/// The lane row at plot height `y`, if `y` is within a row
+pub fn lane_row_at(y: f64, rows: usize) -> Option<usize> {
+    let row = (rows as f64 - 1.0 - y).round();
+    (row >= 0.0 && row < rows as f64).then_some(row as usize)
 }
 
 /// Puts the subflows of a connection in the order they started. The server does not number
@@ -689,20 +774,51 @@ mod tests {
     }
 
     #[test]
-    fn nearest_event_in_the_hovered_row() {
+    fn close_events_of_a_row_form_one_group() {
         let events = [
-            event(1.0, TCBEE_MPTCP_CREATED, 0),
-            event(5.0, TCBEE_MPTCP_CREATED, 0),
-            event(4.0, TCBEE_MPTCP_REINJECTED, 1),
+            event(0.0, TCBEE_MPTCP_CREATED, 0),
+            event(1.0, TCBEE_MPTCP_ESTABLISHED, 0),
+            event(1.5, TCBEE_MPTCP_SUB_ESTABLISHED, 1),
+            event(2.5, TCBEE_MPTCP_SUBFLOW_STALE, 0),
+            event(9.0, TCBEE_MPTCP_CLOSED, 0),
         ];
-        // Row 0 of two is at y = 1
-        let hit = nearest_event(&events, "created", 3.5, 1.1, 2);
-        assert_eq!(hit, Some(&events[1]));
-        let hit = nearest_event(&events, "reinjected", 3.5, 0.0, 2);
-        assert_eq!(hit, Some(&events[2]));
-        // In the other row, or on no item at all
-        assert_eq!(nearest_event(&events, "created", 3.5, 0.0, 2), None);
-        assert_eq!(nearest_event(&events, "", 1.0, 1.0, 2), None);
+        let groups = group_events(&events, 1.0);
+        let members: Vec<Vec<usize>> = groups.iter().map(|g| g.members.clone()).collect();
+        // Row 1 does not split row 0's chain 0, 1, 2.5
+        assert_eq!(members, vec![vec![0, 1], vec![2], vec![3], vec![4]]);
+        let groups = group_events(&events, 1.5);
+        assert_eq!(groups[0].members, vec![0, 1, 3]);
+        // The stale subflow is the trouble shown
+        assert_eq!(groups[0].representative, 3);
+        assert_eq!(groups[0].label(&events), "stale +2");
+        assert_eq!(groups[1].label(&events), "up");
+    }
+
+    #[test]
+    fn group_under_the_pointer() {
+        let events = [
+            event(0.0, TCBEE_MPTCP_CREATED, 0),
+            event(0.5, TCBEE_MPTCP_ESTABLISHED, 0),
+            event(5.0, TCBEE_MPTCP_SUB_ESTABLISHED, 1),
+        ];
+        let groups = group_events(&events, 1.0);
+        assert_eq!(group_at(&groups, &events, 0, 0.8, 0.5), Some(0));
+        assert_eq!(group_at(&groups, &events, 1, 5.2, 0.5), Some(1));
+        assert_eq!(group_at(&groups, &events, 1, 0.2, 0.5), None);
+        assert_eq!(group_at(&groups, &events, 0, 3.0, 0.5), None);
+        assert_eq!(lane_row_at(1.2, 2), Some(0));
+        assert_eq!(lane_row_at(-0.3, 2), Some(1));
+        assert_eq!(lane_row_at(-0.7, 2), None);
+    }
+
+    #[test]
+    fn labels_skip_what_would_overlap() {
+        let shown = place_labels(
+            &[(0.0, 30.0), (20.0, 40.0), (34.0, 50.0), (60.0, 70.0)],
+            4.0,
+        );
+        assert_eq!(shown, vec![true, false, true, true]);
+        assert!(place_labels(&[], 4.0).is_empty());
     }
 
     #[test]

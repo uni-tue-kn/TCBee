@@ -4,10 +4,14 @@
 use std::sync::Arc;
 
 use egui::{RichText, Vec2};
-use egui_plot::{AxisHints, GridMark, MarkerShape, Plot, PlotBounds, PlotPoints, Points, Polygon};
+use egui_plot::{
+    AxisHints, GridMark, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, PlotTransform,
+    Points, Polygon,
+};
 
 use super::model::{
-    event_type, event_type_name, lane_row_name, lane_y, nearest_event, EventKind, PmEvent,
+    event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name, lane_y,
+    place_labels, EventGroup, EventKind, PmEvent,
 };
 use super::{TabMptcp, Y_AXIS_WIDTH};
 use crate::{
@@ -25,6 +29,11 @@ const MIN_ROW_PITCH: f32 = 26.0;
 const MAX_LANE_ROWS: usize = 8;
 /// Opacity of a subflow's colour behind its row
 const ROW_TINT: f32 = 0.12;
+/// Events of a row closer than this on screen share one marker
+const GROUP_PX: f64 = 10.0;
+/// Space between a marker and its label, and between labels
+const LABEL_GAP: f32 = 4.0;
+const LABEL_SIZE: f32 = 11.0;
 /// Radius of an event marker
 const MARKER_RADIUS: f32 = 6.0;
 
@@ -59,7 +68,10 @@ impl TabMptcp {
         let lane_height = (rows.min(MAX_LANE_ROWS) as f32 + 0.5) * pitch + 12.0;
         let dark_mode = settings.dark_mode;
         section_heading(ui, "Path manager events");
-        let events = Arc::clone(&self.events);
+        // Groups use the scale of the last frame; the first frame groups nothing
+        let tol = GROUP_PX * self.lane_ns_per_px.get();
+        let groups: Arc<[EventGroup]> = group_events(&self.events, tol).into();
+        let (events, hover_groups) = (Arc::clone(&self.events), Arc::clone(&groups));
         let response = Plot::new("mptcp_event_lane")
             // Only time moves; the rows stay in view
             .allow_drag([true, false])
@@ -90,10 +102,19 @@ impl TabMptcp {
             // The tints mark the rows
             .show_grid([true, false])
             .label_formatter(move |name, point| {
-                let time = format!("{:.3} s", (point.x - origin) / 1e9);
-                match nearest_event(&events, name, point.x, point.y, rows) {
-                    Some(e) => format!("{}\n{:.3} s", e.label, (e.t - origin) / 1e9),
-                    None => time,
+                let seconds = |t: f64| format!("{:.3} s", (t - origin) / 1e9);
+                // Empty when the pointer is on no marker
+                let group = lane_row_at(point.y, rows)
+                    .filter(|_| !name.is_empty())
+                    .and_then(|row| group_at(&hover_groups, &events, row, point.x, tol));
+                match group {
+                    Some(g) => hover_groups[g]
+                        .members
+                        .iter()
+                        .map(|&i| format!("{}  {}", seconds(events[i].t), events[i].label))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    None => seconds(point.x),
                 }
             })
             .height(lane_height)
@@ -121,10 +142,11 @@ impl TabMptcp {
                         .allow_hover(false),
                     );
                 }
+                // One marker per group, of its most severe event
                 for &(code, failed) in &self.event_keys {
-                    let points: Vec<[f64; 2]> = self
-                        .events
+                    let points: Vec<[f64; 2]> = groups
                         .iter()
+                        .map(|g| &self.events[g.representative])
                         .filter(|e| e.code == code && e.failed == failed)
                         .map(|e| [e.t, lane_y(e.row, rows)])
                         .collect();
@@ -138,14 +160,63 @@ impl TabMptcp {
                     );
                 }
             });
+        let frame = *response.transform.frame();
+        let bounds = response.transform.bounds();
+        self.lane_ns_per_px
+            .set((bounds.max()[0] - bounds.min()[0]) / f64::from(frame.width().max(1.0)));
+        self.paint_lane_labels(ui, &response.transform, &groups, rows, dark_mode);
         self.show_event_legend(ui, dark_mode);
         ui.add_space(4.0);
-        let bounds = response.transform.bounds();
         LaneResponse {
             height: ui.cursor().top() - top,
             time_range: (bounds.min()[0], bounds.max()[0]),
             // Like on the metric plots
             reset: response.response.secondary_clicked() || response.response.double_clicked(),
+        }
+    }
+
+    /// The short label right of each marker, where it does not overlap the one before it.
+    /// Data moves (reinjections) get none; there can be many.
+    fn paint_lane_labels(
+        &self,
+        ui: &egui::Ui,
+        transform: &PlotTransform,
+        groups: &[EventGroup],
+        rows: usize,
+        dark_mode: bool,
+    ) {
+        let painter = ui.painter_at(*transform.frame());
+        let color = theme::text(dark_mode);
+        for row in 0..rows {
+            let labelled: Vec<&EventGroup> = groups
+                .iter()
+                .filter(|g| g.row == row)
+                .filter(|g| self.events[g.representative].kind() != EventKind::Data)
+                .collect();
+            let placed: Vec<(egui::Pos2, std::sync::Arc<egui::Galley>)> = labelled
+                .iter()
+                .map(|g| {
+                    let e = &self.events[g.representative];
+                    let marker =
+                        transform.position_from_point(&PlotPoint::new(e.t, lane_y(row, rows)));
+                    let galley = painter.layout_no_wrap(
+                        g.label(&self.events),
+                        egui::FontId::proportional(LABEL_SIZE),
+                        color,
+                    );
+                    let left = marker.x + MARKER_RADIUS + LABEL_GAP;
+                    (egui::pos2(left, marker.y - galley.size().y / 2.0), galley)
+                })
+                .collect();
+            let spans: Vec<(f32, f32)> = placed
+                .iter()
+                .map(|(pos, galley)| (pos.x, pos.x + galley.size().x))
+                .collect();
+            for ((pos, galley), shown) in placed.into_iter().zip(place_labels(&spans, LABEL_GAP)) {
+                if shown {
+                    painter.galley(pos, galley, color);
+                }
+            }
         }
     }
 
