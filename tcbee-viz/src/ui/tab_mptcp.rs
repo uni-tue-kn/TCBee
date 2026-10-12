@@ -1,6 +1,6 @@
 //! MPTCP connections: one connection at a time, its path manager events in a lane, a plot per
-//! chosen metric with all subflows, and a table of the subflows with their share of the
-//! acknowledged bytes.
+//! chosen metric with all subflows, and a table of the subflows with their bytes and their
+//! share of the connection's bytes.
 
 mod model;
 
@@ -151,6 +151,13 @@ impl SubflowColumn {
 const FILTER_GAP: f32 = 4.0;
 const CONNECTION_FILTER_HELP: &str = "Plain text searches the token (hex or decimal), the \
 first subflow and the side.\nCombine terms with spaces, e.g. 10.31.1.1 client";
+
+/// Horizontal margin of the sidebar's content
+const SIDEBAR_MARGIN: i8 = 16;
+/// The connection table with its first subflow column at its narrowest
+const CONNECTION_TABLE_MIN_WIDTH: f32 =
+    COL_TOKEN + COL_FIRST_SUBFLOW_MIN + COL_SIDE + COL_SUBFLOWS + COL_EVENTS + COL_DURATION;
+const COL_FIRST_SUBFLOW_MIN: f32 = 80.0;
 
 // Columns of the connection table; the first subflow takes the rest of the width
 const COL_TOKEN: f32 = 86.0;
@@ -508,6 +515,10 @@ struct Subflow {
     /// Its flow, for the table
     flow: String,
     series: Vec<SeriesInfo>,
+    /// Bytes acknowledged by the peer and received, and the share of the connection's bytes
+    acked: Option<f64>,
+    received: Option<f64>,
+    share: Option<f64>,
     /// Backup flag of its last path manager event that carries one
     backup: Option<bool>,
     /// Its path manager events
@@ -592,8 +603,7 @@ impl TabMptcp {
 
         egui::SidePanel::left("mptcp_sidebar")
             .resizable(true)
-            // Room for every column of the connection table
-            .min_width(400.0)
+            .min_width(CONNECTION_TABLE_MIN_WIDTH + 2.0 * SIDEBAR_MARGIN as f32)
             .max_width(720.0)
             .default_width(460.0)
             .frame(theme::sidebar_frame(settings.dark_mode))
@@ -603,7 +613,7 @@ impl TabMptcp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         egui::Frame::NONE
-                            .inner_margin(egui::Margin::symmetric(16, 8))
+                            .inner_margin(egui::Margin::symmetric(SIDEBAR_MARGIN, 8))
                             .show(ui, |ui| self.show_sidebar(ui, db));
                     });
             });
@@ -697,7 +707,7 @@ impl TabMptcp {
                 .filter(|c| c.matches(&filter))
                 .collect();
             let fixed = COL_TOKEN + COL_SIDE + COL_SUBFLOWS + COL_EVENTS + COL_DURATION;
-            let col_flow = (content_w - fixed).max(80.0);
+            let col_flow = (content_w - fixed).max(COL_FIRST_SUBFLOW_MIN);
 
             table::header_row(ui, content_w, |ui| {
                 header_cell(ui, "Token", COL_TOKEN);
@@ -800,6 +810,9 @@ impl TabMptcp {
                     .entry(m.flow_id)
                     .or_insert_with(|| db.list_series_for_flow(m.flow_id))
                     .clone(),
+                acked: None,
+                received: None,
+                share: None,
                 backup: None,
                 events: 0,
                 hidden: false,
@@ -831,6 +844,16 @@ impl TabMptcp {
         }
         self.plots.clear();
         self.needs_fit = true;
+
+        for sub in &mut self.subflows {
+            sub.acked = sub.counter("bytes_acked");
+            sub.received = sub.counter("bytes_received");
+        }
+        let acked: Vec<Option<f64>> = self.subflows.iter().map(|s| s.acked).collect();
+        let received: Vec<Option<f64>> = self.subflows.iter().map(|s| s.received).collect();
+        for (sub, share) in self.subflows.iter_mut().zip(byte_shares(&acked, &received)) {
+            sub.share = share;
+        }
 
         let mut events = Vec::new();
         for (index, sub) in self.subflows.iter_mut().enumerate() {
@@ -1173,17 +1196,6 @@ impl TabMptcp {
     /// shows or hides the subflow in the plots.
     fn show_subflow_table(&self, ui: &mut egui::Ui) -> Option<usize> {
         let dark_mode = ui.visuals().dark_mode;
-        let acked: Vec<Option<f64>> = self
-            .subflows
-            .iter()
-            .map(|s| s.counter("bytes_acked"))
-            .collect();
-        let received: Vec<Option<f64>> = self
-            .subflows
-            .iter()
-            .map(|s| s.counter("bytes_received"))
-            .collect();
-        let shares = byte_shares(&acked, &received);
         let min_width = SubflowColumn::fixed_width() + SubflowColumn::MIN_FLOW_WIDTH + 2.0;
         let mut clicked = None;
         // Scrolls sideways in a narrow window instead of cutting off the last columns
@@ -1228,15 +1240,7 @@ impl TabMptcp {
                                         table::row_fill(dark_mode, i, false, hovered),
                                     );
                                     for column in SubflowColumn::ALL {
-                                        self.subflow_cell(
-                                            ui,
-                                            column,
-                                            i,
-                                            width(column),
-                                            acked[i],
-                                            received[i],
-                                            shares[i],
-                                        );
+                                        self.subflow_cell(ui, column, i, width(column));
                                     }
                                 });
                                 let rect = response.response.rect;
@@ -1260,17 +1264,7 @@ impl TabMptcp {
     }
 
     /// One cell of the subflow table: `column` of subflow `index`
-    #[allow(clippy::too_many_arguments)]
-    fn subflow_cell(
-        &self,
-        ui: &mut egui::Ui,
-        column: SubflowColumn,
-        index: usize,
-        width: f32,
-        acked: Option<f64>,
-        received: Option<f64>,
-        share: Option<f64>,
-    ) {
+    fn subflow_cell(&self, ui: &mut egui::Ui, column: SubflowColumn, index: usize, width: f32) {
         let sub = &self.subflows[index];
         let m = &sub.member;
         let origin = self.connection.as_ref().map_or(0, |c| c.start_ts);
@@ -1283,7 +1277,7 @@ impl TabMptcp {
                 return;
             }
             SubflowColumn::Share => {
-                share_cell(ui, share, sub.color, width);
+                share_cell(ui, sub.share, sub.color, width);
                 return;
             }
             SubflowColumn::Flow => {
@@ -1294,8 +1288,8 @@ impl TabMptcp {
             SubflowColumn::Id => or_dash(m.subflow_id.map(|id| id.to_string())),
             SubflowColumn::Start => seconds(m.first_ts),
             SubflowColumn::End => seconds(m.last_ts),
-            SubflowColumn::Acked => or_dash(acked.map(format_bytes)),
-            SubflowColumn::Received => or_dash(received.map(format_bytes)),
+            SubflowColumn::Acked => or_dash(sub.acked.map(format_bytes)),
+            SubflowColumn::Received => or_dash(sub.received.map(format_bytes)),
             SubflowColumn::Retrans => count(sub.counter("total_retrans")),
             SubflowColumn::Backoff => count(sub.counter("backoff")),
             SubflowColumn::Backup => {

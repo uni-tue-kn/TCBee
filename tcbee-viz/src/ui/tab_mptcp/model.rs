@@ -1,6 +1,6 @@
 //! The parts of the MPTCP tab that do not draw: which end of a connection a recording shows,
 //! the sidebar rows and their filter, the order of the subflows, the line segments of a series,
-//! the rows of the event lane.
+//! the path manager event types (names, lane rows, backup flag) and the subflows' byte shares.
 
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
