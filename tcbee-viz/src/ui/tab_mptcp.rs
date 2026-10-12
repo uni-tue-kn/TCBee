@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 
 use egui::{RichText, ScrollArea, Vec2};
-use egui_plot::{Corner, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
+use egui_plot::{Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
     TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
@@ -31,9 +31,8 @@ use crate::{
     settings::AppSettings,
     ui::{
         tab_single_flow::{
-            plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter, section_heading,
-            time_or_compact_coordinates_formatter, time_or_compact_formatter,
-            vertical_marker_label,
+            seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
+            split_plot_height_with_footer, time_or_compact_formatter, vertical_marker_label,
         },
         table::{self, data_cell, header_cell, ROW_HEIGHT},
         theme,
@@ -45,6 +44,11 @@ pub const NO_MPTCP_HINT: &str =
     "No MPTCP was recorded in this database. Record with tcbee-record -M to see MPTCP connections.";
 /// Plotted first if the subflows have it
 const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
+
+/// Smallest height of a metric plot; more plots scroll
+const MIN_PLOT_HEIGHT: f32 = 120.0;
+/// Width of the value axis of every metric plot
+const Y_AXIS_WIDTH: f32 = 56.0;
 
 // Columns of the connection table; the first subflow takes the rest of the width
 const COL_TOKEN: f32 = 86.0;
@@ -72,6 +76,23 @@ fn metric_label((source, dir, name): &MetricKey) -> String {
         Dir::None => format!("{name} · {source}"),
         _ => format!("{name} · {source} · {dir:?}").to_lowercase(),
     }
+}
+
+/// The metrics whose label contains every term of `filter`, grouped by source
+fn group_metrics<'a>(metrics: &'a [MetricKey], filter: &str) -> Vec<(&'a str, Vec<&'a MetricKey>)> {
+    let filter = filter.to_lowercase();
+    let mut groups: Vec<(&str, Vec<&MetricKey>)> = Vec::new();
+    for m in metrics {
+        let label = metric_label(m).to_lowercase();
+        if !filter.split_whitespace().all(|term| label.contains(term)) {
+            continue;
+        }
+        match groups.iter_mut().find(|(source, _)| *source == m.0) {
+            Some((_, group)) => group.push(m),
+            None => groups.push((&m.0, vec![m])),
+        }
+    }
+    groups
 }
 
 /// Name of an event of the path manager records (`enum tcbee_mptcp_event` in records.h)
@@ -321,6 +342,11 @@ impl Subflow {
     }
 }
 
+/// One plotted metric: a series per subflow that has it
+struct MetricPlot {
+    series: Vec<SeriesData>,
+}
+
 /// The tab is reset whenever another tab is shown, and the database only changes on the Home
 /// tab, so its state always belongs to the open database.
 #[derive(Default)]
@@ -333,10 +359,13 @@ pub struct TabMptcp {
     catalogs: HashMap<i64, Vec<SeriesInfo>>,
     connection: Option<ConnectionInfo>,
     subflows: Vec<Subflow>,
+    /// The metrics that at least one subflow has
     metrics: Vec<MetricKey>,
-    metric: Option<MetricKey>,
-    /// One series per subflow that has the metric
-    series: Vec<SeriesData>,
+    metric_filter: String,
+    /// Plotted metrics, top to bottom
+    selected: Vec<MetricKey>,
+    /// The loaded plots, in the order of `selected`; the last ones may still be missing
+    plots: Vec<MetricPlot>,
     /// Path manager events: (time, label)
     events: Vec<(f64, String)>,
     needs_fit: bool,
@@ -398,29 +427,43 @@ impl TabMptcp {
             return;
         }
         ui.add_space(12.0);
-        ui.label(RichText::new("Metric of every subflow").strong());
-        let current = self
-            .metric
-            .as_ref()
-            .map_or_else(|| "none".to_string(), metric_label);
-        let mut chosen = None;
-        egui::ComboBox::from_id_salt("mptcp_metric")
-            .selected_text(current)
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                for m in &self.metrics {
-                    if ui
-                        .selectable_label(self.metric.as_ref() == Some(m), metric_label(m))
-                        .clicked()
-                    {
-                        chosen = Some(m.clone());
+        section_heading(ui, "Metrics of every subflow");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.metric_filter)
+                .hint_text("Filter metrics")
+                .desired_width(ui.available_width()),
+        );
+        let mut toggled = None;
+        for (source, metrics) in group_metrics(&self.metrics, &self.metric_filter) {
+            let selected = metrics.iter().filter(|m| self.selected.contains(m)).count();
+            let title = if selected > 0 {
+                format!("{source} ({selected})")
+            } else {
+                source.to_string()
+            };
+            egui::CollapsingHeader::new(title)
+                .id_salt(("mptcp_metric_group", source))
+                .default_open(source == DEFAULT_METRIC.0)
+                .show(ui, |ui| {
+                    for m in metrics {
+                        let mut on = self.selected.contains(m);
+                        if ui.checkbox(&mut on, metric_label(m)).changed() {
+                            toggled = Some(m.clone());
+                        }
+                    }
+                });
+        }
+        if let Some(m) = toggled {
+            match self.selected.iter().position(|s| *s == m) {
+                Some(i) => {
+                    self.selected.remove(i);
+                    if i < self.plots.len() {
+                        self.plots.remove(i);
                     }
                 }
-            });
-        if let Some(m) = chosen {
-            // Loaded by show_connection, at the width of the plot
-            self.metric = Some(m);
-            self.series.clear();
+                // Loaded by show_connection, at the width of the plots
+                None => self.selected.push(m),
+            }
             self.needs_fit = true;
         }
     }
@@ -576,12 +619,16 @@ impl TabMptcp {
             DEFAULT_METRIC.1,
             DEFAULT_METRIC.2.to_string(),
         );
-        self.metric = if self.metrics.contains(&default) {
-            Some(default)
-        } else {
-            self.metrics.first().cloned()
-        };
-        self.series.clear();
+        // Keep the plotted metrics when switching connections, as far as the new one has them
+        self.selected.retain(|m| self.metrics.contains(m));
+        if self.selected.is_empty() {
+            self.selected = if self.metrics.contains(&default) {
+                vec![default]
+            } else {
+                self.metrics.first().cloned().into_iter().collect()
+            };
+        }
+        self.plots.clear();
         self.needs_fit = true;
 
         for sub in &self.subflows {
@@ -591,18 +638,22 @@ impl TabMptcp {
         self.connection = Some(connection);
     }
 
-    /// Loads the selected metric of every subflow over the whole connection.
-    fn load_metric(&mut self, db: &DbBackend, settings: &AppSettings, width: f32) {
-        self.series.clear();
-        self.needs_fit = true;
-        let Some(metric) = &self.metric else { return };
+    /// Loads `metric` of every subflow over the whole connection.
+    fn load_metric(
+        &self,
+        db: &DbBackend,
+        settings: &AppSettings,
+        metric: &MetricKey,
+        width: f32,
+    ) -> MetricPlot {
+        let mut plot = MetricPlot { series: Vec::new() };
         let infos: Vec<(&Subflow, &SeriesInfo)> = self
             .subflows
             .iter()
             .filter_map(|s| s.find(metric).map(|info| (s, info)))
             .collect();
         let Some(connection) = &self.connection else {
-            return;
+            return plot;
         };
         // A flow tuple may also belong to other connections: only this one's time span
         let Some((t_min, t_max)) = flow_x_bounds(infos.iter().map(|(_, info)| *info))
@@ -614,14 +665,15 @@ impl TabMptcp {
             })
             .filter(|(lo, hi)| lo <= hi)
         else {
-            return;
+            return plot;
         };
         for (sub, info) in infos {
             let mut sd = SeriesData::from_info(info, t_min, t_max, sub.color);
             sd.name = sub.label.clone();
             fetch_range(db, &mut sd, t_min, t_max, settings, Some(width));
-            self.series.push(sd);
+            plot.series.push(sd);
         }
+        plot
     }
 
     fn show_connection(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
@@ -634,12 +686,13 @@ impl TabMptcp {
             });
             return;
         }
-        if self.series.is_empty() && self.metric.is_some() && self.needs_fit {
-            self.load_metric(db, settings, ui.available_width());
+        while self.plots.len() < self.selected.len() {
+            let metric = &self.selected[self.plots.len()];
+            let plot = self.load_metric(db, settings, metric, ui.available_width());
+            self.plots.push(plot);
         }
         let table_height = ((self.subflows.len() as f32 + 2.0) * 22.0 + 16.0).min(200.0);
-        let plot_height = plot_height_with_footer(ui.available_height() - table_height);
-        self.show_plot(ui, db, settings, plot_height);
+        self.show_plots(ui, db, settings, ui.available_height() - table_height);
         ui.separator();
         ScrollArea::vertical()
             .id_salt("mptcp_subflow_table_scroll")
@@ -647,90 +700,114 @@ impl TabMptcp {
             .show(ui, |ui| self.show_subflow_table(ui));
     }
 
-    fn show_plot(
+    /// One plot per selected metric, stacked, with a shared time axis
+    fn show_plots(
         &mut self,
         ui: &mut egui::Ui,
         db: &DbBackend,
         settings: &AppSettings,
         height: f32,
     ) {
-        let origin = self
-            .series
-            .iter()
-            .map(|s| s.global_t_min)
-            .fold(f64::INFINITY, f64::min);
-        let origin = if origin.is_finite() {
-            origin
-        } else {
-            self.events.first().map_or(0.0, |e| e.0)
+        let Some(connection) = &self.connection else {
+            return;
         };
+        if self.selected.is_empty() {
+            ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.label(
+                        RichText::new("Select metrics in the sidebar.")
+                            .color(theme::muted_text(settings.dark_mode)),
+                    );
+                });
+            });
+            return;
+        }
+        // Time 0 is the start of the connection
+        let origin = connection.start_ts as f64;
+        let (fit_x_min, fit_x_max) = (connection.start_ts as f64, connection.end_ts as f64);
         let fit = std::mem::take(&mut self.needs_fit);
         let width = ui.available_width().max(1.0);
-
-        let plot = Plot::new("mptcp_subflows")
-            .allow_boxed_zoom(true)
-            .allow_drag(true)
-            .allow_scroll(true)
-            .x_grid_spacer(seconds_grid_spacer(origin))
-            .x_axis_formatter(seconds_since_formatter(origin))
-            .y_axis_formatter(time_or_compact_formatter(origin))
-            .coordinates_formatter(
-                Corner::LeftBottom,
-                time_or_compact_coordinates_formatter(origin),
-            )
-            .legend(Legend::default())
-            .height(height);
+        // Room for the metric name above each plot
+        let plot_height = (split_plot_height_with_footer(height, self.selected.len()) - 22.0)
+            .max(MIN_PLOT_HEIGHT);
+        let marker_color = theme::muted_text(settings.dark_mode);
 
         let mut visible = None;
-        plot.show(ui, |plot_ui| {
-            if fit {
-                let (mut x_min, mut x_max) = (f64::MAX, f64::MIN);
-                let (mut y_min, mut y_max) = (0.0_f64, 1.0_f64);
-                for s in &self.series {
-                    x_min = x_min.min(s.global_t_min);
-                    x_max = x_max.max(s.global_t_max);
-                    y_min = y_min.min(s.global_y_min);
-                    y_max = y_max.max(s.global_y_max);
+        let mut reset = false;
+        ScrollArea::vertical()
+            .id_salt("mptcp_plots_scroll")
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (metric, plot) in self.selected.iter().zip(&self.plots) {
+                    ui.label(
+                        RichText::new(metric_label(metric))
+                            .strong()
+                            .color(theme::muted_text(settings.dark_mode)),
+                    );
+                    let response = Plot::new(("mptcp_metric", metric_label(metric)))
+                        .allow_boxed_zoom(true)
+                        .allow_drag(true)
+                        // The wheel scrolls the stack, not the values
+                        .allow_scroll([true, false])
+                        .link_axis("mptcp_time", [true, false])
+                        .link_cursor("mptcp_time", [true, false])
+                        .x_grid_spacer(seconds_grid_spacer(origin))
+                        .x_axis_formatter(seconds_since_formatter(origin))
+                        .y_axis_formatter(time_or_compact_formatter(origin))
+                        // Same width in every plot, so the time axes line up
+                        .y_axis_min_width(Y_AXIS_WIDTH)
+                        .label_formatter(seconds_label_formatter(origin))
+                        .height(plot_height)
+                        .show(ui, |plot_ui| {
+                            if fit {
+                                let (y_min, y_max) =
+                                    plot.series.iter().fold((0.0_f64, 1.0_f64), |(lo, hi), s| {
+                                        (lo.min(s.global_y_min), hi.max(s.global_y_max))
+                                    });
+                                plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                    [fit_x_min, y_min * 1.05],
+                                    [fit_x_max, y_max * 1.05],
+                                ));
+                            } else if visible.is_none() {
+                                let bounds = plot_ui.plot_bounds();
+                                visible = Some((bounds.min()[0], bounds.max()[0]));
+                            }
+                            for s in &plot.series {
+                                let points: Vec<[f64; 2]> =
+                                    s.points.iter().map(|(t, v)| [*t, *v]).collect();
+                                plot_ui.line(
+                                    Line::new(PlotPoints::from(points))
+                                        .color(s.color)
+                                        .name(&s.name),
+                                );
+                            }
+                            let bounds = plot_ui.plot_bounds();
+                            let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
+                            for (t, label) in &self.events {
+                                plot_ui.vline(VLine::new(*t).color(marker_color));
+                                plot_ui.text(
+                                    Text::new(
+                                        PlotPoint::new(*t, marker_y),
+                                        vertical_marker_label(label),
+                                    )
+                                    .anchor(egui::Align2::LEFT_CENTER)
+                                    .color(marker_color),
+                                );
+                            }
+                        });
+                    reset |= response.response.secondary_clicked();
+                    ui.add_space(4.0);
                 }
-                for (t, _) in &self.events {
-                    x_min = x_min.min(*t);
-                    x_max = x_max.max(*t);
-                }
-                if x_min < x_max {
-                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                        [x_min, y_min * 1.05],
-                        [x_max, y_max * 1.05],
-                    ));
-                }
-            } else {
-                let bounds = plot_ui.plot_bounds();
-                visible = Some((bounds.min()[0], bounds.max()[0]));
-            }
-            for s in &self.series {
-                let points: Vec<[f64; 2]> = s.points.iter().map(|(t, v)| [*t, *v]).collect();
-                plot_ui.line(
-                    Line::new(PlotPoints::from(points))
-                        .color(s.color)
-                        .name(&s.name),
-                );
-            }
-            let bounds = plot_ui.plot_bounds();
-            let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
-            let color = theme::muted_text(settings.dark_mode);
-            for (t, label) in &self.events {
-                plot_ui.vline(VLine::new(*t).color(color).name("path manager"));
-                plot_ui.text(
-                    Text::new(PlotPoint::new(*t, marker_y), vertical_marker_label(label))
-                        .anchor(egui::Align2::LEFT_CENTER)
-                        .color(color),
-                );
-            }
-        });
+            });
+        if reset {
+            self.needs_fit = true;
+        }
 
-        // Panned or zoomed in: load the visible part of the data in more detail
+        // Panned or zoomed in: load the visible part of the data in more detail. The plots
+        // share the time axis, so one of them gives the visible range of all.
         if let Some((x_min, x_max)) = visible {
-            for sd in &mut self.series {
-                // The plot may show more than there is data, as the markers widen the fit
+            for sd in self.plots.iter_mut().flat_map(|p| p.series.iter_mut()) {
                 let lo = x_min.max(sd.global_t_min);
                 let hi = x_max.min(sd.global_t_max);
                 if lo >= hi {
@@ -820,6 +897,24 @@ mod tests {
             "[2001:db8::1]:80"
         );
         assert_eq!(event_address(0, 0, [0; 4]), None);
+    }
+
+    #[test]
+    fn metrics_group_by_source_and_filter() {
+        let key = |source: &str, dir, name: &str| (source.to_string(), dir, name.to_string());
+        let metrics = vec![
+            key("cwnd", Dir::None, "snd_cwnd"),
+            key("sock", Dir::Send, "backoff"),
+            key("sock", Dir::Send, "snd_cwnd"),
+            key("sock", Dir::Recv, "snd_cwnd"),
+        ];
+        let groups = group_metrics(&metrics, "");
+        let sizes: Vec<(&str, usize)> = groups.iter().map(|(s, g)| (*s, g.len())).collect();
+        assert_eq!(sizes, vec![("cwnd", 1), ("sock", 3)]);
+        let groups = group_metrics(&metrics, "CWND send");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1, vec![&metrics[2]]);
+        assert!(group_metrics(&metrics, "rtt").is_empty());
     }
 
     #[test]

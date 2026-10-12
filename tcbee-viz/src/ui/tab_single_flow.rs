@@ -635,6 +635,20 @@ pub fn time_or_compact_coordinates_formatter(origin_ns: f64) -> CoordinatesForma
     })
 }
 
+/// Hover label of a plot: the item's name, the time in seconds since `origin_ns` and the
+/// compact value
+pub fn seconds_label_formatter(origin_ns: f64) -> impl Fn(&str, &PlotPoint) -> String {
+    move |name, point| {
+        let time = format!("{:.3} s", (point.x - origin_ns) / 1_000_000_000.0);
+        let value = compact_axis_label(point.y);
+        if name.is_empty() {
+            format!("{time}\n{value}")
+        } else {
+            format!("{name}\n{time}\n{value}")
+        }
+    }
+}
+
 pub fn compact_coordinates_formatter(origin_ns: f64) -> CoordinatesFormatter<'static> {
     CoordinatesFormatter::new(move |point, bounds| {
         format!(
@@ -819,4 +833,17 @@ pub fn section_heading(ui: &mut egui::Ui, label: &str) {
             .color(theme::muted_text(dark_mode)),
     );
     ui.add_space(4.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hover_label_shows_seconds_since_origin() {
+        let label = seconds_label_formatter(1_000_000_000_000.0);
+        let point = PlotPoint::new(1_002_500_000_000.0, 41_565.5);
+        assert_eq!(label("subflow 1", &point), "subflow 1\n2.500 s\n41.6k");
+        assert_eq!(label("", &point), "2.500 s\n41.6k");
+    }
 }
