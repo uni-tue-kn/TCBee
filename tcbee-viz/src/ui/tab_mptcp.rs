@@ -1,6 +1,6 @@
 //! MPTCP connections: one connection at a time, its path manager events in a lane, a plot per
-//! chosen metric with all subflows, and a table of the subflows with their bytes and their
-//! share of the connection's bytes.
+//! chosen metric with all subflows and lines at the events, and below them a table of the
+//! subflows with their bytes and share, and a list of the events.
 
 mod event_list;
 mod lane;

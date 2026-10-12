@@ -1,5 +1,6 @@
 //! The event lane above the metric plots: a row for the connection and one per subflow, a
-//! marker per path manager event, and its legend.
+//! marker per group of close path manager events with a short label, a tooltip with the
+//! group's events, and a legend. Also the event labels along the top of the first plot.
 
 use std::sync::Arc;
 
@@ -55,7 +56,7 @@ pub(super) struct LaneResponse {
 
 impl TabMptcp {
     /// The path manager events above the metric plots: a row for the connection and one per
-    /// subflow, a marker per event, the full text on hover.
+    /// subflow, a marker per group of close events, its events in a tooltip on hover.
     pub(super) fn show_event_lane(
         &mut self,
         ui: &mut egui::Ui,

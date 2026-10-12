@@ -1,6 +1,7 @@
 //! The parts of the MPTCP tab that do not draw: which end of a connection a recording shows,
 //! the sidebar rows and their filter, the order of the subflows, the line segments of a series,
-//! the path manager event types (names, lane rows, backup flag) and the subflows' byte shares.
+//! the path manager event types, the grouping of close events and the placing of their labels,
+//! the event filter, the view range that centres an event, and the subflows' byte shares.
 
 use egui_plot::MarkerShape;
 use tcbee_common::records::{
