@@ -46,6 +46,9 @@ pub(super) struct LaneResponse {
     pub reset: bool,
     /// The time range it shows, which all plots share
     pub time_range: (f64, f64),
+    /// Its groups of close events, and the time within which events group
+    pub groups: Arc<[EventGroup]>,
+    pub tol: f64,
 }
 
 impl TabMptcp {
@@ -168,6 +171,8 @@ impl TabMptcp {
         self.show_event_legend(ui, dark_mode);
         ui.add_space(4.0);
         LaneResponse {
+            groups,
+            tol,
             height: ui.cursor().top() - top,
             time_range: (bounds.min()[0], bounds.max()[0]),
             // Like on the metric plots
@@ -216,6 +221,47 @@ impl TabMptcp {
                 if shown {
                     painter.galley(pos, galley, color);
                 }
+            }
+        }
+    }
+
+    /// Labels along the top of a metric plot for the lines of its events: the subflow's row
+    /// and the short name, e.g. "#2 stale", where they do not overlap
+    pub(super) fn paint_plot_labels(
+        &self,
+        ui: &egui::Ui,
+        transform: &PlotTransform,
+        groups: &[EventGroup],
+        dark_mode: bool,
+    ) {
+        let frame = *transform.frame();
+        let painter = ui.painter_at(frame);
+        let mut labelled: Vec<(f32, std::sync::Arc<egui::Galley>, egui::Color32)> = groups
+            .iter()
+            .filter(|g| !self.is_hidden_row(g.row))
+            .map(|g| (g, &self.events[g.representative]))
+            .filter(|(_, e)| e.kind() != EventKind::Data)
+            .map(|(g, e)| {
+                let text = match g.row {
+                    0 => g.label(&self.events),
+                    row => format!("#{row} {}", g.label(&self.events)),
+                };
+                let x = transform.position_from_point_x(e.t);
+                let color = kind_color(e.kind(), dark_mode);
+                let galley =
+                    painter.layout_no_wrap(text, egui::FontId::proportional(LABEL_SIZE), color);
+                (x + LABEL_GAP, galley, color)
+            })
+            .collect();
+        labelled.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let spans: Vec<(f32, f32)> = labelled
+            .iter()
+            .map(|(x, galley, _)| (*x, x + galley.size().x))
+            .collect();
+        for ((x, galley, color), shown) in labelled.into_iter().zip(place_labels(&spans, LABEL_GAP))
+        {
+            if shown {
+                painter.galley(egui::pos2(x, frame.top() + 2.0), galley, color);
             }
         }
     }

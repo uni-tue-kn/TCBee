@@ -16,6 +16,7 @@ use ts_storage::{
     ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind, ValueKind,
 };
 
+use lane::kind_color;
 use model::{
     byte_shares, carries_backup, event_type, format_bytes, gap_threshold, infer_sides,
     is_connection_event, is_structural, segments, sort_subflows, ConnectionSummary, PmEvent,
@@ -860,6 +861,35 @@ impl TabMptcp {
         self.show_plots(ui, db, settings, ui.available_height());
     }
 
+    /// Hover text of a metric plot: the value under the pointer, and the events whose lines
+    /// are within `tol` of it
+    fn plot_label_formatter(
+        &self,
+        origin: f64,
+        tol: f64,
+    ) -> impl Fn(&str, &egui_plot::PlotPoint) -> String + 'static {
+        let value = seconds_label_formatter(origin);
+        let events = Arc::clone(&self.events);
+        let hidden: Vec<bool> = (0..=self.subflows.len())
+            .map(|row| self.is_hidden_row(row))
+            .collect();
+        move |name, point| {
+            let mut text = value(name, point);
+            for e in events
+                .iter()
+                .filter(|e| is_structural(e.code) && !hidden[e.row] && (e.t - point.x).abs() <= tol)
+            {
+                text.push_str(&format!("\n{}", e.label));
+            }
+            text
+        }
+    }
+
+    /// Whether a lane row belongs to a subflow hidden in the plots
+    fn is_hidden_row(&self, row: usize) -> bool {
+        row > 0 && self.subflows.get(row - 1).is_some_and(|s| s.hidden)
+    }
+
     /// The value range a plot is fitted to: its visible subflows' values and 0, with some room
     fn value_range(&self, plot: &MetricPlot) -> (f64, f64) {
         let (lo, hi) = plot
@@ -907,7 +937,14 @@ impl TabMptcp {
         // Room for the metric name above each plot
         let plot_height = (split_plot_height_with_footer(height, self.selected.len()) - 22.0)
             .max(MIN_PLOT_HEIGHT);
-        let marker_color = theme::muted_text(settings.dark_mode);
+        let dark_mode = settings.dark_mode;
+        // Dotted, so that they look like neither grid lines nor the steps of a series
+        let event_lines: Vec<(f64, egui::Color32)> = self
+            .events
+            .iter()
+            .filter(|e| is_structural(e.code) && !self.is_hidden_row(e.row))
+            .map(|e| (e.t, kind_color(e.kind(), dark_mode)))
+            .collect();
 
         let mut visible = None;
         ScrollArea::vertical()
@@ -915,7 +952,7 @@ impl TabMptcp {
             .max_height(height)
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (metric, plot) in self.selected.iter().zip(&self.plots) {
+                for (index, (metric, plot)) in self.selected.iter().zip(&self.plots).enumerate() {
                     let (y_min, y_max) = self.value_range(plot);
                     section_heading(ui, &metric_label(metric));
                     let response = Plot::new(("mptcp_metric", metric_label(metric)))
@@ -933,7 +970,7 @@ impl TabMptcp {
                         .y_axis_formatter(time_or_compact_formatter(origin))
                         // Same width in every plot, so the time axes line up
                         .y_axis_min_width(Y_AXIS_WIDTH)
-                        .label_formatter(seconds_label_formatter(origin))
+                        .label_formatter(self.plot_label_formatter(origin, lane.tol))
                         .height(plot_height)
                         .show(ui, |plot_ui| {
                             if fit {
@@ -987,12 +1024,19 @@ impl TabMptcp {
                                     }
                                 }
                             }
-                            // Details are in the event lane
-                            for e in self.events.iter().filter(|e| is_structural(e.code)) {
-                                plot_ui
-                                    .vline(VLine::new(e.t).color(marker_color.gamma_multiply(0.5)));
+                            for &(t, color) in &event_lines {
+                                plot_ui.vline(
+                                    VLine::new(t)
+                                        .color(color)
+                                        .width(1.5)
+                                        .style(LineStyle::dotted_dense()),
+                                );
                             }
                         });
+                    // The top plot names the lines
+                    if index == 0 {
+                        self.paint_plot_labels(ui, &response.transform, &lane.groups, dark_mode);
+                    }
                     reset |=
                         response.response.secondary_clicked() || response.response.double_clicked();
                     ui.add_space(4.0);
