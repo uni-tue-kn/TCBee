@@ -3,7 +3,7 @@
 
 use egui::{ScrollArea, Vec2};
 
-use super::lane::{kind_color, paint_marker};
+use super::markers::{kind_color, paint_marker};
 use super::model::{event_matches, event_type, event_type_name, row_name};
 use super::{TabMptcp, FILTER_GAP};
 use crate::ui::{

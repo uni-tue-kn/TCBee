@@ -4,6 +4,7 @@
 
 mod event_list;
 mod lane;
+mod markers;
 mod model;
 
 use std::collections::{BTreeSet, HashMap};
@@ -17,7 +18,7 @@ use ts_storage::{
     ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind, ValueKind,
 };
 
-use lane::kind_color;
+use markers::kind_color;
 use model::{
     byte_shares, carries_backup, event_type, format_bytes, gap_threshold, infer_sides,
     is_connection_event, is_structural, segments, sort_subflows, ConnectionSummary, PmEvent,
