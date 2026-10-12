@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use egui::{RichText, Ui, Vec2};
+use egui::{RichText, Ui};
 use ts_storage::Flow;
 
 use crate::{
@@ -16,9 +16,6 @@ const COL_PORT: f32 = 54.0;
 const COL_SERIES: f32 = 54.0;
 const COL_POINTS: f32 = 72.0;
 const COL_CONN: f32 = 54.0;
-const SEARCH_ICON_W: f32 = 18.0;
-const CLEAR_BUTTON_W: f32 = 22.0;
-const HELP_BUTTON_W: f32 = 20.0;
 const FILTER_GAP: f32 = 20.0;
 const FILTER_HELP: &str = "Filter syntax:\n\
 Plain text searches all flow columns.\n\
@@ -82,38 +79,13 @@ impl FlowTable {
             // ── Filter bar ──────────────────────────────────────────────────
             // Use content_w - 2 so the framed clear button's 1px stroke never
             // overflows the table frame boundary.
-            let filter_w = content_w * 0.9;
-            ui.allocate_ui_with_layout(
-                Vec2::new(filter_w, ROW_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = FILTER_GAP;
-                    ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
-                    let text_w = (filter_w
-                        - SEARCH_ICON_W
-                        - HELP_BUTTON_W
-                        - CLEAR_BUTTON_W
-                        - 3.0 * FILTER_GAP)
-                        .max(40.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text("Filter, e.g. id:52 src:10.0.0.1")
-                            .desired_width(text_w)
-                            .min_size(Vec2::new(text_w, ROW_HEIGHT)),
-                    );
-                    ui.add_sized(
-                        [HELP_BUTTON_W, ROW_HEIGHT],
-                        egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
-                    )
-                    .on_hover_text(FILTER_HELP);
-                    let clear = ui.add_sized(
-                        [CLEAR_BUTTON_W, ROW_HEIGHT],
-                        egui::Button::new("x").frame(!self.filter.is_empty()),
-                    );
-                    if !self.filter.is_empty() && clear.clicked() {
-                        self.filter.clear();
-                    }
-                },
+            table::filter_bar(
+                ui,
+                &mut self.filter,
+                "Filter, e.g. id:52 src:10.0.0.1",
+                Some(FILTER_HELP),
+                content_w * 0.9,
+                FILTER_GAP,
             );
 
             let filter_lower = self.filter.to_lowercase();
@@ -143,15 +115,7 @@ impl FlowTable {
             let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w;
             let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
 
-            let header_rect = egui::Rect::from_min_size(
-                ui.available_rect_before_wrap().min,
-                Vec2::new(content_w, ROW_HEIGHT),
-            );
-            ui.painter()
-                .rect_filled(header_rect, 0.0, theme::table_header_bg(dark_mode));
-
-            ui.horizontal(|ui| {
-                ui.set_height(ROW_HEIGHT);
+            table::header_row(ui, content_w, |ui| {
                 header_cell(ui, "ID", COL_ID);
                 header_cell(ui, "Src IP", col_ip);
                 header_cell(ui, "Sport", COL_PORT);
@@ -211,14 +175,8 @@ impl FlowTable {
 
                         // Make the whole row clickable
                         let row_rect = row_response.response.rect;
-                        let row_click = ui.interact(
-                            row_rect,
-                            ui.id().with((id_salt, "row", fid)),
-                            egui::Sense::click(),
-                        );
-                        if row_click.hovered() {
-                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                        }
+                        let row_click =
+                            table::row_click(ui, row_rect, ui.id().with((id_salt, "row", fid)));
                         if row_click.clicked() && !is_selected {
                             self.selected_id = Some(fid);
                             new_selection = Some(fid);

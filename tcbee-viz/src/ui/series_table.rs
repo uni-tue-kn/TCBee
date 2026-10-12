@@ -12,8 +12,6 @@ use crate::{
 const COL_CHECK: f32 = 28.0;
 const COL_TYPE: f32 = 44.0;
 const COL_COUNT: f32 = 64.0;
-const SEARCH_ICON_W: f32 = 18.0;
-const CLEAR_BUTTON_W: f32 = 22.0;
 const FILTER_GAP: f32 = 4.0;
 
 /// A searchable, checkable table for selecting time series metrics.
@@ -63,29 +61,13 @@ impl SeriesTable {
             ui.spacing_mut().item_spacing.x = 0.0;
 
             // ── Filter bar ───────────────────────────────────────────────────
-            let filter_w = content_w * 0.9;
-            ui.allocate_ui_with_layout(
-                Vec2::new(filter_w, ROW_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = FILTER_GAP;
-                    ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
-                    let text_w =
-                        (filter_w - SEARCH_ICON_W - CLEAR_BUTTON_W - 2.0 * FILTER_GAP).max(40.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.filter)
-                            .hint_text("Search metrics…")
-                            .desired_width(text_w)
-                            .min_size(Vec2::new(text_w, ROW_HEIGHT)),
-                    );
-                    let clear = ui.add_sized(
-                        [CLEAR_BUTTON_W, ROW_HEIGHT],
-                        egui::Button::new("x").frame(!self.filter.is_empty()),
-                    );
-                    if !self.filter.is_empty() && clear.clicked() {
-                        self.filter.clear();
-                    }
-                },
+            table::filter_bar(
+                ui,
+                &mut self.filter,
+                "Search metrics…",
+                None,
+                content_w * 0.9,
+                FILTER_GAP,
             );
 
             let filter_lower = self.filter.to_lowercase();
@@ -111,15 +93,7 @@ impl SeriesTable {
             let fixed_w = COL_CHECK + COL_TYPE + COL_COUNT;
             let col_name = (content_w - fixed_w).max(40.0);
 
-            let header_rect = egui::Rect::from_min_size(
-                ui.available_rect_before_wrap().min,
-                Vec2::new(content_w, ROW_HEIGHT),
-            );
-            ui.painter()
-                .rect_filled(header_rect, 0.0, theme::table_header_bg(dark_mode));
-
-            ui.horizontal(|ui| {
-                ui.set_height(ROW_HEIGHT);
+            table::header_row(ui, content_w, |ui| {
                 header_cell(ui, "", COL_CHECK);
                 header_cell(ui, "Name", col_name);
                 header_cell(ui, "Type", COL_TYPE);
@@ -186,14 +160,8 @@ impl SeriesTable {
 
                         // Clicking anywhere in the row toggles the series
                         let row_rect = row_resp.response.rect;
-                        let row_click = ui.interact(
-                            row_rect,
-                            ui.id().with((id_salt, "srow", sid)),
-                            egui::Sense::click(),
-                        );
-                        if row_click.hovered() {
-                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                        }
+                        let row_click =
+                            table::row_click(ui, row_rect, ui.id().with((id_salt, "srow", sid)));
                         if row_click.clicked() {
                             toggled = Some(sid);
                         }

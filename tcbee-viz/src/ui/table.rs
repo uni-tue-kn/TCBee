@@ -8,6 +8,79 @@ pub const ROW_HEIGHT: f32 = 22.0;
 /// Space between a right-aligned number and the next column
 const NUMBER_PADDING: f32 = 8.0;
 
+const SEARCH_ICON_W: f32 = 18.0;
+const CLEAR_BUTTON_W: f32 = 22.0;
+const HELP_BUTTON_W: f32 = 20.0;
+
+/// Filter box `width` wide with a search icon, a "?" with `help` if given and a clear button,
+/// `gap` apart
+pub fn filter_bar(
+    ui: &mut Ui,
+    filter: &mut String,
+    hint: &str,
+    help: Option<&str>,
+    width: f32,
+    gap: f32,
+) {
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, ROW_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
+            let help_w = if help.is_some() {
+                HELP_BUTTON_W + gap
+            } else {
+                0.0
+            };
+            let text_w = (width - SEARCH_ICON_W - help_w - CLEAR_BUTTON_W - 2.0 * gap).max(40.0);
+            ui.add(
+                egui::TextEdit::singleline(filter)
+                    .hint_text(hint)
+                    .desired_width(text_w)
+                    .min_size(Vec2::new(text_w, ROW_HEIGHT)),
+            );
+            if let Some(help) = help {
+                ui.add_sized(
+                    [HELP_BUTTON_W, ROW_HEIGHT],
+                    egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
+                )
+                .on_hover_text(help);
+            }
+            let clear = ui.add_sized(
+                [CLEAR_BUTTON_W, ROW_HEIGHT],
+                egui::Button::new("x").frame(!filter.is_empty()),
+            );
+            if !filter.is_empty() && clear.clicked() {
+                filter.clear();
+            }
+        },
+    );
+}
+
+/// The header of a table `width` wide: its background, then the cells that `add_cells` adds
+pub fn header_row(ui: &mut Ui, width: f32, add_cells: impl FnOnce(&mut Ui)) {
+    let rect = egui::Rect::from_min_size(
+        ui.available_rect_before_wrap().min,
+        Vec2::new(width, ROW_HEIGHT),
+    );
+    ui.painter()
+        .rect_filled(rect, 0.0, theme::table_header_bg(ui.visuals().dark_mode));
+    ui.horizontal(|ui| {
+        ui.set_height(ROW_HEIGHT);
+        add_cells(ui);
+    });
+}
+
+/// Makes a whole row clickable, with a pointing hand on hover
+pub fn row_click(ui: &Ui, rect: egui::Rect, id: egui::Id) -> egui::Response {
+    let response = ui.interact(rect, id, egui::Sense::click());
+    if response.hovered() {
+        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
 /// Rounded, bordered frame around a table
 pub fn frame(dark_mode: bool) -> egui::Frame {
     egui::Frame::new()
@@ -40,6 +113,22 @@ pub fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) -> egui::R
         )
         .truncate(),
     )
+}
+
+/// A header cell with its text at the right edge, over a column of numbers
+pub fn number_header_cell(ui: &mut Ui, label: &str, width: f32) -> egui::Response {
+    let color = theme::table_header_text(ui.visuals().dark_mode);
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, ROW_HEIGHT),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.add_space(NUMBER_PADDING);
+            ui.add(egui::Label::new(
+                RichText::new(label).color(color).strong().size(12.0),
+            ))
+        },
+    )
+    .inner
 }
 
 /// A data cell with its text at the right edge, for numbers
