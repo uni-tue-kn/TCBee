@@ -146,6 +146,10 @@ impl SubflowColumn {
     }
 }
 
+const CONNECTION_EVENTS_HELP: &str = "All path manager records on the subflows' tuples, \
+also those of another connection that used a tuple before or after. The event list shows \
+this connection's own events.";
+
 /// Rows the subflow panel makes room for at first
 const PANEL_MIN_ROWS: usize = 5;
 const PANEL_MAX_ROWS: usize = 10;
@@ -640,8 +644,7 @@ impl TabMptcp {
                 header_cell(ui, "First subflow", col_flow);
                 header_cell(ui, "Side", COL_SIDE);
                 number_header_cell(ui, "Sf", COL_SUBFLOWS).on_hover_text("Subflows");
-                number_header_cell(ui, "Events", COL_EVENTS)
-                    .on_hover_text("Path manager records on the subflows' tuples");
+                number_header_cell(ui, "Events", COL_EVENTS).on_hover_text(CONNECTION_EVENTS_HELP);
                 number_header_cell(ui, "Length", COL_DURATION);
             });
             if visible.is_empty() {
