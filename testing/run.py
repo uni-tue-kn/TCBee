@@ -4,7 +4,13 @@ TCBee unified testing launcher.
 
 Interactively selects a tool (tcbee-live, tcbee-record, or tcbee-full) and a
 scenario, then delegates to topology.py.
+
+    run.py [--headless [--duration S]]
+
+--headless skips the tool menu and runs tcbee-full without the recorder's terminal UI: the
+recorder stops after S seconds, then the recording is processed and opened in tcbee-viz.
 """
+import argparse
 import os
 import sys
 import subprocess
@@ -109,18 +115,21 @@ def rebuild():
             print(f"  Done.")
 
 
-def main():
+def main(args):
     # ── Tool ──────────────────────────────────────────────────────────────────
-    tool = menu("Select tool:", [
-        ("tcbee-live   (egui window)",          "live"),
-        ("tcbee-record (TUI)",                  "record"),
-        ("tcbee-full   (record, process, viz)", "full"),
-        ("Rebuild Program",                     "rebuild"),
-    ])
+    if args.headless:
+        tool = "full"
+    else:
+        tool = menu("Select tool:", [
+            ("tcbee-live   (egui window)",          "live"),
+            ("tcbee-record (TUI)",                  "record"),
+            ("tcbee-full   (record, process, viz)", "full"),
+            ("Rebuild Program",                     "rebuild"),
+        ])
 
     if tool == "rebuild":
         rebuild()
-        main()
+        main(args)
         return
 
     # ── Scenario ──────────────────────────────────────────────────────────────
@@ -135,7 +144,12 @@ def main():
     record_args = ""
     if tool in ("record", "full"):
         record_args = ask_record_args()
-        if tool == "full":
+        if args.headless:
+            print(
+                "\n  Headless run: tcbee-record runs without its terminal UI and stops\n"
+                "  by itself; processing and visualization then continue automatically.\n"
+            )
+        elif tool == "full":
             print(
                 "\n  tcbee-full starts with tcbee-record. Quit the recorder with q\n"
                 "  when the capture is complete; processing and visualization then\n"
@@ -156,6 +170,10 @@ def main():
         cmd.append("--double")
     if record_args:
         cmd.append(f"--record-args={record_args}")
+    if args.headless:
+        cmd.append("--headless")
+    if args.duration:
+        cmd.append(f"--duration={args.duration}")
 
     print(f"\nCleaning up any leftover mininet state...")
     subprocess.run(["sudo", "mn", "-c"], capture_output=True)
@@ -165,7 +183,17 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="TCBee testing launcher")
+    parser.add_argument("--headless", action="store_true",
+                        help="record without the terminal UI, stop after --duration seconds, "
+                             "then process and open tcbee-viz")
+    parser.add_argument("--duration", type=int,
+                        help="seconds a headless run records (default: 30, 60 for two "
+                             "streams)")
+    args = parser.parse_args()
+    if args.duration and not args.headless:
+        parser.error("--duration needs --headless")
     if os.geteuid() != 0:
         # Re-exec under sudo -E so DISPLAY is preserved.
         os.execvp("sudo", ["sudo", "-E", sys.executable] + sys.argv)
-    main()
+    main(args)

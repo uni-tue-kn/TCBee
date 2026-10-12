@@ -55,6 +55,14 @@ The interactive menu lets you pick the tool, congestion algorithm (CUBIC / BBR),
 
 In double-stream mode a second iperf3 flow starts 30 s after the first.
 
+### Headless
+
+```bash
+python3 testing/run.py --headless [--duration SECONDS]
+```
+
+runs tcbee-full without the recorder's terminal UI: `tcbee-record -q --duration SECONDS` stops by itself (default 30 s, 60 s with two streams), then the launcher stops Mininet, processes the recording and opens it in tcbee-viz, as in tcbee-full. The tool menu is skipped; scenario and recording profile are still asked. `topology.py --tool full --headless [--duration SECONDS]` does the same without menus.
+
 In record/full mode the topology passes map-backed filters to `tcbee-record` so recordings are limited to the test flow(s): port `5001` for single-stream runs, ports `5001,5002` for double-stream runs, and traffic whose source and destination endpoints are the two Mininet test hosts.
 
 ## Tuning

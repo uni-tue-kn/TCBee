@@ -12,6 +12,7 @@ Usage via the run scripts in this directory:
 
 Or directly:
     sudo -E python3 testing/topology.py [--cc cubic|bbr] [--double]
+                                        [--tool full --headless [--duration S]]
 """
 import argparse
 import os
@@ -67,6 +68,9 @@ VIZ_BINARY = (
 )
 
 DUCKDB_PATH = "/tmp/db.duck"
+# Recording time of a headless run unless --duration is given: the second stream of a double
+# run starts at 30 s
+HEADLESS_SECONDS = {False: 30, True: 60}
 
 
 class BottleneckTopo(Topo):
@@ -82,7 +86,8 @@ class BottleneckTopo(Topo):
         self.addLink(s2,    recv, bw=UPLINK_BW,    delay="1ms",           use_htb=True)
 
 
-def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
+def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
+        headless: bool = False, duration: int | None = None):
     setLogLevel("info")
 
     if tool == "live" and not LIVE_BINARY.exists():
@@ -168,12 +173,18 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = ""):
             f"--dst-ips {test_hosts}"
         )
         full_args = shlex.split(" ".join(filter(None, [record_args, test_filter_args])))
+        if headless:
+            # No terminal UI; the recorder stops by itself
+            full_args += ["-q", "--duration", str(duration or HEADLESS_SECONDS[double])]
         cmd = [str(RECORD_BINARY)] + full_args
         uses_headers = any(arg == "-h" or arg == "--headers" or arg.startswith("--headers=")
                            for arg in full_args)
         run_cmd = ["nsenter", f"--net=/proc/{tcbee.pid}/ns/net"] + cmd if uses_headers else cmd
         info(f"    Running: {' '.join(run_cmd)}\n")
-        if tool == "full":
+        if headless:
+            info(f"    Recording for {full_args[-1]} s without the terminal UI.\n")
+            info("    The launcher will then process /tmp/db.duck and open tcbee-viz.\n\n")
+        elif tool == "full":
             info("    Quit tcbee-record with q when the capture is complete.\n")
             info("    The launcher will then process /tmp/db.duck and open tcbee-viz.\n\n")
         else:
@@ -213,6 +224,14 @@ if __name__ == "__main__":
     parser.add_argument("--tool", choices=["live", "record", "full"], default="live")
     parser.add_argument("--record-args", default="",
                         help="Extra flags forwarded verbatim to tcbee-record")
+    parser.add_argument("--headless", action="store_true",
+                        help="With --tool full: record without the terminal UI, stop after "
+                             "--duration seconds, then process and open tcbee-viz")
+    parser.add_argument("--duration", type=int,
+                        help="Seconds a headless run records (default: 30, 60 with --double)")
     args = parser.parse_args()
+    if args.headless and args.tool != "full":
+        parser.error("--headless needs --tool full")
 
-    run(cc=args.cc, double=args.double, tool=args.tool, record_args=args.record_args)
+    run(cc=args.cc, double=args.double, tool=args.tool, record_args=args.record_args,
+        headless=args.headless, duration=args.duration)
