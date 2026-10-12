@@ -96,7 +96,7 @@ impl TabMptcp {
                                     rect,
                                     ui.id().with(("mptcp_event", index)),
                                 )
-                                .on_hover_text("Show in the plots");
+                                .on_hover_text("Show in the plots; click again to let go");
                                 if click.clicked() {
                                     clicked = Some(index);
                                 }
@@ -112,9 +112,14 @@ impl TabMptcp {
                     }
                 });
             });
+        // A second click on the picked event lets it go
         if let Some(index) = clicked {
-            self.selected_event = Some(index);
-            self.focus = Some(self.events[index].t);
+            if self.selected_event == Some(index) {
+                self.selected_event = None;
+            } else {
+                self.selected_event = Some(index);
+                self.focus = Some(self.events[index].t);
+            }
         }
     }
 

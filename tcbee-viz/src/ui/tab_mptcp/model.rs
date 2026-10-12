@@ -307,17 +307,28 @@ pub fn row_name(row: usize) -> String {
     }
 }
 
-/// Whether an event matches every whitespace-separated term of a lowercase filter, in its
-/// row name, type name or label
+/// Whether an event matches every whitespace-separated term of a lowercase filter. A row
+/// term ("conn", "#2") must name the event's row, so "#1" does not match "#12"; other terms
+/// are looked up in its type name and label.
 pub fn event_matches(event: &PmEvent, filter: &str) -> bool {
+    let row = row_name(event.row);
     let text = format!(
-        "{} {} {}",
-        row_name(event.row),
+        "{} {}",
         event_type_name(event.code, event.failed),
         event.label
     )
     .to_lowercase();
-    filter.split_whitespace().all(|term| text.contains(term))
+    filter.split_whitespace().all(|term| {
+        let is_row_term = term == "conn"
+            || term
+                .strip_prefix('#')
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if is_row_term {
+            term == row
+        } else {
+            text.contains(term)
+        }
+    })
 }
 
 /// The time range that shows `t` in the middle at the width of `lo..hi`, kept within
@@ -761,6 +772,13 @@ mod tests {
             ..event(1.0, TCBEE_MPTCP_SUBFLOW_CONNECT, 0)
         };
         assert!(event_matches(&failed, "conn failed"));
+        let on_twelve = event(1.0, TCBEE_MPTCP_SUB_CLOSED, 12);
+        assert!(event_matches(&on_twelve, "#12"));
+        assert!(!event_matches(&on_twelve, "#1"));
+        // "conn" names the row, not "subflow connect"
+        let join_on_one = event(1.0, TCBEE_MPTCP_SUBFLOW_CONNECT, 1);
+        assert!(!event_matches(&join_on_one, "conn"));
+        assert!(event_matches(&join_on_one, "connect"));
     }
 
     #[test]

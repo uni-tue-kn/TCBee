@@ -991,6 +991,7 @@ impl TabMptcp {
         let selected_time = self
             .selected_event
             .and_then(|i| self.events.get(i))
+            .filter(|e| !self.is_hidden_row(e.row))
             .map(|e| e.t);
         let mut visible = None;
         ScrollArea::vertical()
