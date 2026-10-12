@@ -45,6 +45,15 @@ pub enum EventKind {
     Trouble,
 }
 
+/// Lane row of an event type
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventRow {
+    /// The connection's own row
+    Connection,
+    /// The row of the subflow it was recorded on
+    Subflow,
+}
+
 /// A type of path manager event (`enum tcbee_mptcp_event` in records.h)
 #[derive(Debug, PartialEq)]
 pub struct EventType {
@@ -55,6 +64,12 @@ pub struct EventType {
     pub kind: EventKind,
     /// Marker; unique with the kind, also for the failed variant (kind `Trouble`)
     pub shape: MarkerShape,
+    /// Joins, sent MP_PRIOs, reinjections and requeued data are recorded on the
+    /// connection's socket, which carries the first subflow's tuple, so their record does
+    /// not tell the subflow: they go to the connection row
+    pub row: EventRow,
+    /// Whether its record holds the subflow's backup flag
+    pub carries_backup: bool,
 }
 
 const fn event_type_row(
@@ -63,6 +78,8 @@ const fn event_type_row(
     short: &'static str,
     kind: EventKind,
     shape: MarkerShape,
+    row: EventRow,
+    carries_backup: bool,
 ) -> EventType {
     EventType {
         code,
@@ -70,140 +87,36 @@ const fn event_type_row(
         short,
         kind,
         shape,
+        row,
+        carries_backup,
     }
 }
 
 /// Every recorded event type
+#[rustfmt::skip]
 pub const EVENT_TYPES: [EventType; 18] = {
     use EventKind as K;
+    use EventRow::{Connection as Conn, Subflow as Sub};
     use MarkerShape as M;
     [
-        event_type_row(
-            TCBEE_MPTCP_CREATED,
-            "created",
-            "created",
-            K::Lifecycle,
-            M::Circle,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_ESTABLISHED,
-            "established",
-            "est.",
-            K::Lifecycle,
-            M::Square,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_CLOSED,
-            "closed",
-            "closed",
-            K::Lifecycle,
-            M::Cross,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_TOKEN_DESTROYED,
-            "token destroyed",
-            "token gone",
-            K::Lifecycle,
-            M::Plus,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_LISTENER_CREATED,
-            "listener created",
-            "listen",
-            K::Lifecycle,
-            M::Up,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_LISTENER_CLOSED,
-            "listener closed",
-            "unlisten",
-            K::Lifecycle,
-            M::Down,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_ANNOUNCED,
-            "address announced",
-            "add addr",
-            K::Info,
-            M::Up,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_SUB_PRIORITY,
-            "subflow priority",
-            "prio",
-            K::Info,
-            M::Diamond,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_MP_PRIO_SENT,
-            "MP_PRIO sent",
-            "MP_PRIO",
-            K::Info,
-            M::Plus,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_SUB_ESTABLISHED,
-            "subflow established",
-            "up",
-            K::Up,
-            M::Up,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_SUBFLOW_CONNECT,
-            "subflow connect",
-            "join",
-            K::Up,
-            M::Right,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_SUB_CLOSED,
-            "subflow closed",
-            "down",
-            K::End,
-            M::Down,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_REMOVED,
-            "address removed",
-            "rm addr",
-            K::End,
-            M::Left,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_MP_FAIL,
-            "MP_FAIL",
-            "MP_FAIL",
-            K::Trouble,
-            M::Asterisk,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_SUBFLOW_STALE,
-            "subflow stale",
-            "stale",
-            K::Trouble,
-            M::Square,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_FALLBACK,
-            "fallback to TCP",
-            "fallback",
-            K::Trouble,
-            M::Cross,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_REINJECTED,
-            "reinjected",
-            "reinj.",
-            K::Data,
-            M::Circle,
-        ),
-        event_type_row(
-            TCBEE_MPTCP_PENDING_REQUEUED,
-            "pending data requeued",
-            "requeue",
-            K::Data,
-            M::Left,
-        ),
+        event_type_row(TCBEE_MPTCP_CREATED,          "created",               "created",    K::Lifecycle, M::Circle,   Conn, false),
+        event_type_row(TCBEE_MPTCP_ESTABLISHED,      "established",           "est.",       K::Lifecycle, M::Square,   Conn, false),
+        event_type_row(TCBEE_MPTCP_CLOSED,           "closed",                "closed",     K::Lifecycle, M::Cross,    Conn, false),
+        event_type_row(TCBEE_MPTCP_TOKEN_DESTROYED,  "token destroyed",       "token gone", K::Lifecycle, M::Plus,     Conn, false),
+        event_type_row(TCBEE_MPTCP_LISTENER_CREATED, "listener created",      "listen",     K::Lifecycle, M::Up,       Conn, false),
+        event_type_row(TCBEE_MPTCP_LISTENER_CLOSED,  "listener closed",       "unlisten",   K::Lifecycle, M::Down,     Conn, false),
+        event_type_row(TCBEE_MPTCP_ANNOUNCED,        "address announced",     "add addr",   K::Info,      M::Up,       Conn, false),
+        event_type_row(TCBEE_MPTCP_SUB_PRIORITY,     "subflow priority",      "prio",       K::Info,      M::Diamond,  Sub,  true),
+        event_type_row(TCBEE_MPTCP_MP_PRIO_SENT,     "MP_PRIO sent",          "MP_PRIO",    K::Info,      M::Plus,     Conn, true),
+        event_type_row(TCBEE_MPTCP_SUB_ESTABLISHED,  "subflow established",   "up",         K::Up,        M::Up,       Sub,  true),
+        event_type_row(TCBEE_MPTCP_SUBFLOW_CONNECT,  "subflow connect",       "join",       K::Up,        M::Right,    Conn, false),
+        event_type_row(TCBEE_MPTCP_SUB_CLOSED,       "subflow closed",        "down",       K::End,       M::Down,     Sub,  false),
+        event_type_row(TCBEE_MPTCP_REMOVED,          "address removed",       "rm addr",    K::End,       M::Left,     Conn, false),
+        event_type_row(TCBEE_MPTCP_MP_FAIL,          "MP_FAIL",               "MP_FAIL",    K::Trouble,   M::Asterisk, Sub,  false),
+        event_type_row(TCBEE_MPTCP_SUBFLOW_STALE,    "subflow stale",         "stale",      K::Trouble,   M::Square,   Sub,  false),
+        event_type_row(TCBEE_MPTCP_FALLBACK,         "fallback to TCP",       "fallback",   K::Trouble,   M::Cross,    Conn, false),
+        event_type_row(TCBEE_MPTCP_REINJECTED,       "reinjected",            "reinj.",     K::Data,      M::Circle,   Conn, false),
+        event_type_row(TCBEE_MPTCP_PENDING_REQUEUED, "pending data requeued", "requeue",    K::Data,      M::Left,     Conn, false),
     ]
 };
 
@@ -214,6 +127,8 @@ const UNKNOWN_EVENT: EventType = event_type_row(
     "event",
     EventKind::Lifecycle,
     MarkerShape::Asterisk,
+    EventRow::Connection,
+    false,
 );
 
 pub fn event_type(code: i64) -> &'static EventType {
@@ -223,14 +138,18 @@ pub fn event_type(code: i64) -> &'static EventType {
         .unwrap_or(&UNKNOWN_EVENT)
 }
 
+/// The kind of an event: a failed event counts as trouble whatever its type
+pub fn event_kind(code: i64, failed: bool) -> EventKind {
+    if failed {
+        EventKind::Trouble
+    } else {
+        event_type(code).kind
+    }
+}
+
 impl PmEvent {
-    /// A failed event counts as trouble whatever its type
     pub fn kind(&self) -> EventKind {
-        if self.failed {
-            EventKind::Trouble
-        } else {
-            event_type(self.code).kind
-        }
+        event_kind(self.code, self.failed)
     }
 }
 
@@ -246,36 +165,12 @@ pub fn event_type_name(code: i64, failed: bool) -> String {
 
 /// Whether an event's record holds the subflow's backup flag
 pub fn carries_backup(code: i64) -> bool {
-    [
-        TCBEE_MPTCP_SUB_ESTABLISHED,
-        TCBEE_MPTCP_SUB_PRIORITY,
-        TCBEE_MPTCP_MP_PRIO_SENT,
-    ]
-    .iter()
-    .any(|c| *c as i64 == code)
+    event_type(code).carries_backup
 }
 
-/// Events about the whole connection go to its own lane row, the others to their subflow's.
-/// Joins, sent MP_PRIOs, reinjections and requeued data are recorded on the connection's
-/// socket, which carries the first subflow's tuple, so their record does not tell the subflow.
+/// Events about the whole connection go to its own lane row, the others to their subflow's
 pub fn is_connection_event(code: i64) -> bool {
-    [
-        TCBEE_MPTCP_CREATED,
-        TCBEE_MPTCP_ESTABLISHED,
-        TCBEE_MPTCP_CLOSED,
-        TCBEE_MPTCP_ANNOUNCED,
-        TCBEE_MPTCP_REMOVED,
-        TCBEE_MPTCP_LISTENER_CREATED,
-        TCBEE_MPTCP_LISTENER_CLOSED,
-        TCBEE_MPTCP_TOKEN_DESTROYED,
-        TCBEE_MPTCP_FALLBACK,
-        TCBEE_MPTCP_SUBFLOW_CONNECT,
-        TCBEE_MPTCP_MP_PRIO_SENT,
-        TCBEE_MPTCP_REINJECTED,
-        TCBEE_MPTCP_PENDING_REQUEUED,
-    ]
-    .iter()
-    .any(|c| *c as i64 == code)
+    event_type(code).row == EventRow::Connection
 }
 
 /// Whether the event changes the connection's paths, as opposed to moving data, which can

@@ -10,8 +10,8 @@ use egui_plot::{
 };
 
 use super::model::{
-    centered_x, event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name,
-    lane_y, place_labels, EventGroup, EventKind, PmEvent,
+    centered_x, event_kind, event_type, event_type_name, group_at, group_events, lane_row_at,
+    lane_row_name, lane_y, place_labels, EventGroup, EventKind,
 };
 use super::{TabMptcp, Y_AXIS_WIDTH};
 use crate::{
@@ -332,15 +332,7 @@ impl TabMptcp {
 
 /// Colour of the events of one type, failed or not
 fn key_color(code: i64, failed: bool, dark_mode: bool) -> egui::Color32 {
-    let probe = PmEvent {
-        t: 0.0,
-        code,
-        row: 0,
-        label: String::new(),
-        backup: false,
-        failed,
-    };
-    kind_color(probe.kind(), dark_mode)
+    kind_color(event_kind(code, failed), dark_mode)
 }
 
 /// Colour of an event kind: green up, neutral end, red trouble, grey lifecycle, violet
