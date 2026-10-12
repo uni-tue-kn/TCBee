@@ -121,14 +121,15 @@ pub const EVENT_TYPES: [EventType; 18] = {
     ]
 };
 
-/// For a code the recorder does not know (a newer recorder)
+/// For a code this viewer does not know (a newer recorder); it stays on the row of the
+/// subflow it was recorded on
 const UNKNOWN_EVENT: EventType = event_type_row(
     0,
     "event",
     "event",
     EventKind::Lifecycle,
     MarkerShape::Asterisk,
-    EventRow::Connection,
+    EventRow::Subflow,
     false,
 );
 
@@ -651,6 +652,7 @@ mod tests {
         assert_eq!(event_type(105).name, "reinjected");
         assert_eq!(event_type(107).name, "fallback to TCP");
         assert_eq!(event_type(-1).name, "event");
+        assert_eq!(event_type(999).row, EventRow::Subflow);
         assert_eq!(event_type_name(101, true), "subflow connect failed");
     }
 
