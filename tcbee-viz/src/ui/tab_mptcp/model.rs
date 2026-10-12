@@ -5,8 +5,10 @@
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
     TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
-    TCBEE_MPTCP_PENDING_REQUEUED, TCBEE_MPTCP_REINJECTED, TCBEE_MPTCP_REMOVED,
-    TCBEE_MPTCP_TOKEN_DESTROYED,
+    TCBEE_MPTCP_MP_FAIL, TCBEE_MPTCP_MP_PRIO_SENT, TCBEE_MPTCP_PENDING_REQUEUED,
+    TCBEE_MPTCP_REINJECTED, TCBEE_MPTCP_REMOVED, TCBEE_MPTCP_SUBFLOW_CONNECT,
+    TCBEE_MPTCP_SUBFLOW_STALE, TCBEE_MPTCP_SUB_CLOSED, TCBEE_MPTCP_SUB_ESTABLISHED,
+    TCBEE_MPTCP_SUB_PRIORITY, TCBEE_MPTCP_TOKEN_DESTROYED,
 };
 use ts_storage::ConnectionFlow;
 
@@ -19,6 +21,44 @@ pub struct PmEvent {
     /// Lane row: 0 for the connection, 1 + the index of the subflow otherwise
     pub row: usize,
     pub label: String,
+    /// The subflow's backup flag, where the event carries it (see `carries_backup`)
+    pub backup: bool,
+}
+
+/// Name of an event of the path manager records (`enum tcbee_mptcp_event` in records.h)
+pub fn pm_event_name(event: i64) -> &'static str {
+    match u32::try_from(event).unwrap_or(0) {
+        TCBEE_MPTCP_CREATED => "created",
+        TCBEE_MPTCP_ESTABLISHED => "established",
+        TCBEE_MPTCP_CLOSED => "closed",
+        TCBEE_MPTCP_ANNOUNCED => "address announced",
+        TCBEE_MPTCP_REMOVED => "address removed",
+        TCBEE_MPTCP_SUB_ESTABLISHED => "subflow established",
+        TCBEE_MPTCP_SUB_CLOSED => "subflow closed",
+        TCBEE_MPTCP_SUB_PRIORITY => "subflow priority",
+        TCBEE_MPTCP_LISTENER_CREATED => "listener created",
+        TCBEE_MPTCP_LISTENER_CLOSED => "listener closed",
+        TCBEE_MPTCP_TOKEN_DESTROYED => "token destroyed",
+        TCBEE_MPTCP_SUBFLOW_CONNECT => "subflow connect",
+        TCBEE_MPTCP_MP_FAIL => "MP_FAIL",
+        TCBEE_MPTCP_SUBFLOW_STALE => "subflow stale",
+        TCBEE_MPTCP_MP_PRIO_SENT => "MP_PRIO sent",
+        TCBEE_MPTCP_REINJECTED => "reinjected",
+        TCBEE_MPTCP_PENDING_REQUEUED => "pending data requeued",
+        TCBEE_MPTCP_FALLBACK => "fallback to TCP",
+        _ => "event",
+    }
+}
+
+/// Whether an event's record holds the subflow's backup flag
+pub fn carries_backup(code: i64) -> bool {
+    [
+        TCBEE_MPTCP_SUB_ESTABLISHED,
+        TCBEE_MPTCP_SUB_PRIORITY,
+        TCBEE_MPTCP_MP_PRIO_SENT,
+    ]
+    .iter()
+    .any(|c| *c as i64 == code)
 }
 
 /// Events about the whole connection go to its own lane row, the others to their subflow's
@@ -49,11 +89,23 @@ pub fn lane_y(row: usize, rows: usize) -> f64 {
     rows.saturating_sub(1 + row) as f64
 }
 
+/// Name of a row of the event lane at plot height `y`: the connection on top, then the
+/// subflows in the order they started
+pub fn lane_row_name(y: f64, rows: usize) -> String {
+    let row = rows as f64 - 1.0 - y;
+    if row.fract() != 0.0 || row < 0.0 || row >= rows as f64 {
+        return String::new();
+    }
+    match row as usize {
+        0 => "conn".to_string(),
+        k => format!("#{k}"),
+    }
+}
+
 /// The event that the pointer at (`x`, `y`) of the lane is on: of type `name`, in the row at
 /// `y`, closest in time. `name` is empty when the pointer is on no event.
 pub fn nearest_event<'a>(
     events: &'a [PmEvent],
-    name_of: impl Fn(i64) -> &'static str,
     name: &str,
     x: f64,
     y: f64,
@@ -64,7 +116,7 @@ pub fn nearest_event<'a>(
     }
     events
         .iter()
-        .filter(|e| name_of(e.code) == name && (lane_y(e.row, rows) - y).abs() < 0.5)
+        .filter(|e| pm_event_name(e.code) == name && (lane_y(e.row, rows) - y).abs() < 0.5)
         .min_by(|a, b| (a.t - x).abs().total_cmp(&(b.t - x).abs()))
 }
 
@@ -333,15 +385,27 @@ mod tests {
             code: code as i64,
             row,
             label: format!("{code} at {t}"),
+            backup: false,
         }
     }
 
-    fn name_of(code: i64) -> &'static str {
-        if code == TCBEE_MPTCP_CREATED as i64 {
-            "created"
-        } else {
-            "other"
-        }
+    #[test]
+    fn event_names_cover_the_recorded_events() {
+        assert_eq!(pm_event_name(1), "created");
+        assert_eq!(pm_event_name(10), "subflow established");
+        assert_eq!(pm_event_name(100), "token destroyed");
+        assert_eq!(pm_event_name(105), "reinjected");
+        assert_eq!(pm_event_name(107), "fallback to TCP");
+        assert_eq!(pm_event_name(-1), "event");
+    }
+
+    #[test]
+    fn lane_rows_are_named_from_the_top() {
+        assert_eq!(lane_row_name(2.0, 3), "conn");
+        assert_eq!(lane_row_name(1.0, 3), "#1");
+        assert_eq!(lane_row_name(0.0, 3), "#2");
+        assert_eq!(lane_row_name(0.5, 3), "");
+        assert_eq!(lane_row_name(3.0, 3), "");
     }
 
     #[test]
@@ -361,16 +425,13 @@ mod tests {
             event(4.0, TCBEE_MPTCP_REINJECTED, 1),
         ];
         // Row 0 of two is at y = 1
-        let hit = nearest_event(&events, name_of, "created", 3.5, 1.1, 2);
+        let hit = nearest_event(&events, "created", 3.5, 1.1, 2);
         assert_eq!(hit, Some(&events[1]));
-        let hit = nearest_event(&events, name_of, "other", 3.5, 0.0, 2);
+        let hit = nearest_event(&events, "reinjected", 3.5, 0.0, 2);
         assert_eq!(hit, Some(&events[2]));
         // In the other row, or on no item at all
-        assert_eq!(
-            nearest_event(&events, name_of, "created", 3.5, 0.0, 2),
-            None
-        );
-        assert_eq!(nearest_event(&events, name_of, "", 1.0, 1.0, 2), None);
+        assert_eq!(nearest_event(&events, "created", 3.5, 0.0, 2), None);
+        assert_eq!(nearest_event(&events, "", 1.0, 1.0, 2), None);
     }
 
     #[test]

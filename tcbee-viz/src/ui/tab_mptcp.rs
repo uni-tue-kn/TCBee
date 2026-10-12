@@ -6,6 +6,7 @@ mod model;
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use egui::{RichText, ScrollArea, Vec2};
 use egui_plot::{GridMark, Line, MarkerShape, Plot, PlotBounds, PlotPoints, Points, VLine};
@@ -22,8 +23,9 @@ use ts_storage::{
 };
 
 use model::{
-    byte_shares, format_bytes, gap_threshold, infer_sides, is_connection_event, is_structural,
-    lane_y, nearest_event, segments, sort_subflows, ConnectionSummary, PmEvent, SideInput,
+    byte_shares, carries_backup, format_bytes, gap_threshold, infer_sides, is_connection_event,
+    is_structural, lane_row_name, lane_y, nearest_event, pm_event_name, segments, sort_subflows,
+    ConnectionSummary, PmEvent, SideInput,
 };
 
 use crate::{
@@ -140,31 +142,6 @@ fn group_metrics<'a>(metrics: &'a [MetricKey], filter: &str) -> Vec<(&'a str, Ve
     groups
 }
 
-/// Name of an event of the path manager records (`enum tcbee_mptcp_event` in records.h)
-fn pm_event_name(event: i64) -> &'static str {
-    match u32::try_from(event).unwrap_or(0) {
-        TCBEE_MPTCP_CREATED => "created",
-        TCBEE_MPTCP_ESTABLISHED => "established",
-        TCBEE_MPTCP_CLOSED => "closed",
-        TCBEE_MPTCP_ANNOUNCED => "address announced",
-        TCBEE_MPTCP_REMOVED => "address removed",
-        TCBEE_MPTCP_SUB_ESTABLISHED => "subflow established",
-        TCBEE_MPTCP_SUB_CLOSED => "subflow closed",
-        TCBEE_MPTCP_SUB_PRIORITY => "subflow priority",
-        TCBEE_MPTCP_LISTENER_CREATED => "listener created",
-        TCBEE_MPTCP_LISTENER_CLOSED => "listener closed",
-        TCBEE_MPTCP_TOKEN_DESTROYED => "token destroyed",
-        TCBEE_MPTCP_SUBFLOW_CONNECT => "subflow connect",
-        TCBEE_MPTCP_MP_FAIL => "MP_FAIL",
-        TCBEE_MPTCP_SUBFLOW_STALE => "subflow stale",
-        TCBEE_MPTCP_MP_PRIO_SENT => "MP_PRIO sent",
-        TCBEE_MPTCP_REINJECTED => "reinjected",
-        TCBEE_MPTCP_PENDING_REQUEUED => "pending data requeued",
-        TCBEE_MPTCP_FALLBACK => "fallback to TCP",
-        _ => "event",
-    }
-}
-
 /// The value of a catalog series of a flow: the largest value of `name` over both directions
 fn catalog_max(series: &[SeriesInfo], source: &str, name: &str) -> Option<f64> {
     series
@@ -271,12 +248,13 @@ fn connection_tooltip(row: &ConnectionSummary) -> String {
 }
 
 /// The path manager events of one subflow that belong to `connection` (a flow tuple may be
-/// reused by another connection): (time, event code, label, backup flag)
+/// reused by another connection), in the lane row of subflow `index`
 fn subflow_events(
     db: &DbBackend,
     sub: &Subflow,
+    index: usize,
     connection: &ConnectionInfo,
-) -> Vec<(f64, i64, String, bool)> {
+) -> Vec<PmEvent> {
     let column = |name: &str| -> Vec<(f64, DataValue)> {
         sub.series
             .iter()
@@ -337,7 +315,17 @@ fn subflow_events(
             label.push_str(&format!(" {} B", int(&data_len)));
         }
         label.push_str(subflow.as_deref().unwrap_or(""));
-        out.push((*t, event, label, int(&backup) != 0));
+        out.push(PmEvent {
+            t: *t,
+            code: event,
+            row: if is_connection_event(event) {
+                0
+            } else {
+                index + 1
+            },
+            label,
+            backup: int(&backup) != 0,
+        });
     }
     out
 }
@@ -369,19 +357,6 @@ fn plot_heading(ui: &mut egui::Ui, text: &str) {
             .size(12.5)
             .color(theme::muted_text(ui.visuals().dark_mode)),
     );
-}
-
-/// Name of a row of the event lane at plot height `y`: the connection on top, then the
-/// subflows in the order they started
-fn lane_row_name(y: f64, rows: usize) -> String {
-    let row = rows as f64 - 1.0 - y;
-    if row.fract() != 0.0 || row < 0.0 || row >= rows as f64 {
-        return String::new();
-    }
-    match row as usize {
-        0 => "conn".to_string(),
-        k => format!("#{k}"),
-    }
 }
 
 /// Marker of an event type. Types share a shape only between the connection row and the
@@ -542,8 +517,10 @@ pub struct TabMptcp {
     selected: Vec<MetricKey>,
     /// The loaded plots, in the order of `selected`; the last ones may still be missing
     plots: Vec<MetricPlot>,
-    /// Path manager events, in time order
-    events: Vec<PmEvent>,
+    /// Path manager events, in time order; shared with the lane's hover label
+    events: Arc<[PmEvent]>,
+    /// The event types among them
+    event_codes: Vec<i64>,
     needs_fit: bool,
 }
 
@@ -755,7 +732,7 @@ impl TabMptcp {
             return;
         };
         self.subflows.clear();
-        self.events.clear();
+        self.events = Arc::default();
         let mut members: Vec<&ConnectionFlow> = db
             .list_connection_flows()
             .iter()
@@ -813,29 +790,22 @@ impl TabMptcp {
         self.plots.clear();
         self.needs_fit = true;
 
+        let mut events = Vec::new();
         for (index, sub) in self.subflows.iter_mut().enumerate() {
-            let events = subflow_events(db, sub, &connection);
-            sub.events = events.len();
-            sub.backup = events
+            let own = subflow_events(db, sub, index, &connection);
+            sub.events = own.len();
+            sub.backup = own
                 .iter()
                 .rev()
-                .find(|e| carries_backup(e.1))
-                .map(|e| e.3);
-            for (t, code, label, _) in events {
-                let row = if is_connection_event(code) {
-                    0
-                } else {
-                    index + 1
-                };
-                self.events.push(PmEvent {
-                    t,
-                    code,
-                    row,
-                    label,
-                });
-            }
+                .find(|e| carries_backup(e.code))
+                .map(|e| e.backup);
+            events.extend(own);
         }
-        self.events.sort_by(|a, b| a.t.total_cmp(&b.t));
+        events.sort_by(|a, b| a.t.total_cmp(&b.t));
+        self.event_codes = events.iter().map(|e| e.code).collect();
+        self.event_codes.sort_unstable();
+        self.event_codes.dedup();
+        self.events = events.into();
         self.connection = Some(connection);
     }
 
@@ -1069,7 +1039,7 @@ impl TabMptcp {
         let lane_height = ((rows + 1) as f32 * LANE_ROW_HEIGHT).max(MIN_LANE_HEIGHT);
         let dark_mode = settings.dark_mode;
         plot_heading(ui, "Path manager events");
-        let events = self.events.clone();
+        let events = Arc::clone(&self.events);
         let response = Plot::new("mptcp_event_lane")
             // Only time moves; the rows stay in view
             .allow_drag([true, false])
@@ -1096,7 +1066,7 @@ impl TabMptcp {
             .y_axis_min_width(Y_AXIS_WIDTH)
             .label_formatter(move |name, point| {
                 let time = format!("{:.3} s", (point.x - origin) / 1e9);
-                match nearest_event(&events, pm_event_name, name, point.x, point.y, rows) {
+                match nearest_event(&events, name, point.x, point.y, rows) {
                     Some(e) => format!("{}\n{:.3} s", e.label, (e.t - origin) / 1e9),
                     None => time,
                 }
@@ -1109,10 +1079,7 @@ impl TabMptcp {
                         [connection.end_ts as f64, rows as f64 - 0.4],
                     ));
                 }
-                let mut codes: Vec<i64> = self.events.iter().map(|e| e.code).collect();
-                codes.sort_unstable();
-                codes.dedup();
-                for code in codes {
+                for &code in &self.event_codes {
                     let points: Vec<[f64; 2]> = self
                         .events
                         .iter()
@@ -1139,11 +1106,8 @@ impl TabMptcp {
 
     /// Marker and name of each event type of the connection
     fn show_event_legend(&self, ui: &mut egui::Ui, dark_mode: bool) {
-        let mut codes: Vec<i64> = self.events.iter().map(|e| e.code).collect();
-        codes.sort_unstable();
-        codes.dedup();
         ui.horizontal_wrapped(|ui| {
-            for code in codes {
+            for &code in &self.event_codes {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(12.0), egui::Sense::hover());
                 paint_marker(
                     ui.painter(),
@@ -1336,30 +1300,9 @@ fn share_cell(ui: &mut egui::Ui, share: Option<f64>, color: egui::Color32, width
     );
 }
 
-/// Whether an event's record holds the subflow's backup flag
-fn carries_backup(code: i64) -> bool {
-    [
-        TCBEE_MPTCP_SUB_ESTABLISHED,
-        TCBEE_MPTCP_SUB_PRIORITY,
-        TCBEE_MPTCP_MP_PRIO_SENT,
-    ]
-    .iter()
-    .any(|c| *c as i64 == code)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn event_names_cover_the_recorded_events() {
-        assert_eq!(pm_event_name(1), "created");
-        assert_eq!(pm_event_name(10), "subflow established");
-        assert_eq!(pm_event_name(100), "token destroyed");
-        assert_eq!(pm_event_name(105), "reinjected");
-        assert_eq!(pm_event_name(107), "fallback to TCP");
-        assert_eq!(pm_event_name(-1), "event");
-    }
 
     #[test]
     fn event_addresses() {
@@ -1394,15 +1337,6 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].1, vec![&metrics[2]]);
         assert!(group_metrics(&metrics, "rtt").is_empty());
-    }
-
-    #[test]
-    fn lane_rows_are_named_from_the_top() {
-        assert_eq!(lane_row_name(2.0, 3), "conn");
-        assert_eq!(lane_row_name(1.0, 3), "#1");
-        assert_eq!(lane_row_name(0.0, 3), "#2");
-        assert_eq!(lane_row_name(0.5, 3), "");
-        assert_eq!(lane_row_name(3.0, 3), "");
     }
 
     #[test]
