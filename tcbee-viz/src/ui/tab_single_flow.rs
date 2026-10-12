@@ -124,7 +124,7 @@ impl TabSingleFlow {
         if self.state.flow_id.is_none() {
             ui.add_space(8.0);
             ui.label(
-                RichText::new("← Select a flow above.")
+                RichText::new("Select a flow above.")
                     .color(egui::Color32::GRAY)
                     .italics(),
             );

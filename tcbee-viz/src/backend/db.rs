@@ -422,7 +422,7 @@ pub fn datavalue_as_f64(v: &DataValue) -> Option<f64> {
 
 pub fn format_flow(flow: &Flow) -> String {
     format!(
-        "ID:{} {}:{} → {}:{}",
+        "ID:{} {}:{} -> {}:{}",
         flow.id, flow.tuple.src, flow.tuple.sport, flow.tuple.dst, flow.tuple.dport,
     )
 }
@@ -580,6 +580,22 @@ mod tests {
             .into_iter()
             .map(|id| id.unwrap_or_else(|| panic!("{kind:?}: unbound input")))
             .collect()
+    }
+
+    #[test]
+    fn flow_labels_use_ascii_arrows() {
+        // The default egui font has no arrow glyphs
+        let flow = Flow::new(
+            3,
+            IpTuple {
+                src: IpAddr::V4(Ipv4Addr::new(10, 31, 2, 1)),
+                dst: IpAddr::V4(Ipv4Addr::new(10, 31, 1, 2)),
+                sport: 58139,
+                dport: 5501,
+                l4proto: 6,
+            },
+        );
+        assert_eq!(format_flow(&flow), "ID:3 10.31.2.1:58139 -> 10.31.1.2:5501");
     }
 
     #[test]
