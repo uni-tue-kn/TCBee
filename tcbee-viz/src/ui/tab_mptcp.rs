@@ -176,7 +176,7 @@ fn metric_key(s: &SeriesInfo) -> MetricKey {
 fn metric_label((source, dir, name): &MetricKey) -> String {
     match dir {
         Dir::None => format!("{name} · {source}"),
-        _ => format!("{name} · {source} · {dir:?}").to_lowercase(),
+        _ => format!("{name} · {source} · {}", format!("{dir:?}").to_lowercase()),
     }
 }
 
@@ -402,16 +402,6 @@ fn event_address(family: i64, port: i64, words: [i64; 4]) -> Option<String> {
         (IpAddr::V6(ip), port) => format!("[{ip}]:{port}"),
         (ip, port) => format!("{ip}:{port}"),
     })
-}
-
-/// Title above a plot, like the section headings of the sidebar
-fn plot_heading(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        RichText::new(text)
-            .strong()
-            .size(12.5)
-            .color(theme::muted_text(ui.visuals().dark_mode)),
-    );
 }
 
 /// Marker of an event type. Types share a shape only between the connection row and the
@@ -979,7 +969,7 @@ impl TabMptcp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (metric, plot) in self.selected.iter().zip(&self.plots) {
-                    plot_heading(ui, &metric_label(metric));
+                    section_heading(ui, &metric_label(metric));
                     let response = Plot::new(("mptcp_metric", metric_label(metric)))
                         .allow_boxed_zoom(true)
                         .allow_drag(true)
@@ -1090,7 +1080,7 @@ impl TabMptcp {
         let rows = self.subflows.len() + 1;
         let lane_height = ((rows + 1) as f32 * LANE_ROW_HEIGHT).max(MIN_LANE_HEIGHT);
         let dark_mode = settings.dark_mode;
-        plot_heading(ui, "Path manager events");
+        section_heading(ui, "Path manager events");
         let events = Arc::clone(&self.events);
         let response = Plot::new("mptcp_event_lane")
             // Only time moves; the rows stay in view
@@ -1410,5 +1400,7 @@ mod tests {
         assert_eq!(metric_label(&key), "snd_cwnd · sock · send");
         let key = ("tcp_probe".to_string(), Dir::None, "SRTT".to_string());
         assert_eq!(metric_label(&key), "SRTT · tcp_probe");
+        let key = ("tcp4".to_string(), Dir::Recv, "ACK_NUM".to_string());
+        assert_eq!(metric_label(&key), "ACK_NUM · tcp4 · recv");
     }
 }
