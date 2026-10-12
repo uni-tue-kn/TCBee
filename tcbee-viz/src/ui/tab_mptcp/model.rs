@@ -2,6 +2,7 @@
 //! the sidebar rows and their filter, the order of the subflows, the line segments of a series,
 //! the path manager event types (names, lane rows, backup flag) and the subflows' byte shares.
 
+use egui_plot::MarkerShape;
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
     TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
@@ -23,30 +24,227 @@ pub struct PmEvent {
     pub label: String,
     /// The subflow's backup flag, where the event carries it (see `carries_backup`)
     pub backup: bool,
+    /// The event reports an error (a failed join or MP_PRIO)
+    pub failed: bool,
 }
 
-/// Name of an event of the path manager records (`enum tcbee_mptcp_event` in records.h)
-pub fn pm_event_name(event: i64) -> &'static str {
-    match u32::try_from(event).unwrap_or(0) {
-        TCBEE_MPTCP_CREATED => "created",
-        TCBEE_MPTCP_ESTABLISHED => "established",
-        TCBEE_MPTCP_CLOSED => "closed",
-        TCBEE_MPTCP_ANNOUNCED => "address announced",
-        TCBEE_MPTCP_REMOVED => "address removed",
-        TCBEE_MPTCP_SUB_ESTABLISHED => "subflow established",
-        TCBEE_MPTCP_SUB_CLOSED => "subflow closed",
-        TCBEE_MPTCP_SUB_PRIORITY => "subflow priority",
-        TCBEE_MPTCP_LISTENER_CREATED => "listener created",
-        TCBEE_MPTCP_LISTENER_CLOSED => "listener closed",
-        TCBEE_MPTCP_TOKEN_DESTROYED => "token destroyed",
-        TCBEE_MPTCP_SUBFLOW_CONNECT => "subflow connect",
-        TCBEE_MPTCP_MP_FAIL => "MP_FAIL",
-        TCBEE_MPTCP_SUBFLOW_STALE => "subflow stale",
-        TCBEE_MPTCP_MP_PRIO_SENT => "MP_PRIO sent",
-        TCBEE_MPTCP_REINJECTED => "reinjected",
-        TCBEE_MPTCP_PENDING_REQUEUED => "pending data requeued",
-        TCBEE_MPTCP_FALLBACK => "fallback to TCP",
-        _ => "event",
+/// What an event means for the connection, which sets its colour
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EventKind {
+    /// Moves data: reinjected, requeued. Can be many.
+    Data,
+    /// The connection or a listener starts or ends
+    Lifecycle,
+    /// Addresses and priorities
+    Info,
+    /// A subflow comes up
+    Up,
+    /// A subflow or address goes away as intended
+    End,
+    /// Something failed: a failed event, MP_FAIL, a stale subflow, a fallback to TCP
+    Trouble,
+}
+
+/// A type of path manager event (`enum tcbee_mptcp_event` in records.h)
+#[derive(Debug, PartialEq)]
+pub struct EventType {
+    pub code: u32,
+    pub name: &'static str,
+    /// Label next to a marker
+    pub short: &'static str,
+    pub kind: EventKind,
+    /// Marker; unique with the kind, also for the failed variant (kind `Trouble`)
+    pub shape: MarkerShape,
+}
+
+const fn event_type_row(
+    code: u32,
+    name: &'static str,
+    short: &'static str,
+    kind: EventKind,
+    shape: MarkerShape,
+) -> EventType {
+    EventType {
+        code,
+        name,
+        short,
+        kind,
+        shape,
+    }
+}
+
+/// Every recorded event type
+pub const EVENT_TYPES: [EventType; 18] = {
+    use EventKind as K;
+    use MarkerShape as M;
+    [
+        event_type_row(
+            TCBEE_MPTCP_CREATED,
+            "created",
+            "created",
+            K::Lifecycle,
+            M::Circle,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_ESTABLISHED,
+            "established",
+            "est.",
+            K::Lifecycle,
+            M::Square,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_CLOSED,
+            "closed",
+            "closed",
+            K::Lifecycle,
+            M::Cross,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_TOKEN_DESTROYED,
+            "token destroyed",
+            "token gone",
+            K::Lifecycle,
+            M::Plus,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_LISTENER_CREATED,
+            "listener created",
+            "listen",
+            K::Lifecycle,
+            M::Up,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_LISTENER_CLOSED,
+            "listener closed",
+            "unlisten",
+            K::Lifecycle,
+            M::Down,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_ANNOUNCED,
+            "address announced",
+            "add addr",
+            K::Info,
+            M::Up,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_SUB_PRIORITY,
+            "subflow priority",
+            "prio",
+            K::Info,
+            M::Diamond,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_MP_PRIO_SENT,
+            "MP_PRIO sent",
+            "MP_PRIO",
+            K::Info,
+            M::Plus,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_SUB_ESTABLISHED,
+            "subflow established",
+            "up",
+            K::Up,
+            M::Up,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_SUBFLOW_CONNECT,
+            "subflow connect",
+            "join",
+            K::Up,
+            M::Right,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_SUB_CLOSED,
+            "subflow closed",
+            "down",
+            K::End,
+            M::Down,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_REMOVED,
+            "address removed",
+            "rm addr",
+            K::End,
+            M::Left,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_MP_FAIL,
+            "MP_FAIL",
+            "MP_FAIL",
+            K::Trouble,
+            M::Asterisk,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_SUBFLOW_STALE,
+            "subflow stale",
+            "stale",
+            K::Trouble,
+            M::Square,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_FALLBACK,
+            "fallback to TCP",
+            "fallback",
+            K::Trouble,
+            M::Cross,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_REINJECTED,
+            "reinjected",
+            "reinj.",
+            K::Data,
+            M::Circle,
+        ),
+        event_type_row(
+            TCBEE_MPTCP_PENDING_REQUEUED,
+            "pending data requeued",
+            "requeue",
+            K::Data,
+            M::Left,
+        ),
+    ]
+};
+
+/// For a code the recorder does not know (a newer recorder)
+const UNKNOWN_EVENT: EventType = event_type_row(
+    0,
+    "event",
+    "event",
+    EventKind::Lifecycle,
+    MarkerShape::Asterisk,
+);
+
+pub fn event_type(code: i64) -> &'static EventType {
+    EVENT_TYPES
+        .iter()
+        .find(|t| t.code as i64 == code)
+        .unwrap_or(&UNKNOWN_EVENT)
+}
+
+impl PmEvent {
+    /// A failed event counts as trouble whatever its type
+    pub fn kind(&self) -> EventKind {
+        if self.failed {
+            EventKind::Trouble
+        } else {
+            event_type(self.code).kind
+        }
+    }
+
+    /// Name of its type, which tells failed events apart
+    pub fn type_name(&self) -> String {
+        event_type_name(self.code, self.failed)
+    }
+}
+
+pub fn event_type_name(code: i64, failed: bool) -> String {
+    let name = event_type(code).name;
+    if failed {
+        format!("{name} failed")
+    } else {
+        name.to_string()
     }
 }
 
@@ -87,7 +285,7 @@ pub fn is_connection_event(code: i64) -> bool {
 /// Whether the event changes the connection's paths, as opposed to moving data, which can
 /// happen thousands of times. Only these are marked in the metric plots.
 pub fn is_structural(code: i64) -> bool {
-    code != TCBEE_MPTCP_REINJECTED as i64 && code != TCBEE_MPTCP_PENDING_REQUEUED as i64
+    event_type(code).kind != EventKind::Data
 }
 
 /// Plot height of a lane row; row 0 is at the top
@@ -122,7 +320,7 @@ pub fn nearest_event<'a>(
     }
     events
         .iter()
-        .filter(|e| pm_event_name(e.code) == name && (lane_y(e.row, rows) - y).abs() < 0.5)
+        .filter(|e| e.type_name() == name && (lane_y(e.row, rows) - y).abs() < 0.5)
         .min_by(|a, b| (a.t - x).abs().total_cmp(&(b.t - x).abs()))
 }
 
@@ -392,17 +590,50 @@ mod tests {
             row,
             label: format!("{code} at {t}"),
             backup: false,
+            failed: false,
         }
     }
 
     #[test]
     fn event_names_cover_the_recorded_events() {
-        assert_eq!(pm_event_name(1), "created");
-        assert_eq!(pm_event_name(10), "subflow established");
-        assert_eq!(pm_event_name(100), "token destroyed");
-        assert_eq!(pm_event_name(105), "reinjected");
-        assert_eq!(pm_event_name(107), "fallback to TCP");
-        assert_eq!(pm_event_name(-1), "event");
+        assert_eq!(event_type(1).name, "created");
+        assert_eq!(event_type(10).name, "subflow established");
+        assert_eq!(event_type(100).name, "token destroyed");
+        assert_eq!(event_type(105).name, "reinjected");
+        assert_eq!(event_type(107).name, "fallback to TCP");
+        assert_eq!(event_type(-1).name, "event");
+        assert_eq!(event_type_name(101, true), "subflow connect failed");
+    }
+
+    #[test]
+    fn event_types_are_told_apart_by_kind_and_shape() {
+        let codes: Vec<u32> = EVENT_TYPES.iter().map(|t| t.code).collect();
+        for (i, a) in EVENT_TYPES.iter().enumerate() {
+            assert!(!codes[..i].contains(&a.code), "{} twice", a.name);
+            assert!(!a.short.is_empty());
+            // Failed variants (only joins and MP_PRIOs report errors) are trouble
+            let mut looks = vec![(a.kind, a.shape)];
+            if matches!(
+                a.code,
+                TCBEE_MPTCP_SUBFLOW_CONNECT | TCBEE_MPTCP_MP_PRIO_SENT
+            ) {
+                looks.push((EventKind::Trouble, a.shape));
+            }
+            for b in &EVENT_TYPES[..i] {
+                assert!(
+                    !looks.contains(&(b.kind, b.shape)),
+                    "{} looks like {}",
+                    a.name,
+                    b.name
+                );
+            }
+        }
+        let failed_join = PmEvent {
+            failed: true,
+            ..event(1.0, TCBEE_MPTCP_SUBFLOW_CONNECT, 0)
+        };
+        assert_eq!(failed_join.kind(), EventKind::Trouble);
+        assert_eq!(event(1.0, TCBEE_MPTCP_SUB_CLOSED, 1).kind(), EventKind::End);
     }
 
     #[test]

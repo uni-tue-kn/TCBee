@@ -17,8 +17,9 @@ use ts_storage::{
 };
 
 use model::{
-    byte_shares, carries_backup, format_bytes, gap_threshold, infer_sides, is_connection_event,
-    is_structural, pm_event_name, segments, sort_subflows, ConnectionSummary, PmEvent, SideInput,
+    byte_shares, carries_backup, event_type, format_bytes, gap_threshold, infer_sides,
+    is_connection_event, is_structural, segments, sort_subflows, ConnectionSummary, PmEvent,
+    SideInput,
 };
 
 use crate::{
@@ -350,7 +351,7 @@ fn subflow_events(
         if aligned && int(&token) != connection.key || !span.contains(t) {
             continue;
         }
-        let mut label = pm_event_name(event).to_string();
+        let mut label = event_type(event).name.to_string();
         match event_address(int(&family), int(&port), words.each_ref().map(|w| int(w))) {
             Some(address) => label.push_str(&format!(" {address}")),
             None if int(&addr_id) != 0 => label.push_str(&format!(" id {}", int(&addr_id))),
@@ -382,6 +383,7 @@ fn subflow_events(
             },
             label,
             backup: int(&backup) != 0,
+            failed: int(&error) != 0,
         });
     }
     out
@@ -467,8 +469,8 @@ pub struct TabMptcp {
     plots: Vec<MetricPlot>,
     /// Path manager events, in time order; shared with the lane's hover label
     events: Arc<[PmEvent]>,
-    /// The event types among them
-    event_codes: Vec<i64>,
+    /// The event types among them: code and whether failed
+    event_keys: Vec<(i64, bool)>,
     needs_fit: bool,
 }
 
@@ -760,9 +762,9 @@ impl TabMptcp {
             events.extend(own);
         }
         events.sort_by(|a, b| a.t.total_cmp(&b.t));
-        self.event_codes = events.iter().map(|e| e.code).collect();
-        self.event_codes.sort_unstable();
-        self.event_codes.dedup();
+        self.event_keys = events.iter().map(|e| (e.code, e.failed)).collect();
+        self.event_keys.sort_unstable();
+        self.event_keys.dedup();
         self.events = events.into();
         self.connection = Some(connection);
     }

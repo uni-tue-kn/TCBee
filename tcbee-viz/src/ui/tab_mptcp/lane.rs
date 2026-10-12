@@ -5,16 +5,10 @@ use std::sync::Arc;
 
 use egui::{RichText, Vec2};
 use egui_plot::{GridMark, MarkerShape, Plot, PlotBounds, PlotPoints, Points};
-use tcbee_common::records::{
-    TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
-    TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
-    TCBEE_MPTCP_MP_FAIL, TCBEE_MPTCP_MP_PRIO_SENT, TCBEE_MPTCP_PENDING_REQUEUED,
-    TCBEE_MPTCP_REINJECTED, TCBEE_MPTCP_REMOVED, TCBEE_MPTCP_SUBFLOW_CONNECT,
-    TCBEE_MPTCP_SUBFLOW_STALE, TCBEE_MPTCP_SUB_CLOSED, TCBEE_MPTCP_SUB_ESTABLISHED,
-    TCBEE_MPTCP_SUB_PRIORITY, TCBEE_MPTCP_TOKEN_DESTROYED,
-};
 
-use super::model::{is_structural, lane_row_name, lane_y, nearest_event, pm_event_name};
+use super::model::{
+    event_type, event_type_name, lane_row_name, lane_y, nearest_event, EventKind, PmEvent,
+};
 use super::{TabMptcp, Y_AXIS_WIDTH};
 use crate::{
     settings::AppSettings,
@@ -27,6 +21,8 @@ use crate::{
 /// Height of a row of the event lane
 const LANE_ROW_HEIGHT: f32 = 18.0;
 const MIN_LANE_HEIGHT: f32 = 60.0;
+/// Radius of an event marker
+const MARKER_RADIUS: f32 = 6.0;
 
 /// What the event lane reports to the plots below it
 #[derive(Default)]
@@ -95,20 +91,20 @@ impl TabMptcp {
                         [connection.end_ts as f64, rows as f64 - 0.4],
                     ));
                 }
-                for &code in &self.event_codes {
+                for &(code, failed) in &self.event_keys {
                     let points: Vec<[f64; 2]> = self
                         .events
                         .iter()
-                        .filter(|e| e.code == code)
+                        .filter(|e| e.code == code && e.failed == failed)
                         .map(|e| [e.t, lane_y(e.row, rows)])
                         .collect();
                     plot_ui.points(
                         Points::new(PlotPoints::from(points))
-                            .shape(event_shape(code))
-                            .color(event_color(code, dark_mode))
+                            .shape(event_type(code).shape)
+                            .color(key_color(code, failed, dark_mode))
                             .filled(true)
-                            .radius(4.0)
-                            .name(pm_event_name(code)),
+                            .radius(MARKER_RADIUS)
+                            .name(event_type_name(code, failed)),
                     );
                 }
             });
@@ -124,17 +120,17 @@ impl TabMptcp {
     /// Marker and name of each event type of the connection
     fn show_event_legend(&self, ui: &mut egui::Ui, dark_mode: bool) {
         ui.horizontal_wrapped(|ui| {
-            for &code in &self.event_codes {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(12.0), egui::Sense::hover());
+            for &(code, failed) in &self.event_keys {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
                 paint_marker(
                     ui.painter(),
                     rect.center(),
-                    event_shape(code),
-                    event_color(code, dark_mode),
-                    4.0,
+                    event_type(code).shape,
+                    key_color(code, failed, dark_mode),
+                    5.0,
                 );
                 ui.label(
-                    RichText::new(pm_event_name(code))
+                    RichText::new(event_type_name(code, failed))
                         .size(11.5)
                         .color(theme::muted_text(dark_mode)),
                 );
@@ -144,31 +140,29 @@ impl TabMptcp {
     }
 }
 
-/// Marker of an event type. Types share a shape only between the connection row and the
-/// subflow rows, where the row tells them apart.
-fn event_shape(code: i64) -> MarkerShape {
-    match u32::try_from(code).unwrap_or(0) {
-        TCBEE_MPTCP_CREATED | TCBEE_MPTCP_REINJECTED => MarkerShape::Circle,
-        TCBEE_MPTCP_ESTABLISHED | TCBEE_MPTCP_SUBFLOW_STALE => MarkerShape::Square,
-        TCBEE_MPTCP_CLOSED | TCBEE_MPTCP_LISTENER_CLOSED => MarkerShape::Cross,
-        TCBEE_MPTCP_ANNOUNCED | TCBEE_MPTCP_SUB_ESTABLISHED => MarkerShape::Up,
-        TCBEE_MPTCP_REMOVED | TCBEE_MPTCP_SUB_CLOSED => MarkerShape::Down,
-        TCBEE_MPTCP_TOKEN_DESTROYED | TCBEE_MPTCP_MP_PRIO_SENT => MarkerShape::Plus,
-        TCBEE_MPTCP_FALLBACK | TCBEE_MPTCP_MP_FAIL => MarkerShape::Asterisk,
-        TCBEE_MPTCP_LISTENER_CREATED | TCBEE_MPTCP_SUB_PRIORITY => MarkerShape::Diamond,
-        TCBEE_MPTCP_SUBFLOW_CONNECT => MarkerShape::Right,
-        TCBEE_MPTCP_PENDING_REQUEUED => MarkerShape::Left,
-        _ => MarkerShape::Circle,
-    }
+/// Colour of an event kind: green up, neutral end, red trouble, grey lifecycle, violet
+/// information, orange data
+/// Colour of the events of one type, failed or not
+fn key_color(code: i64, failed: bool, dark_mode: bool) -> egui::Color32 {
+    let probe = PmEvent {
+        t: 0.0,
+        code,
+        row: 0,
+        label: String::new(),
+        backup: false,
+        failed,
+    };
+    kind_color(probe.kind(), dark_mode)
 }
 
-/// Events in the text colour, data movements muted, so that subflow colours stay for the
-/// subflows
-fn event_color(code: i64, dark_mode: bool) -> egui::Color32 {
-    if is_structural(code) {
-        theme::text(dark_mode)
-    } else {
-        theme::muted_text(dark_mode)
+pub(super) fn kind_color(kind: EventKind, dark_mode: bool) -> egui::Color32 {
+    match kind {
+        EventKind::Up => theme::SUCCESS,
+        EventKind::End => theme::text(dark_mode),
+        EventKind::Trouble => theme::ERROR,
+        EventKind::Lifecycle => theme::muted_text(dark_mode),
+        EventKind::Info => theme::info(dark_mode),
+        EventKind::Data => theme::warning(dark_mode),
     }
 }
 
