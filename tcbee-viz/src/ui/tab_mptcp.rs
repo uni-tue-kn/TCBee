@@ -121,7 +121,11 @@ impl SubflowColumn {
                 Some(54.0),
                 "Backup flag of the last path manager event that carries it",
             ),
-            Self::Events => ("Events", Some(52.0), "Path manager events of the subflow"),
+            Self::Events => (
+                "Events",
+                Some(52.0),
+                "Path manager events in the subflow's row of the lane",
+            ),
         }
     }
 
@@ -365,7 +369,9 @@ fn subflow_events(
         if event == TCBEE_MPTCP_REINJECTED as i64 {
             label.push_str(&format!(" {} B", int(&data_len)));
         }
-        label.push_str(subflow.as_deref().unwrap_or(""));
+        if !is_connection_event(event) {
+            label.push_str(subflow.as_deref().unwrap_or(""));
+        }
         out.push(PmEvent {
             t: *t,
             code: event,
@@ -744,9 +750,10 @@ impl TabMptcp {
         let mut events = Vec::new();
         for (index, sub) in self.subflows.iter_mut().enumerate() {
             let own = subflow_events(db, sub, index, &connection);
-            sub.events = own.len();
-            sub.backup = own
-                .iter()
+            // Only the events in the subflow's own row are about it
+            let mine = || own.iter().filter(|e| e.row != 0);
+            sub.events = mine().count();
+            sub.backup = mine()
                 .rev()
                 .find(|e| carries_backup(e.code))
                 .map(|e| e.backup);

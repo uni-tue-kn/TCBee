@@ -61,7 +61,9 @@ pub fn carries_backup(code: i64) -> bool {
     .any(|c| *c as i64 == code)
 }
 
-/// Events about the whole connection go to its own lane row, the others to their subflow's
+/// Events about the whole connection go to its own lane row, the others to their subflow's.
+/// Joins, sent MP_PRIOs, reinjections and requeued data are recorded on the connection's
+/// socket, which carries the first subflow's tuple, so their record does not tell the subflow.
 pub fn is_connection_event(code: i64) -> bool {
     [
         TCBEE_MPTCP_CREATED,
@@ -73,6 +75,10 @@ pub fn is_connection_event(code: i64) -> bool {
         TCBEE_MPTCP_LISTENER_CLOSED,
         TCBEE_MPTCP_TOKEN_DESTROYED,
         TCBEE_MPTCP_FALLBACK,
+        TCBEE_MPTCP_SUBFLOW_CONNECT,
+        TCBEE_MPTCP_MP_PRIO_SENT,
+        TCBEE_MPTCP_REINJECTED,
+        TCBEE_MPTCP_PENDING_REQUEUED,
     ]
     .iter()
     .any(|c| *c as i64 == code)
@@ -413,6 +419,16 @@ mod tests {
         assert_eq!(lane_y(0, 4), 3.0);
         assert_eq!(lane_y(3, 4), 0.0);
         assert!(is_connection_event(TCBEE_MPTCP_TOKEN_DESTROYED as i64));
+        // Recorded on the connection's socket, not on a subflow
+        for code in [
+            TCBEE_MPTCP_SUBFLOW_CONNECT,
+            TCBEE_MPTCP_MP_PRIO_SENT,
+            TCBEE_MPTCP_REINJECTED,
+            TCBEE_MPTCP_PENDING_REQUEUED,
+        ] {
+            assert!(is_connection_event(code as i64));
+        }
+        assert!(!is_connection_event(TCBEE_MPTCP_SUBFLOW_STALE as i64));
         assert!(!is_structural(TCBEE_MPTCP_REINJECTED as i64));
         assert!(is_structural(TCBEE_MPTCP_CLOSED as i64));
     }
