@@ -468,21 +468,45 @@ pub fn gap_threshold(points: &[(f64, f64)], sample_interval: f64) -> f64 {
     GAP_FACTOR * sample_interval.max(median)
 }
 
+/// A part of a plotted series
+#[derive(Debug, PartialEq)]
+pub struct Segment {
+    pub points: Vec<[f64; 2]>,
+    /// A value held over a pause without records, drawn faint
+    pub held: bool,
+}
+
 /// Splits a series where two points are more than `gap` apart. With `step`, each value holds
-/// until the next point, as for counters and states, instead of a straight line between them.
-pub fn segments(points: &[(f64, f64)], gap: f64, step: bool) -> Vec<Vec<[f64; 2]>> {
-    let mut out: Vec<Vec<[f64; 2]>> = Vec::new();
+/// until the next point, as for counters and states, instead of a straight line between them,
+/// and a pause does not break the line: the value is held across it in a segment of its own.
+pub fn segments(points: &[(f64, f64)], gap: f64, step: bool) -> Vec<Segment> {
+    let open = |points| Segment {
+        points,
+        held: false,
+    };
+    let mut out: Vec<Segment> = Vec::new();
     let mut previous: Option<(f64, f64)> = None;
     for &(t, v) in points {
         match previous {
             Some((pt, pv)) if t - pt <= gap => {
                 let segment = out.last_mut().expect("a segment is open");
                 if step && v != pv {
-                    segment.push([t, pv]);
+                    segment.points.push([t, pv]);
                 }
-                segment.push([t, v]);
+                segment.points.push([t, v]);
             }
-            _ => out.push(vec![[t, v]]),
+            Some((pt, pv)) if step => {
+                out.push(Segment {
+                    points: vec![[pt, pv], [t, pv]],
+                    held: true,
+                });
+                out.push(open(if v != pv {
+                    vec![[t, pv], [t, v]]
+                } else {
+                    vec![[t, v]]
+                }));
+            }
+            _ => out.push(open(vec![[t, v]])),
         }
         previous = Some((t, v));
     }
@@ -715,7 +739,10 @@ mod tests {
             (11.0, 3.0),
             (30.0, 4.0),
         ];
-        let lines = segments(&points, 2.0, false);
+        let lines: Vec<Vec<[f64; 2]>> = segments(&points, 2.0, false)
+            .into_iter()
+            .map(|s| s.points)
+            .collect();
         assert_eq!(
             lines,
             vec![
@@ -728,10 +755,35 @@ mod tests {
     }
 
     #[test]
+    fn steps_hold_their_value_across_a_pause() {
+        // cwnd recorded only when it changes: flat from 2 to 10, then down to 5
+        let lines = segments(
+            &[(0.0, 1.0), (2.0, 4.0), (10.0, 5.0), (30.0, 5.0)],
+            3.0,
+            true,
+        );
+        let plain = |points: Vec<[f64; 2]>| Segment {
+            points,
+            held: false,
+        };
+        let held = |points: Vec<[f64; 2]>| Segment { points, held: true };
+        assert_eq!(
+            lines,
+            vec![
+                plain(vec![[0.0, 1.0], [2.0, 1.0], [2.0, 4.0]]),
+                held(vec![[2.0, 4.0], [10.0, 4.0]]),
+                plain(vec![[10.0, 4.0], [10.0, 5.0]]),
+                held(vec![[10.0, 5.0], [30.0, 5.0]]),
+                plain(vec![[30.0, 5.0]]),
+            ]
+        );
+    }
+
+    #[test]
     fn steps_hold_the_value_until_the_next_point() {
         let lines = segments(&[(0.0, 1.0), (1.0, 3.0), (2.0, 3.0), (3.0, 2.0)], 5.0, true);
         assert_eq!(
-            lines,
+            lines.into_iter().map(|s| s.points).collect::<Vec<_>>(),
             vec![vec![
                 [0.0, 1.0],
                 [1.0, 1.0],

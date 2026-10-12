@@ -10,7 +10,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use egui::{RichText, ScrollArea, Vec2};
-use egui_plot::{Line, Plot, PlotBounds, PlotPoints, Points, VLine};
+use egui_plot::{Line, LineStyle, Plot, PlotBounds, PlotPoints, Points, VLine};
 use tcbee_common::records::{TCBEE_MPTCP_MP_PRIO_SENT, TCBEE_MPTCP_REINJECTED};
 use ts_storage::{
     ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind, ValueKind,
@@ -932,16 +932,24 @@ impl TabMptcp {
                                 let step = s.val_type == ValueKind::Int;
                                 let gap = gap_threshold(&s.points, s.loaded_sample_interval);
                                 for segment in segments(&s.points, gap, step) {
-                                    if segment.len() == 1 {
+                                    if segment.held {
+                                        // No records over the pause, the value only held
+                                        plot_ui.line(
+                                            Line::new(PlotPoints::from(segment.points))
+                                                .color(s.color.gamma_multiply(0.4))
+                                                .style(LineStyle::dashed_dense())
+                                                .name(&s.name),
+                                        );
+                                    } else if segment.points.len() == 1 {
                                         plot_ui.points(
-                                            Points::new(PlotPoints::from(segment))
+                                            Points::new(PlotPoints::from(segment.points))
                                                 .color(s.color)
                                                 .radius(2.0)
                                                 .name(&s.name),
                                         );
                                     } else {
                                         plot_ui.line(
-                                            Line::new(PlotPoints::from(segment))
+                                            Line::new(PlotPoints::from(segment.points))
                                                 .color(s.color)
                                                 .name(&s.name),
                                         );
