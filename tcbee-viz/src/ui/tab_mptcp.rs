@@ -35,7 +35,10 @@ use crate::{
             seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
             split_plot_height_with_footer, time_or_compact_formatter,
         },
-        table::{self, data_cell, header_cell, number_cell, number_header_cell, ROW_HEIGHT},
+        table::{
+            self, data_cell, header_cell, number_cell, number_header_cell, text_cell,
+            text_header_cell, ROW_HEIGHT,
+        },
         theme,
     },
 };
@@ -140,6 +143,12 @@ impl SubflowColumn {
         Self::ALL.iter().filter_map(|c| c.spec().1).sum()
     }
 }
+
+/// Rows the subflow panel makes room for at first
+const PANEL_MIN_ROWS: usize = 5;
+const PANEL_MAX_ROWS: usize = 10;
+/// Space above and below the table in the subflow panel
+const PANEL_MARGIN: f32 = 8.0;
 
 /// Space between the filter box, its icon and buttons
 const FILTER_GAP: f32 = 4.0;
@@ -828,16 +837,17 @@ impl TabMptcp {
             let plot = self.load_metric(db, settings, metric, ui.available_width());
             self.plots.push(plot);
         }
-        // The panel takes its space first, the plots get the rest
-        let rows = self.subflows.len() as f32 + 1.0;
+        // The panel takes its space first, the plots get the rest. Its height is chosen once;
+        // after that it keeps what the user resized it to.
+        let rows = self.subflows.len().clamp(PANEL_MIN_ROWS, PANEL_MAX_ROWS);
         egui::TopBottomPanel::bottom("mptcp_subflow_panel")
             .resizable(true)
-            .default_height((rows * ROW_HEIGHT + 24.0).clamp(80.0, 260.0))
+            .default_height(table::table_height(rows) + 2.0 * PANEL_MARGIN)
             .height_range(60.0..=600.0)
             .frame(
                 egui::Frame::new()
                     .fill(theme::panel_bg(settings.dark_mode))
-                    .inner_margin(egui::Margin::symmetric(0, 8)),
+                    .inner_margin(egui::Margin::symmetric(0, PANEL_MARGIN as i8)),
             )
             .show_inside(ui, |ui| {
                 if let Some(index) = self.show_subflow_table(ui) {
@@ -1025,7 +1035,8 @@ impl TabMptcp {
                 ui.set_min_width(min_width);
                 table::frame(dark_mode).show(ui, |ui| {
                     let content_w = ui.available_width().max(1.0);
-                    ui.spacing_mut().item_spacing.x = 0.0;
+                    // Packed rows, so that table_height holds
+                    ui.spacing_mut().item_spacing = Vec2::ZERO;
                     let flow_w = (content_w - SubflowColumn::fixed_width())
                         .max(SubflowColumn::MIN_FLOW_WIDTH);
                     let width = |c: SubflowColumn| c.spec().1.unwrap_or(flow_w);
@@ -1034,6 +1045,8 @@ impl TabMptcp {
                             let (header, _, hint) = column.spec();
                             let response = if column.is_number() {
                                 number_header_cell(ui, header, width(column))
+                            } else if column == SubflowColumn::Flow {
+                                text_header_cell(ui, header, width(column))
                             } else {
                                 header_cell(ui, header, width(column))
                             };
@@ -1101,7 +1114,7 @@ impl TabMptcp {
                 return;
             }
             SubflowColumn::Flow => {
-                data_cell(ui, &sub.flow, width, false).on_hover_text(&sub.flow);
+                text_cell(ui, &sub.flow, width, false).on_hover_text(&sub.flow);
                 return;
             }
             SubflowColumn::Position => (index + 1).to_string(),

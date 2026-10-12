@@ -7,6 +7,10 @@ use crate::ui::theme;
 pub const ROW_HEIGHT: f32 = 22.0;
 /// Space between a right-aligned number and the next column
 const NUMBER_PADDING: f32 = 8.0;
+/// Space between the previous column and left-aligned text
+const TEXT_PADDING: f32 = 6.0;
+/// Room for a horizontal scroll bar below the rows
+const SCROLL_BAR_ROOM: f32 = 8.0;
 
 const SEARCH_ICON_W: f32 = 18.0;
 const CLEAR_BUTTON_W: f32 = 22.0;
@@ -119,6 +123,47 @@ pub fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) -> egui::R
     )
 }
 
+/// A data cell with its text at the left edge, for addresses and descriptions
+pub fn text_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) -> egui::Response {
+    let color = cell_text(ui, selected);
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, ROW_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            // A left-to-right child only takes the width of its content
+            ui.set_min_size(Vec2::new(width, ROW_HEIGHT));
+            ui.add_space(TEXT_PADDING);
+            ui.add(egui::Label::new(RichText::new(text).color(color).size(12.0)).truncate())
+        },
+    )
+    .inner
+}
+
+/// A header cell with its text at the left edge, over a column of `text_cell`s
+pub fn text_header_cell(ui: &mut Ui, label: &str, width: f32) -> egui::Response {
+    let color = theme::table_header_text(ui.visuals().dark_mode);
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, ROW_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            // A left-to-right child only takes the width of its content
+            ui.set_min_size(Vec2::new(width, ROW_HEIGHT));
+            ui.add_space(TEXT_PADDING);
+            ui.add(egui::Label::new(
+                RichText::new(label).color(color).strong().size(12.0),
+            ))
+        },
+    )
+    .inner
+}
+
+/// Height of a table frame with a header and `rows` rows, when the rows are packed without
+/// spacing (`item_spacing.y` 0): the rows, the header, the frame's border and room for a
+/// horizontal scroll bar
+pub fn table_height(rows: usize) -> f32 {
+    (rows + 1) as f32 * ROW_HEIGHT + 2.0 + SCROLL_BAR_ROOM
+}
+
 /// A header cell with its text at the right edge, over a column of numbers
 pub fn number_header_cell(ui: &mut Ui, label: &str, width: f32) -> egui::Response {
     let color = theme::table_header_text(ui.visuals().dark_mode);
@@ -190,6 +235,55 @@ mod tests {
         // The help adds its width and a gap
         assert_eq!(filter_text_width(200.0, 20.0, true, 4.0), 72.0);
         assert_eq!(filter_text_width(50.0, 4.0, true, 4.0), 40.0);
+    }
+
+    /// How far `add_cell` moves the cursor of a row
+    fn cell_advance(add_cell: impl Fn(&mut Ui)) -> f32 {
+        let ctx = egui::Context::default();
+        let mut advance = 0.0;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::ZERO;
+                    let start = ui.cursor().left();
+                    add_cell(ui);
+                    advance = ui.cursor().left() - start;
+                });
+            });
+        });
+        advance
+    }
+
+    #[test]
+    fn cells_take_their_column_width() {
+        for text in ["x", "10.31.1.1:55872 -> 10.31.1.2:5501"] {
+            assert_eq!(
+                cell_advance(|ui| drop(text_cell(ui, text, 200.0, false))),
+                200.0
+            );
+            assert_eq!(
+                cell_advance(|ui| drop(text_header_cell(ui, text, 200.0))),
+                200.0
+            );
+            assert_eq!(
+                cell_advance(|ui| drop(number_cell(ui, text, 200.0, false))),
+                200.0
+            );
+            assert_eq!(
+                cell_advance(|ui| drop(number_header_cell(ui, text, 200.0))),
+                200.0
+            );
+            assert_eq!(
+                cell_advance(|ui| drop(data_cell(ui, text, 200.0, false))),
+                200.0
+            );
+        }
+    }
+
+    #[test]
+    fn table_height_counts_header_border_and_scroll_bar() {
+        assert_eq!(table_height(0), 22.0 + 2.0 + 8.0);
+        assert_eq!(table_height(3), 4.0 * 22.0 + 2.0 + 8.0);
     }
 
     #[test]
