@@ -250,10 +250,15 @@ pub fn format_bytes(bytes: f64) -> String {
 }
 
 /// Each subflow's share of the connection's bytes: of the acknowledged bytes on a sender, of
-/// the received bytes on a receiver, which acknowledges none
+/// the received bytes on a receiver. Each side counts a byte or so of the other direction
+/// (the SYN), so the larger total tells the direction.
 pub fn byte_shares(acked: &[Option<f64>], received: &[Option<f64>]) -> Vec<Option<f64>> {
     let total = |values: &[Option<f64>]| values.iter().flatten().sum::<f64>();
-    let values = if total(acked) > 0.0 { acked } else { received };
+    let values = if total(acked) >= total(received) {
+        acked
+    } else {
+        received
+    };
     let sum = total(values);
     values
         .iter()
@@ -379,11 +384,15 @@ mod tests {
     #[test]
     fn shares_of_acked_or_received_bytes() {
         // Sender: acknowledged bytes
-        let shares = byte_shares(&[Some(3.0), Some(1.0), None], &[Some(0.0), Some(9.0), None]);
+        let shares = byte_shares(&[Some(3.0), Some(1.0), None], &[Some(0.0), Some(1.0), None]);
         assert_eq!(shares, vec![Some(0.75), Some(0.25), None]);
         // Receiver: nothing acknowledged, so the received bytes count
         let shares = byte_shares(&[Some(0.0), Some(0.0)], &[Some(1.0), Some(3.0)]);
         assert_eq!(shares, vec![Some(0.25), Some(0.75)]);
+        // Receiving client: each subflow acknowledged the server's SYN
+        let gib = 1024.0 * 1024.0 * 1024.0;
+        let shares = byte_shares(&[Some(1.0); 3], &[Some(2.0 * gib), Some(gib), Some(gib)]);
+        assert_eq!(shares, vec![Some(0.5), Some(0.25), Some(0.25)]);
         // No bytes at all
         assert_eq!(byte_shares(&[Some(0.0)], &[None]), vec![None]);
     }

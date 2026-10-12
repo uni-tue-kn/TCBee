@@ -79,7 +79,7 @@ const SUBFLOW_COLUMNS: [(&str, f32, &str); 12] = [
     (
         "Share",
         110.0,
-        "Share of the acknowledged bytes, on a receiver of the received bytes",
+        "Share of the bytes sent, or on a receiver of the bytes received",
     ),
     ("Retrans", 56.0, "Retransmitted segments"),
     (
