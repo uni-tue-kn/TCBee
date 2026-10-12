@@ -810,7 +810,7 @@ pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -
     ((available_height - PLOT_AXIS_FOOTER) / count).max(80.0)
 }
 
-fn section_heading(ui: &mut egui::Ui, label: &str) {
+pub fn section_heading(ui: &mut egui::Ui, label: &str) {
     let dark_mode = ui.visuals().dark_mode;
     ui.label(
         RichText::new(label)

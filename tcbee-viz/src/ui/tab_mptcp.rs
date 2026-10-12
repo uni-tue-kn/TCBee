@@ -2,10 +2,12 @@
 //! the path manager events as markers, and a table of the subflows with their share of the
 //! acknowledged bytes.
 
-use std::collections::BTreeSet;
+mod model;
+
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 
-use egui::{RichText, ScrollArea};
+use egui::{RichText, ScrollArea, Vec2};
 use egui_plot::{Corner, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
@@ -17,6 +19,8 @@ use tcbee_common::records::{
 };
 use ts_storage::{ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind};
 
+use model::{infer_sides, ConnectionSummary, SideInput};
+
 use crate::{
     backend::db::{flow_x_bounds, format_flow, DbBackend},
     data::{
@@ -27,10 +31,11 @@ use crate::{
     settings::AppSettings,
     ui::{
         tab_single_flow::{
-            plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter,
+            plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter, section_heading,
             time_or_compact_coordinates_formatter, time_or_compact_formatter,
             vertical_marker_label,
         },
+        table::{self, data_cell, header_cell, ROW_HEIGHT},
         theme,
     },
 };
@@ -40,6 +45,13 @@ pub const NO_MPTCP_HINT: &str =
     "No MPTCP was recorded in this database. Record with tcbee-record -M to see MPTCP connections.";
 /// Plotted first if the subflows have it
 const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
+
+// Columns of the connection table; the first subflow takes the rest of the width
+const COL_TOKEN: f32 = 86.0;
+const COL_SIDE: f32 = 56.0;
+const COL_SUBFLOWS: f32 = 30.0;
+const COL_EVENTS: f32 = 50.0;
+const COL_DURATION: f32 = 62.0;
 
 /// Whether the database has MPTCP connections, which enables the tab
 pub fn has_mptcp(db: &DbBackend) -> bool {
@@ -87,35 +99,109 @@ fn pm_event_name(event: i64) -> &'static str {
     }
 }
 
-/// The MPTCP connections of the database with their sidebar text
-fn connection_rows(db: &DbBackend) -> Vec<ConnectionRow> {
-    let mptcp: Vec<&ConnectionInfo> = db
+/// The value of a catalog series of a flow: the largest value of `name` over both directions
+fn catalog_max(series: &[SeriesInfo], source: &str, name: &str) -> Option<f64> {
+    series
+        .iter()
+        .filter(|s| s.source == source && s.name == name)
+        .filter_map(|s| s.v_max)
+        .reduce(f64::max)
+}
+
+/// The MPTCP connections of the database as sidebar rows, oldest first. `catalogs` caches the
+/// series catalog of each flow.
+fn connection_summaries(
+    db: &DbBackend,
+    catalogs: &mut HashMap<i64, Vec<SeriesInfo>>,
+) -> Vec<ConnectionSummary> {
+    let mut mptcp: Vec<&ConnectionInfo> = db
         .list_connections()
         .iter()
         .filter(|c| c.kind == ConnectionInfo::KIND_MPTCP)
         .collect();
-    let origin = mptcp.iter().map(|c| c.start_ts).min().unwrap_or(0);
-    mptcp
-        .into_iter()
-        .map(|c| {
-            let flows = db
-                .list_connection_flows()
-                .iter()
-                .filter(|m| m.connection_id == c.id)
-                .count();
-            ConnectionRow {
-                info: c.clone(),
-                text: format!(
-                    "#{}  token {:#010x}  {} flows  {:.2} s, at {:.3} s",
-                    c.id,
-                    c.key,
-                    flows,
-                    (c.end_ts - c.start_ts) as f64 / 1e9,
-                    (c.start_ts - origin) as f64 / 1e9
-                ),
+    mptcp.sort_by_key(|c| (c.start_ts, c.id));
+    let origin = mptcp.first().map_or(0, |c| c.start_ts);
+
+    let mut inputs = Vec::with_capacity(mptcp.len());
+    let mut rows = Vec::with_capacity(mptcp.len());
+    for c in &mptcp {
+        let mut members: Vec<&ConnectionFlow> = db
+            .list_connection_flows()
+            .iter()
+            .filter(|m| m.connection_id == c.id)
+            .collect();
+        members.sort_by_key(|m| (m.first_ts, m.subflow_id));
+        let mut input = SideInput {
+            key: c.key,
+            ..SideInput::default()
+        };
+        let mut events = 0;
+        for m in &members {
+            let series = catalogs
+                .entry(m.flow_id)
+                .or_insert_with(|| db.list_series_for_flow(m.flow_id));
+            if let Some(token) = catalog_max(series, "mptcp_pm", "remote_token") {
+                input.remote_tokens.push(token as i64);
             }
-        })
-        .collect()
+            events += series
+                .iter()
+                .find(|s| s.source == "mptcp_pm" && s.name == "event")
+                .map_or(0, |s| s.n);
+            if let Some(flow) = db.get_flow_by_id(m.flow_id) {
+                input.ports.push((flow.tuple.sport, flow.tuple.dport));
+            }
+        }
+        // connections.flow_id stays empty, so the first subflow is the earliest member
+        let first_subflow = members
+            .first()
+            .and_then(|m| db.get_flow_by_id(m.flow_id))
+            .map_or_else(String::new, |f| {
+                format!(
+                    "{}:{} -> {}:{}",
+                    f.tuple.src, f.tuple.sport, f.tuple.dst, f.tuple.dport
+                )
+            });
+        inputs.push(input);
+        rows.push(ConnectionSummary {
+            id: c.id,
+            token: c.key,
+            first_subflow,
+            side: None,
+            peer: None,
+            subflows: members.len(),
+            events,
+            start_s: (c.start_ts - origin) as f64 / 1e9,
+            duration_s: (c.end_ts - c.start_ts) as f64 / 1e9,
+        });
+    }
+    for (row, (side, peer)) in rows.iter_mut().zip(infer_sides(&inputs)) {
+        row.side = side;
+        row.peer = peer.map(|i| mptcp[i].id);
+    }
+    rows
+}
+
+fn connection_tooltip(row: &ConnectionSummary) -> String {
+    let mut text = format!(
+        "Connection #{}, token {} ({})\nFirst subflow {}\nStarts at {:.3} s, lasts {:.3} s",
+        row.id,
+        row.token_text(),
+        row.token,
+        row.first_subflow,
+        row.start_s,
+        row.duration_s
+    );
+    if let Some(side) = row.side {
+        text.push_str(&format!(
+            "\nSide: {} ({})",
+            side.label(),
+            side.description()
+        ));
+    }
+    if let Some(peer) = row.peer {
+        text.push_str(&format!("\nThe other end is connection #{peer}"));
+    }
+    text
 }
 
 /// The path manager events of one subflow that belong to `connection` (a flow tuple may be
@@ -233,18 +319,16 @@ impl Subflow {
     }
 }
 
-/// A connection in the sidebar
-struct ConnectionRow {
-    info: ConnectionInfo,
-    text: String,
-}
-
 /// The tab is reset whenever another tab is shown, and the database only changes on the Home
 /// tab, so its state always belongs to the open database.
 #[derive(Default)]
 pub struct TabMptcp {
     /// The MPTCP connections of the database, read when the tab is first shown
-    connections: Vec<ConnectionRow>,
+    connections: Vec<ConnectionSummary>,
+    connections_read: bool,
+    connection_filter: String,
+    /// Series catalog of each subflow, read once
+    catalogs: HashMap<i64, Vec<SeriesInfo>>,
     connection: Option<ConnectionInfo>,
     subflows: Vec<Subflow>,
     metrics: Vec<MetricKey>,
@@ -262,8 +346,12 @@ impl TabMptcp {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
-        if self.connections.is_empty() {
-            self.connections = connection_rows(db);
+        if !self.connections_read {
+            self.connections = connection_summaries(db, &mut self.catalogs);
+            self.connections_read = true;
+            if let Some(first) = self.connections.first().map(|c| c.id) {
+                self.select_connection(db, first);
+            }
         }
         if self.connections.is_empty() {
             // The tab is disabled then, this only shows if that changes
@@ -275,9 +363,9 @@ impl TabMptcp {
 
         egui::SidePanel::left("mptcp_sidebar")
             .resizable(true)
-            .min_width(240.0)
-            .max_width(500.0)
-            .default_width(360.0)
+            .min_width(280.0)
+            .max_width(720.0)
+            .default_width(460.0)
             .frame(theme::sidebar_frame(settings.dark_mode))
             .show_inside(ui, |ui| {
                 ScrollArea::vertical()
@@ -299,17 +387,9 @@ impl TabMptcp {
     }
 
     fn show_sidebar(&mut self, ui: &mut egui::Ui, db: &DbBackend) {
-        ui.label(RichText::new("MPTCP connections").strong());
-        ui.add_space(4.0);
-        let mut clicked = None;
-        for row in &self.connections {
-            let selected = self.connection.as_ref().map(|c| c.id) == Some(row.info.id);
-            if ui.selectable_label(selected, &row.text).clicked() {
-                clicked = Some(row.info.clone());
-            }
-        }
-        if let Some(connection) = clicked {
-            self.select_connection(db, connection);
+        section_heading(ui, "Connections");
+        if let Some(id) = self.show_connection_table(ui) {
+            self.select_connection(db, id);
         }
 
         if self.connection.is_none() {
@@ -343,10 +423,113 @@ impl TabMptcp {
         }
     }
 
+    /// The filterable connection table. Returns the id of a newly clicked connection.
+    fn show_connection_table(&mut self, ui: &mut egui::Ui) -> Option<i64> {
+        let dark_mode = ui.visuals().dark_mode;
+        let selected_id = self.connection.as_ref().map(|c| c.id);
+        let mut clicked = None;
+        table::frame(dark_mode).show(ui, |ui| {
+            let content_w = ui.available_width().max(1.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add(
+                egui::TextEdit::singleline(&mut self.connection_filter)
+                    .hint_text("Filter, e.g. 0x3fa1 10.31.1.1 server")
+                    .desired_width(content_w),
+            );
+            let filter = self.connection_filter.to_lowercase();
+            let visible: Vec<&ConnectionSummary> = self
+                .connections
+                .iter()
+                .filter(|c| c.matches(&filter))
+                .collect();
+            let fixed = COL_TOKEN + COL_SIDE + COL_SUBFLOWS + COL_EVENTS + COL_DURATION;
+            let col_flow = (content_w - fixed).max(80.0);
+
+            let header_rect = egui::Rect::from_min_size(
+                ui.available_rect_before_wrap().min,
+                Vec2::new(content_w, ROW_HEIGHT),
+            );
+            ui.painter()
+                .rect_filled(header_rect, 0.0, theme::table_header_bg(dark_mode));
+            ui.horizontal(|ui| {
+                ui.set_height(ROW_HEIGHT);
+                header_cell(ui, "Token", COL_TOKEN);
+                header_cell(ui, "First subflow", col_flow);
+                header_cell(ui, "Side", COL_SIDE);
+                header_cell(ui, "Sf", COL_SUBFLOWS).on_hover_text("Subflows");
+                header_cell(ui, "Events", COL_EVENTS)
+                    .on_hover_text("Path manager records on the subflows' tuples");
+                header_cell(ui, "Length", COL_DURATION);
+            });
+            if visible.is_empty() {
+                ui.label(
+                    RichText::new("No connections match the filter.")
+                        .color(theme::muted_text(dark_mode))
+                        .italics(),
+                );
+                return;
+            }
+            // At most 8 rows, the metrics follow below
+            ScrollArea::vertical()
+                .id_salt("mptcp_connection_rows")
+                .max_height(8.0 * ROW_HEIGHT)
+                .auto_shrink([false, true])
+                .show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
+                    ui.set_width(content_w);
+                    for i in range {
+                        let row = visible[i];
+                        let selected = selected_id == Some(row.id);
+                        let response = ui.horizontal(|ui| {
+                            ui.set_width(content_w);
+                            ui.set_height(ROW_HEIGHT);
+                            let rect = ui.max_rect();
+                            let hovered = ui.rect_contains_pointer(rect);
+                            ui.painter().rect_filled(
+                                rect,
+                                0.0,
+                                table::row_fill(dark_mode, i, selected, hovered),
+                            );
+                            data_cell(ui, &row.token_text(), COL_TOKEN, selected);
+                            data_cell(ui, &row.first_subflow, col_flow, selected);
+                            data_cell(ui, row.side.map_or("–", |s| s.label()), COL_SIDE, selected);
+                            data_cell(ui, &row.subflows.to_string(), COL_SUBFLOWS, selected);
+                            data_cell(ui, &row.events.to_string(), COL_EVENTS, selected);
+                            data_cell(
+                                ui,
+                                &format!("{:.2} s", row.duration_s),
+                                COL_DURATION,
+                                selected,
+                            );
+                        });
+                        let rect = response.response.rect;
+                        let click = ui
+                            .interact(
+                                rect,
+                                ui.id().with(("mptcp_connection", row.id)),
+                                egui::Sense::click(),
+                            )
+                            .on_hover_text(connection_tooltip(row));
+                        if click.clicked() && !selected {
+                            clicked = Some(row.id);
+                        }
+                        table::row_divider(ui, rect);
+                    }
+                });
+        });
+        clicked
+    }
+
     /// Reads the subflows of a connection and their catalogs, the metrics they share and the
     /// path manager events.
-    fn select_connection(&mut self, db: &DbBackend, connection: ConnectionInfo) {
-        let connection_id = connection.id;
+    fn select_connection(&mut self, db: &DbBackend, connection_id: i64) {
+        let Some(connection) = db
+            .list_connections()
+            .iter()
+            .find(|c| c.id == connection_id)
+            .cloned()
+        else {
+            return;
+        };
         self.subflows.clear();
         self.events.clear();
         for m in db
@@ -365,7 +548,11 @@ impl TabMptcp {
                 member: m.clone(),
                 label: format!("{label} ({}:{})", flow.tuple.src, flow.tuple.sport),
                 flow: format_flow(flow),
-                series: db.list_series_for_flow(m.flow_id),
+                series: self
+                    .catalogs
+                    .entry(m.flow_id)
+                    .or_insert_with(|| db.list_series_for_flow(m.flow_id))
+                    .clone(),
             });
         }
 
