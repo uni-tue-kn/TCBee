@@ -948,6 +948,9 @@ impl TabMptcp {
                         .allow_drag(true)
                         // The wheel scrolls the stack, not the values
                         .allow_scroll([true, false])
+                        // Its auto bounds would spread to the linked plots and unlink their
+                        // time; a double-click resets the whole view instead, see below
+                        .allow_double_click_reset(false)
                         .link_axis("mptcp_time", [true, false])
                         .link_cursor("mptcp_time", [true, false])
                         .x_grid_spacer(seconds_grid_spacer(origin))
@@ -1004,7 +1007,8 @@ impl TabMptcp {
                                     .vline(VLine::new(e.t).color(marker_color.gamma_multiply(0.5)));
                             }
                         });
-                    reset |= response.response.secondary_clicked();
+                    reset |=
+                        response.response.secondary_clicked() || response.response.double_clicked();
                     ui.add_space(4.0);
                 }
             });
@@ -1059,7 +1063,8 @@ impl TabMptcp {
             .allow_double_click_reset(false)
             .link_axis("mptcp_time", [true, false])
             .link_cursor("mptcp_time", [true, false])
-            .show_x(false)
+            // Hover needs one of the two; the label shows the event, not the coordinates
+            .show_x(true)
             .show_y(false)
             .x_grid_spacer(seconds_grid_spacer(origin))
             .x_axis_formatter(|_, _| String::new())
