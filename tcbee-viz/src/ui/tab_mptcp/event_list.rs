@@ -114,7 +114,7 @@ impl TabMptcp {
             });
         if let Some(index) = clicked {
             self.selected_event = Some(index);
-            self.focus.set(Some(self.events[index].t));
+            self.focus = Some(self.events[index].t);
         }
     }
 

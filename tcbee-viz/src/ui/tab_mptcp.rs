@@ -499,14 +499,14 @@ pub struct TabMptcp {
     /// The event types among them: code and whether failed
     event_keys: Vec<(i64, bool)>,
     /// Time per screen pixel of the lane in the last frame, for grouping close events
-    lane_ns_per_px: std::cell::Cell<f64>,
+    lane_ns_per_px: f64,
     /// What the panel below the plots shows
     bottom_tab: BottomTab,
     event_filter: String,
     /// Index into `events` of the event picked in the event list
     selected_event: Option<usize>,
     /// Time to move the view to, once
-    focus: std::cell::Cell<Option<f64>>,
+    focus: Option<f64>,
     needs_fit: bool,
 }
 
@@ -716,7 +716,7 @@ impl TabMptcp {
         self.events = Arc::default();
         // The picked event belonged to the old connection
         self.selected_event = None;
-        self.focus.set(None);
+        self.focus = None;
         let mut members: Vec<&ConnectionFlow> = db
             .list_connection_flows()
             .iter()

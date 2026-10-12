@@ -55,7 +55,7 @@ impl TabMptcp {
     /// The path manager events above the metric plots: a row for the connection and one per
     /// subflow, a marker per event, the full text on hover.
     pub(super) fn show_event_lane(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         settings: &AppSettings,
         fit: bool,
@@ -72,7 +72,9 @@ impl TabMptcp {
         let dark_mode = settings.dark_mode;
         section_heading(ui, "Path manager events");
         // Groups use the scale of the last frame; the first frame groups nothing
-        let tol = GROUP_PX * self.lane_ns_per_px.get();
+        let tol = GROUP_PX * self.lane_ns_per_px;
+        // An event picked in the list, shown once
+        let focus = self.focus.take();
         let groups: Arc<[EventGroup]> = group_events(&self.events, tol).into();
         let (events, hover_groups) = (Arc::clone(&self.events), Arc::clone(&groups));
         let response = Plot::new("mptcp_event_lane")
@@ -128,7 +130,7 @@ impl TabMptcp {
                     plot_ui.set_plot_bounds(PlotBounds::from_min_max([start, y_min], [end, y_max]));
                 }
                 // An event picked in the list: the plots below follow through the linked axis
-                if let Some(t) = self.focus.take() {
+                if let Some(t) = focus {
                     let shown = plot_ui.plot_bounds();
                     let (x0, x1) = centered_x(shown.min()[0], shown.max()[0], t, start, end);
                     plot_ui.set_plot_bounds(PlotBounds::from_min_max([x0, y_min], [x1, y_max]));
@@ -179,8 +181,8 @@ impl TabMptcp {
             });
         let frame = *response.transform.frame();
         let bounds = response.transform.bounds();
-        self.lane_ns_per_px
-            .set((bounds.max()[0] - bounds.min()[0]) / f64::from(frame.width().max(1.0)));
+        self.lane_ns_per_px =
+            (bounds.max()[0] - bounds.min()[0]) / f64::from(frame.width().max(1.0));
         self.paint_lane_labels(ui, &response.transform, &groups, rows, dark_mode);
         self.show_event_legend(ui, dark_mode);
         ui.add_space(4.0);
