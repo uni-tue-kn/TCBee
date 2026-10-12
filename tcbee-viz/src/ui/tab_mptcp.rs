@@ -1,5 +1,5 @@
-//! MPTCP connections: one connection at a time, one metric of all its subflows in one plot,
-//! the path manager events as markers, and a table of the subflows with their share of the
+//! MPTCP connections: one connection at a time, its path manager events in a lane, a plot per
+//! chosen metric with all subflows, and a table of the subflows with their share of the
 //! acknowledged bytes.
 
 mod model;
@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 
 use egui::{RichText, ScrollArea, Vec2};
-use egui_plot::{Line, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Text, VLine};
+use egui_plot::{GridMark, Line, MarkerShape, Plot, PlotBounds, PlotPoints, Points, VLine};
 use tcbee_common::records::{
     TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
     TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
@@ -21,7 +21,10 @@ use ts_storage::{
     ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind, ValueKind,
 };
 
-use model::{gap_threshold, infer_sides, segments, sort_subflows, ConnectionSummary, SideInput};
+use model::{
+    gap_threshold, infer_sides, is_connection_event, is_structural, lane_y, nearest_event,
+    segments, sort_subflows, ConnectionSummary, PmEvent, SideInput,
+};
 
 use crate::{
     backend::db::{flow_x_bounds, format_flow, DbBackend},
@@ -34,7 +37,7 @@ use crate::{
     ui::{
         tab_single_flow::{
             seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
-            split_plot_height_with_footer, time_or_compact_formatter, vertical_marker_label,
+            split_plot_height_with_footer, time_or_compact_formatter,
         },
         table::{self, data_cell, header_cell, ROW_HEIGHT},
         theme,
@@ -51,6 +54,9 @@ const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
 const MIN_PLOT_HEIGHT: f32 = 120.0;
 /// Width of the value axis of every metric plot
 const Y_AXIS_WIDTH: f32 = 56.0;
+/// Height of a row of the event lane
+const LANE_ROW_HEIGHT: f32 = 18.0;
+const MIN_LANE_HEIGHT: f32 = 60.0;
 
 // Columns of the connection table; the first subflow takes the rest of the width
 const COL_TOKEN: f32 = 86.0;
@@ -228,12 +234,12 @@ fn connection_tooltip(row: &ConnectionSummary) -> String {
 }
 
 /// The path manager events of one subflow that belong to `connection` (a flow tuple may be
-/// reused by another connection): (time, marker label)
+/// reused by another connection): (time, event code, label)
 fn subflow_events(
     db: &DbBackend,
     sub: &Subflow,
     connection: &ConnectionInfo,
-) -> Vec<(f64, String)> {
+) -> Vec<(f64, i64, String)> {
     let column = |name: &str| -> Vec<(f64, DataValue)> {
         sub.series
             .iter()
@@ -294,7 +300,7 @@ fn subflow_events(
             label.push_str(&format!(" {} B", int(&data_len)));
         }
         label.push_str(subflow.as_deref().unwrap_or(""));
-        out.push((*t, label));
+        out.push((*t, event, label));
     }
     out
 }
@@ -316,6 +322,113 @@ fn event_address(family: i64, port: i64, words: [i64; 4]) -> Option<String> {
         (IpAddr::V6(ip), port) => format!("[{ip}]:{port}"),
         (ip, port) => format!("{ip}:{port}"),
     })
+}
+
+/// Name of a row of the event lane at plot height `y`: the connection on top, then the
+/// subflows in the order they started
+fn lane_row_name(y: f64, rows: usize) -> String {
+    let row = rows as f64 - 1.0 - y;
+    if row.fract() != 0.0 || row < 0.0 || row >= rows as f64 {
+        return String::new();
+    }
+    match row as usize {
+        0 => "conn".to_string(),
+        k => format!("#{k}"),
+    }
+}
+
+/// Marker of an event type. Types share a shape only between the connection row and the
+/// subflow rows, where the row tells them apart.
+fn event_shape(code: i64) -> MarkerShape {
+    match u32::try_from(code).unwrap_or(0) {
+        TCBEE_MPTCP_CREATED | TCBEE_MPTCP_REINJECTED => MarkerShape::Circle,
+        TCBEE_MPTCP_ESTABLISHED | TCBEE_MPTCP_SUBFLOW_STALE => MarkerShape::Square,
+        TCBEE_MPTCP_CLOSED | TCBEE_MPTCP_LISTENER_CLOSED => MarkerShape::Cross,
+        TCBEE_MPTCP_ANNOUNCED | TCBEE_MPTCP_SUB_ESTABLISHED => MarkerShape::Up,
+        TCBEE_MPTCP_REMOVED | TCBEE_MPTCP_SUB_CLOSED => MarkerShape::Down,
+        TCBEE_MPTCP_TOKEN_DESTROYED | TCBEE_MPTCP_MP_PRIO_SENT => MarkerShape::Plus,
+        TCBEE_MPTCP_FALLBACK | TCBEE_MPTCP_MP_FAIL => MarkerShape::Asterisk,
+        TCBEE_MPTCP_LISTENER_CREATED | TCBEE_MPTCP_SUB_PRIORITY => MarkerShape::Diamond,
+        TCBEE_MPTCP_SUBFLOW_CONNECT => MarkerShape::Right,
+        TCBEE_MPTCP_PENDING_REQUEUED => MarkerShape::Left,
+        _ => MarkerShape::Circle,
+    }
+}
+
+/// Events in the text colour, data movements muted, so that subflow colours stay for the
+/// subflows
+fn event_color(code: i64, dark_mode: bool) -> egui::Color32 {
+    if is_structural(code) {
+        theme::text(dark_mode)
+    } else {
+        theme::muted_text(dark_mode)
+    }
+}
+
+/// Paints an egui_plot marker shape for the legend
+fn paint_marker(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    shape: MarkerShape,
+    color: egui::Color32,
+    r: f32,
+) {
+    use egui::{pos2, Shape, Stroke};
+    let stroke = Stroke::new(1.5, color);
+    let triangle =
+        |points: [egui::Pos2; 3]| Shape::convex_polygon(points.to_vec(), color, Stroke::NONE);
+    let shape = match shape {
+        MarkerShape::Circle => Shape::circle_filled(c, r, color),
+        MarkerShape::Square => Shape::rect_filled(
+            egui::Rect::from_center_size(c, Vec2::splat(2.0 * r)),
+            0.0,
+            color,
+        ),
+        MarkerShape::Diamond => Shape::convex_polygon(
+            vec![
+                pos2(c.x, c.y - r),
+                pos2(c.x + r, c.y),
+                pos2(c.x, c.y + r),
+                pos2(c.x - r, c.y),
+            ],
+            color,
+            Stroke::NONE,
+        ),
+        MarkerShape::Up => triangle([
+            pos2(c.x, c.y - r),
+            pos2(c.x + r, c.y + r),
+            pos2(c.x - r, c.y + r),
+        ]),
+        MarkerShape::Down => triangle([
+            pos2(c.x - r, c.y - r),
+            pos2(c.x + r, c.y - r),
+            pos2(c.x, c.y + r),
+        ]),
+        MarkerShape::Left => triangle([
+            pos2(c.x - r, c.y),
+            pos2(c.x + r, c.y - r),
+            pos2(c.x + r, c.y + r),
+        ]),
+        MarkerShape::Right => triangle([
+            pos2(c.x - r, c.y - r),
+            pos2(c.x + r, c.y),
+            pos2(c.x - r, c.y + r),
+        ]),
+        MarkerShape::Plus => Shape::Vec(vec![
+            Shape::line_segment([pos2(c.x - r, c.y), pos2(c.x + r, c.y)], stroke),
+            Shape::line_segment([pos2(c.x, c.y - r), pos2(c.x, c.y + r)], stroke),
+        ]),
+        MarkerShape::Cross => Shape::Vec(vec![
+            Shape::line_segment([pos2(c.x - r, c.y - r), pos2(c.x + r, c.y + r)], stroke),
+            Shape::line_segment([pos2(c.x - r, c.y + r), pos2(c.x + r, c.y - r)], stroke),
+        ]),
+        MarkerShape::Asterisk => Shape::Vec(vec![
+            Shape::line_segment([pos2(c.x - r, c.y), pos2(c.x + r, c.y)], stroke),
+            Shape::line_segment([pos2(c.x - r, c.y - r), pos2(c.x + r, c.y + r)], stroke),
+            Shape::line_segment([pos2(c.x - r, c.y + r), pos2(c.x + r, c.y - r)], stroke),
+        ]),
+    };
+    painter.add(shape);
 }
 
 /// One subflow of the selected connection with its catalog
@@ -368,8 +481,8 @@ pub struct TabMptcp {
     selected: Vec<MetricKey>,
     /// The loaded plots, in the order of `selected`; the last ones may still be missing
     plots: Vec<MetricPlot>,
-    /// Path manager events: (time, label)
-    events: Vec<(f64, String)>,
+    /// Path manager events, in time order
+    events: Vec<PmEvent>,
     needs_fit: bool,
 }
 
@@ -633,10 +746,22 @@ impl TabMptcp {
         self.plots.clear();
         self.needs_fit = true;
 
-        for sub in &self.subflows {
-            self.events.extend(subflow_events(db, sub, &connection));
+        for (index, sub) in self.subflows.iter().enumerate() {
+            for (t, code, label) in subflow_events(db, sub, &connection) {
+                let row = if is_connection_event(code) {
+                    0
+                } else {
+                    index + 1
+                };
+                self.events.push(PmEvent {
+                    t,
+                    code,
+                    row,
+                    label,
+                });
+            }
         }
-        self.events.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.events.sort_by(|a, b| a.t.total_cmp(&b.t));
         self.connection = Some(connection);
     }
 
@@ -735,10 +860,11 @@ impl TabMptcp {
         let marker_color = theme::muted_text(settings.dark_mode);
 
         let mut visible = None;
-        let mut reset = false;
+        let lane_height = self.show_event_lane(ui, settings, fit, origin);
+        let mut reset = lane_height.1;
         ScrollArea::vertical()
             .id_salt("mptcp_plots_scroll")
-            .max_height(height)
+            .max_height(height - lane_height.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (metric, plot) in self.selected.iter().zip(&self.plots) {
@@ -796,18 +922,10 @@ impl TabMptcp {
                                     }
                                 }
                             }
-                            let bounds = plot_ui.plot_bounds();
-                            let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
-                            for (t, label) in &self.events {
-                                plot_ui.vline(VLine::new(*t).color(marker_color));
-                                plot_ui.text(
-                                    Text::new(
-                                        PlotPoint::new(*t, marker_y),
-                                        vertical_marker_label(label),
-                                    )
-                                    .anchor(egui::Align2::LEFT_CENTER)
-                                    .color(marker_color),
-                                );
+                            // Details are in the event lane
+                            for e in self.events.iter().filter(|e| is_structural(e.code)) {
+                                plot_ui
+                                    .vline(VLine::new(e.t).color(marker_color.gamma_multiply(0.5)));
                             }
                         });
                     reset |= response.response.secondary_clicked();
@@ -835,6 +953,120 @@ impl TabMptcp {
                 }
             }
         }
+    }
+
+    /// The path manager events above the metric plots: a row for the connection and one per
+    /// subflow, a marker per event, the full text on hover. Returns the height it took and
+    /// whether it was right-clicked to reset the view.
+    fn show_event_lane(
+        &self,
+        ui: &mut egui::Ui,
+        settings: &AppSettings,
+        fit: bool,
+        origin: f64,
+    ) -> (f32, bool) {
+        let Some(connection) = &self.connection else {
+            return (0.0, false);
+        };
+        let top = ui.cursor().top();
+        let rows = self.subflows.len() + 1;
+        let lane_height = ((rows + 1) as f32 * LANE_ROW_HEIGHT).max(MIN_LANE_HEIGHT);
+        let dark_mode = settings.dark_mode;
+        ui.label(
+            RichText::new("Path manager events")
+                .strong()
+                .color(theme::muted_text(dark_mode)),
+        );
+        let events = self.events.clone();
+        let response = Plot::new("mptcp_event_lane")
+            // Only time moves; the rows stay in view
+            .allow_drag([true, false])
+            .allow_zoom([true, false])
+            .allow_scroll([true, false])
+            .allow_boxed_zoom(false)
+            .allow_double_click_reset(false)
+            .link_axis("mptcp_time", [true, false])
+            .link_cursor("mptcp_time", [true, false])
+            .show_x(false)
+            .show_y(false)
+            .x_grid_spacer(seconds_grid_spacer(origin))
+            .x_axis_formatter(|_, _| String::new())
+            .y_grid_spacer(move |_| {
+                (0..rows)
+                    .map(|i| GridMark {
+                        value: i as f64,
+                        step_size: 1.0,
+                    })
+                    .collect()
+            })
+            .y_axis_formatter(move |mark, _| lane_row_name(mark.value, rows))
+            .y_axis_min_width(Y_AXIS_WIDTH)
+            .label_formatter(move |name, point| {
+                let time = format!("{:.3} s", (point.x - origin) / 1e9);
+                match nearest_event(&events, pm_event_name, name, point.x, point.y, rows) {
+                    Some(e) => format!("{}\n{:.3} s", e.label, (e.t - origin) / 1e9),
+                    None => time,
+                }
+            })
+            .height(lane_height)
+            .show(ui, |plot_ui| {
+                if fit {
+                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                        [connection.start_ts as f64, -0.6],
+                        [connection.end_ts as f64, rows as f64 - 0.4],
+                    ));
+                }
+                let mut codes: Vec<i64> = self.events.iter().map(|e| e.code).collect();
+                codes.sort_unstable();
+                codes.dedup();
+                for code in codes {
+                    let points: Vec<[f64; 2]> = self
+                        .events
+                        .iter()
+                        .filter(|e| e.code == code)
+                        .map(|e| [e.t, lane_y(e.row, rows)])
+                        .collect();
+                    plot_ui.points(
+                        Points::new(PlotPoints::from(points))
+                            .shape(event_shape(code))
+                            .color(event_color(code, dark_mode))
+                            .filled(true)
+                            .radius(4.0)
+                            .name(pm_event_name(code)),
+                    );
+                }
+            });
+        self.show_event_legend(ui, dark_mode);
+        ui.add_space(4.0);
+        (
+            ui.cursor().top() - top,
+            response.response.secondary_clicked(),
+        )
+    }
+
+    /// Marker and name of each event type of the connection
+    fn show_event_legend(&self, ui: &mut egui::Ui, dark_mode: bool) {
+        let mut codes: Vec<i64> = self.events.iter().map(|e| e.code).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        ui.horizontal_wrapped(|ui| {
+            for code in codes {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(12.0), egui::Sense::hover());
+                paint_marker(
+                    ui.painter(),
+                    rect.center(),
+                    event_shape(code),
+                    event_color(code, dark_mode),
+                    4.0,
+                );
+                ui.label(
+                    RichText::new(pm_event_name(code))
+                        .size(11.5)
+                        .color(theme::muted_text(dark_mode)),
+                );
+                ui.add_space(8.0);
+            }
+        });
     }
 
     fn show_subflow_table(&self, ui: &mut egui::Ui) {
@@ -929,6 +1161,15 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].1, vec![&metrics[2]]);
         assert!(group_metrics(&metrics, "rtt").is_empty());
+    }
+
+    #[test]
+    fn lane_rows_are_named_from_the_top() {
+        assert_eq!(lane_row_name(2.0, 3), "conn");
+        assert_eq!(lane_row_name(1.0, 3), "#1");
+        assert_eq!(lane_row_name(0.0, 3), "#2");
+        assert_eq!(lane_row_name(0.5, 3), "");
+        assert_eq!(lane_row_name(3.0, 3), "");
     }
 
     #[test]

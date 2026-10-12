@@ -1,7 +1,72 @@
 //! The parts of the MPTCP tab that do not draw: which end of a connection a recording shows,
-//! the sidebar rows and their filter, the order of the subflows, the line segments of a series.
+//! the sidebar rows and their filter, the order of the subflows, the line segments of a series,
+//! the rows of the event lane.
 
+use tcbee_common::records::{
+    TCBEE_MPTCP_ANNOUNCED, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
+    TCBEE_MPTCP_FALLBACK, TCBEE_MPTCP_LISTENER_CLOSED, TCBEE_MPTCP_LISTENER_CREATED,
+    TCBEE_MPTCP_PENDING_REQUEUED, TCBEE_MPTCP_REINJECTED, TCBEE_MPTCP_REMOVED,
+    TCBEE_MPTCP_TOKEN_DESTROYED,
+};
 use ts_storage::ConnectionFlow;
+
+/// A path manager event of the selected connection
+#[derive(Clone, Debug, PartialEq)]
+pub struct PmEvent {
+    pub t: f64,
+    /// `enum tcbee_mptcp_event` in records.h
+    pub code: i64,
+    /// Lane row: 0 for the connection, 1 + the index of the subflow otherwise
+    pub row: usize,
+    pub label: String,
+}
+
+/// Events about the whole connection go to its own lane row, the others to their subflow's
+pub fn is_connection_event(code: i64) -> bool {
+    [
+        TCBEE_MPTCP_CREATED,
+        TCBEE_MPTCP_ESTABLISHED,
+        TCBEE_MPTCP_CLOSED,
+        TCBEE_MPTCP_ANNOUNCED,
+        TCBEE_MPTCP_REMOVED,
+        TCBEE_MPTCP_LISTENER_CREATED,
+        TCBEE_MPTCP_LISTENER_CLOSED,
+        TCBEE_MPTCP_TOKEN_DESTROYED,
+        TCBEE_MPTCP_FALLBACK,
+    ]
+    .iter()
+    .any(|c| *c as i64 == code)
+}
+
+/// Whether the event changes the connection's paths, as opposed to moving data, which can
+/// happen thousands of times. Only these are marked in the metric plots.
+pub fn is_structural(code: i64) -> bool {
+    code != TCBEE_MPTCP_REINJECTED as i64 && code != TCBEE_MPTCP_PENDING_REQUEUED as i64
+}
+
+/// Plot height of a lane row; row 0 is at the top
+pub fn lane_y(row: usize, rows: usize) -> f64 {
+    rows.saturating_sub(1 + row) as f64
+}
+
+/// The event that the pointer at (`x`, `y`) of the lane is on: of type `name`, in the row at
+/// `y`, closest in time. `name` is empty when the pointer is on no event.
+pub fn nearest_event<'a>(
+    events: &'a [PmEvent],
+    name_of: impl Fn(i64) -> &'static str,
+    name: &str,
+    x: f64,
+    y: f64,
+    rows: usize,
+) -> Option<&'a PmEvent> {
+    if name.is_empty() {
+        return None;
+    }
+    events
+        .iter()
+        .filter(|e| name_of(e.code) == name && (lane_y(e.row, rows) - y).abs() < 0.5)
+        .min_by(|a, b| (a.t - x).abs().total_cmp(&(b.t - x).abs()))
+}
 
 /// Puts the subflows of a connection in the order they started. The server does not number
 /// its joins (no subflow id), so the id only breaks ties.
@@ -227,6 +292,52 @@ mod tests {
     fn unknown_or_own_token_is_ignored() {
         let sides = infer_sides(&[input(5, &[5, 77], &[]), input(6, &[], &[])]);
         assert_eq!(sides, vec![(None, None), (None, None)]);
+    }
+
+    fn event(t: f64, code: u32, row: usize) -> PmEvent {
+        PmEvent {
+            t,
+            code: code as i64,
+            row,
+            label: format!("{code} at {t}"),
+        }
+    }
+
+    fn name_of(code: i64) -> &'static str {
+        if code == TCBEE_MPTCP_CREATED as i64 {
+            "created"
+        } else {
+            "other"
+        }
+    }
+
+    #[test]
+    fn lane_rows_from_the_top() {
+        assert_eq!(lane_y(0, 4), 3.0);
+        assert_eq!(lane_y(3, 4), 0.0);
+        assert!(is_connection_event(TCBEE_MPTCP_TOKEN_DESTROYED as i64));
+        assert!(!is_structural(TCBEE_MPTCP_REINJECTED as i64));
+        assert!(is_structural(TCBEE_MPTCP_CLOSED as i64));
+    }
+
+    #[test]
+    fn nearest_event_in_the_hovered_row() {
+        let events = [
+            event(1.0, TCBEE_MPTCP_CREATED, 0),
+            event(5.0, TCBEE_MPTCP_CREATED, 0),
+            event(4.0, TCBEE_MPTCP_REINJECTED, 1),
+        ];
+        // Row 0 of two is at y = 1
+        let hit = nearest_event(&events, name_of, "created", 3.5, 1.1, 2);
+        assert_eq!(hit, Some(&events[1]));
+        let hit = nearest_event(&events, name_of, "other", 3.5, 0.0, 2);
+        assert_eq!(hit, Some(&events[2]));
+        // In the other row, or on no item at all
+        assert_eq!(
+            nearest_event(&events, name_of, "created", 3.5, 0.0, 2),
+            None
+        );
+        assert_eq!(nearest_event(&events, name_of, "", 1.0, 1.0, 2), None);
     }
 
     #[test]
