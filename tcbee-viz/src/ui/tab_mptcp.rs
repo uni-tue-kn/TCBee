@@ -472,8 +472,9 @@ enum BottomTab {
 /// One plotted metric: a series per subflow that has it, with the subflow's index
 struct MetricPlot {
     series: Vec<(usize, SeriesData)>,
-    /// Not shown yet: its values are fitted once, the time range comes from the other plots
-    new: bool,
+    /// Drawn before; until then its values are fitted once, its time range comes from the
+    /// other plots
+    shown: bool,
 }
 
 /// The tab is reset whenever another tab is shown, and the database only changes on the Home
@@ -818,7 +819,7 @@ impl TabMptcp {
     ) -> MetricPlot {
         let mut plot = MetricPlot {
             series: Vec::new(),
-            new: true,
+            shown: false,
         };
         let infos: Vec<(usize, &Subflow, &SeriesInfo)> = self
             .subflows
@@ -1026,7 +1027,7 @@ impl TabMptcp {
                                     [fit_x_min, y_min],
                                     [fit_x_max, y_max],
                                 ));
-                            } else if plot.new {
+                            } else if !plot.shown {
                                 // Otherwise its values stay on auto bounds and rescale with
                                 // every detail load while panning
                                 let (x_min, x_max) = lane.time_range;
@@ -1099,7 +1100,7 @@ impl TabMptcp {
                 }
             });
         for plot in &mut self.plots {
-            plot.new = false;
+            plot.shown = true;
         }
         if reset {
             self.needs_fit = true;
@@ -1128,7 +1129,8 @@ impl TabMptcp {
     /// shows or hides the subflow in the plots.
     fn show_subflow_table(&self, ui: &mut egui::Ui) -> Option<usize> {
         let dark_mode = ui.visuals().dark_mode;
-        let min_width = SubflowColumn::fixed_width() + SubflowColumn::MIN_FLOW_WIDTH + 2.0;
+        let min_width =
+            SubflowColumn::fixed_width() + SubflowColumn::MIN_FLOW_WIDTH + table::FRAME_BORDER;
         let mut clicked = None;
         // Scrolls sideways in a narrow window instead of cutting off the last columns
         ScrollArea::horizontal()

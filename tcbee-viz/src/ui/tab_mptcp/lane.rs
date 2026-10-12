@@ -9,7 +9,7 @@ use egui_plot::{
     Points, Polygon,
 };
 
-use super::markers::{key_color, kind_color, paint_marker};
+use super::markers::{key_color, kind_color, paint_marker, SMALL_MARKER_RADIUS};
 use super::model::{
     centered_x, event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name,
     lane_y, place_labels, row_name, EventGroup, EventKind,
@@ -47,8 +47,9 @@ pub(super) struct LaneResponse {
     pub reset: bool,
     /// The time range it shows, which all plots share
     pub time_range: (f64, f64),
-    /// Its groups of close events, and the time within which events group
+    /// Its groups of close events
     pub groups: Arc<[EventGroup]>,
+    /// Time (ns) within which events group, a few pixels at the current zoom
     pub tol: f64,
 }
 
@@ -124,15 +125,14 @@ impl TabMptcp {
                 }
                 // Each subflow's row in its colour; they span the connection, which the fit
                 // shows anyway
-                let (t0, t1) = (connection.start_ts as f64, connection.end_ts as f64);
                 for (index, sub) in self.subflows.iter().enumerate() {
                     let y = lane_y(index + 1, rows);
                     plot_ui.polygon(
                         Polygon::new(PlotPoints::from(vec![
-                            [t0, y - 0.5],
-                            [t1, y - 0.5],
-                            [t1, y + 0.5],
-                            [t0, y + 0.5],
+                            [start, y - 0.5],
+                            [end, y - 0.5],
+                            [end, y + 0.5],
+                            [start, y + 0.5],
                         ]))
                         .fill_color(sub.color.gamma_multiply(ROW_TINT))
                         .stroke(egui::Stroke::NONE)
@@ -322,7 +322,7 @@ impl TabMptcp {
                     rect.center(),
                     event_type(code).shape,
                     key_color(code, failed, dark_mode),
-                    5.0,
+                    SMALL_MARKER_RADIUS,
                 );
                 ui.label(
                     RichText::new(event_type_name(code, failed))

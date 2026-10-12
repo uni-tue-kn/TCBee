@@ -9,6 +9,8 @@ pub const ROW_HEIGHT: f32 = 22.0;
 const NUMBER_PADDING: f32 = 8.0;
 /// Space between the previous column and left-aligned text
 const TEXT_PADDING: f32 = 6.0;
+/// The table frame's border on both sides together
+pub const FRAME_BORDER: f32 = 2.0;
 /// Room for a horizontal scroll bar below the rows
 const SCROLL_BAR_ROOM: f32 = 8.0;
 
@@ -161,7 +163,7 @@ pub fn text_header_cell(ui: &mut Ui, label: &str, width: f32) -> egui::Response 
 /// spacing (`item_spacing.y` 0): the rows, the header, the frame's border and room for a
 /// horizontal scroll bar
 pub fn table_height(rows: usize) -> f32 {
-    (rows + 1) as f32 * ROW_HEIGHT + 2.0 + SCROLL_BAR_ROOM
+    (rows + 1) as f32 * ROW_HEIGHT + FRAME_BORDER + SCROLL_BAR_ROOM
 }
 
 /// A header cell with its text at the right edge, over a column of numbers

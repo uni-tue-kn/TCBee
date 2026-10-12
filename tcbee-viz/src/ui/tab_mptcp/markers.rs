@@ -7,6 +7,9 @@ use egui_plot::MarkerShape;
 use super::model::{event_kind, EventKind};
 use crate::ui::theme;
 
+/// Radius of a marker outside a plot
+pub(super) const SMALL_MARKER_RADIUS: f32 = 5.0;
+
 /// Colour of the events of one type, failed or not
 pub(super) fn key_color(code: i64, failed: bool, dark_mode: bool) -> egui::Color32 {
     kind_color(event_kind(code, failed), dark_mode)

@@ -3,7 +3,7 @@
 
 use egui::{ScrollArea, Vec2};
 
-use super::markers::{kind_color, paint_marker};
+use super::markers::{kind_color, paint_marker, SMALL_MARKER_RADIUS};
 use super::model::{event_matches, event_type, event_type_name, row_name};
 use super::{TabMptcp, FILTER_GAP};
 use crate::ui::{
@@ -16,7 +16,11 @@ const COL_TIME: f32 = 72.0;
 const COL_ROW: f32 = 64.0;
 const COL_EVENT: f32 = 200.0;
 const MIN_DETAILS_WIDTH: f32 = 160.0;
-const MARKER_SIZE: f32 = 16.0;
+/// The marker before the event name
+const COL_MARKER: f32 = 22.0;
+/// Space before the subflow's colour in the row column, and the colour's size
+const ROW_PADDING: f32 = 8.0;
+const ROW_DOT: f32 = 10.0;
 
 impl TabMptcp {
     /// The filterable event list; a click selects an event and moves the view to it
@@ -24,7 +28,7 @@ impl TabMptcp {
         let dark_mode = ui.visuals().dark_mode;
         let origin = self.connection.as_ref().map_or(0, |c| c.start_ts) as f64;
         let mut clicked = None;
-        let min_width = COL_TIME + COL_ROW + COL_EVENT + MIN_DETAILS_WIDTH + 2.0;
+        let min_width = COL_TIME + COL_ROW + COL_EVENT + MIN_DETAILS_WIDTH + table::FRAME_BORDER;
         ScrollArea::horizontal()
             .id_salt("mptcp_event_table")
             .show(ui, |ui| {
@@ -75,7 +79,7 @@ impl TabMptcp {
                                     number_cell(ui, &time, COL_TIME, selected);
                                     self.row_cell(ui, e.row, selected);
                                     let (marker, _) = ui.allocate_exact_size(
-                                        Vec2::new(MARKER_SIZE + 6.0, table::ROW_HEIGHT),
+                                        Vec2::new(COL_MARKER, table::ROW_HEIGHT),
                                         egui::Sense::hover(),
                                     );
                                     paint_marker(
@@ -83,10 +87,10 @@ impl TabMptcp {
                                         marker.center(),
                                         event_type(e.code).shape,
                                         kind_color(e.kind(), dark_mode),
-                                        5.0,
+                                        SMALL_MARKER_RADIUS,
                                     );
                                     let name = event_type_name(e.code, e.failed);
-                                    text_cell(ui, &name, COL_EVENT - MARKER_SIZE - 6.0, selected);
+                                    text_cell(ui, &name, COL_EVENT - COL_MARKER, selected);
                                     text_cell(ui, &e.label, details_w, selected)
                                         .on_hover_text(&e.label);
                                 });
@@ -134,12 +138,17 @@ impl TabMptcp {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.set_min_size(Vec2::new(COL_ROW, table::ROW_HEIGHT));
-                ui.add_space(8.0);
-                let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
+                ui.add_space(ROW_PADDING);
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(ROW_DOT), egui::Sense::hover());
                 if let Some(color) = color {
                     ui.painter().rect_filled(dot, 2.0, color);
                 }
-                text_cell(ui, &row_name(row), COL_ROW - 18.0, selected);
+                text_cell(
+                    ui,
+                    &row_name(row),
+                    COL_ROW - ROW_PADDING - ROW_DOT,
+                    selected,
+                );
             },
         );
     }
