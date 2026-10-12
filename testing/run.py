@@ -44,6 +44,7 @@ RECORD_FLAGS = [
     ("-a", "algorithms",    "CUBIC / BBR algorithm state"),
     ("-t", "tracepoints",   "tcp_probe tracepoint (main TCP metrics)"),
     ("-k", "kernel",        "tcp_sendmsg / tcp_recvmsg (all TCP metrics)"),
+    ("-M", "mptcp",         "MPTCP path manager events (added for the MPTCP scenario)"),
     ("-m", "metrics",       "write metrics.json"),
 ]
 
@@ -133,12 +134,17 @@ def main(args):
         return
 
     # ── Scenario ──────────────────────────────────────────────────────────────
-    cc, double = menu("Select scenario:", [
-        ("CUBIC  —  single stream",                       ("cubic", False)),
-        ("CUBIC  —  two streams  (second starts at +30s)", ("cubic", True)),
-        ("BBR    —  single stream",                       ("bbr",   False)),
-        ("BBR    —  two streams  (second starts at +30s)", ("bbr",   True)),
-    ])
+    scenarios = [
+        ("CUBIC  —  single stream",                       ("cubic", False, False)),
+        ("CUBIC  —  two streams  (second starts at +30s)", ("cubic", True,  False)),
+        ("BBR    —  single stream",                       ("bbr",   False, False)),
+        ("BBR    —  two streams  (second starts at +30s)", ("bbr",   True,  False)),
+    ]
+    if tool != "live":
+        scenarios.append(
+            ("MPTCP  —  two paths: subflow joins, fails, turns backup, leaves",
+             ("cubic", False, True)))
+    cc, double, mptcp = menu("Select scenario:", scenarios)
 
     # ── tcbee-record profile ───────────────────────────────────────────────────
     record_args = ""
@@ -168,6 +174,8 @@ def main(args):
     ]
     if double:
         cmd.append("--double")
+    if mptcp:
+        cmd.append("--mptcp")
     if record_args:
         cmd.append(f"--record-args={record_args}")
     if args.headless:

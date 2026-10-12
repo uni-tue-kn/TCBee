@@ -47,7 +47,7 @@ The interactive launcher also has a rebuild menu with per-tool options and an `a
 python3 testing/run.py
 ```
 
-The interactive menu lets you pick the tool, congestion algorithm (CUBIC / BBR), single or double stream, and (for `tcbee-record`/`tcbee-full`) which probes to enable.
+The interactive menu lets you pick the tool, congestion algorithm (CUBIC / BBR), single or double stream or the MPTCP scenario (below), and (for `tcbee-record`/`tcbee-full`) which probes to enable.
 
 - **tcbee-live** opens as a GUI window; the Mininet CLI stays in the terminal. Type `exit` to stop.
 - **tcbee-record** runs as a TUI in the current terminal. Quit with `q` or `Ctrl-C` to stop the topology.
@@ -63,7 +63,29 @@ python3 testing/run.py --headless [--duration SECONDS]
 
 runs tcbee-full without the recorder's terminal UI: `tcbee-record -q --duration SECONDS` stops by itself (default 30 s, 60 s with two streams), then the launcher stops Mininet, processes the recording and opens it in tcbee-viz, as in tcbee-full. The tool menu is skipped; scenario and recording profile are still asked. `topology.py --tool full --headless [--duration SECONDS]` does the same without menus.
 
-In record/full mode the topology passes map-backed filters to `tcbee-record` so recordings are limited to the test flow(s): port `5001` for single-stream runs, ports `5001,5002` for double-stream runs, and traffic whose source and destination endpoints are the two Mininet test hosts.
+In record/full mode the topology passes map-backed filters to `tcbee-record` so recordings are limited to the test flow(s): port `5001` for single-stream runs, ports `5001,5002` for double-stream runs, `5003` for the MPTCP scenario, and traffic whose source and destination endpoints are the two Mininet test hosts.
+
+### MPTCP scenario
+
+The MPTCP scenario (tcbee-record and tcbee-full only) shows the MPTCP tab of tcbee-viz. It adds a second path to the topology and runs one MPTCP connection over both:
+
+```
+TCBeeHost ──100 Mbps── s1 ──10 Mbps, 40 ms── ReceivingHost     path 1, 10.0.0.1 ↔ 10.0.0.2
+          ──100 Mbps── s2 ──20 Mbps, 10 ms──                   path 2, 10.0.1.1 ↔ 10.0.1.2
+```
+
+The connection opens over path 1 three seconds after the recorder starts and sends as fast as it can for 40 s. From its start:
+
+| Time | Action | What tcbee-viz shows |
+|------|--------|----------------------|
+| 5 s | TCBeeHost adds an MPTCP endpoint on path 2 | a second subflow joins and takes most of the data (shorter RTT) |
+| 15 s | path 2 drops every packet | the subflow goes stale, its data is reinjected on path 1 |
+| 22 s | path 2 works again | data flows over path 2 again after the next retransmission timeout (the recovery itself is not an event) |
+| 28 s | the path 2 endpoint becomes backup | MP_PRIO; the data moves to path 1 |
+| 34 s | the path 2 endpoint is deleted | the subflow closes |
+| 40 s | the transfer ends | the connection closes |
+
+The launcher adds `-M` to the recording flags; record with `-k` (kernel functions, or the full trace) to get the metrics of every subflow. While the recorder's terminal UI runs, the steps are logged to `/tmp/tcbee-mptcp.log`. A headless run records 48 s. The scenario needs a kernel with MPTCP and tc ingress filters (`sch_ingress`, `cls_matchall`, `act_gact`), which drop the packets of path 2. `mptcp/traffic.py` generates the traffic, so iperf3 needs no MPTCP support.
 
 ## Tuning
 
@@ -78,7 +100,7 @@ Edit the constants at the top of `topology.py`:
 
 ## MPTCP
 
-`mptcp/run.sh` tests MPTCP recording without Mininet. It builds two network namespaces joined
+The scripts in `mptcp/` test MPTCP recording without Mininet. `mptcp/run.sh` checks one short recording. It builds two network namespaces joined
 by two veth pairs, so an MPTCP connection gets one subflow per path, records it next to a plain
 TCP connection with `tcbee-record -k -M`, and checks the recording with `mptcp/check_trace.py`.
 If a SQLite build of `tcbee-process` exists (`TCBEE_PROCESS`, default
