@@ -31,6 +31,8 @@ pub(super) struct LaneResponse {
     pub height: f32,
     /// Right-clicked to reset the view
     pub reset: bool,
+    /// The time range it shows, which all plots share
+    pub time_range: (f64, f64),
 }
 
 impl TabMptcp {
@@ -110,8 +112,10 @@ impl TabMptcp {
             });
         self.show_event_legend(ui, dark_mode);
         ui.add_space(4.0);
+        let bounds = response.transform.bounds();
         LaneResponse {
             height: ui.cursor().top() - top,
+            time_range: (bounds.min()[0], bounds.max()[0]),
             // Like on the metric plots
             reset: response.response.secondary_clicked() || response.response.double_clicked(),
         }

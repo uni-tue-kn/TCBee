@@ -446,6 +446,8 @@ impl Subflow {
 /// One plotted metric: a series per subflow that has it, with the subflow's index
 struct MetricPlot {
     series: Vec<(usize, SeriesData)>,
+    /// Not shown yet: its values are fitted once, the time range comes from the other plots
+    new: bool,
 }
 
 /// The tab is reset whenever another tab is shown, and the database only changes on the Home
@@ -777,7 +779,10 @@ impl TabMptcp {
         metric: &MetricKey,
         width: f32,
     ) -> MetricPlot {
-        let mut plot = MetricPlot { series: Vec::new() };
+        let mut plot = MetricPlot {
+            series: Vec::new(),
+            new: true,
+        };
         let infos: Vec<(usize, &Subflow, &SeriesInfo)> = self
             .subflows
             .iter()
@@ -843,6 +848,18 @@ impl TabMptcp {
         self.show_plots(ui, db, settings, ui.available_height());
     }
 
+    /// The value range a plot is fitted to: its visible subflows' values and 0, with some room
+    fn value_range(&self, plot: &MetricPlot) -> (f64, f64) {
+        let (lo, hi) = plot
+            .series
+            .iter()
+            .filter(|(i, _)| !self.subflows[*i].hidden)
+            .fold((0.0_f64, 1.0_f64), |(lo, hi), (_, s)| {
+                (lo.min(s.global_y_min), hi.max(s.global_y_max))
+            });
+        (lo * 1.05, hi * 1.05)
+    }
+
     /// One plot per selected metric, stacked, with a shared time axis
     fn show_plots(
         &mut self,
@@ -887,6 +904,7 @@ impl TabMptcp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (metric, plot) in self.selected.iter().zip(&self.plots) {
+                    let (y_min, y_max) = self.value_range(plot);
                     section_heading(ui, &metric_label(metric));
                     let response = Plot::new(("mptcp_metric", metric_label(metric)))
                         .allow_boxed_zoom(true)
@@ -907,16 +925,17 @@ impl TabMptcp {
                         .height(plot_height)
                         .show(ui, |plot_ui| {
                             if fit {
-                                let (y_min, y_max) = plot
-                                    .series
-                                    .iter()
-                                    .filter(|(i, _)| !self.subflows[*i].hidden)
-                                    .fold((0.0_f64, 1.0_f64), |(lo, hi), (_, s)| {
-                                        (lo.min(s.global_y_min), hi.max(s.global_y_max))
-                                    });
                                 plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                    [fit_x_min, y_min * 1.05],
-                                    [fit_x_max, y_max * 1.05],
+                                    [fit_x_min, y_min],
+                                    [fit_x_max, y_max],
+                                ));
+                            } else if plot.new {
+                                // Otherwise its values stay on auto bounds and rescale with
+                                // every detail load while panning
+                                let (x_min, x_max) = lane.time_range;
+                                plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                    [x_min, y_min],
+                                    [x_max, y_max],
                                 ));
                             } else if visible.is_none() {
                                 let bounds = plot_ui.plot_bounds();
@@ -967,6 +986,9 @@ impl TabMptcp {
                     ui.add_space(4.0);
                 }
             });
+        for plot in &mut self.plots {
+            plot.new = false;
+        }
         if reset {
             self.needs_fit = true;
         }
