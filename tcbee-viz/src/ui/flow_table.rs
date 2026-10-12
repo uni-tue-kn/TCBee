@@ -1,16 +1,21 @@
 use std::collections::HashMap;
 
-use egui::{Color32, RichText, Stroke, Ui, Vec2};
+use egui::{RichText, Ui, Vec2};
 use ts_storage::Flow;
 
-use crate::{backend::db::DbBackend, ui::theme};
+use crate::{
+    backend::db::DbBackend,
+    ui::{
+        table::{self, data_cell, header_cell, ROW_HEIGHT},
+        theme,
+    },
+};
 
 const COL_ID: f32 = 36.0;
 const COL_PORT: f32 = 54.0;
 const COL_SERIES: f32 = 54.0;
 const COL_POINTS: f32 = 72.0;
 const COL_CONN: f32 = 54.0;
-const ROW_HEIGHT: f32 = 22.0;
 const SEARCH_ICON_W: f32 = 18.0;
 const CLEAR_BUTTON_W: f32 = 22.0;
 const HELP_BUTTON_W: f32 = 20.0;
@@ -68,198 +73,161 @@ impl FlowTable {
         let mut new_selection: Option<i64> = None;
         let dark_mode = ui.visuals().dark_mode;
 
-        egui::Frame::new()
-            .fill(theme::panel_bg(dark_mode))
-            .stroke(Stroke::new(1.0, theme::border(dark_mode)))
-            .corner_radius(6.0)
-            .inner_margin(egui::Margin::ZERO)
-            .show(ui, |ui| {
-                // All width measurements are taken inside the frame so the
-                // 1 px stroke on each side is already excluded.
-                let content_w = ui.available_width().max(1.0);
-                ui.spacing_mut().item_spacing.x = 0.0;
+        table::frame(dark_mode).show(ui, |ui| {
+            // All width measurements are taken inside the frame so the
+            // 1 px stroke on each side is already excluded.
+            let content_w = ui.available_width().max(1.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
 
-                // ── Filter bar ──────────────────────────────────────────────────
-                // Use content_w - 2 so the framed clear button's 1px stroke never
-                // overflows the table frame boundary.
-                let filter_w = content_w * 0.9;
-                ui.allocate_ui_with_layout(
-                    Vec2::new(filter_w, ROW_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = FILTER_GAP;
-                        ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
-                        let text_w = (filter_w
-                            - SEARCH_ICON_W
-                            - HELP_BUTTON_W
-                            - CLEAR_BUTTON_W
-                            - 3.0 * FILTER_GAP)
-                            .max(40.0);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.filter)
-                                .hint_text("Filter, e.g. id:52 src:10.0.0.1")
-                                .desired_width(text_w)
-                                .min_size(Vec2::new(text_w, ROW_HEIGHT)),
-                        );
-                        ui.add_sized(
-                            [HELP_BUTTON_W, ROW_HEIGHT],
-                            egui::Label::new(RichText::new("?").strong())
-                                .sense(egui::Sense::hover()),
-                        )
-                        .on_hover_text(FILTER_HELP);
-                        let clear = ui.add_sized(
-                            [CLEAR_BUTTON_W, ROW_HEIGHT],
-                            egui::Button::new("x").frame(!self.filter.is_empty()),
-                        );
-                        if !self.filter.is_empty() && clear.clicked() {
-                            self.filter.clear();
-                        }
-                    },
-                );
-
-                let filter_lower = self.filter.to_lowercase();
-                // The connection column only appears for recordings with connections
-                let show_conn = !db.list_connections().is_empty();
-                let visible: Vec<(&Flow, &str)> = flows
-                    .iter()
-                    .map(|f| (f, db.connection_label(f.id)))
-                    .filter(|(f, conn)| flow_matches(f, conn, &filter_lower))
-                    .collect();
-
-                ui.separator();
-
-                if visible.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("No flows match the filter.")
-                            .color(theme::muted_text(dark_mode))
-                            .italics(),
+            // ── Filter bar ──────────────────────────────────────────────────
+            // Use content_w - 2 so the framed clear button's 1px stroke never
+            // overflows the table frame boundary.
+            let filter_w = content_w * 0.9;
+            ui.allocate_ui_with_layout(
+                Vec2::new(filter_w, ROW_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = FILTER_GAP;
+                    ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
+                    let text_w = (filter_w
+                        - SEARCH_ICON_W
+                        - HELP_BUTTON_W
+                        - CLEAR_BUTTON_W
+                        - 3.0 * FILTER_GAP)
+                        .max(40.0);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.filter)
+                            .hint_text("Filter, e.g. id:52 src:10.0.0.1")
+                            .desired_width(text_w)
+                            .min_size(Vec2::new(text_w, ROW_HEIGHT)),
                     );
-                    ui.add_space(4.0);
-                    return;
-                }
-
-                // ── Header ────────────────────────────────────────────────────────
-                let conn_w = if show_conn { COL_CONN } else { 0.0 };
-                let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w;
-                let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
-
-                let header_rect = egui::Rect::from_min_size(
-                    ui.available_rect_before_wrap().min,
-                    Vec2::new(content_w, ROW_HEIGHT),
-                );
-                ui.painter()
-                    .rect_filled(header_rect, 0.0, theme::table_header_bg(dark_mode));
-
-                ui.horizontal(|ui| {
-                    ui.set_height(ROW_HEIGHT);
-                    header_cell(ui, "ID", COL_ID);
-                    header_cell(ui, "Src IP", col_ip);
-                    header_cell(ui, "Sport", COL_PORT);
-                    header_cell(ui, "Dst IP", col_ip);
-                    header_cell(ui, "Dport", COL_PORT);
-                    if show_conn {
-                        header_cell(ui, "Conn", COL_CONN).on_hover_text("MPTCP connection/subflow");
-                    }
-                    header_cell(ui, "Series", COL_SERIES);
-                    header_cell(ui, "Points", COL_POINTS);
-                });
-
-                ui.separator();
-
-                // ── Rows ──────────────────────────────────────────────────────────
-                let row_count = visible.len();
-                egui::ScrollArea::vertical()
-                    .id_salt((id_salt, "scroll"))
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(
-                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+                    ui.add_sized(
+                        [HELP_BUTTON_W, ROW_HEIGHT],
+                        egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
                     )
-                    .show_rows(ui, ROW_HEIGHT, row_count, |ui, range| {
-                        ui.set_width(content_w);
-                        for i in range {
-                            let (flow, conn) = &visible[i];
-                            let fid = flow.id;
-                            let is_selected = self.selected_id == Some(fid);
-                            let stats = *self
-                                .stats_cache
-                                .entry(fid)
-                                .or_insert_with(|| flow_stats(db, flow));
+                    .on_hover_text(FILTER_HELP);
+                    let clear = ui.add_sized(
+                        [CLEAR_BUTTON_W, ROW_HEIGHT],
+                        egui::Button::new("x").frame(!self.filter.is_empty()),
+                    );
+                    if !self.filter.is_empty() && clear.clicked() {
+                        self.filter.clear();
+                    }
+                },
+            );
 
-                            let base_color = if is_selected {
-                                theme::table_row_selected(dark_mode)
-                            } else if i % 2 == 0 {
-                                theme::table_row_even(dark_mode)
-                            } else {
-                                theme::table_row_odd(dark_mode)
-                            };
+            let filter_lower = self.filter.to_lowercase();
+            // The connection column only appears for recordings with connections
+            let show_conn = !db.list_connections().is_empty();
+            let visible: Vec<(&Flow, &str)> = flows
+                .iter()
+                .map(|f| (f, db.connection_label(f.id)))
+                .filter(|(f, conn)| flow_matches(f, conn, &filter_lower))
+                .collect();
 
-                            let row_response = ui.horizontal(|ui| {
-                                ui.set_width(content_w);
-                                ui.set_height(ROW_HEIGHT);
+            ui.separator();
 
-                                let rect = ui.max_rect();
-                                let hovered = ui.rect_contains_pointer(rect);
-                                let bg = if is_selected {
-                                    if hovered {
-                                        theme::table_row_selected_hover(dark_mode)
-                                    } else {
-                                        theme::table_row_selected(dark_mode)
-                                    }
-                                } else if hovered {
-                                    theme::table_row_hover(dark_mode)
-                                } else {
-                                    base_color
-                                };
-                                ui.painter().rect_filled(rect, 0.0, bg);
+            if visible.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("No flows match the filter.")
+                        .color(theme::muted_text(dark_mode))
+                        .italics(),
+                );
+                ui.add_space(4.0);
+                return;
+            }
 
-                                data_cell(ui, &fid.to_string(), COL_ID, is_selected);
-                                data_cell(ui, &flow.tuple.src.to_string(), col_ip, is_selected);
-                                data_cell(ui, &flow.tuple.sport.to_string(), COL_PORT, is_selected);
-                                data_cell(ui, &flow.tuple.dst.to_string(), col_ip, is_selected);
-                                data_cell(ui, &flow.tuple.dport.to_string(), COL_PORT, is_selected);
-                                if show_conn {
-                                    data_cell(ui, conn, COL_CONN, is_selected);
-                                }
-                                data_cell(
-                                    ui,
-                                    &stats.series_count.to_string(),
-                                    COL_SERIES,
-                                    is_selected,
-                                );
-                                data_cell(
-                                    ui,
-                                    &format_count(stats.point_count),
-                                    COL_POINTS,
-                                    is_selected,
-                                );
-                            });
+            // ── Header ────────────────────────────────────────────────────────
+            let conn_w = if show_conn { COL_CONN } else { 0.0 };
+            let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w;
+            let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
 
-                            // Make the whole row clickable
-                            let row_rect = row_response.response.rect;
-                            let row_click = ui.interact(
-                                row_rect,
-                                ui.id().with((id_salt, "row", fid)),
-                                egui::Sense::click(),
-                            );
-                            if row_click.hovered() {
-                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                            }
-                            if row_click.clicked() && !is_selected {
-                                self.selected_id = Some(fid);
-                                new_selection = Some(fid);
-                            }
+            let header_rect = egui::Rect::from_min_size(
+                ui.available_rect_before_wrap().min,
+                Vec2::new(content_w, ROW_HEIGHT),
+            );
+            ui.painter()
+                .rect_filled(header_rect, 0.0, theme::table_header_bg(dark_mode));
 
-                            // Row divider
-                            let rect = row_response.response.rect;
-                            ui.painter().hline(
-                                rect.x_range(),
-                                rect.bottom(),
-                                Stroke::new(0.5, theme::border(dark_mode)),
-                            );
-                        }
-                    });
+            ui.horizontal(|ui| {
+                ui.set_height(ROW_HEIGHT);
+                header_cell(ui, "ID", COL_ID);
+                header_cell(ui, "Src IP", col_ip);
+                header_cell(ui, "Sport", COL_PORT);
+                header_cell(ui, "Dst IP", col_ip);
+                header_cell(ui, "Dport", COL_PORT);
+                if show_conn {
+                    header_cell(ui, "Conn", COL_CONN).on_hover_text("MPTCP connection/subflow");
+                }
+                header_cell(ui, "Series", COL_SERIES);
+                header_cell(ui, "Points", COL_POINTS);
             });
+
+            ui.separator();
+
+            // ── Rows ──────────────────────────────────────────────────────────
+            let row_count = visible.len();
+            egui::ScrollArea::vertical()
+                .id_salt((id_salt, "scroll"))
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                .show_rows(ui, ROW_HEIGHT, row_count, |ui, range| {
+                    ui.set_width(content_w);
+                    for i in range {
+                        let (flow, conn) = &visible[i];
+                        let fid = flow.id;
+                        let is_selected = self.selected_id == Some(fid);
+                        let stats = *self
+                            .stats_cache
+                            .entry(fid)
+                            .or_insert_with(|| flow_stats(db, flow));
+
+                        let row_response = ui.horizontal(|ui| {
+                            ui.set_width(content_w);
+                            ui.set_height(ROW_HEIGHT);
+
+                            let rect = ui.max_rect();
+                            let hovered = ui.rect_contains_pointer(rect);
+                            let bg = table::row_fill(dark_mode, i, is_selected, hovered);
+                            ui.painter().rect_filled(rect, 0.0, bg);
+
+                            data_cell(ui, &fid.to_string(), COL_ID, is_selected);
+                            data_cell(ui, &flow.tuple.src.to_string(), col_ip, is_selected);
+                            data_cell(ui, &flow.tuple.sport.to_string(), COL_PORT, is_selected);
+                            data_cell(ui, &flow.tuple.dst.to_string(), col_ip, is_selected);
+                            data_cell(ui, &flow.tuple.dport.to_string(), COL_PORT, is_selected);
+                            if show_conn {
+                                data_cell(ui, conn, COL_CONN, is_selected);
+                            }
+                            data_cell(ui, &stats.series_count.to_string(), COL_SERIES, is_selected);
+                            data_cell(
+                                ui,
+                                &format_count(stats.point_count),
+                                COL_POINTS,
+                                is_selected,
+                            );
+                        });
+
+                        // Make the whole row clickable
+                        let row_rect = row_response.response.rect;
+                        let row_click = ui.interact(
+                            row_rect,
+                            ui.id().with((id_salt, "row", fid)),
+                            egui::Sense::click(),
+                        );
+                        if row_click.hovered() {
+                            ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                        }
+                        if row_click.clicked() && !is_selected {
+                            self.selected_id = Some(fid);
+                            new_selection = Some(fid);
+                        }
+
+                        table::row_divider(ui, row_response.response.rect);
+                    }
+                });
+        });
 
         new_selection
     }
@@ -336,36 +304,6 @@ fn format_count(count: i64) -> String {
     } else {
         count.to_string()
     }
-}
-
-fn header_cell(ui: &mut Ui, label: &str, width: f32) -> egui::Response {
-    let dark_mode = ui.visuals().dark_mode;
-    ui.add_sized(
-        [width, ROW_HEIGHT],
-        egui::Label::new(
-            RichText::new(label)
-                .color(theme::table_header_text(dark_mode))
-                .strong()
-                .size(12.0),
-        ),
-    )
-}
-
-fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) {
-    let dark_mode = ui.visuals().dark_mode;
-    let color = if selected {
-        if dark_mode {
-            Color32::from_rgb(226, 232, 240)
-        } else {
-            Color32::from_rgb(20, 40, 80)
-        }
-    } else {
-        theme::text(dark_mode)
-    };
-    ui.add_sized(
-        [width, ROW_HEIGHT],
-        egui::Label::new(RichText::new(text).color(color).size(12.0)).truncate(),
-    );
 }
 
 #[cfg(test)]
