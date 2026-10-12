@@ -1,5 +1,13 @@
 //! The parts of the MPTCP tab that do not draw: which end of a connection a recording shows,
-//! the sidebar rows and their filter.
+//! the sidebar rows and their filter, the order of the subflows.
+
+use ts_storage::ConnectionFlow;
+
+/// Puts the subflows of a connection in the order they started. The server does not number
+/// its joins (no subflow id), so the id only breaks ties.
+pub fn sort_subflows<M: std::borrow::Borrow<ConnectionFlow>>(members: &mut [M]) {
+    members.sort_by_key(|m| (m.borrow().first_ts, m.borrow().subflow_id));
+}
 
 /// Which end of an MPTCP connection the recording shows
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +187,26 @@ mod tests {
     fn unknown_or_own_token_is_ignored() {
         let sides = infer_sides(&[input(5, &[5, 77], &[]), input(6, &[], &[])]);
         assert_eq!(sides, vec![(None, None), (None, None)]);
+    }
+
+    #[test]
+    fn subflows_start_in_time_order() {
+        let member = |flow_id, subflow_id, first_ts| ConnectionFlow {
+            connection_id: 2,
+            flow_id,
+            subflow_id,
+            first_ts,
+            last_ts: first_ts + 10,
+        };
+        // e6, server side: only the initial subflow has an id
+        let mut members = vec![
+            member(4, None, 200),
+            member(6, None, 900),
+            member(2, Some(1), 50),
+        ];
+        sort_subflows(&mut members);
+        let order: Vec<i64> = members.iter().map(|m| m.flow_id).collect();
+        assert_eq!(order, vec![2, 4, 6]);
     }
 
     #[test]

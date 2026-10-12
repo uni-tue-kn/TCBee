@@ -19,7 +19,7 @@ use tcbee_common::records::{
 };
 use ts_storage::{ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind};
 
-use model::{infer_sides, ConnectionSummary, SideInput};
+use model::{infer_sides, sort_subflows, ConnectionSummary, SideInput};
 
 use crate::{
     backend::db::{flow_x_bounds, format_flow, DbBackend},
@@ -130,7 +130,7 @@ fn connection_summaries(
             .iter()
             .filter(|m| m.connection_id == c.id)
             .collect();
-        members.sort_by_key(|m| (m.first_ts, m.subflow_id));
+        sort_subflows(&mut members);
         let mut input = SideInput {
             key: c.key,
             ..SideInput::default()
@@ -300,6 +300,8 @@ struct Subflow {
     member: ConnectionFlow,
     /// Legend name
     label: String,
+    /// Same in every plot and table
+    color: egui::Color32,
     /// Its flow, for the table
     flow: String,
     series: Vec<SeriesInfo>,
@@ -532,11 +534,14 @@ impl TabMptcp {
         };
         self.subflows.clear();
         self.events.clear();
-        for m in db
+        let mut members: Vec<&ConnectionFlow> = db
             .list_connection_flows()
             .iter()
             .filter(|m| m.connection_id == connection_id)
-        {
+            .collect();
+        sort_subflows(&mut members);
+        let colors = generate_colors(members.len());
+        for (m, color) in members.into_iter().zip(colors) {
             let Some(flow) = db.get_flow_by_id(m.flow_id) else {
                 continue;
             };
@@ -547,6 +552,7 @@ impl TabMptcp {
             self.subflows.push(Subflow {
                 member: m.clone(),
                 label: format!("{label} ({}:{})", flow.tuple.src, flow.tuple.sport),
+                color,
                 flow: format_flow(flow),
                 series: self
                     .catalogs
@@ -610,9 +616,8 @@ impl TabMptcp {
         else {
             return;
         };
-        let colors = generate_colors(infos.len());
-        for ((sub, info), color) in infos.into_iter().zip(colors) {
-            let mut sd = SeriesData::from_info(info, t_min, t_max, color);
+        for (sub, info) in infos {
+            let mut sd = SeriesData::from_info(info, t_min, t_max, sub.color);
             sd.name = sub.label.clone();
             fetch_range(db, &mut sd, t_min, t_max, settings, Some(width));
             self.series.push(sd);
