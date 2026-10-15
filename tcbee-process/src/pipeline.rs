@@ -20,7 +20,10 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
-use tcbee_trace::TCBeeTrace;
+use tcbee_trace::{
+    onchange::{Manifest, Sampling, MANIFEST_VERSION},
+    TCBeeTrace, TraceFile,
+};
 use ts_storage::{
     BatchWriter, Catalog, CreateOptions, Dir, EventBatch, IngestSession, StatsAccumulator,
 };
@@ -421,17 +424,70 @@ fn run_workers(shared: &Shared<'_>, threads: usize) -> Result<WorkerOutput> {
     }
 }
 
-fn build_catalog(registry: FlowRegistry, stats: StatsAccumulator, trace: &TCBeeTrace) -> Catalog {
+/// Catalog meta entries `sampling.<source>.<dir>` for the on-change files of the manifest,
+/// e.g. `sampling.sock_oc.1 = on_change(snd_cwnd,total_retrans)`, with ` shadow` appended in
+/// shadow mode. Readers draw those series as steps.
+fn sampling_meta(manifest: &Manifest) -> Vec<(String, String)> {
+    let mut meta = Vec::new();
+    for source in &manifest.sources {
+        let Sampling::OnChange { fields } = &source.sampling else {
+            continue;
+        };
+        let Some(b) = TraceFile::all()
+            .iter()
+            .find(|f| f.filename() == source.file)
+            .and_then(|f| binding(*f))
+        else {
+            continue;
+        };
+        let mut value = format!("on_change({})", fields.join(","));
+        if source.shadow {
+            value.push_str(" shadow");
+        }
+        meta.push((
+            format!("sampling.{}.{}", b.table.source, b.dir.code()),
+            value,
+        ));
+    }
+    meta
+}
+
+fn build_catalog(
+    registry: FlowRegistry,
+    stats: StatsAccumulator,
+    trace: &TCBeeTrace,
+    summary: &mut Summary,
+) -> Catalog {
+    let mut meta = vec![
+        (
+            "writer".to_string(),
+            format!("tcbee-process {}", env!("CARGO_PKG_VERSION")),
+        ),
+        ("trace_dir".to_string(), trace.dir().display().to_string()),
+    ];
+    match Manifest::read(trace.dir()) {
+        Ok(Some(manifest)) => {
+            if manifest.format_version > MANIFEST_VERSION {
+                let msg = format!(
+                    "manifest format version {} is newer than {MANIFEST_VERSION}, sampling may be misread",
+                    manifest.format_version
+                );
+                warn!("{msg}");
+                summary.warnings.push(msg);
+            }
+            meta.extend(sampling_meta(&manifest));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            let msg = format!("cannot read the on-change manifest: {e}");
+            warn!("{msg}");
+            summary.warnings.push(msg);
+        }
+    }
     Catalog {
         flows: registry.into_flows(),
         series: stats.into_series(1),
-        meta: vec![
-            (
-                "writer".to_string(),
-                format!("tcbee-process {}", env!("CARGO_PKG_VERSION")),
-            ),
-            ("trace_dir".to_string(), trace.dir().display().to_string()),
-        ],
+        meta,
     }
 }
 
@@ -499,7 +555,7 @@ pub fn run(args: &Args) -> Result<Summary> {
     }
 
     let finish_start = Instant::now();
-    let catalog = build_catalog(registry, output.stats, &trace);
+    let catalog = build_catalog(registry, output.stats, &trace, &mut summary);
     summary.flows = catalog.flows.len();
     summary.series = catalog.series.len();
     session
@@ -509,4 +565,49 @@ pub fn run(args: &Args) -> Result<Summary> {
     summary.elapsed = start.elapsed();
     summary.output_bytes = std::fs::metadata(&args.output).map_or(0, |m| m.len());
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use tcbee_trace::onchange::SourceMeta;
+
+    use super::*;
+
+    fn source(file: &str, sampling: Sampling, shadow: bool) -> SourceMeta {
+        SourceMeta {
+            file: file.into(),
+            sampling,
+            shadow,
+            recv_hook: "fexit/tcp_rcv_established".into(),
+        }
+    }
+
+    #[test]
+    fn manifest_becomes_sampling_meta() {
+        let on_change = |f: &[&str]| Sampling::OnChange {
+            fields: f.iter().map(|s| s.to_string()).collect(),
+        };
+        let manifest = Manifest {
+            format_version: MANIFEST_VERSION,
+            sources: vec![
+                source("send_sock_oc.tcp", on_change(&["snd_cwnd", "rto"]), true),
+                source("recv_cwnd_oc.tcp", on_change(&["snd_cwnd"]), false),
+                source("send_sock.tcp", Sampling::EveryRun, false),
+                source("unknown.tcp", on_change(&["snd_cwnd"]), false),
+            ],
+        };
+        assert_eq!(
+            sampling_meta(&manifest),
+            vec![
+                (
+                    "sampling.sock_oc.1".to_string(),
+                    "on_change(snd_cwnd,rto) shadow".to_string()
+                ),
+                (
+                    "sampling.cwnd_oc.2".to_string(),
+                    "on_change(snd_cwnd)".to_string()
+                ),
+            ]
+        );
+    }
 }

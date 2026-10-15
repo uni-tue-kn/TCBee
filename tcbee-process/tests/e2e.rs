@@ -198,6 +198,35 @@ fn small_fixture_series_cover_every_record() {
     }
 }
 
+/// The manifest of an on-change recording becomes `sampling.<source>.<dir>` catalog meta.
+#[test]
+fn manifest_tags_on_change_series() {
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_2026-01-01T00-00-00");
+        std::fs::create_dir(&trace).unwrap();
+        for f in std::fs::read_dir(fixture("tcbee_small")).unwrap() {
+            let f = f.unwrap().path();
+            std::fs::copy(&f, trace.join(f.file_name().unwrap())).unwrap();
+        }
+        std::fs::write(
+            trace.join("manifest.json"),
+            r#"{"format_version": 2, "sources": [{"file": "send_sock_oc.tcp",
+               "sampling": {"mode": "on_change", "fields": ["snd_cwnd", "rto"]},
+               "shadow": false, "recv_hook": "fexit/tcp_rcv_established"}]}"#,
+        )
+        .unwrap();
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let meta = ts_storage::open(&out).unwrap().meta().unwrap();
+        assert!(meta.contains(&(
+            "sampling.sock_oc.1".to_string(),
+            "on_change(snd_cwnd,rto)".to_string()
+        )));
+        assert!(!meta.iter().any(|(k, _)| k == "sampling.cwnd_oc.1"));
+    }
+}
+
 /// On-change files land in their own source, never in the full series of the same flow.
 #[test]
 fn on_change_sock_is_a_separate_series() {
