@@ -1,3 +1,5 @@
+pub mod onchange;
+
 use std::{
     fs,
     path::{Path, PathBuf},

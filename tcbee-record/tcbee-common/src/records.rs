@@ -2,7 +2,7 @@
 //!
 //! The trace files are bincode serialised field by field, so changing a field's order or
 //! type here changes the on-disk format. The size asserts catch accidental changes.
-#![allow(non_camel_case_types, non_snake_case)]
+#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
 include!(concat!(env!("OUT_DIR"), "/records.rs"));
 
@@ -20,3 +20,41 @@ const _: () = assert!(size_of::<tcp_bad_csum_entry>() == 24);
 const _: () = assert!(size_of::<IpTuple>() == 38);
 const _: () = assert!(size_of::<hook_seq_key>() == 40);
 const _: () = assert!(size_of::<FilterIp>() == 16);
+
+// The watchable socket fields in tcbee-trace mirror enum tcbee_sock_field (bpf/onchange.h)
+mod sock_fields {
+    use super::*;
+    use tcbee_trace::onchange::SockField as F;
+
+    macro_rules! same {
+        ($($rust:ident = $c:ident),* $(,)?) => {
+            $(const _: () = assert!(F::$rust as u32 == $c);)*
+            const _: () = assert!(F::ALL.len() as u32 == tcbee_sock_field_SF_COUNT);
+        };
+    }
+
+    same!(
+        PacingRate = tcbee_sock_field_SF_pacing_rate,
+        MaxPacingRate = tcbee_sock_field_SF_max_pacing_rate,
+        Backoff = tcbee_sock_field_SF_backoff,
+        Rto = tcbee_sock_field_SF_rto,
+        RcvMss = tcbee_sock_field_SF_rcv_mss,
+        SndCwnd = tcbee_sock_field_SF_snd_cwnd,
+        BytesAcked = tcbee_sock_field_SF_bytes_acked,
+        SndSsthresh = tcbee_sock_field_SF_snd_ssthresh,
+        TotalRetrans = tcbee_sock_field_SF_total_retrans,
+        Probes = tcbee_sock_field_SF_probes,
+        Lost = tcbee_sock_field_SF_lost,
+        SackedOut = tcbee_sock_field_SF_sacked_out,
+        Retrans = tcbee_sock_field_SF_retrans,
+        RcvSsthresh = tcbee_sock_field_SF_rcv_ssthresh,
+        Rttvar = tcbee_sock_field_SF_rttvar,
+        Advmss = tcbee_sock_field_SF_advmss,
+        Reordering = tcbee_sock_field_SF_reordering,
+        RcvRtt = tcbee_sock_field_SF_rcv_rtt,
+        RcvSpace = tcbee_sock_field_SF_rcv_space,
+        BytesReceived = tcbee_sock_field_SF_bytes_received,
+        SegsOut = tcbee_sock_field_SF_segs_out,
+        SegsIn = tcbee_sock_field_SF_segs_in,
+    );
+}

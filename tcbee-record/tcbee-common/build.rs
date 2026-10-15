@@ -6,6 +6,7 @@ use std::{env, path::PathBuf};
 use bindgen::callbacks::{DeriveInfo, ItemInfo, ParseCallbacks};
 
 const RECORDS_H: &str = "../tcbee/src/bpf/records.h";
+const ONCHANGE_H: &str = "../tcbee/src/bpf/onchange.h";
 
 const RECORDS: &[&str] = &[
     "tcp4_packet_trace",
@@ -20,6 +21,7 @@ const RECORDS: &[&str] = &[
     "ip_tuple",
     "hook_seq_key",
     "filter_ip",
+    "tcbee_sock_field",
 ];
 
 /// C names that keep their historical Rust names
@@ -70,4 +72,5 @@ fn main() {
         .expect("writing records.rs");
 
     println!("cargo:rerun-if-changed={RECORDS_H}");
+    println!("cargo:rerun-if-changed={ONCHANGE_H}");
 }
