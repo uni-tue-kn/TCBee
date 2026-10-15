@@ -327,14 +327,19 @@ impl EbpfRunner {
         rodata.FILTER_RULE_FLAGS = self.config.filter.rule_flags();
         rodata.FLOW_TRACKING = self.config.do_tui as u8;
         rodata.RB_SUBMIT_FLAGS = self.config.poll_mode.submit_flags();
+        if let Some(on_change) = self.config.on_change {
+            rodata.SOCK_WATCH_MASK = on_change.watch.mask();
+            rodata.ONCHG_SHADOW = on_change.shadow as u8;
+        }
+        let on_change = self.config.on_change.is_some();
 
         rings::set_slots(open.open_object_mut(), cpus)?;
 
         // A skeleton loads all programs, the ones of disabled groups must be switched off.
         // Their attach targets may not even exist on this kernel.
         TCTracer::configure(&mut open.progs, self.config.headers, tcx);
-        KernelTracer::configure(&mut open.progs, self.config.kernel);
-        CwndTracer::configure(&mut open.progs, self.config.cwnd);
+        KernelTracer::configure(&mut open.progs, self.config.kernel, on_change);
+        CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
         CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
         let bbr = BBRTracer::configure(&mut open.progs, self.config.algorithms && with_bbr, btf);
@@ -416,13 +421,13 @@ impl EbpfRunner {
 
         // Tracing kernel metrics via FEntry probe
         if self.config.kernel {
-            KernelTracer::spawn(skel, dir, writer, links)?;
+            KernelTracer::spawn(skel, dir, writer, links, self.config.on_change.is_some())?;
 
             watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
-            CwndTracer::spawn(skel, dir, writer, links)?;
+            CwndTracer::spawn(skel, dir, writer, links, self.config.on_change.is_some())?;
 
             watcher_config.graphs.kernel = true;
         }
