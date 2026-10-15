@@ -687,6 +687,109 @@ int BPF_PROG(cwnd_oc_recvmsg, struct sock *sk)
 	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV, ONCHG_CWND_RECV);
 }
 
+/* Every field of a sock record, the watched ones from the snapshot the decision used */
+static __always_inline void fill_sock_fields_watched(struct sock_trace_entry *rec,
+						     struct sock *sk, struct tcp_sock *tp,
+						     const __u64 *snap)
+{
+#define FILL(name, bit)                                                                    \
+	rec->name = (SOCK_WATCH_MASK & (1u << SF_##name)) ? snap[SF_##name] :            \
+							      sock_field(sk, tp, SF_##name);
+	SOCK_FIELDS(FILL)
+#undef FILL
+	rec->ato = 0;
+	rec->snd_wscale = 0;
+	rec->rcv_wscale = 0;
+}
+
+static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 rb,
+					 enum onchg_slot slot)
+{
+	int hook = slot - ONCHG_SOCK_SEND; /* 0 send, 1 receive */
+	struct sock_trace_entry *rec;
+	struct onchg_state *st;
+	struct tcp_sock *tp;
+	__u64 snap[SF_COUNT] = {};
+	__u16 sport, dport;
+	__u64 hook_seq;
+	bool changed = false;
+	__u8 state, reason;
+
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
+		count_error(rb);
+		return 0;
+	}
+	state = sk->__sk_common.skc_state;
+	/* SOCK_WATCH_MASK is frozen rodata: the verifier drops the unwatched fields */
+#define SNAP(name, bit)                                                                    \
+	if (SOCK_WATCH_MASK & (1u << SF_##name))                                           \
+		snap[SF_##name] = sock_field(sk, tp, SF_##name);
+	SOCK_FIELDS(SNAP)
+#undef SNAP
+
+	st = onchg_state_of(sk);
+	if (!st) {
+		reason = ONCHG_REASON_NO_STORAGE;
+	} else if (!st->valid[slot]) {
+		reason = ONCHG_REASON_FIRST;
+	} else if (st->state_last[slot] != state) {
+		reason = ONCHG_REASON_STATE;
+	} else {
+#define CMP(name, bit)                                                                     \
+	if ((SOCK_WATCH_MASK & (1u << SF_##name)) &&                                       \
+	    snap[SF_##name] != st->sock_last[hook][SF_##name])                             \
+		changed = true;
+		SOCK_FIELDS(CMP)
+#undef CMP
+		reason = changed ? ONCHG_REASON_CHANGED : ONCHG_REASON_SUPPRESS;
+	}
+	if (reason == ONCHG_REASON_SUPPRESS && !ONCHG_SHADOW) {
+		count_suppressed(rb);
+		return 0;
+	}
+
+	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq) ||
+	    !(rec = reserve(ringbufs, rb, rec))) {
+		if (st)
+			st->valid[slot] = 0;
+		return 0;
+	}
+	fill_header(rec, sk, sport, dport, hook_seq);
+	fill_sock_fields_watched(rec, sk, tp, snap);
+	if (ONCHG_SHADOW)
+		rec->ato = reason;
+	commit(rec, rb);
+	if (st) {
+#define STORE(name, bit)                                                                   \
+	if (SOCK_WATCH_MASK & (1u << SF_##name))                                           \
+		st->sock_last[hook][SF_##name] = snap[SF_##name];
+		SOCK_FIELDS(STORE)
+#undef STORE
+		st->state_last[slot] = state;
+		st->valid[slot] = 1;
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+SEC("?fentry/__tcp_transmit_skb")
+int BPF_PROG(sock_oc_sendmsg, struct sock *sk, struct sk_buff *skb)
+{
+	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, ONCHG_SOCK_SEND);
+}
+
+SEC("?fexit/tcp_rcv_established")
+int BPF_PROG(sock_oc_recvmsg, struct sock *sk, struct sk_buff *skb)
+{
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_SOCK_RECV);
+}
+
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */
 
 static __always_inline int trace_cubic(struct sock *sk)

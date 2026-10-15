@@ -42,4 +42,16 @@ enum tcbee_sock_field {
 
 #undef SOCK_FIELD_ENUM
 
+/*
+ * Shadow mode (ONCHG_SHADOW, --on-change-shadow): every run of the on-change sock probes is
+ * written, with the decision in the ato field of the record.
+ */
+enum tcbee_onchg_reason {
+	ONCHG_REASON_SUPPRESS = 1, /* nothing watched changed: no record in on-change mode */
+	ONCHG_REASON_CHANGED = 2, /* a watched field changed */
+	ONCHG_REASON_FIRST = 3, /* first run of the flow at the hook, or after a drop/error */
+	ONCHG_REASON_STATE = 4, /* the socket state changed */
+	ONCHG_REASON_NO_STORAGE = 5, /* no socket storage (state_err), always written */
+};
+
 #endif /* __TCBEE_ONCHANGE_H */

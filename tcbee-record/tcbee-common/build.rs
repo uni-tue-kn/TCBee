@@ -22,6 +22,7 @@ const RECORDS: &[&str] = &[
     "hook_seq_key",
     "filter_ip",
     "tcbee_sock_field",
+    "tcbee_onchg_reason",
 ];
 
 /// C names that keep their historical Rust names
