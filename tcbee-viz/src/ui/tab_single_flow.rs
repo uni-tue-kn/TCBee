@@ -289,7 +289,7 @@ impl TabSingleFlow {
             .iter()
             .filter(|s| !s.is_string_type() && !s.is_boolean_type())
             .map(|s| {
-                let points = points_after_outlier_removal(&s.points, remove_outliers);
+                let points = points_after_outlier_removal(&s.points, remove_outliers && !s.step);
                 (to_plot_points(points), s.color, s.name.clone())
             })
             .collect();
@@ -424,7 +424,7 @@ impl TabSingleFlow {
             .iter()
             .filter(|s| !s.is_string_type())
             .map(|s| {
-                let points = points_after_outlier_removal(&s.points, remove_outliers);
+                let points = points_after_outlier_removal(&s.points, remove_outliers && !s.step);
                 let pts = to_plot_points(points);
                 let (y_min, y_max) = if remove_outliers {
                     points_bounds(&pts)
