@@ -450,6 +450,102 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbufs, __u32 rb)
 	return 0;
 }
 
+/*
+ * The value of a watchable socket field (bpf/onchange.h). field is a constant at every
+ * call, so this folds to the one load.
+ */
+static __always_inline __u64 sock_field(struct sock *sk, struct tcp_sock *tp,
+					enum tcbee_sock_field field)
+{
+	switch (field) {
+	/* struct sock */
+	case SF_pacing_rate:
+		return sk->sk_pacing_rate;
+	case SF_max_pacing_rate:
+		return sk->sk_max_pacing_rate;
+	/* struct inet_connection_sock */
+	case SF_backoff:
+		return tp->inet_conn.icsk_backoff;
+	case SF_rto:
+		return tp->inet_conn.icsk_rto;
+	case SF_rcv_mss:
+		return tp->inet_conn.icsk_ack.rcv_mss;
+	/* struct tcp_sock */
+	case SF_snd_cwnd:
+		return tp->snd_cwnd;
+	case SF_bytes_acked:
+		return tp->bytes_acked;
+	case SF_snd_ssthresh:
+		return tp->snd_ssthresh;
+	case SF_total_retrans:
+		return tp->total_retrans;
+	case SF_probes:
+		return tp->keepalive_probes;
+	case SF_lost:
+		return tp->lost;
+	case SF_sacked_out:
+		return tp->sacked_out;
+	case SF_retrans:
+		return tp->retrans_out;
+	case SF_rcv_ssthresh:
+		return tp->rcv_ssthresh;
+	case SF_rttvar:
+		return tp->rttvar_us;
+	case SF_advmss:
+		return tp->advmss;
+	case SF_reordering:
+		return tp->reordering;
+	case SF_rcv_rtt:
+		return tp->rcv_rtt_est.rtt_us;
+	case SF_rcv_space:
+		return tp->rcvq_space.space;
+	case SF_bytes_received:
+		return tp->bytes_received;
+	case SF_segs_out:
+		return tp->segs_out;
+	case SF_segs_in:
+		return tp->segs_in;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Every field of a sock record after the header, read from the socket. Written out field
+ * by field in record order, not with SOCK_FIELDS(): that would move the ato store and
+ * change the default programs' code (testing/bpf_identity.sh).
+ */
+static __always_inline void fill_sock_fields(struct sock_trace_entry *rec, struct sock *sk,
+					     struct tcp_sock *tp)
+{
+	rec->pacing_rate = sock_field(sk, tp, SF_pacing_rate);
+	rec->max_pacing_rate = sock_field(sk, tp, SF_max_pacing_rate);
+	rec->backoff = sock_field(sk, tp, SF_backoff);
+	rec->rto = sock_field(sk, tp, SF_rto);
+	rec->ato = 0;
+	rec->rcv_mss = sock_field(sk, tp, SF_rcv_mss);
+	rec->snd_cwnd = sock_field(sk, tp, SF_snd_cwnd);
+	rec->bytes_acked = sock_field(sk, tp, SF_bytes_acked);
+	rec->snd_ssthresh = sock_field(sk, tp, SF_snd_ssthresh);
+	rec->total_retrans = sock_field(sk, tp, SF_total_retrans);
+	rec->probes = sock_field(sk, tp, SF_probes);
+	rec->lost = sock_field(sk, tp, SF_lost);
+	rec->sacked_out = sock_field(sk, tp, SF_sacked_out);
+	rec->retrans = sock_field(sk, tp, SF_retrans);
+	rec->rcv_ssthresh = sock_field(sk, tp, SF_rcv_ssthresh);
+	rec->rttvar = sock_field(sk, tp, SF_rttvar);
+	rec->advmss = sock_field(sk, tp, SF_advmss);
+	rec->reordering = sock_field(sk, tp, SF_reordering);
+	rec->rcv_rtt = sock_field(sk, tp, SF_rcv_rtt);
+	rec->rcv_space = sock_field(sk, tp, SF_rcv_space);
+	rec->bytes_received = sock_field(sk, tp, SF_bytes_received);
+	rec->segs_out = sock_field(sk, tp, SF_segs_out);
+	rec->segs_in = sock_field(sk, tp, SF_segs_in);
+	/* struct tcp_options_received, not read yet */
+	rec->snd_wscale = 0;
+	rec->rcv_wscale = 0;
+}
+
 static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
 				      __u32 rb)
 {
@@ -469,35 +565,7 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 		count_error(rb);
 	} else if ((rec = reserve(ringbufs, rb, rec))) {
 		fill_header(rec, sk, sport, dport, hook_seq);
-		/* struct sock */
-		rec->pacing_rate = sk->sk_pacing_rate;
-		rec->max_pacing_rate = sk->sk_max_pacing_rate;
-		/* struct inet_connection_sock */
-		rec->backoff = tp->inet_conn.icsk_backoff;
-		rec->rto = tp->inet_conn.icsk_rto;
-		rec->ato = 0;
-		rec->rcv_mss = tp->inet_conn.icsk_ack.rcv_mss;
-		/* struct tcp_sock */
-		rec->snd_cwnd = tp->snd_cwnd;
-		rec->bytes_acked = tp->bytes_acked;
-		rec->snd_ssthresh = tp->snd_ssthresh;
-		rec->total_retrans = tp->total_retrans;
-		rec->probes = tp->keepalive_probes;
-		rec->lost = tp->lost;
-		rec->sacked_out = tp->sacked_out;
-		rec->retrans = tp->retrans_out;
-		rec->rcv_ssthresh = tp->rcv_ssthresh;
-		rec->rttvar = tp->rttvar_us;
-		rec->advmss = tp->advmss;
-		rec->reordering = tp->reordering;
-		rec->rcv_rtt = tp->rcv_rtt_est.rtt_us;
-		rec->rcv_space = tp->rcvq_space.space;
-		rec->bytes_received = tp->bytes_received;
-		rec->segs_out = tp->segs_out;
-		rec->segs_in = tp->segs_in;
-		/* struct tcp_options_received, not read yet */
-		rec->snd_wscale = 0;
-		rec->rcv_wscale = 0;
+		fill_sock_fields(rec, sk, tp);
 		commit(rec, rb);
 	}
 
