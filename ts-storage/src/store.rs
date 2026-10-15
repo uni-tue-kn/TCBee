@@ -60,6 +60,8 @@ pub trait Store {
     fn flow(&self, id: i64) -> Result<Option<Flow>, StoreError>;
     fn series(&self, flow_id: i64) -> Result<Vec<SeriesInfo>, StoreError>;
     fn series_by_id(&self, id: i64) -> Result<Option<SeriesInfo>, StoreError>;
+    /// The `meta` entries (writer, trace_dir, schema_version, ...), ordered by key.
+    fn meta(&self) -> Result<Vec<(String, String)>, StoreError>;
     /// Points ordered by (ts, seq). `range` is inclusive, in f64 ns.
     fn for_each_point(
         &self,

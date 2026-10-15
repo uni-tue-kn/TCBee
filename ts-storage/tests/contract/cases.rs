@@ -326,6 +326,17 @@ pub fn catalog_flows_by_tuple(engine: Engine) {
     assert!(st.flow(4).unwrap().is_none());
 }
 
+pub fn catalog_meta_is_readable(engine: Engine) {
+    let (_env, st) = catalog_db(engine);
+    let meta = st.meta().unwrap();
+    let keys: Vec<&str> = meta.iter().map(|(k, _)| k.as_str()).collect();
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(keys, sorted);
+    assert!(meta.contains(&("writer".to_string(), "contract test".to_string())));
+    assert!(keys.contains(&"schema_version"));
+}
+
 pub fn catalog_series_per_flow(engine: Engine) {
     let (_env, st) = catalog_db(engine);
     // Eight series per `all` group (send, recv, none), two per `other` group, none for an empty

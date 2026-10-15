@@ -555,6 +555,16 @@ impl Store for DuckStore {
         Ok(out)
     }
 
+    fn meta(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut st = self.conn.prepare(sql::SELECT_META)?;
+        let mut rows = st.query([])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push((r.get(0)?, r.get(1)?));
+        }
+        Ok(out)
+    }
+
     fn flow(&self, id: i64) -> Result<Option<Flow>, StoreError> {
         let mut st = self.conn.prepare(sql::SELECT_FLOW)?;
         let mut rows = st.query(params![id])?;

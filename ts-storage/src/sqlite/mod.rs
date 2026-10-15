@@ -542,6 +542,16 @@ impl Store for SqliteStore {
         Ok(out)
     }
 
+    fn meta(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut stmt = self.conn.prepare_cached(sql::SELECT_META)?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push((r.get(0)?, r.get(1)?));
+        }
+        Ok(out)
+    }
+
     fn flow(&self, id: i64) -> Result<Option<Flow>, StoreError> {
         let mut stmt = self.conn.prepare_cached(sql::SELECT_FLOW)?;
         let mut rows = stmt.query([id])?;
