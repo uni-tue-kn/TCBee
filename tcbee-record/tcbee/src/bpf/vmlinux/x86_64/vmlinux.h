@@ -56,7 +56,13 @@ enum {
 	BPF_MAP_TYPE_PERCPU_HASH = 5,
 	BPF_MAP_TYPE_PERCPU_ARRAY = 6,
 	BPF_MAP_TYPE_ARRAY_OF_MAPS = 12,
+	BPF_MAP_TYPE_SK_STORAGE = 24,
 	BPF_MAP_TYPE_RINGBUF = 27,
+};
+
+enum {
+	BPF_F_NO_PREALLOC = 1,
+	BPF_SK_STORAGE_GET_F_CREATE = 1,
 };
 
 /* The TC context is a stable UAPI layout, not a CO-RE kernel struct. */
@@ -130,6 +136,7 @@ struct sock_common {
 	unsigned short skc_family;
 	struct in6_addr skc_v6_daddr;
 	struct in6_addr skc_v6_rcv_saddr;
+	volatile unsigned char skc_state;
 };
 
 struct sock {

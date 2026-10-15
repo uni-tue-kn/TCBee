@@ -599,6 +599,94 @@ int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
 	return trace_cwnd(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
 }
 
+/*
+ * ---- On-change mode (--on-change) ---------------------------------------------------
+ *
+ * Separate programs that write a record only when a watched field or the socket state
+ * changed since the last record of the flow at this hook, after a drop or error, and on
+ * the first run. They are the only users of ONCHG and declared with "?" (not loaded unless
+ * userspace enables them), so the default programs above are unchanged.
+ *
+ * The decision comes before hook_seq is taken and before the ring buffer is touched: a
+ * suppressed run counts as suppressed and takes no number, so hook_seq gaps still are
+ * exactly the drops. A tcp_sock error also comes before hook_seq here and leaves no gap.
+ * The receive side hooks fexit/tcp_rcv_established, so its records carry the state after
+ * the packet was processed, at the time it was processed.
+ */
+
+/* The state of this socket, created on first use; counts state_err if there is none */
+static __always_inline struct onchg_state *onchg_state_of(struct sock *sk)
+{
+	struct onchg_state *st;
+
+	st = bpf_sk_storage_get(&ONCHG, sk, NULL, BPF_SK_STORAGE_GET_F_CREATE);
+	if (!st)
+		count_state_err();
+	return st;
+}
+
+static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 rb,
+					 enum onchg_slot slot)
+{
+	int hook = slot - ONCHG_CWND_SEND; /* 0 send, 1 receive */
+	struct cwnd_trace_entry *rec;
+	struct onchg_state *st;
+	struct tcp_sock *tp;
+	__u16 sport, dport;
+	__u64 hook_seq;
+	__u32 cwnd;
+	__u8 state;
+
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
+		count_error(rb);
+		return 0;
+	}
+	cwnd = tp->snd_cwnd;
+	state = sk->__sk_common.skc_state;
+
+	st = onchg_state_of(sk);
+	if (st && st->valid[slot] && st->cwnd_last[hook] == cwnd &&
+	    st->state_last[slot] == state) {
+		count_suppressed(rb);
+		return 0;
+	}
+
+	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq) ||
+	    !(rec = reserve(ringbufs, rb, rec))) {
+		if (st)
+			st->valid[slot] = 0;
+		return 0;
+	}
+	fill_header(rec, sk, sport, dport, hook_seq);
+	rec->snd_cwnd = cwnd;
+	commit(rec, rb);
+	if (st) {
+		st->cwnd_last[hook] = cwnd;
+		st->state_last[slot] = state;
+		st->valid[slot] = 1;
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+SEC("?fentry/__tcp_transmit_skb")
+int BPF_PROG(cwnd_oc_sendmsg, struct sock *sk)
+{
+	return trace_cwnd_oc(sk, &TCP_SEND_CWND_EVENTS, RB_CWND_SEND, ONCHG_CWND_SEND);
+}
+
+SEC("?fexit/tcp_rcv_established")
+int BPF_PROG(cwnd_oc_recvmsg, struct sock *sk)
+{
+	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV, ONCHG_CWND_RECV);
+}
+
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */
 
 static __always_inline int trace_cubic(struct sock *sk)

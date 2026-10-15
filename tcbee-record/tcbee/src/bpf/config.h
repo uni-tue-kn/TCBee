@@ -20,6 +20,14 @@ const volatile __u64 RB_SUBMIT_FLAGS = BPF_RB_NO_WAKEUP;
 /* Set to 0 by userspace when the flow list is not displayed */
 const volatile __u8 FLOW_TRACKING = 1;
 
+/*
+ * On-change mode (--on-change, see onchange.h): the socket fields the sock probes compare,
+ * one bit per enum tcbee_sock_field. ONCHG_SHADOW writes every run anyway, with the
+ * decision as a reason code in the ato field.
+ */
+const volatile __u32 SOCK_WATCH_MASK = 0;
+const volatile __u8 ONCHG_SHADOW = 0;
+
 /* Constants that only exist as macros in the uapi headers, not in BTF */
 #define AF_INET 2
 #define AF_INET6 10
