@@ -2,7 +2,9 @@
 //!
 //! A flow can hold several series with the same name: send and receive copies, raw columns and
 //! derived series. The plugins zip their inputs by index, so only rows of one `(source, dir)`
-//! group are aligned. [`resolve_inputs`] picks one series per required name.
+//! group are aligned. [`resolve_inputs`] picks one series per required name. On-change series
+//! (`_oc` sources) hold only the changes, so their rows never line up with other series and
+//! they are not plugin inputs.
 
 use ts_storage::{Dir, SeriesInfo, SeriesKind};
 
@@ -85,6 +87,12 @@ fn best_match_series_id(required: &str, available: &[SeriesInfo]) -> Option<i64>
 /// Otherwise (for example SenderLimitation, which needs `SND_*` from tcp_probe and `advmss`
 /// from sock) every input is resolved independently.
 pub fn resolve_inputs(required: &[String], available: &[SeriesInfo]) -> Vec<Option<i64>> {
+    let available: Vec<SeriesInfo> = available
+        .iter()
+        .filter(|s| !s.source.ends_with("_oc"))
+        .cloned()
+        .collect();
+    let available = available.as_slice();
     let best_tiers: Vec<Option<Tier>> = required
         .iter()
         .map(|r| best(r, available.iter()).map(|(t, _)| t))
@@ -256,6 +264,21 @@ mod tests {
             resolve_inputs(&names(&["SND_NXT", "SND_UNA"]), &a),
             vec![Some(2), Some(3)]
         );
+    }
+
+    #[test]
+    fn on_change_series_are_never_inputs() {
+        let a = [
+            raw(1, "sock_oc", Dir::Send, "snd_cwnd"),
+            raw(2, "sock_oc", Dir::Send, "advmss"),
+            raw(3, "sock", Dir::Recv, "snd_cwnd"),
+            raw(4, "sock", Dir::Recv, "advmss"),
+        ];
+        assert_eq!(
+            resolve_inputs(&names(&["snd_cwnd", "advmss"]), &a),
+            vec![Some(3), Some(4)]
+        );
+        assert_eq!(resolve_inputs(&names(&["snd_cwnd"]), &a[..2]), vec![None]);
     }
 
     #[test]
