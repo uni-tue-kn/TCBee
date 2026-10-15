@@ -54,6 +54,23 @@ impl TraceInoutProbe for cwnd_trace_entry {
     const OUT_QUEUE: &'static str = "TCP_SEND_CWND_EVENTS";
 }
 
+/// Files of the probes that support on-change mode (`--on-change`), which writes step
+/// series under their own names
+pub trait TraceOnChangeProbe {
+    const IN_FILE_OC: &'static str;
+    const OUT_FILE_OC: &'static str;
+}
+
+impl TraceOnChangeProbe for sock_trace_entry {
+    const IN_FILE_OC: &'static str = "recv_sock_oc.tcp";
+    const OUT_FILE_OC: &'static str = "send_sock_oc.tcp";
+}
+
+impl TraceOnChangeProbe for cwnd_trace_entry {
+    const IN_FILE_OC: &'static str = "recv_cwnd_oc.tcp";
+    const OUT_FILE_OC: &'static str = "send_cwnd_oc.tcp";
+}
+
 impl TraceInoutProbe for tcp4_packet_trace {
     const IN_FILE: &'static str = "tcp4_receive.tcp";
     const IN_QUEUE: &'static str = "TCP4_PACKETS_INGRESS";

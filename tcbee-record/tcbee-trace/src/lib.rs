@@ -23,6 +23,11 @@ pub enum TraceFile {
     Tcp4Send,
     Tcp6Receive,
     Tcp6Send,
+    /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
+    SendSockOc,
+    RecvSockOc,
+    SendCwndOc,
+    RecvCwndOc,
 }
 
 impl TraceFile {
@@ -41,6 +46,10 @@ impl TraceFile {
             TraceFile::Tcp4Send => "tcp4_send.tcp",
             TraceFile::Tcp6Receive => "tcp6_receive.tcp",
             TraceFile::Tcp6Send => "tcp6_send.tcp",
+            TraceFile::SendSockOc => "send_sock_oc.tcp",
+            TraceFile::RecvSockOc => "recv_sock_oc.tcp",
+            TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
+            TraceFile::RecvCwndOc => "recv_cwnd_oc.tcp",
         }
     }
 
@@ -59,6 +68,10 @@ impl TraceFile {
             TraceFile::Tcp4Send,
             TraceFile::Tcp6Receive,
             TraceFile::Tcp6Send,
+            TraceFile::SendSockOc,
+            TraceFile::RecvSockOc,
+            TraceFile::SendCwndOc,
+            TraceFile::RecvCwndOc,
         ]
     }
 }

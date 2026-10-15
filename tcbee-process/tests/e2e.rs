@@ -39,6 +39,8 @@ const SMALL: &[(&str, &str, u8, u64, usize)] = &[
     ("tcp4_receive.tcp", "tcp4", 2, 2000, 4),
     ("tcp6_send.tcp", "tcp6", 1, 500, 4),
     ("tcp6_receive.tcp", "tcp6", 2, 500, 4),
+    ("send_sock_oc.tcp", "sock_oc", 1, 200, 25),
+    ("send_cwnd_oc.tcp", "cwnd_oc", 1, 200, 1),
 ];
 
 /// Size of one `tcp4` record in the trace file.
@@ -193,6 +195,32 @@ fn small_fixture_series_cover_every_record() {
             }
         }
         assert_eq!(dump(&*store).series.len(), summary.series);
+    }
+}
+
+/// On-change files land in their own source, never in the full series of the same flow.
+#[test]
+fn on_change_sock_is_a_separate_series() {
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, _) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
+        let store = ts_storage::open(&out).unwrap();
+        let mut found = false;
+        for f in store.flows().unwrap() {
+            let series = store.series(f.id).unwrap();
+            let cwnd = |source: &str| {
+                series
+                    .iter()
+                    .find(|s| s.source == source && s.name == "snd_cwnd" && s.dir.code() == 1)
+                    .map(|s| (s.id, s.n))
+            };
+            if let (Some(full), Some(oc)) = (cwnd("sock"), cwnd("sock_oc")) {
+                found = true;
+                assert_ne!(full.0, oc.0);
+                assert!(oc.1 <= full.1);
+            }
+        }
+        assert!(found, "no flow with full and on-change sock data");
     }
 }
 

@@ -488,6 +488,10 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::TcpProbe, "tcp_probe", Dir::None),
         (TraceFile::Cubic, "cubic", Dir::None),
         (TraceFile::Bbr, "bbr", Dir::None),
+        (TraceFile::SendSockOc, "sock_oc", Dir::Send),
+        (TraceFile::RecvSockOc, "sock_oc", Dir::Recv),
+        (TraceFile::SendCwndOc, "cwnd_oc", Dir::Send),
+        (TraceFile::RecvCwndOc, "cwnd_oc", Dir::Recv),
     ];
     for (file, source, dir) in want {
         let b = binding(file).unwrap();
@@ -512,6 +516,8 @@ fn file_table_maps_every_trace_file() {
         ("cwnd", 70, 1),
         ("tcp6", 67, 4),
         ("tcp4", 43, 4),
+        ("sock_oc", 168, 25),
+        ("cwnd_oc", 70, 1),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -519,7 +525,7 @@ fn file_table_maps_every_trace_file() {
     let mut names: Vec<_> = tables.iter().map(|t| t.source).collect();
     names.sort();
     names.dedup();
-    assert_eq!(names.len(), 7);
+    assert_eq!(names.len(), 9);
 }
 
 /// Decoding a record through the file table reaches the same row as the typed path.

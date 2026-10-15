@@ -140,9 +140,24 @@ mod generate {
         write(&small, "send_cwnd.tcp", (0..1000).map(cwnd));
         write(&small, "tcp6_receive.tcp", (0..500).map(|i| tcp6(i, true)));
         write(&small, "tcp6_send.tcp", (0..500).map(|i| tcp6(i, false)));
-        for empty in ["tcp_retransmit_synack", "tcp_bad_csum", "recv_cwnd"] {
+        write(&small, "send_cwnd_oc.tcp", (0..200).map(cwnd));
+        for empty in [
+            "tcp_retransmit_synack",
+            "tcp_bad_csum",
+            "recv_cwnd",
+            "recv_sock_oc",
+            "recv_cwnd_oc",
+        ] {
             fs::write(small.join(format!("{empty}.tcp")), b"").unwrap();
         }
+
+        // On-change sock file: the first 200 records of the real send_sock.tcp.
+        let bytes = fs::read(small.join("send_sock.tcp")).unwrap();
+        fs::write(
+            small.join("send_sock_oc.tcp"),
+            &bytes[..200 * sock_trace_entry::ENTRY_SIZE],
+        )
+        .unwrap();
 
         // First 10 sock records of the real send_sock.tcp plus 17 bytes of the eleventh.
         let mut bytes = fs::read(small.join("send_sock.tcp")).unwrap();
@@ -204,6 +219,10 @@ mod checks {
         check::<TcpProbe>("tcp_probe.tcp", 2000);
         check::<sock_trace_entry>("recv_sock.tcp", 2000);
         check::<cwnd_trace_entry>("recv_cwnd.tcp", 0);
+        check::<sock_trace_entry>("send_sock_oc.tcp", 200);
+        check::<sock_trace_entry>("recv_sock_oc.tcp", 0);
+        check::<cwnd_trace_entry>("send_cwnd_oc.tcp", 200);
+        check::<cwnd_trace_entry>("recv_cwnd_oc.tcp", 0);
         check::<Tcp4Packet>("tcp4_receive.tcp", 2000);
         check::<Tcp4Packet>("tcp4_send.tcp", 2000);
         check::<Tcp6Packet>("tcp6_receive.tcp", 500);

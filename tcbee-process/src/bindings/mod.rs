@@ -32,12 +32,30 @@ pub struct Binding {
     pub decode: DecodeFn,
 }
 
+/// On-change files (`*_oc.tcp`) hold the same records as their full counterparts, but as step
+/// series: their own sources keep them apart from the full series of a flow.
+static SOCK_OC: EventTable = EventTable {
+    source: "sock_oc",
+    columns: <sock_trace_entry as Event>::TABLE.columns,
+};
+static CWND_OC: EventTable = EventTable {
+    source: "cwnd_oc",
+    columns: <cwnd_trace_entry as Event>::TABLE.columns,
+};
+
 fn binding_of<E: Event>(dir: Dir) -> Binding {
     Binding {
         dir,
         table: E::TABLE,
         entry_size: E::ENTRY_SIZE,
         decode: decode_dyn::<E>,
+    }
+}
+
+fn on_change_binding_of<E: Event>(table: &'static EventTable, dir: Dir) -> Binding {
+    Binding {
+        table,
+        ..binding_of::<E>(dir)
     }
 }
 
@@ -56,12 +74,16 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::TcpProbe => binding_of::<TcpProbe>(Dir::None),
         TraceFile::Cubic => binding_of::<CubicEvent>(Dir::None),
         TraceFile::Bbr => binding_of::<BbrEvent>(Dir::None),
+        TraceFile::SendSockOc => on_change_binding_of::<sock_trace_entry>(&SOCK_OC, Dir::Send),
+        TraceFile::RecvSockOc => on_change_binding_of::<sock_trace_entry>(&SOCK_OC, Dir::Recv),
+        TraceFile::SendCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Send),
+        TraceFile::RecvCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Recv),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
 }
 
-/// Every event table: sock, tcp_probe, cwnd, cubic, bbr, tcp4, tcp6.
-pub fn event_tables() -> [&'static EventTable; 7] {
+/// Every event table: sock, tcp_probe, cwnd, cubic, bbr, tcp4, tcp6, sock_oc, cwnd_oc.
+pub fn event_tables() -> [&'static EventTable; 9] {
     [
         sock_trace_entry::TABLE,
         TcpProbe::TABLE,
@@ -70,6 +92,8 @@ pub fn event_tables() -> [&'static EventTable; 7] {
         BbrEvent::TABLE,
         Tcp4Packet::TABLE,
         Tcp6Packet::TABLE,
+        &SOCK_OC,
+        &CWND_OC,
     ]
 }
 
