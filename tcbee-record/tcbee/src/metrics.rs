@@ -44,12 +44,15 @@ pub struct RingBufMetrics {
     pub handled: u64,
     pub dropped: u64,
     pub error: u64,
+    /// Runs an on-change probe suppressed (0 in the default mode)
+    pub suppressed: u64,
     /// None if no writer was registered for this ring buffer
     pub records_written: Option<u64>,
     pub writer_error: Option<String>,
     /// Sum of the last hook_seq of every flow direction at this ring buffer's hook. Equals
-    /// handled + dropped + the errors after the filter, so it also covers drops at the end
-    /// of a flow, which leave no gap. None if the counters could not be read.
+    /// handled + dropped + the errors after hook_seq was taken (after the filter in the
+    /// default mode), so it also covers drops at the end of a flow, which leave no gap.
+    /// Suppressed runs take no number. None if the counters could not be read.
     pub hook_seq_issued: Option<u64>,
 }
 
@@ -90,6 +93,10 @@ pub struct Metrics {
     pub handled: u64,
     pub dropped: u64,
     pub error: u64,
+    /// Runs on-change probes suppressed (0 in the default mode)
+    pub suppressed: u64,
+    /// On-change runs without socket storage, which wrote a full record
+    pub state_errors: u64,
     pub records_written: u64,
     pub ingress: u64,
     pub egress: u64,
@@ -129,6 +136,7 @@ impl Metrics {
                     handled: snapshot.rb(rb, STAT_HANDLED),
                     dropped: snapshot.rb(rb, STAT_DROPPED),
                     error: snapshot.rb(rb, STAT_ERROR),
+                    suppressed: snapshot.suppressed(rb),
                     records_written: report.map(|r| r.records),
                     writer_error: report.and_then(|r| r.error.clone()),
                     hook_seq_issued: hook_seq.map(|totals| totals.issued[rb as usize]),
@@ -143,6 +151,8 @@ impl Metrics {
             handled: snapshot.handled(),
             dropped: snapshot.dropped(),
             error: snapshot.errors(),
+            suppressed: snapshot.suppressed_total(),
+            state_errors: snapshot.state_errors(),
             records_written: reports.iter().map(|r| r.records).sum(),
             ingress: attempts(&[RB_TCP4_INGRESS, RB_TCP6_INGRESS]),
             egress: attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]),

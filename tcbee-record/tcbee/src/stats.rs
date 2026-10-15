@@ -1,6 +1,7 @@
 use libbpf_rs::{MapCore, MapFlags, MapHandle};
 use tcbee_common::stats::{
-    invocation_slots, slot, RB_COUNT, STATS_LEN, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+    invocation_slots, slot, suppressed_slot, RB_COUNT, STATS_LEN, STATS_STATE_ERR, STAT_DROPPED,
+    STAT_ERROR, STAT_HANDLED,
 };
 
 /// Reads the `STATS` per-CPU counter array of the eBPF programs.
@@ -68,7 +69,21 @@ impl Snapshot {
         self.total(STAT_ERROR)
     }
 
-    /// Probe invocations of one ring buffer: handled, dropped and failed events
+    /// Runs of one ring buffer that an on-change probe suppressed
+    pub fn suppressed(&self, rb: u32) -> u64 {
+        self.get(suppressed_slot(rb))
+    }
+
+    pub fn suppressed_total(&self) -> u64 {
+        (0..RB_COUNT).map(|rb| self.suppressed(rb)).sum()
+    }
+
+    /// On-change runs without socket storage, which wrote a full record
+    pub fn state_errors(&self) -> u64 {
+        self.get(STATS_STATE_ERR)
+    }
+
+    /// Probe invocations of one ring buffer: handled, dropped, failed and suppressed events
     pub fn invocations(&self, rb: u32) -> u64 {
         self.sum(&invocation_slots(rb))
     }
