@@ -207,7 +207,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut on_change).add_option(
             &["--on-change"],
             Store,
-            "Write sock (-k) and cwnd (-w) records only when a watched field or the socket state changed, into *_oc.tcp files with a manifest.json. 'cc' watches snd_cwnd, snd_ssthresh, total_retrans, backoff, rto, reordering and rcv_mss; or give a comma-separated list of sock_trace_entry fields. The cwnd probe watches snd_cwnd. Each probe compares with the last record of the connection, whichever hook wrote it.",
+            "Write sock (-k) and cwnd (-w) records only when a watched field or the socket state changed, into *_oc.tcp files with a manifest.json. 'cc' watches snd_cwnd, snd_ssthresh, total_retrans, backoff, rto, reordering and rcv_mss, 'rcv' (for a receiver) rcv_mss, rcv_space, rcv_ssthresh and rcv_rtt; or give a comma-separated list of sock_trace_entry fields. The cwnd probe watches snd_cwnd. Each probe compares with the last record of the connection, whichever hook wrote it.",
         );
         argparser.refer(&mut on_change_hooks).add_option(
             &["--on-change-hooks"],

@@ -126,10 +126,24 @@ impl WatchSet {
             | 1 << SockField::RcvMss as u32,
     );
 
-    /// `cc` or a comma-separated list of field names
+    /// Receive side state: MSS, receive buffer autotuning and window clamp, receiver RTT
+    /// estimate. On a receiver ingress runs per data segment, so this is the set that
+    /// saves there. rcv_space is adjusted when the application reads (tcp_rcv_space_adjust)
+    /// and rcv_ssthresh also when a window is sent, so such a change is recorded at the
+    /// next hook run.
+    pub const RCV: WatchSet = WatchSet(
+        1 << SockField::RcvMss as u32
+            | 1 << SockField::RcvSpace as u32
+            | 1 << SockField::RcvSsthresh as u32
+            | 1 << SockField::RcvRtt as u32,
+    );
+
+    /// A preset (`cc`, `rcv`) or a comma-separated list of field names
     pub fn parse(spec: &str) -> Result<WatchSet, WatchSetError> {
-        if spec.trim() == "cc" {
-            return Ok(WatchSet::CC);
+        match spec.trim() {
+            "cc" => return Ok(WatchSet::CC),
+            "rcv" => return Ok(WatchSet::RCV),
+            _ => {}
         }
         let mut mask = 0;
         for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -363,6 +377,11 @@ mod tests {
     #[test]
     fn parse_preset_and_lists() {
         assert_eq!(WatchSet::parse("cc").unwrap(), WatchSet::CC);
+        assert_eq!(
+            WatchSet::parse("rcv").unwrap(),
+            WatchSet::parse("rcv_mss,rcv_space,rcv_ssthresh,rcv_rtt").unwrap()
+        );
+        assert!(WatchSet::RCV.fields().all(|f| !f.changes_per_packet()));
         let set = WatchSet::parse("snd_cwnd, total_retrans,snd_cwnd").unwrap();
         assert_eq!(
             set.fields().collect::<Vec<_>>(),
