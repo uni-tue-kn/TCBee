@@ -4,13 +4,13 @@
 #   testing/bpf_identity.sh BASE      e.g. the commit a branch started from
 #
 # Builds tcbee-record at BASE (in a temporary worktree) and at the working tree, then compares
-# the disassembly and relocations of the default socket and cwnd programs. The baseline build
+# the disassembly and relocations of the default programs: every program of the baseline object
+# that is not declared with "?" (the opt-in on-change programs). The baseline build
 # uses its own target directory under tcbee-record/target, so only the first run is slow.
 set -euo pipefail
 
 repo=$(git rev-parse --show-toplevel)
 base=${1:?usage: testing/bpf_identity.sh BASE}
-progs=sock_sendmsg,sock_recvmsg,cwnd_sock_sendmsg,cwnd_sock_recvmsg
 
 tmp=$(mktemp -d)
 cleanup() {
@@ -35,16 +35,22 @@ CARGO_TARGET_DIR="$repo/tcbee-record/target/bpf-identity" \
 cargo build --quiet --release --manifest-path "$repo/tcbee-record/Cargo.toml" -p tcbee
 
 # BTF type ids in the CO-RE relocation notes shift whenever a type is added to the object;
-# libbpf resolves the relocations by type name and access path, which are compared.
+# libbpf resolves the relocations by type name and access path, which are compared. Local
+# labels (LBB<function>_<block>) are numbered by the function's place in the object, so
+# adding a program renumbers the ones after it; jump offsets are compared instead.
 disasm() {
 	llvm-objdump -dr --no-show-raw-insn --disassemble-symbols="$progs" "$1" |
-		grep -v 'file format' | sed -E 's/(CO-RE <[a-z_]+>) \[[0-9]+\]/\1 [id]/'
+		grep -v 'file format' |
+		sed -E 's/(CO-RE <[a-z0-9_]+>) \[[0-9]+\]/\1 [id]/; s/<LBB[0-9]+_([0-9]+)>/<LBB_\1>/'
 }
 
-disasm "$(object "$repo/tcbee-record/target/bpf-identity")" >"$tmp/base.txt"
+base_obj=$(object "$repo/tcbee-record/target/bpf-identity")
+# Function symbols: address, binding, F, section, size, name
+progs=$(llvm-objdump -t "$base_obj" | awk '$3 == "F" && $4 !~ /^\?/ { print $6 }' | paste -sd,)
+disasm "$base_obj" >"$tmp/base.txt"
 disasm "$(object "$repo/tcbee-record/target/release")" >"$tmp/new.txt"
 if diff -u "$tmp/base.txt" "$tmp/new.txt"; then
-	echo "default programs identical to $base ($(grep -c '^ *[0-9a-f]*:' "$tmp/new.txt") instructions)"
+	echo "default programs identical to $base ($(tr , '\n' <<<"$progs" | wc -l) programs, $(grep -c '^ *[0-9a-f]*:' "$tmp/new.txt") instructions)"
 else
 	echo "default programs differ from $base" >&2
 	exit 1
