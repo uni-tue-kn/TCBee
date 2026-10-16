@@ -78,7 +78,11 @@ static __always_inline void add_stat_owned(__u32 slot, __u64 value)
 		*counter += value;
 }
 
-/* Ring buffers whose counters exactly one program updates, see add_stat_owned() */
+/*
+ * Ring buffers whose counters exactly one program updates, see add_stat_owned(). In on-change
+ * mode the sock and cwnd rings have several programs (ingress, timer); the on-change programs
+ * count through the _shared helpers below, which always take the atomic add.
+ */
 static __always_inline bool rb_owned(__u32 rb)
 {
 	return rb == RB_SOCK_SEND || rb == RB_SOCK_RECV || rb == RB_CWND_SEND ||
@@ -102,15 +106,30 @@ static __always_inline void count_error(__u32 rb)
 	count(rb, STAT_ERROR);
 }
 
-/* An on-change run whose watched fields did not change: no hook_seq, no record */
+/*
+ * count() of an on-change program. The on-change receive ring has two programs, the ingress
+ * and the write timer hook, which can nest on one CPU (backlog processing with BH enabled,
+ * interrupted by a timer softirq), so the on-change programs always count with the atomic add.
+ * The default helpers stay as they are, so that the default programs compile unchanged
+ * (testing/bpf_identity.sh).
+ */
+static __always_inline void count_shared(__u32 rb, __u32 stat)
+{
+	add_stat(rb * STATS_PER_RB + stat, 1);
+}
+
+static __always_inline void count_error_shared(__u32 rb)
+{
+	count_shared(rb, STAT_ERROR);
+}
+
+/*
+ * An on-change run whose watched fields did not change: no hook_seq, no record. Only the
+ * on-change programs count it, so it always takes the atomic add like count_shared().
+ */
 static __always_inline void count_suppressed(__u32 rb)
 {
-	__u32 slot = STATS_SUPPRESSED_BASE + rb;
-
-	if (rb_owned(rb))
-		add_stat_owned(slot, 1);
-	else
-		add_stat(slot, 1);
+	add_stat(STATS_SUPPRESSED_BASE + rb, 1);
 }
 
 /* Several programs share this slot, so it always takes the atomic add */
@@ -158,6 +177,39 @@ static __always_inline void commit(void *rec, __u32 rb)
 #define reserve(ringbufs, rb, rec)                                                         \
 	({                                                                                 \
 		typeof(rec) __rec = reserve_record(ringbufs, rb, sizeof(*(rec)));          \
+		if (__rec)                                                                 \
+			__builtin_memset(__rec, 0, sizeof(*__rec));                        \
+		__rec;                                                                     \
+	})
+
+/* reserve_record() of an on-change program, see count_shared() */
+static __always_inline void *reserve_record_shared(void *ringbufs, __u32 rb, __u64 size)
+{
+	__u32 cpu = bpf_get_smp_processor_id();
+	void *ringbuf, *rec;
+
+	ringbuf = bpf_map_lookup_elem(ringbufs, &cpu);
+	if (!ringbuf) {
+		count_shared(rb, STAT_ERROR);
+		return NULL;
+	}
+	rec = bpf_ringbuf_reserve(ringbuf, size, 0);
+	if (!rec)
+		count_shared(rb, STAT_DROPPED);
+	return rec;
+}
+
+/* commit() of an on-change program, see count_shared() */
+static __always_inline void commit_shared(void *rec, __u32 rb)
+{
+	bpf_ringbuf_submit(rec, RB_SUBMIT_FLAGS);
+	count_shared(rb, STAT_HANDLED);
+}
+
+/* reserve() of an on-change program, see count_shared() */
+#define reserve_shared(ringbufs, rb, rec)                                                  \
+	({                                                                                 \
+		typeof(rec) __rec = reserve_record_shared(ringbufs, rb, sizeof(*(rec)));   \
 		if (__rec)                                                                 \
 			__builtin_memset(__rec, 0, sizeof(*__rec));                        \
 		__rec;                                                                     \

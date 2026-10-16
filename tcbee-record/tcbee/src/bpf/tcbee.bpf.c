@@ -665,7 +665,7 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
-		count_error(rb);
+		count_error_shared(rb);
 		return 0;
 	}
 	cwnd = tp->snd_cwnd;
@@ -678,8 +678,8 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 		return 0;
 	}
 
-	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq) ||
-	    !(rec = reserve(ringbufs, rb, rec))) {
+	if (!hook_seq_sk_shared(sk, sport, dport, rb, &hook_seq) ||
+	    !(rec = reserve_shared(ringbufs, rb, rec))) {
 		if (st)
 			st->valid[slot] = 0;
 		return 0;
@@ -687,7 +687,7 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 	fill_header(rec, sk, sport, dport, hook_seq);
 	rec->snd_cwnd = cwnd;
 	rec->conn_id = mptcp_conn_id(tp);
-	commit(rec, rb);
+	commit_shared(rec, rb);
 	if (st) {
 		st->cwnd_last[hook] = cwnd;
 		st->state_last[slot] = state;
@@ -745,7 +745,7 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp) {
-		count_error(rb);
+		count_error_shared(rb);
 		return 0;
 	}
 	state = sk->__sk_common.skc_state;
@@ -777,8 +777,8 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 		return 0;
 	}
 
-	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq) ||
-	    !(rec = reserve(ringbufs, rb, rec))) {
+	if (!hook_seq_sk_shared(sk, sport, dport, rb, &hook_seq) ||
+	    !(rec = reserve_shared(ringbufs, rb, rec))) {
 		if (st)
 			st->valid[slot] = 0;
 		return 0;
@@ -787,7 +787,7 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 	fill_sock_fields_watched(rec, sk, tp, snap);
 	if (ONCHG_SHADOW)
 		rec->ato = reason;
-	commit(rec, rb);
+	commit_shared(rec, rb);
 	if (st) {
 #define STORE(name, bit)                                                                   \
 	if (SOCK_WATCH_MASK & (1u << SF_##name))                                           \

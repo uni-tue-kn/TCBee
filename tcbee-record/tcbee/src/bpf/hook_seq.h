@@ -105,6 +105,26 @@ static __always_inline bool hook_seq_known_tuple(const struct ip_tuple *t, __u8 
 	return true;
 }
 
+/*
+ * The on-change twin of hook_seq_sk(), with hook_seq_tuple() inlined: an error counts with
+ * the atomic add (count_shared()). hook_seq_sk() stays as it is so that the default programs
+ * compile unchanged (testing/bpf_identity.sh).
+ */
+static __always_inline bool hook_seq_sk_shared(struct sock *sk, __u16 sport, __u16 dport, __u8 rb,
+					       __u64 *hook_seq)
+{
+	struct hook_seq_key key;
+
+	__builtin_memset(&key, 0, sizeof(key));
+	tuple_from_sk(&key.tuple, sk, sport, dport);
+	key.rb = rb;
+	key.family = sk->__sk_common.skc_family;
+	if (next_hook_seq(&key, hook_seq))
+		return true;
+	count_error_shared(rb);
+	return false;
+}
+
 /* hook_seq of a socket based event, the tuple is local -> remote */
 static __always_inline bool hook_seq_sk(struct sock *sk, __u16 sport, __u16 dport, __u8 rb,
 					__u64 *hook_seq)
