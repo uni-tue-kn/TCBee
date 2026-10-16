@@ -22,7 +22,9 @@
  *
  * The on-change programs (--on-change) decide first and take a number only for the runs
  * they write: suppressed runs and a missing tcp_sock take none, so there issued = handled +
- * dropped + the errors after hook_seq, and gaps are still exactly the drops.
+ * dropped + the errors after hook_seq, and gaps are still exactly the drops. Their ingress
+ * and timer programs write one ring and share its numbers, so hook_seq numbers the records
+ * of a ring (output file) rather than of one hook.
  */
 #ifndef __TCBEE_HOOK_SEQ_H
 #define __TCBEE_HOOK_SEQ_H

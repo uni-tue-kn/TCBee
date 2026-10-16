@@ -116,25 +116,25 @@ struct {
 } MPTCP_RETRANS_START SEC(".maps");
 
 /*
- * Per-socket state of the on-change probes: the values of their last written record, per
- * hook. Only the on-change programs use the map, so in the default mode it stays empty;
- * socket storage takes no memory until a program creates it and is freed with the socket.
+ * Per-socket state of the on-change probes: the values of the last written record of the
+ * connection, one per probe (sock, cwnd), whichever hook wrote it. A change is written once,
+ * by the first hook that sees it. Only the on-change programs use the map, so in the default
+ * mode it stays empty; socket storage takes no memory until a program creates it and is
+ * freed with the socket.
  */
-enum onchg_slot {
-	ONCHG_SOCK_SEND,
-	ONCHG_SOCK_RECV,
-	ONCHG_CWND_SEND,
-	ONCHG_CWND_RECV,
-	ONCHG_SLOTS,
+enum onchg_probe {
+	ONCHG_SOCK,
+	ONCHG_CWND,
+	ONCHG_PROBES,
 };
 
 struct onchg_state {
-	__u64 sock_last[2][SF_COUNT]; /* [send, recv][field] */
-	__u32 cwnd_last[2];
+	__u64 sock_last[SF_COUNT];
+	__u32 cwnd_last;
 	/* skc_state at the last write; a state change forces a write */
-	__u8 state_last[ONCHG_SLOTS];
+	__u8 state_last[ONCHG_PROBES];
 	/* 0 before the first write and after a drop or error: the next run writes */
-	__u8 valid[ONCHG_SLOTS];
+	__u8 valid[ONCHG_PROBES];
 };
 
 struct {

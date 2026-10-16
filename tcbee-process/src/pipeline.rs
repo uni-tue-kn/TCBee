@@ -668,6 +668,7 @@ mod tests {
             sampling,
             shadow,
             recv_hook: "fexit/tcp_rcv_established".into(),
+            hooks: Vec::new(),
         }
     }
 

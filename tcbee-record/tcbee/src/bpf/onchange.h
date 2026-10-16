@@ -44,7 +44,7 @@ enum tcbee_sock_field {
 
 /*
  * Shadow mode (ONCHG_SHADOW, --on-change-shadow): every run of the on-change sock probes is
- * written, with the decision in the ato field of the record.
+ * written, with the decision in bits 0-7 of the ato field of the record.
  */
 enum tcbee_onchg_reason {
 	ONCHG_REASON_SUPPRESS = 1, /* nothing watched changed: no record in on-change mode */
@@ -53,5 +53,17 @@ enum tcbee_onchg_reason {
 	ONCHG_REASON_STATE = 4, /* the socket state changed */
 	ONCHG_REASON_NO_STORAGE = 5, /* no socket storage (state_err), always written */
 };
+
+/*
+ * The hook of an on-change sock record, in bits 8-15 of its ato field (bits 0-7 hold the
+ * shadow reason). Mirrored by tcbee_trace::onchange::Hook::tag.
+ */
+enum tcbee_onchg_hook {
+	ONCHG_HOOK_INGRESS = 1, /* fexit/tcp_rcv_established, fexit/tcp_rcv_state_process */
+	ONCHG_HOOK_TIMER = 2, /* fexit/tcp_write_timer_handler */
+	ONCHG_HOOK_EGRESS = 3, /* fentry/__tcp_transmit_skb */
+};
+
+#define ONCHG_HOOK_SHIFT 8
 
 #endif /* __TCBEE_ONCHANGE_H */

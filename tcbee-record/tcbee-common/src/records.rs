@@ -27,6 +27,16 @@ const _: () = assert!(size_of::<IpTuple>() == 38);
 const _: () = assert!(size_of::<hook_seq_key>() == 40);
 const _: () = assert!(size_of::<FilterIp>() == 16);
 
+// The hook tags of on-change sock records in tcbee-trace mirror enum tcbee_onchg_hook
+mod onchg_hooks {
+    use super::*;
+    use tcbee_trace::onchange::Hook;
+
+    const _: () = assert!(Hook::Ingress.tag() == ONCHG_HOOK_INGRESS);
+    const _: () = assert!(Hook::Timer.tag() == ONCHG_HOOK_TIMER);
+    const _: () = assert!(Hook::Egress.tag() == ONCHG_HOOK_EGRESS);
+}
+
 // The watchable socket fields in tcbee-trace mirror enum tcbee_sock_field (bpf/onchange.h)
 mod sock_fields {
     use super::*;

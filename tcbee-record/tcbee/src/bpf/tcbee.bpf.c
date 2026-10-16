@@ -631,16 +631,40 @@ int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
  * ---- On-change mode (--on-change) ---------------------------------------------------
  *
  * Separate programs that write a record only when a watched field or the socket state
- * changed since the last record of the flow at this hook, after a drop or error, and on
- * the first run. They are the only users of ONCHG and declared with "?" (not loaded unless
- * userspace enables them), so the default programs above are unchanged.
+ * changed since the last record of the connection (at any hook, see struct onchg_state),
+ * after a drop or error, and on the first run. They are the only users of ONCHG and declared
+ * with "?" (not loaded unless userspace enables them), so the default programs above are
+ * unchanged.
  *
  * The decision comes before hook_seq is taken and before the ring buffer is touched: a
  * suppressed run counts as suppressed and takes no number, so hook_seq gaps still are
  * exactly the drops. A tcp_sock error also comes before hook_seq here and leaves no gap.
- * The receive side hooks fexit/tcp_rcv_established, so its records carry the state after
- * the packet was processed, at the time it was processed.
+ *
+ * Hooks (--on-change-hooks): ingress and timer write the receive ring, egress the send
+ * ring. Ingress is fexit/tcp_rcv_established, which only sees ESTABLISHED sockets, and
+ * fexit/tcp_rcv_state_process for the segments of the other states (handshake, FIN_WAIT,
+ * CLOSE_WAIT, LAST_ACK; rare, so cheap). Listeners and closed sockets are skipped. Timer is
+ * fexit/tcp_write_timer_handler, egress fentry/__tcp_transmit_skb. Ingress and timer records
+ * carry the state after the segment or the timer was processed; the timer hook sees what an
+ * RTO, loss probe or zero window probe changed while no ACK arrives. It runs from the
+ * timer softirq, or from tcp_release_cb when the socket was owned by the user. Egress
+ * records carry the state before the transmit.
+ * Every hook runs under the socket lock, so the runs of one socket never overlap. Runs for
+ * different sockets can nest on one CPU (the timer softirq interrupting backlog
+ * processing), so these programs count with the atomic add.
  */
+
+/*
+ * Sockets the on-change programs skip like filtered events (no counter): listeners, which
+ * tcp_rcv_state_process sees for every SYN, and closed sockets. tcp_done unhashes a socket
+ * and clears its local port, so a record of the close would carry another tuple.
+ */
+static __always_inline bool onchg_skip(struct sock *sk)
+{
+	__u8 state = sk->__sk_common.skc_state;
+
+	return state == TCP_LISTEN || state == TCP_CLOSE;
+}
 
 /* The state of this socket, created on first use; counts state_err if there is none */
 static __always_inline struct onchg_state *onchg_state_of(struct sock *sk)
@@ -653,10 +677,8 @@ static __always_inline struct onchg_state *onchg_state_of(struct sock *sk)
 	return st;
 }
 
-static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 rb,
-					 enum onchg_slot slot)
+static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 rb)
 {
-	int hook = slot - ONCHG_CWND_SEND; /* 0 send, 1 receive */
 	struct cwnd_trace_entry *rec;
 	struct onchg_state *st;
 	struct tcp_sock *tp;
@@ -665,6 +687,8 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 	__u32 cwnd;
 	__u8 state;
 
+	if (onchg_skip(sk))
+		return 0;
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
@@ -678,8 +702,8 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 	state = sk->__sk_common.skc_state;
 
 	st = onchg_state_of(sk);
-	if (st && st->valid[slot] && st->cwnd_last[hook] == cwnd &&
-	    st->state_last[slot] == state) {
+	if (st && st->valid[ONCHG_CWND] && st->cwnd_last == cwnd &&
+	    st->state_last[ONCHG_CWND] == state) {
 		count_suppressed(rb);
 		return 0;
 	}
@@ -687,7 +711,7 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 	if (!hook_seq_sk_shared(sk, sport, dport, rb, &hook_seq) ||
 	    !(rec = reserve_shared(ringbufs, rb, rec))) {
 		if (st)
-			st->valid[slot] = 0;
+			st->valid[ONCHG_CWND] = 0;
 		return 0;
 	}
 	fill_header(rec, sk, sport, dport, hook_seq);
@@ -695,9 +719,9 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 	rec->conn_id = mptcp_conn_id(tp);
 	commit_shared(rec, rb);
 	if (st) {
-		st->cwnd_last[hook] = cwnd;
-		st->state_last[slot] = state;
-		st->valid[slot] = 1;
+		st->cwnd_last = cwnd;
+		st->state_last[ONCHG_CWND] = state;
+		st->valid[ONCHG_CWND] = 1;
 	}
 
 	flow_track_sk(sk, sport, dport);
@@ -707,13 +731,26 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 SEC("?fentry/__tcp_transmit_skb")
 int BPF_PROG(cwnd_oc_sendmsg, struct sock *sk)
 {
-	return trace_cwnd_oc(sk, &TCP_SEND_CWND_EVENTS, RB_CWND_SEND, ONCHG_CWND_SEND);
+	return trace_cwnd_oc(sk, &TCP_SEND_CWND_EVENTS, RB_CWND_SEND);
 }
 
 SEC("?fexit/tcp_rcv_established")
 int BPF_PROG(cwnd_oc_recvmsg, struct sock *sk)
 {
-	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV, ONCHG_CWND_RECV);
+	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
+}
+
+/* Segments outside ESTABLISHED (handshake, FIN_WAIT, CLOSE_WAIT, LAST_ACK), see above */
+SEC("?fexit/tcp_rcv_state_process")
+int BPF_PROG(cwnd_oc_rcv_state, struct sock *sk)
+{
+	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
+}
+
+SEC("?fexit/tcp_write_timer_handler")
+int BPF_PROG(cwnd_oc_timer, struct sock *sk)
+{
+	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
 }
 
 /* Every field of a sock record, the watched ones from the snapshot the decision used */
@@ -733,9 +770,8 @@ static __always_inline void fill_sock_fields_watched(struct sock_trace_entry *re
 }
 
 static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 rb,
-					 enum onchg_slot slot)
+					 enum tcbee_onchg_hook hook)
 {
-	int hook = slot - ONCHG_SOCK_SEND; /* 0 send, 1 receive */
 	struct sock_trace_entry *rec;
 	struct onchg_state *st;
 	struct tcp_sock *tp;
@@ -745,6 +781,8 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 	bool changed = false;
 	__u8 state, reason;
 
+	if (onchg_skip(sk))
+		return 0;
 	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
@@ -765,14 +803,14 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 	st = onchg_state_of(sk);
 	if (!st) {
 		reason = ONCHG_REASON_NO_STORAGE;
-	} else if (!st->valid[slot]) {
+	} else if (!st->valid[ONCHG_SOCK]) {
 		reason = ONCHG_REASON_FIRST;
-	} else if (st->state_last[slot] != state) {
+	} else if (st->state_last[ONCHG_SOCK] != state) {
 		reason = ONCHG_REASON_STATE;
 	} else {
 #define CMP(name, bit)                                                                     \
 	if ((SOCK_WATCH_MASK & (1u << SF_##name)) &&                                       \
-	    snap[SF_##name] != st->sock_last[hook][SF_##name])                             \
+	    snap[SF_##name] != st->sock_last[SF_##name])                                   \
 		changed = true;
 		SOCK_FIELDS(CMP)
 #undef CMP
@@ -786,22 +824,23 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 	if (!hook_seq_sk_shared(sk, sport, dport, rb, &hook_seq) ||
 	    !(rec = reserve_shared(ringbufs, rb, rec))) {
 		if (st)
-			st->valid[slot] = 0;
+			st->valid[ONCHG_SOCK] = 0;
 		return 0;
 	}
 	fill_header(rec, sk, sport, dport, hook_seq);
 	fill_sock_fields_watched(rec, sk, tp, snap);
+	rec->ato = hook << ONCHG_HOOK_SHIFT;
 	if (ONCHG_SHADOW)
-		rec->ato = reason;
+		rec->ato |= reason;
 	commit_shared(rec, rb);
 	if (st) {
 #define STORE(name, bit)                                                                   \
 	if (SOCK_WATCH_MASK & (1u << SF_##name))                                           \
-		st->sock_last[hook][SF_##name] = snap[SF_##name];
+		st->sock_last[SF_##name] = snap[SF_##name];
 		SOCK_FIELDS(STORE)
 #undef STORE
-		st->state_last[slot] = state;
-		st->valid[slot] = 1;
+		st->state_last[ONCHG_SOCK] = state;
+		st->valid[ONCHG_SOCK] = 1;
 	}
 
 	flow_track_sk(sk, sport, dport);
@@ -811,13 +850,26 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 SEC("?fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_oc_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, ONCHG_SOCK_SEND);
+	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, ONCHG_HOOK_EGRESS);
 }
 
 SEC("?fexit/tcp_rcv_established")
 int BPF_PROG(sock_oc_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_SOCK_RECV);
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_INGRESS);
+}
+
+SEC("?fexit/tcp_rcv_state_process")
+int BPF_PROG(sock_oc_rcv_state, struct sock *sk)
+{
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_INGRESS);
+}
+
+/* The write timer writes the receive file, see the section comment */
+SEC("?fexit/tcp_write_timer_handler")
+int BPF_PROG(sock_oc_timer, struct sock *sk)
+{
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_TIMER);
 }
 
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */

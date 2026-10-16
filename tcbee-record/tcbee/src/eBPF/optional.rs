@@ -70,6 +70,10 @@ impl OptionalGroup {
                 "sock_oc_recvmsg",
                 "cwnd_oc_sendmsg",
                 "cwnd_oc_recvmsg",
+                "sock_oc_rcv_state",
+                "sock_oc_timer",
+                "cwnd_oc_rcv_state",
+                "cwnd_oc_timer",
             ],
             OptionalGroup::MptcpPm => &MPTCP_PM_PROGRAMS,
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].programs,
@@ -147,6 +151,21 @@ mod tests {
         for group in OptionalGroup::ALL {
             for program in group.programs() {
                 assert!(programs.iter().any(|p| p == program), "{program}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_sock_and_cwnd_program_is_in_mptcp_tagging() {
+        let mut storage = MaybeUninit::uninit();
+        let open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
+        for program in open.open_object().progs() {
+            let name = program.name().to_string_lossy();
+            if name.starts_with("sock_") || name.starts_with("cwnd_") {
+                assert!(
+                    OptionalGroup::MptcpTag.programs().contains(&&*name),
+                    "{name}"
+                );
             }
         }
     }

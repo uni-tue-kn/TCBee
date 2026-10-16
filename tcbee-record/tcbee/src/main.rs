@@ -85,6 +85,7 @@ fn main() -> anyhow::Result<()> {
     let mut poll: String = "busy".to_string();
     let mut writer_cpus: String = String::new();
     let mut on_change: String = String::new();
+    let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
 
     {
@@ -206,12 +207,17 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut on_change).add_option(
             &["--on-change"],
             Store,
-            "Write sock (-k) and cwnd (-w) records only when a watched field or the socket state changed, into *_oc.tcp files with a manifest.json. 'cc' watches snd_cwnd, snd_ssthresh, total_retrans, backoff, rto, reordering and rcv_mss; or give a comma-separated list of sock_trace_entry fields. The cwnd probe watches snd_cwnd.",
+            "Write sock (-k) and cwnd (-w) records only when a watched field or the socket state changed, into *_oc.tcp files with a manifest.json. 'cc' watches snd_cwnd, snd_ssthresh, total_retrans, backoff, rto, reordering and rcv_mss; or give a comma-separated list of sock_trace_entry fields. The cwnd probe watches snd_cwnd. Each probe compares with the last record of the connection, whichever hook wrote it.",
+        );
+        argparser.refer(&mut on_change_hooks).add_option(
+            &["--on-change-hooks"],
+            Store,
+            "With --on-change: comma-separated kernel hooks to compare at. ingress = after each received segment (fexit/tcp_rcv_established), timer = after each retransmission, loss probe or zero window probe timer (fexit/tcp_write_timer_handler), both into the recv_*_oc.tcp files; egress = before each transmitted segment (fentry/__tcp_transmit_skb), into send_*_oc.tcp, one probe run per segment. Default: ingress,timer. In sock records, bits 8-15 of ato tell the hook (1 ingress, 2 timer, 3 egress).",
         );
         argparser.refer(&mut on_change_shadow).add_option(
             &["--on-change-shadow"],
             StoreTrue,
-            "With --on-change and -k: write every sock run anyway, with the decision as a reason code in the ato field (1 suppressed, 2 changed, 3 first or after a drop, 4 state change, 5 no socket storage).",
+            "With --on-change and -k: write every sock run anyway, with the decision as a reason code in bits 0-7 of the ato field (1 suppressed, 2 changed, 3 first or after a drop, 4 state change, 5 no socket storage).",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -295,7 +301,13 @@ fn main() -> anyhow::Result<()> {
     {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
-    let on_change = parse_on_change(&on_change, on_change_shadow, trace_kernel, trace_cwnd)?;
+    let on_change = parse_on_change(
+        &on_change,
+        &on_change_hooks,
+        on_change_shadow,
+        trace_kernel,
+        trace_cwnd,
+    )?;
 
     // Create a timestamped recording directory inside the requested base dir
     let trace = TCBeeTrace::create(&dir)

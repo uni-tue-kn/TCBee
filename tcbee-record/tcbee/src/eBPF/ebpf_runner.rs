@@ -180,7 +180,11 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
-    let groups: [(bool, &[u32]); 8] = [
+    // In on-change mode, the hooks decide which of the send and receive rings are written
+    let (send, receive) = config
+        .on_change
+        .map_or((true, true), |o| (o.hooks.send(), o.hooks.receive()));
+    let groups: [(bool, &[u32]); 10] = [
         (
             config.headers,
             &[
@@ -190,8 +194,10 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
                 RB_TCP6_INGRESS,
             ],
         ),
-        (config.kernel, &[RB_SOCK_SEND, RB_SOCK_RECV]),
-        (config.cwnd, &[RB_CWND_SEND, RB_CWND_RECV]),
+        (config.kernel && send, &[RB_SOCK_SEND]),
+        (config.kernel && receive, &[RB_SOCK_RECV]),
+        (config.cwnd && send, &[RB_CWND_SEND]),
+        (config.cwnd && receive, &[RB_CWND_RECV]),
         (
             config.tracepoints,
             &[RB_TCP_PROBE, RB_RETRANSMIT_SYNACK, RB_BAD_CSUM],
@@ -446,7 +452,23 @@ impl EbpfRunner {
             rodata.SOCK_WATCH_MASK = on_change.watch.mask();
             rodata.ONCHG_SHADOW = on_change.shadow as u8;
         }
-        let on_change = self.config.on_change.is_some();
+        let on_change = self.config.on_change.map(|o| o.hooks);
+        if let Some(hooks) = on_change {
+            // Every hook must exist, or the whole skeleton fails to load
+            for hook in hooks.hooks() {
+                for target in hook.kernel_hooks() {
+                    let func = target.split_once('/').map_or(*target, |(_, func)| func);
+                    if btf.find_func(None, &[func]).is_none() {
+                        return Err(format!(
+                            "--on-change-hooks {}: the kernel has no {}, choose other hooks",
+                            hook.name(),
+                            func
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
 
         rings::set_slots(open.open_object_mut(), cpus)?;
 
@@ -608,13 +630,25 @@ impl EbpfRunner {
 
         // Tracing kernel metrics via FEntry probe
         if self.config.kernel {
-            KernelTracer::spawn(skel, dir, writer, links, self.config.on_change.is_some())?;
+            KernelTracer::spawn(
+                skel,
+                dir,
+                writer,
+                links,
+                self.config.on_change.map(|o| o.hooks),
+            )?;
 
             watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
-            CwndTracer::spawn(skel, dir, writer, links, self.config.on_change.is_some())?;
+            CwndTracer::spawn(
+                skel,
+                dir,
+                writer,
+                links,
+                self.config.on_change.map(|o| o.hooks),
+            )?;
 
             watcher_config.graphs.kernel = true;
         }

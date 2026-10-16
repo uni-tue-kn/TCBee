@@ -9,6 +9,10 @@ pub mod tracepoints;
 
 use libbpf_rs::{Link, MapCore, MapHandle, MapMut, OpenProgramMut, ProgramMut};
 use log::{info, warn};
+use tcbee_trace::{
+    onchange::{Hook, HookSet},
+    TraceFile,
+};
 
 use super::{errors::EBPFRunnerError, host::KernelBtf};
 
@@ -22,6 +26,26 @@ pub fn attach(program: &ProgramMut<'_>, links: &mut Vec<Link>) -> Result<(), EBP
         })?;
     links.push(link);
     Ok(())
+}
+
+/// On-change mode of a probe: attaches the programs of the hooks in `hooks` and returns which
+/// of its two trace files they write: the send file if egress is hooked, the receive file if
+/// ingress or timer is
+pub fn attach_on_change(
+    hooks: HookSet,
+    programs: &[(Hook, &ProgramMut<'_>)],
+    links: &mut Vec<Link>,
+    (send_file, receive_file): (TraceFile, TraceFile),
+) -> Result<(Option<TraceFile>, Option<TraceFile>), EBPFRunnerError> {
+    for (hook, program) in programs {
+        if hooks.contains(*hook) {
+            attach(program, links)?;
+        }
+    }
+    Ok((
+        hooks.send().then_some(send_file),
+        hooks.receive().then_some(receive_file),
+    ))
 }
 
 /// Own handle to a map, it stays open after the skeleton is dropped

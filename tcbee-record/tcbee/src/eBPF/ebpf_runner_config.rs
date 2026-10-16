@@ -5,7 +5,9 @@ use anyhow::anyhow;
 use crate::writer::PollMode;
 use tcbee_common::{filter::*, stats::RINGBUFS};
 use tcbee_trace::{
-    onchange::{Manifest, Sampling, SockField, SourceMeta, WatchSet, MANIFEST_VERSION},
+    onchange::{
+        Hook, HookSet, Manifest, Sampling, SockField, SourceMeta, WatchSet, MANIFEST_VERSION,
+    },
     TraceFile,
 };
 
@@ -17,6 +19,8 @@ pub struct OnChange {
     pub watch: WatchSet,
     /// Write every sock run anyway, with the decision as a reason code in `ato`
     pub shadow: bool,
+    /// Kernel hooks the on-change programs run at
+    pub hooks: HookSet,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -191,9 +195,11 @@ impl MptcpModes {
     }
 }
 
-/// `--on-change FIELDS` and `--on-change-shadow`, None in the default mode
+/// `--on-change FIELDS`, `--on-change-hooks HOOKS` and `--on-change-shadow`, None in the
+/// default mode. An empty `hooks` is the default set (ingress and timer).
 pub fn parse_on_change(
     fields: &str,
+    hooks: &str,
     shadow: bool,
     kernel: bool,
     cwnd: bool,
@@ -201,6 +207,9 @@ pub fn parse_on_change(
     if fields.is_empty() {
         if shadow {
             return Err(anyhow!("--on-change-shadow needs --on-change"));
+        }
+        if !hooks.is_empty() {
+            return Err(anyhow!("--on-change-hooks needs --on-change"));
         }
         return Ok(None);
     }
@@ -211,6 +220,11 @@ pub fn parse_on_change(
         return Err(anyhow!("--on-change-shadow needs -k"));
     }
     let watch = WatchSet::parse(fields).map_err(|e| anyhow!("--on-change: {}", e))?;
+    let hooks = if hooks.is_empty() {
+        HookSet::DEFAULT
+    } else {
+        HookSet::parse(hooks).map_err(|e| anyhow!("--on-change-hooks: {}", e))?
+    };
     let per_packet: Vec<&str> = watch
         .fields()
         .filter(|f| f.changes_per_packet())
@@ -222,37 +236,65 @@ pub fn parse_on_change(
             per_packet.join(", ")
         );
     }
-    Ok(Some(OnChange { watch, shadow }))
+    Ok(Some(OnChange {
+        watch,
+        shadow,
+        hooks,
+    }))
 }
 
-/// What the on-change files in the recording directory hold, for tcbee-process
+/// What the on-change files in the recording directory hold, for tcbee-process: per probe,
+/// the send file if egress is hooked and the receive file if ingress or timer is
+fn on_change_sources(
+    hooks: HookSet,
+    (send_file, receive_file): (TraceFile, TraceFile),
+    fields: Vec<String>,
+    shadow: bool,
+) -> Vec<SourceMeta> {
+    let source = |file: TraceFile, file_hooks: Vec<Hook>| SourceMeta {
+        file: file.filename().into(),
+        sampling: Sampling::OnChange {
+            fields: fields.clone(),
+        },
+        shadow,
+        recv_hook: "fexit/tcp_rcv_established".into(),
+        hooks: file_hooks
+            .iter()
+            .flat_map(|h| h.kernel_hooks())
+            .map(|k| k.to_string())
+            .collect(),
+    };
+    let mut sources = Vec::new();
+    if hooks.send() {
+        sources.push(source(send_file, vec![Hook::Egress]));
+    }
+    if hooks.receive() {
+        let receive = hooks.hooks().filter(|h| *h != Hook::Egress).collect();
+        sources.push(source(receive_file, receive));
+    }
+    sources
+}
+
+/// The manifest of an on-change recording: the on-change files of the sock (`kernel`) and cwnd
+/// probes
 pub fn on_change_manifest(on_change: OnChange, kernel: bool, cwnd: bool) -> Manifest {
-    let recv_hook = "fexit/tcp_rcv_established".to_string();
     let mut sources = Vec::new();
     if kernel {
-        let fields: Vec<String> = on_change.watch.fields().map(|f| f.name().into()).collect();
-        for file in [TraceFile::SendSockOc, TraceFile::RecvSockOc] {
-            sources.push(SourceMeta {
-                file: file.filename().into(),
-                sampling: Sampling::OnChange {
-                    fields: fields.clone(),
-                },
-                shadow: on_change.shadow,
-                recv_hook: recv_hook.clone(),
-            });
-        }
+        let fields = on_change.watch.fields().map(|f| f.name().into()).collect();
+        sources.extend(on_change_sources(
+            on_change.hooks,
+            (TraceFile::SendSockOc, TraceFile::RecvSockOc),
+            fields,
+            on_change.shadow,
+        ));
     }
     if cwnd {
-        for file in [TraceFile::SendCwndOc, TraceFile::RecvCwndOc] {
-            sources.push(SourceMeta {
-                file: file.filename().into(),
-                sampling: Sampling::OnChange {
-                    fields: vec!["snd_cwnd".into()],
-                },
-                shadow: false,
-                recv_hook: recv_hook.clone(),
-            });
-        }
+        sources.extend(on_change_sources(
+            on_change.hooks,
+            (TraceFile::SendCwndOc, TraceFile::RecvCwndOc),
+            vec!["snd_cwnd".into()],
+            false,
+        ));
     }
     Manifest {
         format_version: MANIFEST_VERSION,
@@ -481,27 +523,42 @@ mod tests {
 
     #[test]
     fn on_change_options() {
-        assert!(parse_on_change("", false, true, true).unwrap().is_none());
-        let oc = parse_on_change("cc", true, true, false).unwrap().unwrap();
+        assert!(parse_on_change("", "", false, true, true)
+            .unwrap()
+            .is_none());
+        let oc = parse_on_change("cc", "", true, true, false)
+            .unwrap()
+            .unwrap();
         assert_eq!(oc.watch, WatchSet::CC);
         assert!(oc.shadow);
-        assert!(parse_on_change("", true, true, false).is_err());
-        assert!(parse_on_change("cc", false, false, false).is_err());
-        assert!(parse_on_change("cc", true, false, true).is_err());
-        assert!(parse_on_change("cwnd", false, true, false).is_err());
-        assert!(parse_on_change("pacing_rate/16", false, true, false).is_err());
+        assert_eq!(oc.hooks, HookSet::DEFAULT);
+        let oc = parse_on_change("cc", "ingress", false, true, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(oc.hooks, HookSet::parse("ingress").unwrap());
+        assert!(parse_on_change("", "", true, true, false).is_err());
+        assert!(parse_on_change("", "egress", false, true, false).is_err());
+        assert!(parse_on_change("cc", "", false, false, false).is_err());
+        assert!(parse_on_change("cc", "", true, false, true).is_err());
+        assert!(parse_on_change("cc", "tx", false, true, false).is_err());
+        assert!(parse_on_change("cwnd", "", false, true, false).is_err());
+        assert!(parse_on_change("pacing_rate/16", "", false, true, false).is_err());
+    }
+
+    fn files(m: &Manifest) -> Vec<&str> {
+        m.sources.iter().map(|s| s.file.as_str()).collect()
     }
 
     #[test]
     fn manifest_lists_the_enabled_on_change_files() {
-        let oc = OnChange {
+        let mut oc = OnChange {
             watch: WatchSet::parse("snd_cwnd,total_retrans").unwrap(),
             shadow: false,
+            hooks: HookSet::parse("ingress,timer,egress").unwrap(),
         };
         let m = on_change_manifest(oc, true, true);
-        let files: Vec<&str> = m.sources.iter().map(|s| s.file.as_str()).collect();
         assert_eq!(
-            files,
+            files(&m),
             [
                 "send_sock_oc.tcp",
                 "recv_sock_oc.tcp",
@@ -515,6 +572,23 @@ mod tests {
                 fields: vec!["snd_cwnd".into(), "total_retrans".into()]
             }
         );
+        assert_eq!(m.sources[0].hooks, ["fentry/__tcp_transmit_skb"]);
+        assert_eq!(
+            m.sources[1].hooks,
+            [
+                "fexit/tcp_rcv_established",
+                "fexit/tcp_rcv_state_process",
+                "fexit/tcp_write_timer_handler"
+            ]
+        );
         assert_eq!(on_change_manifest(oc, false, true).sources.len(), 2);
+
+        // The default hooks write no send files
+        oc.hooks = HookSet::DEFAULT;
+        let m = on_change_manifest(oc, true, true);
+        assert_eq!(files(&m), ["recv_sock_oc.tcp", "recv_cwnd_oc.tcp"]);
+        oc.hooks = HookSet::parse("egress").unwrap();
+        let m = on_change_manifest(oc, true, false);
+        assert_eq!(files(&m), ["send_sock_oc.tcp"]);
     }
 }
