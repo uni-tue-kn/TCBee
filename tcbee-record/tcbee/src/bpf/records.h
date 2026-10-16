@@ -113,6 +113,14 @@ struct sock_trace_entry {
 	uint32_t chrono_busy;
 	uint32_t chrono_rwnd_limited;
 	uint32_t chrono_sndbuf_limited;
+	/* The rest of what TCP_INFO reports (tcp_get_info's units), so -k alone covers it. Not in
+	 * the on-change field catalogue (onchange.h): recorded, not watchable. */
+	uint32_t srtt;     /* tp->srtt_us >> 3, us (= tcpi_rtt) */
+	uint32_t mdev;     /* tp->mdev_us >> 2, us (= tcpi_rttvar) */
+	uint32_t min_rtt;  /* tcp_min_rtt(tp), us (= tcpi_min_rtt) */
+	uint32_t snd_una;
+	uint32_t snd_nxt;
+	uint32_t lost_out; /* = tcpi_lost (the record's `lost` is tp->lost) */
 	/* Token of the MPTCP connection of a subflow (-M tag), 0 otherwise. Last field. */
 	uint32_t conn_id;
 };
@@ -374,7 +382,7 @@ struct filter_ip {
 /* Sizes are mirrored by const asserts in tcbee-common */
 _Static_assert(sizeof(struct tcp4_packet_trace) == 40, "tcp4_packet_trace size");
 _Static_assert(sizeof(struct tcp6_packet_trace) == 64, "tcp6_packet_trace size");
-_Static_assert(sizeof(struct sock_trace_entry) == 224, "sock_trace_entry size");
+_Static_assert(sizeof(struct sock_trace_entry) == 248, "sock_trace_entry size");
 _Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
 _Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
 _Static_assert(sizeof(struct bbr_trace_entry) == 120, "bbr_trace_entry size");

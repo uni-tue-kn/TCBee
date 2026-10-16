@@ -514,8 +514,8 @@ static __always_inline __u64 sock_field(struct sock *sk, struct tcp_sock *tp,
 
 /*
  * The fields of a sock record after rcv_wscale, which on-change mode does not watch: the
- * congestion state, the delivery rate sample, the time spent limited, and the MPTCP
- * connection (mptcp.h). Stored in record order after the ones above.
+ * congestion state, the delivery rate sample, the time spent limited, the rest of TCP_INFO
+ * and the MPTCP connection (mptcp.h). Stored in record order after the ones above.
  */
 static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct tcp_sock *tp)
 {
@@ -528,6 +528,12 @@ static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct
 	rec->chrono_busy = tp->chrono_stat[0];
 	rec->chrono_rwnd_limited = tp->chrono_stat[1];
 	rec->chrono_sndbuf_limited = tp->chrono_stat[2];
+	rec->srtt = tp->srtt_us >> 3;
+	rec->mdev = tp->mdev_us >> 2;
+	rec->min_rtt = tp->rtt_min.s[0].v;
+	rec->snd_una = tp->snd_una;
+	rec->snd_nxt = tp->snd_nxt;
+	rec->lost_out = tp->lost_out;
 	rec->conn_id = mptcp_conn_id(tp);
 }
 

@@ -101,7 +101,8 @@ const SOCK_COLS: &str = "pacing_rate:U64 max_pacing_rate:U64 backoff:U8 rto:U32 
     lost:U32 sacked_out:U32 retrans:U32 rcv_ssthresh:U32 rttvar:U32 advmss:U16 reordering:U32 \
     rcv_rtt:U32 rcv_space:U32 bytes_received:U64 segs_out:U32 segs_in:U32 snd_wscale:U16 \
     rcv_wscale:U16 ca_state:U8 packets_out:U32 delivered:U32 delivered_ce:U32 app_limited:U32 \
-    chrono_type:U8 chrono_busy:U32 chrono_rwnd_limited:U32 chrono_sndbuf_limited:U32";
+    chrono_type:U8 chrono_busy:U32 chrono_rwnd_limited:U32 chrono_sndbuf_limited:U32 \
+    srtt:U32 mdev:U32 min_rtt:U32 snd_una:U32 snd_nxt:U32 lost_out:U32";
 
 #[test]
 fn sock_send() {
@@ -115,7 +116,7 @@ fn sock_send() {
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
             MAX, MAX, 0, 1000, 0, 88, 10, 0, 2147483647, 0, 0, 0, 0, 0, 64240, 0, 1460, 3, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ],
     };
     // The fixture is a real recording in the old layout
@@ -134,7 +135,7 @@ fn sock_recv() {
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
             1157216, MAX, 0, 225, 0, 536, 10, 1, 2147483647, 0, 4, 0, 0, 0, 64088, 200000, 1448, 3,
-            0, 14480, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14480, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ],
     };
     check::<sock::OldSockEntry>(&x);
@@ -530,7 +531,7 @@ fn file_table_maps_every_trace_file() {
         .filter_map(|f| binding(*f).map(|b| (b.table.source, b.entry_size, b.table.columns.len())))
         .collect();
     for (s, size, n) in [
-        ("sock", 202, 34),
+        ("sock", 226, 40),
         ("tcp_probe", 124, 10),
         ("cubic", 122, 14),
         ("bbr", 118, 12),
@@ -539,7 +540,7 @@ fn file_table_maps_every_trace_file() {
         ("tcp4", 43, 4),
         ("mptcp_pm", 123, 17),
         ("tcp_event", 99, 13),
-        ("sock_oc", 202, 34),
+        ("sock_oc", 226, 40),
         ("cwnd_oc", 74, 1),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
@@ -653,7 +654,7 @@ fn sock_layout_is_detected_per_file() {
     }
     fs::write(&path, &bytes).unwrap();
     let current = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
-    assert_eq!(current.entry_size, 202);
+    assert_eq!(current.entry_size, 226);
     assert!(current.missing_columns.is_empty());
 
     // An empty file gets the current binding
@@ -663,7 +664,7 @@ fn sock_layout_is_detected_per_file() {
             .unwrap()
             .unwrap()
             .entry_size,
-        202
+        226
     );
     // Other files are not looked at
     assert!(binding_for(TraceFile::TcpBadCsum, &path).unwrap().is_none());
@@ -813,7 +814,7 @@ fn legacy_entry_sizes_match_their_encoding() {
             .iter()
             .map(|l| l.entry_size)
             .collect::<Vec<_>>(),
-        [172, 168, 201]
+        [172, 168, 201, 202]
     );
     assert_eq!(
         legacy::layouts("cwnd")
@@ -913,6 +914,30 @@ fn legacy_layouts_are_detected_and_decoded() {
     assert_eq!(col(&batch, b.table, "app_limited"), 0);
     assert_eq!(conns, [0]);
 
+    let r202 = legacy::Sock202Entry {
+        p,
+        ca_state: 3,
+        chrono_busy: 44,
+        conn_id: 0xBEEF,
+        ..Default::default()
+    };
+    write_records(&path, &[r202; 3], 0);
+    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.missing_columns),
+        (202, legacy::SOCK202_MISSING)
+    );
+    let (batch, conns) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "ca_state"),
+            col(&batch, b.table, "chrono_busy"),
+            col(&batch, b.table, "srtt")
+        ),
+        (3, 44, 0)
+    );
+    assert_eq!(conns, [0xBEEF]);
+
     let cpath = dir.path().join("send_cwnd.tcp");
     write_records(
         &cpath,
@@ -944,7 +969,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
             .unwrap()
             .unwrap()
             .entry_size,
-        202
+        226
     );
     // only a partial first record: no complete record in any layout -> the current one
     fs::write(&path, [0u8; 50]).unwrap();
@@ -953,7 +978,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
             .unwrap()
             .unwrap()
             .entry_size,
-        202
+        226
     );
     // a 201 B file whose last record was cut off by a kill
     let p = legacy::SockPrefix {
@@ -975,7 +1000,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
             .entry_size,
         201
     );
-    // all 0xFF: dividers at every size; 606 B only divides into 202 B records
+    // all 0xFF: dividers at every size; 606 B only divides into 202 B records (a legacy layout)
     fs::write(&path, [0xFFu8; 606]).unwrap();
     assert_eq!(
         binding_for(TraceFile::SendSock, &path)

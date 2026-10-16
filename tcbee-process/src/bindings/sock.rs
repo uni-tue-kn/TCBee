@@ -8,7 +8,7 @@ use crate::{
 };
 
 event_schema! {
-    sock_trace_entry => "sock", 202 {
+    sock_trace_entry => "sock", 226 {
         pacing_rate: U64,
         max_pacing_rate: U64,
         backoff: U8,
@@ -43,6 +43,12 @@ event_schema! {
         chrono_busy: U32,
         chrono_rwnd_limited: U32,
         chrono_sndbuf_limited: U32,
+        srtt: U32,
+        mdev: U32,
+        min_rtt: U32,
+        snd_una: U32,
+        snd_nxt: U32,
+        lost_out: U32,
     }
     {
         fn flow_key(&self) -> IpTuple {
@@ -63,7 +69,8 @@ event_schema! {
     }
 }
 
-/// Columns of the sock record that recordings in the old layout (`OldSockEntry`) do not have
+/// Columns of the sock record that recordings in the old layout (`OldSockEntry`, and the 168 B
+/// layout) do not have: the run-metadata fields and the rest of TCP_INFO
 pub const ADDED_COLUMNS: &[&str] = &[
     "ca_state",
     "packets_out",
@@ -74,6 +81,12 @@ pub const ADDED_COLUMNS: &[&str] = &[
     "chrono_busy",
     "chrono_rwnd_limited",
     "chrono_sndbuf_limited",
+    "srtt",
+    "mdev",
+    "min_rtt",
+    "snd_una",
+    "snd_nxt",
+    "lost_out",
 ];
 
 /// The sock record of dev with MPTCP (172 B), before `ADDED_COLUMNS` were recorded, so that

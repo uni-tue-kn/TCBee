@@ -207,7 +207,17 @@ struct tcp_sock {
 	u32 total_retrans;
 	bool is_mptcp;
 	u32 snd_una;
+	u32 snd_nxt;
+	u32 srtt_us;
+	u32 mdev_us;
+	struct {
+		struct {
+			u32 t;
+			u32 v;
+		} s[3];
+	} rtt_min;
 	u32 packets_out;
+	u32 lost_out;
 	u32 delivered;
 	u32 delivered_ce;
 	u32 app_limited;
