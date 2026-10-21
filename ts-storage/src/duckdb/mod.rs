@@ -599,6 +599,12 @@ impl Store for DuckStore {
         Ok(out)
     }
 
+    fn meta(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut st = self.conn.prepare(sql::SELECT_META)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     fn flow(&self, id: i64) -> Result<Option<Flow>, StoreError> {
         let mut st = self.conn.prepare(sql::SELECT_FLOW)?;
         let mut rows = st.query(params![id])?;
@@ -629,12 +635,6 @@ impl Store for DuckStore {
 
     fn series_by_id(&self, id: i64) -> Result<Option<SeriesInfo>, StoreError> {
         self.get_series(id)
-    }
-
-    fn meta(&self) -> Result<Vec<(String, String)>, StoreError> {
-        let mut st = self.conn.prepare(sql::SELECT_META)?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     fn for_each_point(

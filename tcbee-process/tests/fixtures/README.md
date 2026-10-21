@@ -1,6 +1,6 @@
 # Test fixtures
 
-`tcbee_small/` (1.4 MB) mixes real and generated data.
+`tcbee_small/` (1.6 MB) mixes real and generated data.
 
 - **Real**, not regenerable: the first 2000 records (`head -c $((2000 * ENTRY_SIZE))`) of `cubic`,
   `tcp_probe`, `send_sock`, `recv_sock`, `tcp4_send` and `tcp4_receive` from the trace
@@ -12,7 +12,8 @@
   tcbee-process detects and decodes through `OldSockEntry` (172 B). The other older layouts
   (sock 168 and 201 B, cwnd 70 B, `src/bindings/legacy.rs`) are tested with records written by
   the tests themselves.
-- **Generated** by `src/fixtures.rs`: `bbr`, `mptcp_pm`, `send_cwnd`, `tcp6_*`, the empty files and
+- **Generated** by `src/fixtures.rs`: `bbr`, `mptcp_pm`, `send_cwnd`, `send_cwnd_oc`, `send_sock_oc` (a
+  copy of real records), `tcp6_*`, the empty files and
   `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
   each flow from 1. Regenerate with
   `cargo test --features fixture-gen -- --ignored regenerate_fixtures`.
@@ -41,6 +42,10 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `tcp4_send.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
 | `tcp6_receive.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
 | `tcp6_send.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
+| `send_sock_oc.tcp` | `OldSockEntry` (source `sock_oc`) | 172 | 200 | real (first 200 of `send_sock.tcp`) |
+| `recv_sock_oc.tcp` | `sock_trace_entry` (source `sock_oc`) | 202 | 0 | generated |
+| `send_cwnd_oc.tcp` | `cwnd_trace_entry` (source `cwnd_oc`) | 74 | 200 | generated |
+| `recv_cwnd_oc.tcp` | `cwnd_trace_entry` (source `cwnd_oc`) | 74 | 0 | generated |
 
 ## `tcbee_truncated/`
 

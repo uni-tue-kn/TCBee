@@ -509,6 +509,10 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::Bbr, "bbr", Dir::None),
         (TraceFile::MptcpPm, "mptcp_pm", Dir::None),
         (TraceFile::TcpEvents, "tcp_event", Dir::None),
+        (TraceFile::SendSockOc, "sock_oc", Dir::Send),
+        (TraceFile::RecvSockOc, "sock_oc", Dir::Recv),
+        (TraceFile::SendCwndOc, "cwnd_oc", Dir::Send),
+        (TraceFile::RecvCwndOc, "cwnd_oc", Dir::Recv),
     ];
     for (file, source, dir) in want {
         let b = binding(file).unwrap();
@@ -535,6 +539,8 @@ fn file_table_maps_every_trace_file() {
         ("tcp4", 43, 4),
         ("mptcp_pm", 123, 17),
         ("tcp_event", 99, 13),
+        ("sock_oc", 202, 34),
+        ("cwnd_oc", 74, 1),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -543,7 +549,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 9);
+    assert_eq!(names.len(), 11);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.

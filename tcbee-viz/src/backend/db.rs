@@ -128,6 +128,8 @@ pub struct DbBackend {
     connection_labels: OnceCell<HashMap<i64, String>>,
     /// The meta table, read on first use
     meta: OnceCell<Vec<(String, String)>>,
+    /// (source, dir code, watched fields) of the on-change files, from the catalog meta
+    step_sources: OnceCell<Vec<(String, u8, Vec<String>)>>,
     /// Last read error that was logged, so a failing plot reload logs once, not every frame.
     last_error: RefCell<Option<String>>,
 }
@@ -240,6 +242,74 @@ impl DbBackend {
             self.report(format!("listing series failed: {e}"));
             Vec::new()
         })
+    }
+
+    /// Whether a series is an on-change step series: a watched field of a file tagged
+    /// `sampling.<source>.<dir> = on_change(fields)` in the catalog meta by tcbee-process.
+    /// The other columns of such a file are samples taken when a watched field changed, not
+    /// change points, and are drawn as plain points.
+    pub fn is_step_series(&self, series: &SeriesInfo) -> bool {
+        let tagged = self.step_sources.get_or_init(|| {
+            let Some(db) = &self.store else {
+                return Vec::new();
+            };
+            let meta = db.meta().unwrap_or_else(|e| {
+                self.report(format!("reading the catalog meta failed: {e}"));
+                Vec::new()
+            });
+            meta.into_iter()
+                .filter_map(|(k, v)| {
+                    let (source, dir) = k.strip_prefix("sampling.")?.rsplit_once('.')?;
+                    let fields = v.strip_prefix("on_change(")?.split(')').next()?;
+                    Some((
+                        source.to_string(),
+                        dir.parse().ok()?,
+                        fields.split(',').map(str::to_string).collect(),
+                    ))
+                })
+                .collect()
+        });
+        tagged.iter().any(|(source, dir, fields)| {
+            *source == series.source
+                && *dir == series.dir.code()
+                && fields.iter().any(|f| *f == series.name)
+        })
+    }
+
+    /// End of a flow: the last timestamp of any of its series
+    pub fn flow_end(&self, flow_id: i64) -> Option<f64> {
+        self.list_series_for_flow(flow_id)
+            .iter()
+            .filter_map(|s| s.t_max)
+            .max()
+            .map(|t| t as f64)
+    }
+
+    /// Every point of a step series in a range, preceded by the last point before it, so the
+    /// value at the start of the range is known. Finding that point reads the series from its
+    /// start; on-change series are small (only their changes), shadow-mode ones are not.
+    pub fn load_range_steps(&self, series: &SeriesInfo, t_min: f64, t_max: f64) -> Vec<(f64, f64)> {
+        let mut out = Vec::new();
+        let mut before: Option<(f64, f64)> = None;
+        let start = series.t_min.map_or(t_min, |t| t as f64).min(t_min);
+        let result = self.for_each(series, Some((start, t_max)), &mut |p| {
+            let Some(v) = datavalue_as_f64(&p.value) else {
+                return;
+            };
+            if p.timestamp < t_min {
+                before = Some((p.timestamp, v));
+            } else {
+                out.push((p.timestamp, v));
+            }
+        });
+        if let Err(e) = result {
+            self.report(e);
+            return Vec::new();
+        }
+        if let Some(b) = before {
+            out.insert(0, b);
+        }
+        out
     }
 
     /// Reads the points of one series, ordered by (ts, seq). `range` is inclusive.
@@ -550,7 +620,11 @@ mod tests {
         s.finish(Catalog {
             flows: vec![flow],
             series: acc.into_series(1),
-            meta: vec![("writer".into(), "tcbee-viz test".into())],
+            meta: vec![
+                ("writer".into(), "tcbee-viz test".into()),
+                // As tcbee-process tags on-change files (here the recv sock copy)
+                ("sampling.sock.2".into(), "on_change(total_retrans)".into()),
+            ],
             ..Catalog::default()
         })
         .unwrap();
@@ -620,6 +694,27 @@ mod tests {
             assert!(meta.windows(2).all(|w| w[0].0 < w[1].0));
         }
         assert!(DbBackend::default().meta().is_empty());
+    }
+
+    #[test]
+    fn on_change_series_load_as_steps() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let all = db.list_series_for_flow(1);
+            let send = find(&all, "sock", Dir::Send, "total_retrans");
+            let recv = find(&all, "sock", Dir::Recv, "total_retrans");
+            assert!(!db.is_step_series(send));
+            assert!(db.is_step_series(recv));
+            // Unwatched columns of the same file are samples, not steps
+            assert!(!db.is_step_series(find(&all, "sock", Dir::Recv, "advmss")));
+            assert_eq!(db.flow_end(1), Some(ts(N - 1) as f64));
+
+            // The point before the range carries the value at its start
+            let pts = db.load_range_steps(send, ts(25) as f64, ts(45) as f64);
+            assert_eq!(pts.first(), Some(&(ts(24) as f64, 1.0)));
+            assert_eq!(pts.len(), 1 + 21);
+            assert_eq!(pts.last(), Some(&(ts(45) as f64, 2.0)));
+        }
     }
 
     #[test]

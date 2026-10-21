@@ -452,6 +452,122 @@ static __always_inline int trace_cwnd(struct sock *sk, void *ringbufs, __u32 rb)
 	return 0;
 }
 
+/*
+ * The value of a watchable socket field (bpf/onchange.h). field is a constant at every
+ * call, so this folds to the one load.
+ */
+static __always_inline __u64 sock_field(struct sock *sk, struct tcp_sock *tp,
+					enum tcbee_sock_field field)
+{
+	switch (field) {
+	/* struct sock */
+	case SF_pacing_rate:
+		return sk->sk_pacing_rate;
+	case SF_max_pacing_rate:
+		return sk->sk_max_pacing_rate;
+	/* struct inet_connection_sock */
+	case SF_backoff:
+		return tp->inet_conn.icsk_backoff;
+	case SF_rto:
+		return tp->inet_conn.icsk_rto;
+	case SF_rcv_mss:
+		return tp->inet_conn.icsk_ack.rcv_mss;
+	/* struct tcp_sock */
+	case SF_snd_cwnd:
+		return tp->snd_cwnd;
+	case SF_bytes_acked:
+		return tp->bytes_acked;
+	case SF_snd_ssthresh:
+		return tp->snd_ssthresh;
+	case SF_total_retrans:
+		return tp->total_retrans;
+	case SF_probes:
+		return tp->keepalive_probes;
+	case SF_lost:
+		return tp->lost;
+	case SF_sacked_out:
+		return tp->sacked_out;
+	case SF_retrans:
+		return tp->retrans_out;
+	case SF_rcv_ssthresh:
+		return tp->rcv_ssthresh;
+	case SF_rttvar:
+		return tp->rttvar_us;
+	case SF_advmss:
+		return tp->advmss;
+	case SF_reordering:
+		return tp->reordering;
+	case SF_rcv_rtt:
+		return tp->rcv_rtt_est.rtt_us;
+	case SF_rcv_space:
+		return tp->rcvq_space.space;
+	case SF_bytes_received:
+		return tp->bytes_received;
+	case SF_segs_out:
+		return tp->segs_out;
+	case SF_segs_in:
+		return tp->segs_in;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * The fields of a sock record after rcv_wscale, which on-change mode does not watch: the
+ * congestion state, the delivery rate sample, the time spent limited, and the MPTCP
+ * connection (mptcp.h). Stored in record order after the ones above.
+ */
+static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct tcp_sock *tp)
+{
+	rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+	rec->packets_out = tp->packets_out;
+	rec->delivered = tp->delivered;
+	rec->delivered_ce = tp->delivered_ce;
+	rec->app_limited = tp->app_limited;
+	rec->chrono_type = BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
+	rec->chrono_busy = tp->chrono_stat[0];
+	rec->chrono_rwnd_limited = tp->chrono_stat[1];
+	rec->chrono_sndbuf_limited = tp->chrono_stat[2];
+	rec->conn_id = mptcp_conn_id(tp);
+}
+
+/*
+ * Every field of a sock record after the header, read from the socket. Written out field
+ * by field in record order, not with SOCK_FIELDS(): that would move the ato store and
+ * change the default programs' code (testing/bpf_identity.sh).
+ */
+static __always_inline void fill_sock_fields(struct sock_trace_entry *rec, struct sock *sk,
+					     struct tcp_sock *tp)
+{
+	rec->pacing_rate = sock_field(sk, tp, SF_pacing_rate);
+	rec->max_pacing_rate = sock_field(sk, tp, SF_max_pacing_rate);
+	rec->backoff = sock_field(sk, tp, SF_backoff);
+	rec->rto = sock_field(sk, tp, SF_rto);
+	rec->ato = 0;
+	rec->rcv_mss = sock_field(sk, tp, SF_rcv_mss);
+	rec->snd_cwnd = sock_field(sk, tp, SF_snd_cwnd);
+	rec->bytes_acked = sock_field(sk, tp, SF_bytes_acked);
+	rec->snd_ssthresh = sock_field(sk, tp, SF_snd_ssthresh);
+	rec->total_retrans = sock_field(sk, tp, SF_total_retrans);
+	rec->probes = sock_field(sk, tp, SF_probes);
+	rec->lost = sock_field(sk, tp, SF_lost);
+	rec->sacked_out = sock_field(sk, tp, SF_sacked_out);
+	rec->retrans = sock_field(sk, tp, SF_retrans);
+	rec->rcv_ssthresh = sock_field(sk, tp, SF_rcv_ssthresh);
+	rec->rttvar = sock_field(sk, tp, SF_rttvar);
+	rec->advmss = sock_field(sk, tp, SF_advmss);
+	rec->reordering = sock_field(sk, tp, SF_reordering);
+	rec->rcv_rtt = sock_field(sk, tp, SF_rcv_rtt);
+	rec->rcv_space = sock_field(sk, tp, SF_rcv_space);
+	rec->bytes_received = sock_field(sk, tp, SF_bytes_received);
+	rec->segs_out = sock_field(sk, tp, SF_segs_out);
+	rec->segs_in = sock_field(sk, tp, SF_segs_in);
+	/* struct tcp_options_received, not read yet */
+	rec->snd_wscale = 0;
+	rec->rcv_wscale = 0;
+	fill_sock_extra(rec, tp);
+}
+
 static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
 				      __u32 rb)
 {
@@ -471,45 +587,7 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 		count_error(rb);
 	} else if ((rec = reserve(ringbufs, rb, rec))) {
 		fill_header(rec, sk, sport, dport, hook_seq);
-		/* struct sock */
-		rec->pacing_rate = sk->sk_pacing_rate;
-		rec->max_pacing_rate = sk->sk_max_pacing_rate;
-		/* struct inet_connection_sock */
-		rec->backoff = tp->inet_conn.icsk_backoff;
-		rec->rto = tp->inet_conn.icsk_rto;
-		rec->ato = 0;
-		rec->rcv_mss = tp->inet_conn.icsk_ack.rcv_mss;
-		/* struct tcp_sock */
-		rec->snd_cwnd = tp->snd_cwnd;
-		rec->bytes_acked = tp->bytes_acked;
-		rec->snd_ssthresh = tp->snd_ssthresh;
-		rec->total_retrans = tp->total_retrans;
-		rec->probes = tp->keepalive_probes;
-		rec->lost = tp->lost;
-		rec->sacked_out = tp->sacked_out;
-		rec->retrans = tp->retrans_out;
-		rec->rcv_ssthresh = tp->rcv_ssthresh;
-		rec->rttvar = tp->rttvar_us;
-		rec->advmss = tp->advmss;
-		rec->reordering = tp->reordering;
-		rec->rcv_rtt = tp->rcv_rtt_est.rtt_us;
-		rec->rcv_space = tp->rcvq_space.space;
-		rec->bytes_received = tp->bytes_received;
-		rec->segs_out = tp->segs_out;
-		rec->segs_in = tp->segs_in;
-		/* struct tcp_options_received, not read yet */
-		rec->snd_wscale = 0;
-		rec->rcv_wscale = 0;
-		rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
-		rec->packets_out = tp->packets_out;
-		rec->delivered = tp->delivered;
-		rec->delivered_ce = tp->delivered_ce;
-		rec->app_limited = tp->app_limited;
-		rec->chrono_type = BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
-		rec->chrono_busy = tp->chrono_stat[0];
-		rec->chrono_rwnd_limited = tp->chrono_stat[1];
-		rec->chrono_sndbuf_limited = tp->chrono_stat[2];
-		rec->conn_id = mptcp_conn_id(tp);
+		fill_sock_fields(rec, sk, tp);
 		commit(rec, rb);
 	}
 
@@ -541,6 +619,199 @@ SEC("fentry/tcp_rcv_established")
 int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
 {
 	return trace_cwnd(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
+}
+
+/*
+ * ---- On-change mode (--on-change) ---------------------------------------------------
+ *
+ * Separate programs that write a record only when a watched field or the socket state
+ * changed since the last record of the flow at this hook, after a drop or error, and on
+ * the first run. They are the only users of ONCHG and declared with "?" (not loaded unless
+ * userspace enables them), so the default programs above are unchanged.
+ *
+ * The decision comes before hook_seq is taken and before the ring buffer is touched: a
+ * suppressed run counts as suppressed and takes no number, so hook_seq gaps still are
+ * exactly the drops. A tcp_sock error also comes before hook_seq here and leaves no gap.
+ * The receive side hooks fexit/tcp_rcv_established, so its records carry the state after
+ * the packet was processed, at the time it was processed.
+ */
+
+/* The state of this socket, created on first use; counts state_err if there is none */
+static __always_inline struct onchg_state *onchg_state_of(struct sock *sk)
+{
+	struct onchg_state *st;
+
+	st = bpf_sk_storage_get(&ONCHG, sk, NULL, BPF_SK_STORAGE_GET_F_CREATE);
+	if (!st)
+		count_state_err();
+	return st;
+}
+
+static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 rb,
+					 enum onchg_slot slot)
+{
+	int hook = slot - ONCHG_CWND_SEND; /* 0 send, 1 receive */
+	struct cwnd_trace_entry *rec;
+	struct onchg_state *st;
+	struct tcp_sock *tp;
+	__u16 sport, dport;
+	__u64 hook_seq;
+	__u32 cwnd;
+	__u8 state;
+
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
+		count_error(rb);
+		return 0;
+	}
+	cwnd = tp->snd_cwnd;
+	state = sk->__sk_common.skc_state;
+
+	st = onchg_state_of(sk);
+	if (st && st->valid[slot] && st->cwnd_last[hook] == cwnd &&
+	    st->state_last[slot] == state) {
+		count_suppressed(rb);
+		return 0;
+	}
+
+	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq) ||
+	    !(rec = reserve(ringbufs, rb, rec))) {
+		if (st)
+			st->valid[slot] = 0;
+		return 0;
+	}
+	fill_header(rec, sk, sport, dport, hook_seq);
+	rec->snd_cwnd = cwnd;
+	rec->conn_id = mptcp_conn_id(tp);
+	commit(rec, rb);
+	if (st) {
+		st->cwnd_last[hook] = cwnd;
+		st->state_last[slot] = state;
+		st->valid[slot] = 1;
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+SEC("?fentry/__tcp_transmit_skb")
+int BPF_PROG(cwnd_oc_sendmsg, struct sock *sk)
+{
+	return trace_cwnd_oc(sk, &TCP_SEND_CWND_EVENTS, RB_CWND_SEND, ONCHG_CWND_SEND);
+}
+
+SEC("?fexit/tcp_rcv_established")
+int BPF_PROG(cwnd_oc_recvmsg, struct sock *sk)
+{
+	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV, ONCHG_CWND_RECV);
+}
+
+/* Every field of a sock record, the watched ones from the snapshot the decision used */
+static __always_inline void fill_sock_fields_watched(struct sock_trace_entry *rec,
+						     struct sock *sk, struct tcp_sock *tp,
+						     const __u64 *snap)
+{
+#define FILL(name, bit)                                                                    \
+	rec->name = (SOCK_WATCH_MASK & (1u << SF_##name)) ? snap[SF_##name] :            \
+							      sock_field(sk, tp, SF_##name);
+	SOCK_FIELDS(FILL)
+#undef FILL
+	rec->ato = 0;
+	rec->snd_wscale = 0;
+	rec->rcv_wscale = 0;
+	fill_sock_extra(rec, tp);
+}
+
+static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 rb,
+					 enum onchg_slot slot)
+{
+	int hook = slot - ONCHG_SOCK_SEND; /* 0 send, 1 receive */
+	struct sock_trace_entry *rec;
+	struct onchg_state *st;
+	struct tcp_sock *tp;
+	__u64 snap[SF_COUNT] = {};
+	__u16 sport, dport;
+	__u64 hook_seq;
+	bool changed = false;
+	__u8 state, reason;
+
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
+		count_error(rb);
+		return 0;
+	}
+	state = sk->__sk_common.skc_state;
+	/* SOCK_WATCH_MASK is frozen rodata: the verifier drops the unwatched fields */
+#define SNAP(name, bit)                                                                    \
+	if (SOCK_WATCH_MASK & (1u << SF_##name))                                           \
+		snap[SF_##name] = sock_field(sk, tp, SF_##name);
+	SOCK_FIELDS(SNAP)
+#undef SNAP
+
+	st = onchg_state_of(sk);
+	if (!st) {
+		reason = ONCHG_REASON_NO_STORAGE;
+	} else if (!st->valid[slot]) {
+		reason = ONCHG_REASON_FIRST;
+	} else if (st->state_last[slot] != state) {
+		reason = ONCHG_REASON_STATE;
+	} else {
+#define CMP(name, bit)                                                                     \
+	if ((SOCK_WATCH_MASK & (1u << SF_##name)) &&                                       \
+	    snap[SF_##name] != st->sock_last[hook][SF_##name])                             \
+		changed = true;
+		SOCK_FIELDS(CMP)
+#undef CMP
+		reason = changed ? ONCHG_REASON_CHANGED : ONCHG_REASON_SUPPRESS;
+	}
+	if (reason == ONCHG_REASON_SUPPRESS && !ONCHG_SHADOW) {
+		count_suppressed(rb);
+		return 0;
+	}
+
+	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq) ||
+	    !(rec = reserve(ringbufs, rb, rec))) {
+		if (st)
+			st->valid[slot] = 0;
+		return 0;
+	}
+	fill_header(rec, sk, sport, dport, hook_seq);
+	fill_sock_fields_watched(rec, sk, tp, snap);
+	if (ONCHG_SHADOW)
+		rec->ato = reason;
+	commit(rec, rb);
+	if (st) {
+#define STORE(name, bit)                                                                   \
+	if (SOCK_WATCH_MASK & (1u << SF_##name))                                           \
+		st->sock_last[hook][SF_##name] = snap[SF_##name];
+		SOCK_FIELDS(STORE)
+#undef STORE
+		st->state_last[slot] = state;
+		st->valid[slot] = 1;
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+SEC("?fentry/__tcp_transmit_skb")
+int BPF_PROG(sock_oc_sendmsg, struct sock *sk, struct sk_buff *skb)
+{
+	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, ONCHG_SOCK_SEND);
+}
+
+SEC("?fexit/tcp_rcv_established")
+int BPF_PROG(sock_oc_recvmsg, struct sock *sk, struct sk_buff *skb)
+{
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_SOCK_RECV);
 }
 
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */

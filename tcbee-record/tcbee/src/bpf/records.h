@@ -23,6 +23,8 @@ typedef __UINT64_TYPE__ uint64_t;
 typedef __INT64_TYPE__ int64_t;
 #endif
 
+#include "onchange.h"
+
 /* TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}. Addresses in host byte order. */
 struct tcp4_packet_trace {
 	uint64_t time;

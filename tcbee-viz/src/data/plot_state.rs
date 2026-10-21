@@ -3,7 +3,10 @@ use ts_storage::{SeriesInfo, ValueKind};
 use crate::{
     backend::db::{flow_x_bounds, format_flow, DbBackend},
     data::{
-        preprocessing::{compute_sample_interval, compute_skip_step, downsample, generate_colors},
+        preprocessing::{
+            bucket_min_max, compute_sample_interval, compute_skip_step, downsample, expand_steps,
+            generate_colors, MAX_RENDER_POINTS,
+        },
         series_data::SeriesData,
     },
     settings::AppSettings,
@@ -259,7 +262,21 @@ pub fn fetch_range(
         settings.pointseries_threshold,
     );
     let Some(info) = &sd.info else { return };
-    if sd.val_type == ValueKind::String {
+    sd.step = db.is_step_series(info);
+    if sd.step && sd.val_type != ValueKind::String {
+        // Every change matters: no interval sampling or skipping, at most a bucketing that
+        // keeps each bucket's levels, and the value at the window start carried in
+        // The value carried in from before the window is kept out of the bucketing, so
+        // the buckets cover the window only
+        let mut points = db.load_range_steps(info, fetch_min, fetch_max);
+        let carried = (points.first().is_some_and(|p| p.0 < fetch_min)).then(|| points.remove(0));
+        let mut changes = bucket_min_max(points, MAX_RENDER_POINTS / 2);
+        if let Some(p) = carried {
+            changes.insert(0, p);
+        }
+        let end = db.flow_end(info.flow_id).map(|t| t.min(fetch_max));
+        sd.points = expand_steps(&changes, end);
+    } else if sd.val_type == ValueKind::String {
         sd.string_points =
             db.load_range_strings_sampled(info, fetch_min, fetch_max, sample_interval);
     } else if sd.val_type == ValueKind::Bool {

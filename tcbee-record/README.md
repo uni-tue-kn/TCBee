@@ -80,6 +80,8 @@ At least one metric source is required.
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 | `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-M` records, comma-separated: `tag`, `pm` |
+| `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
+| `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
@@ -90,12 +92,41 @@ position among the events of its flow direction at its hook.
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
 
+## On-change mode
+
+`--on-change FIELDS` makes the sock (`-k`) and cwnd (`-w`) probes write a record only when a
+watched field or the socket state changed since the flow's last record at that hook, on a
+flow's first run and after a dropped record. Unchanged runs are counted as `suppressed` per
+ring buffer in `metrics.json` and take no `hook_seq`, so gaps in `hook_seq` are still exactly
+the dropped records. The default mode is unchanged.
+
+- `FIELDS` is `cc` (`snd_cwnd`, `snd_ssthresh`, `total_retrans`, `backoff`, `rto`,
+  `reordering`, `rcv_mss`) or a comma-separated list of `sock_trace_entry` fields; the cwnd
+  probe watches `snd_cwnd`. Fields that change on almost every packet (`bytes_acked`,
+  `bytes_received`, `segs_in`, `segs_out`, `rttvar`, `pacing_rate`) bring back nearly every
+  record; tcbee-record warns about them. Quantised fields are not supported yet.
+- The records go to `send_sock_oc.tcp`, `recv_sock_oc.tcp`, `send_cwnd_oc.tcp` and
+  `recv_cwnd_oc.tcp`, next to a `manifest.json` that lists the watched fields. tcbee-process
+  stores them as the sources `sock_oc` and `cwnd_oc`, and tcbee-viz draws the watched fields
+  as steps: a value holds until the next record. The other columns of these files are samples
+  taken when a watched field changed.
+- The receive side hooks `fexit/tcp_rcv_established` in this mode, so a record carries the
+  state after the packet was processed. The default `-k`/`-w` programs use fentry and record
+  the state before it.
+- Each socket keeps the last written values in BPF socket storage (about 370 bytes, freed
+  with the socket). A socket without storage writes every run and counts as `state_errors`.
+- `--on-change-shadow` writes every run anyway and puts the decision into `ato`:
+  1 suppressed, 2 a watched field changed, 3 first run or after a drop, 4 socket state
+  changed, 5 no socket storage. A replay of such a trace checks the decisions record by
+  record (`testing/onchange_smoke.sh`).
+
 ## Kernel requirements
 
 - BTF of the running kernel (`/sys/kernel/btf/vmlinux`, `CONFIG_DEBUG_INFO_BTF=y`)
 - 5.12: every probe numbers its events per flow with a fetch-and-add atomic (`hook_seq`).
   Ring buffers (5.8), fentry programs and `bpf_skc_to_tcp_sock` (5.9) are older; the
   `tcp_bad_csum` tracepoint of `-t` appeared in 5.11.
+- `--on-change` uses BPF socket storage in fentry/fexit programs (5.11).
 - `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
   `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
   and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.

@@ -19,6 +19,10 @@
  * dropped event and an error after the filter leave a gap: issued = handled + dropped +
  * errors after the filter. An event that cannot get a counter (map full) counts as error
  * and writes no record, so every record has hook_seq >= 1.
+ *
+ * The on-change programs (--on-change) decide first and take a number only for the runs
+ * they write: suppressed runs and a missing tcp_sock take none, so there issued = handled +
+ * dropped + the errors after hook_seq, and gaps are still exactly the drops.
  */
 #ifndef __TCBEE_HOOK_SEQ_H
 #define __TCBEE_HOOK_SEQ_H

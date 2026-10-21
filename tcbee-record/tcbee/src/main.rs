@@ -11,7 +11,8 @@ use std::net::IpAddr;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_to_filter_addr, parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig, MptcpModes,
+    ip_to_filter_addr, on_change_manifest, parse_on_change, parse_ringbuf_sizes, EbpfRunnerConfig,
+    FilterConfig, MptcpModes,
 };
 use tcbee_trace::TCBeeTrace;
 use writer::PollMode;
@@ -83,6 +84,8 @@ fn main() -> anyhow::Result<()> {
     let mut ringbuf_size: String = String::new();
     let mut poll: String = "busy".to_string();
     let mut writer_cpus: String = String::new();
+    let mut on_change: String = String::new();
+    let mut on_change_shadow: bool = false;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -200,6 +203,16 @@ fn main() -> anyhow::Result<()> {
             Store,
             "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, mptcp_pm, tcp_events.",
         );
+        argparser.refer(&mut on_change).add_option(
+            &["--on-change"],
+            Store,
+            "Write sock (-k) and cwnd (-w) records only when a watched field or the socket state changed, into *_oc.tcp files with a manifest.json. 'cc' watches snd_cwnd, snd_ssthresh, total_retrans, backoff, rto, reordering and rcv_mss; or give a comma-separated list of sock_trace_entry fields. The cwnd probe watches snd_cwnd.",
+        );
+        argparser.refer(&mut on_change_shadow).add_option(
+            &["--on-change-shadow"],
+            StoreTrue,
+            "With --on-change and -k: write every sock run anyway, with the decision as a reason code in the ato field (1 suppressed, 2 changed, 3 first or after a drop, 4 state change, 5 no socket storage).",
+        );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
             StoreTrue,
@@ -282,6 +295,7 @@ fn main() -> anyhow::Result<()> {
     {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
+    let on_change = parse_on_change(&on_change, on_change_shadow, trace_kernel, trace_cwnd)?;
 
     // Create a timestamped recording directory inside the requested base dir
     let trace = TCBeeTrace::create(&dir)
@@ -317,6 +331,7 @@ fn main() -> anyhow::Result<()> {
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())
+        .on_change(on_change)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints
@@ -336,7 +351,16 @@ fn main() -> anyhow::Result<()> {
         let mut sigterm = signal(SignalKind::terminate())?;
         let mut sigint = signal(SignalKind::interrupt())?;
 
-        let starting_result = runner.run().await;
+        // The manifest only once the probes run, so a failed start leaves no on-change
+        // directory without trace files
+        let starting_result = runner.run().await.and_then(|()| {
+            if let Some(on_change) = on_change {
+                on_change_manifest(on_change, trace_kernel, trace_cwnd)
+                    .write(trace.dir())
+                    .map_err(|e| format!("Failed to write the on-change manifest: {e}"))?;
+            }
+            Ok(())
+        });
 
         if let Err(err) = starting_result {
             // On start failure, wait until everythin has stopped

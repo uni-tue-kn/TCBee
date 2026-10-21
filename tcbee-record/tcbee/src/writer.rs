@@ -20,6 +20,7 @@ use log::{debug, error, info, trace};
 use memmap2::MmapMut;
 use serde::Serialize;
 use tcbee_common::{records::RECORD_DELIMITER, stats::RINGBUFS};
+use tcbee_trace::TraceFile;
 
 use crate::config::WRITER_BUFFER_SIZE;
 
@@ -108,9 +109,22 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
-        let file_path = trace_dir
-            .as_ref()
-            .join(RINGBUFS[rb as usize].file.filename());
+        self.register_as::<T>(rb, maps, RINGBUFS[rb as usize].file, trace_dir)
+    }
+
+    /// As `register`, but into `file` instead of the ring buffer's own file (on-change mode
+    /// writes the sock and cwnd rings to their `_oc` files)
+    pub fn register_as<T>(
+        &mut self,
+        rb: u32,
+        maps: Vec<MapHandle>,
+        file: TraceFile,
+        trace_dir: impl AsRef<Path>,
+    ) -> Result<(), WriterError>
+    where
+        T: Serialize + Copy + Send + 'static,
+    {
+        let file_path = trace_dir.as_ref().join(file.filename());
         let job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?;
         let running = self.running.clone();
 

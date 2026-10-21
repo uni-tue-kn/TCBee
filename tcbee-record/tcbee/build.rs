@@ -69,6 +69,8 @@ fn build_skeleton() -> anyhow::Result<()> {
 
     SkeletonBuilder::new()
         .source(BPF_SRC)
+        // Kept for testing/bpf_identity.sh, which compares the default programs' code
+        .obj(out.join("tcbee.bpf.o"))
         .clang_args([
             "-Wall".into(),
             // BPF_FETCH atomics (kernel 5.12) for the hook_seq fetch-add, whose result is

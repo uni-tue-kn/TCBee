@@ -110,6 +110,60 @@ pub fn downsample(points: Vec<(f64, f64)>, step: usize) -> Vec<(f64, f64)> {
     points.into_iter().step_by(step).collect()
 }
 
+/// Thins a step series to at most `max_points` by time buckets, keeping in every bucket its
+/// first and last point and the points with the lowest and highest value, so every level the
+/// series reaches stays visible.
+pub fn bucket_min_max(points: Vec<(f64, f64)>, max_points: usize) -> Vec<(f64, f64)> {
+    let buckets = max_points / 4;
+    if points.len() <= max_points || buckets == 0 {
+        return points;
+    }
+    let t0 = points[0].0;
+    let span = points[points.len() - 1].0 - t0;
+    if span.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        return points;
+    }
+    let bucket_of = |t: f64| (((t - t0) / span * buckets as f64) as usize).min(buckets - 1);
+    let mut out = Vec::with_capacity(max_points);
+    let mut start = 0;
+    while start < points.len() {
+        let b = bucket_of(points[start].0);
+        let mut end = start + 1;
+        while end < points.len() && bucket_of(points[end].0) == b {
+            end += 1;
+        }
+        let bucket = &points[start..end];
+        let lowest = (0..bucket.len()).min_by(|&i, &j| bucket[i].1.total_cmp(&bucket[j].1));
+        let highest = (0..bucket.len()).max_by(|&i, &j| bucket[i].1.total_cmp(&bucket[j].1));
+        let mut keep = vec![0, bucket.len() - 1];
+        keep.extend(lowest);
+        keep.extend(highest);
+        keep.sort_unstable();
+        keep.dedup();
+        out.extend(keep.into_iter().map(|i| bucket[i]));
+        start = end;
+    }
+    out
+}
+
+/// Draws a step series: before every change the previous value is held up to the change's
+/// time, and the last value is held until `end`.
+pub fn expand_steps(points: &[(f64, f64)], end: Option<f64>) -> Vec<(f64, f64)> {
+    let mut out = Vec::with_capacity(points.len() * 2 + 1);
+    for (i, &(t, y)) in points.iter().enumerate() {
+        if i > 0 {
+            out.push((t, points[i - 1].1));
+        }
+        out.push((t, y));
+    }
+    if let (Some(&(t_last, y_last)), Some(end)) = (points.last(), end) {
+        if end > t_last {
+            out.push((end, y_last));
+        }
+    }
+    out
+}
+
 /// Trim only leading points that are far outside the following steady-state values.
 pub fn remove_leading_outliers(pts: &[(f64, f64)]) -> &[(f64, f64)] {
     let drop_count = leading_outlier_count(pts);
@@ -160,7 +214,41 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::remove_leading_outliers;
+    use super::{bucket_min_max, expand_steps, remove_leading_outliers};
+
+    #[test]
+    fn steps_hold_the_previous_value() {
+        let pts = [(1.0, 10.0), (3.0, 5.0), (4.0, 7.0)];
+        assert_eq!(
+            expand_steps(&pts, Some(6.0)),
+            vec![
+                (1.0, 10.0),
+                (3.0, 10.0),
+                (3.0, 5.0),
+                (4.0, 5.0),
+                (4.0, 7.0),
+                (6.0, 7.0)
+            ]
+        );
+        assert_eq!(expand_steps(&pts, Some(2.0)).last(), Some(&(4.0, 7.0)));
+        assert!(expand_steps(&[], Some(1.0)).is_empty());
+    }
+
+    #[test]
+    fn bucketing_keeps_every_level() {
+        // 10 000 changes, one deep dip in the middle and the first and last point
+        let mut pts: Vec<(f64, f64)> = (0..10_000)
+            .map(|i| (i as f64, 100.0 + (i % 3) as f64))
+            .collect();
+        pts[5_001].1 = 1.0;
+        let thin = bucket_min_max(pts.clone(), 400);
+        assert!(thin.len() <= 400);
+        assert_eq!(thin.first(), pts.first());
+        assert_eq!(thin.last(), pts.last());
+        assert!(thin.contains(&(5_001.0, 1.0)));
+        assert!(thin.windows(2).all(|w| w[0].0 <= w[1].0));
+        assert_eq!(bucket_min_max(pts[..10].to_vec(), 400), pts[..10].to_vec());
+    }
 
     #[test]
     fn removes_large_leading_spikes() {

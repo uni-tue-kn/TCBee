@@ -40,6 +40,8 @@ const SMALL: &[(&str, &str, u8, u64, usize)] = &[
     ("tcp4_receive.tcp", "tcp4", 2, 2000, 4),
     ("tcp6_send.tcp", "tcp6", 1, 500, 4),
     ("tcp6_receive.tcp", "tcp6", 2, 500, 4),
+    ("send_sock_oc.tcp", "sock_oc", 1, 200, 25),
+    ("send_cwnd_oc.tcp", "cwnd_oc", 1, 200, 1),
 ];
 
 /// Size of one `tcp4` record in the trace file.
@@ -194,6 +196,61 @@ fn small_fixture_series_cover_every_record() {
             }
         }
         assert_eq!(dump(&*store).series.len(), summary.series);
+    }
+}
+
+/// The manifest of an on-change recording becomes `sampling.<source>.<dir>` catalog meta.
+#[test]
+fn manifest_tags_on_change_series() {
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_2026-01-01T00-00-00");
+        std::fs::create_dir(&trace).unwrap();
+        for f in std::fs::read_dir(fixture("tcbee_small")).unwrap() {
+            let f = f.unwrap().path();
+            std::fs::copy(&f, trace.join(f.file_name().unwrap())).unwrap();
+        }
+        std::fs::write(
+            trace.join("manifest.json"),
+            r#"{"format_version": 2, "sources": [{"file": "send_sock_oc.tcp",
+               "sampling": {"mode": "on_change", "fields": ["snd_cwnd", "rto"]},
+               "shadow": false, "recv_hook": "fexit/tcp_rcv_established"}]}"#,
+        )
+        .unwrap();
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let meta = ts_storage::open(&out).unwrap().meta().unwrap();
+        assert!(meta.contains(&(
+            "sampling.sock_oc.1".to_string(),
+            "on_change(snd_cwnd,rto)".to_string()
+        )));
+        assert!(!meta.iter().any(|(k, _)| k == "sampling.cwnd_oc.1"));
+    }
+}
+
+/// On-change files land in their own source, never in the full series of the same flow.
+#[test]
+fn on_change_sock_is_a_separate_series() {
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, _) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
+        let store = ts_storage::open(&out).unwrap();
+        let mut found = false;
+        for f in store.flows().unwrap() {
+            let series = store.series(f.id).unwrap();
+            let cwnd = |source: &str| {
+                series
+                    .iter()
+                    .find(|s| s.source == source && s.name == "snd_cwnd" && s.dir.code() == 1)
+                    .map(|s| (s.id, s.n))
+            };
+            if let (Some(full), Some(oc)) = (cwnd("sock"), cwnd("sock_oc")) {
+                found = true;
+                assert_ne!(full.0, oc.0);
+                assert!(oc.1 <= full.1);
+            }
+        }
+        assert!(found, "no flow with full and on-change sock data");
     }
 }
 
@@ -453,9 +510,11 @@ fn digests(d: &Dump) -> BTreeMap<String, u64> {
 const SMALL_DIGESTS: &[(&str, u64)] = &[
     ("bbr|0", 5969312066039208668),
     ("cubic|0", 18293315105502254295),
+    ("cwnd_oc|1", 5004497889326637478),
     ("cwnd|1", 10154183732297103522),
     ("flows", 17654629037281800754),
     ("mptcp_pm|0", 603747683927564092),
+    ("sock_oc|1", 8171228002259875761),
     ("sock|1", 3144412637236659025),
     ("sock|2", 6540169290698444424),
     ("tcp4|1", 16532087506000249234),

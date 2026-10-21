@@ -9,7 +9,7 @@
 #include "records.h"
 
 /* Mirrors tcbee_common::stats::STATS_LEN, see counters.h */
-#define TCBEE_STATS_LEN 45
+#define TCBEE_STATS_LEN 61
 #define TCBEE_MAX_FLOWS 100
 #define TCBEE_FILTER_MAX_ENTRIES 1024
 
@@ -114,6 +114,35 @@ struct {
 	__type(key, __u64);
 	__type(value, struct mptcp_retrans_start);
 } MPTCP_RETRANS_START SEC(".maps");
+
+/*
+ * Per-socket state of the on-change probes: the values of their last written record, per
+ * hook. Only the on-change programs use the map, so in the default mode it stays empty;
+ * socket storage takes no memory until a program creates it and is freed with the socket.
+ */
+enum onchg_slot {
+	ONCHG_SOCK_SEND,
+	ONCHG_SOCK_RECV,
+	ONCHG_CWND_SEND,
+	ONCHG_CWND_RECV,
+	ONCHG_SLOTS,
+};
+
+struct onchg_state {
+	__u64 sock_last[2][SF_COUNT]; /* [send, recv][field] */
+	__u32 cwnd_last[2];
+	/* skc_state at the last write; a state change forces a write */
+	__u8 state_last[ONCHG_SLOTS];
+	/* 0 before the first write and after a drop or error: the next run writes */
+	__u8 valid[ONCHG_SLOTS];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_SK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct onchg_state);
+} ONCHG SEC(".maps");
 
 /* Flows seen by any probe, key and value are the canonical tuple */
 struct {

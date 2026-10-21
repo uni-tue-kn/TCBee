@@ -247,4 +247,6 @@ by us instead of the tracepoint (e.g. `srtt`), changing program type and semanti
    should show up most for `-k` and `-t`.
 5. **Correctness:** record files of old and new binary for the same traffic must parse
    identically with `tcbee-process` (ENTRY_SIZEs unchanged); counter identity
-   `attempted = handled + dropped + error` per ring buffer in `metrics.json`.
+   `attempted = handled + dropped + error + suppressed` per ring buffer in `metrics.json`
+   (`suppressed` is 0 outside on-change mode). `testing/bpf_identity.sh BASE` checks that
+   the default programs compile to the same code as a baseline commit.

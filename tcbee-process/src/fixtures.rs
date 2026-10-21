@@ -195,14 +195,26 @@ mod generate {
         write(&small, "send_cwnd.tcp", (0..1000).map(cwnd));
         write(&small, "tcp6_receive.tcp", (0..500).map(|i| tcp6(i, true)));
         write(&small, "tcp6_send.tcp", (0..500).map(|i| tcp6(i, false)));
+        write(&small, "send_cwnd_oc.tcp", (0..200).map(cwnd));
         for empty in [
             "tcp_retransmit_synack",
             "tcp_bad_csum",
             "recv_cwnd",
             "tcp_events",
+            "recv_sock_oc",
+            "recv_cwnd_oc",
         ] {
             fs::write(small.join(format!("{empty}.tcp")), b"").unwrap();
         }
+
+        // On-change sock file: the first 200 records of the real send_sock.tcp (172 B layout,
+        // decoded through the legacy table like an old on-change recording).
+        let bytes = fs::read(small.join("send_sock.tcp")).unwrap();
+        fs::write(
+            small.join("send_sock_oc.tcp"),
+            &bytes[..200 * OldSockEntry::ENTRY_SIZE],
+        )
+        .unwrap();
 
         // First 10 sock records of the real send_sock.tcp (old layout) plus 17 bytes of the
         // eleventh.
@@ -217,8 +229,8 @@ mod checks {
 
     use crate::{bindings::sock::OldSockEntry, event::Event};
     use tcbee_common::records::{
-        bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, tcp4_packet_trace,
-        tcp6_packet_trace, tcp_probe_entry,
+        bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry,
+        tcp4_packet_trace, tcp6_packet_trace, tcp_probe_entry,
     };
     use tcbee_trace::{TCBeeTrace, TraceFile};
 
@@ -261,6 +273,10 @@ mod checks {
         check::<tcp_probe_entry>("tcp_probe.tcp", 2000);
         check::<OldSockEntry>("recv_sock.tcp", 2000);
         check::<cwnd_trace_entry>("recv_cwnd.tcp", 0);
+        check::<OldSockEntry>("send_sock_oc.tcp", 200);
+        check::<sock_trace_entry>("recv_sock_oc.tcp", 0);
+        check::<cwnd_trace_entry>("send_cwnd_oc.tcp", 200);
+        check::<cwnd_trace_entry>("recv_cwnd_oc.tcp", 0);
         check::<tcp4_packet_trace>("tcp4_receive.tcp", 2000);
         check::<tcp4_packet_trace>("tcp4_send.tcp", 2000);
         check::<tcp6_packet_trace>("tcp6_receive.tcp", 500);

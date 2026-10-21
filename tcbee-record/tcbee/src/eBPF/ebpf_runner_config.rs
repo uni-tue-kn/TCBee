@@ -4,6 +4,20 @@ use anyhow::anyhow;
 
 use crate::writer::PollMode;
 use tcbee_common::{filter::*, stats::RINGBUFS};
+use tcbee_trace::{
+    onchange::{Manifest, Sampling, SockField, SourceMeta, WatchSet, MANIFEST_VERSION},
+    TraceFile,
+};
+
+/// On-change mode of the sock (-k) and cwnd (-w) probes: a record only when a watched field
+/// or the socket state changed
+#[derive(Debug, Clone, Copy)]
+pub struct OnChange {
+    /// Socket fields the sock probes compare; the cwnd probes compare snd_cwnd
+    pub watch: WatchSet,
+    /// Write every sock run anyway, with the decision as a reason code in `ato`
+    pub shadow: bool,
+}
 
 #[derive(Default, Debug, Clone)]
 pub struct FilterConfig {
@@ -177,6 +191,75 @@ impl MptcpModes {
     }
 }
 
+/// `--on-change FIELDS` and `--on-change-shadow`, None in the default mode
+pub fn parse_on_change(
+    fields: &str,
+    shadow: bool,
+    kernel: bool,
+    cwnd: bool,
+) -> anyhow::Result<Option<OnChange>> {
+    if fields.is_empty() {
+        if shadow {
+            return Err(anyhow!("--on-change-shadow needs --on-change"));
+        }
+        return Ok(None);
+    }
+    if !kernel && !cwnd {
+        return Err(anyhow!("--on-change needs -k or -w"));
+    }
+    if shadow && !kernel {
+        return Err(anyhow!("--on-change-shadow needs -k"));
+    }
+    let watch = WatchSet::parse(fields).map_err(|e| anyhow!("--on-change: {}", e))?;
+    let per_packet: Vec<&str> = watch
+        .fields()
+        .filter(|f| f.changes_per_packet())
+        .map(SockField::name)
+        .collect();
+    if kernel && !per_packet.is_empty() {
+        eprintln!(
+            "Warning: {} change on almost every packet, on-change mode will write nearly every run",
+            per_packet.join(", ")
+        );
+    }
+    Ok(Some(OnChange { watch, shadow }))
+}
+
+/// What the on-change files in the recording directory hold, for tcbee-process
+pub fn on_change_manifest(on_change: OnChange, kernel: bool, cwnd: bool) -> Manifest {
+    let recv_hook = "fexit/tcp_rcv_established".to_string();
+    let mut sources = Vec::new();
+    if kernel {
+        let fields: Vec<String> = on_change.watch.fields().map(|f| f.name().into()).collect();
+        for file in [TraceFile::SendSockOc, TraceFile::RecvSockOc] {
+            sources.push(SourceMeta {
+                file: file.filename().into(),
+                sampling: Sampling::OnChange {
+                    fields: fields.clone(),
+                },
+                shadow: on_change.shadow,
+                recv_hook: recv_hook.clone(),
+            });
+        }
+    }
+    if cwnd {
+        for file in [TraceFile::SendCwndOc, TraceFile::RecvCwndOc] {
+            sources.push(SourceMeta {
+                file: file.filename().into(),
+                sampling: Sampling::OnChange {
+                    fields: vec!["snd_cwnd".into()],
+                },
+                shadow: false,
+                recv_hook: recv_hook.clone(),
+            });
+        }
+    }
+    Manifest {
+        format_version: MANIFEST_VERSION,
+        sources,
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct EbpfRunnerConfig {
     pub iface: String,
@@ -198,6 +281,7 @@ pub struct EbpfRunnerConfig {
     pub ringbuf_sizes: Vec<(&'static str, u32)>,
     pub poll_mode: PollMode,
     pub writer_cpus: Vec<usize>,
+    pub on_change: Option<OnChange>,
 }
 
 #[derive(Default)]
@@ -313,6 +397,11 @@ impl EbpfRunnerConfig {
         self
     }
 
+    pub fn on_change(mut self, on_change: Option<OnChange>) -> EbpfRunnerConfig {
+        self.on_change = on_change;
+        self
+    }
+
     pub fn poll_mode(mut self, mode: PollMode) -> EbpfRunnerConfig {
         self.poll_mode = mode;
         self
@@ -388,5 +477,44 @@ mod tests {
         assert!(parse_ringbuf_sizes("3G").is_err());
         assert!(parse_ringbuf_sizes("foo=1M").is_err());
         assert!(parse_ringbuf_sizes("tcp4=1X").is_err());
+    }
+
+    #[test]
+    fn on_change_options() {
+        assert!(parse_on_change("", false, true, true).unwrap().is_none());
+        let oc = parse_on_change("cc", true, true, false).unwrap().unwrap();
+        assert_eq!(oc.watch, WatchSet::CC);
+        assert!(oc.shadow);
+        assert!(parse_on_change("", true, true, false).is_err());
+        assert!(parse_on_change("cc", false, false, false).is_err());
+        assert!(parse_on_change("cc", true, false, true).is_err());
+        assert!(parse_on_change("cwnd", false, true, false).is_err());
+        assert!(parse_on_change("pacing_rate/16", false, true, false).is_err());
+    }
+
+    #[test]
+    fn manifest_lists_the_enabled_on_change_files() {
+        let oc = OnChange {
+            watch: WatchSet::parse("snd_cwnd,total_retrans").unwrap(),
+            shadow: false,
+        };
+        let m = on_change_manifest(oc, true, true);
+        let files: Vec<&str> = m.sources.iter().map(|s| s.file.as_str()).collect();
+        assert_eq!(
+            files,
+            [
+                "send_sock_oc.tcp",
+                "recv_sock_oc.tcp",
+                "send_cwnd_oc.tcp",
+                "recv_cwnd_oc.tcp"
+            ]
+        );
+        assert_eq!(
+            m.sources[0].sampling,
+            Sampling::OnChange {
+                fields: vec!["snd_cwnd".into(), "total_retrans".into()]
+            }
+        );
+        assert_eq!(on_change_manifest(oc, false, true).sources.len(), 2);
     }
 }

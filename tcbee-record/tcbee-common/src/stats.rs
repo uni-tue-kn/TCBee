@@ -2,8 +2,10 @@
 //!
 //! Every ring buffer owns three consecutive u64 slots. A probe invocation that passes the
 //! filter increments exactly one of `STAT_HANDLED` (record submitted), `STAT_DROPPED`
-//! (ring buffer full) or `STAT_ERROR` (kernel read failed). The number of invocations
-//! is their sum.
+//! (ring buffer full), `STAT_ERROR` (kernel read failed) or, in on-change mode, the ring's
+//! suppressed slot (watched fields unchanged, no record). The number of invocations is their
+//! sum. The suppressed slots and the state error slot follow the per-ring slots, so the
+//! layout of the first `RB_COUNT * STATS_PER_RB` slots does not depend on the mode.
 
 use tcbee_trace::TraceFile;
 
@@ -28,11 +30,25 @@ pub const STAT_HANDLED: u32 = 0;
 pub const STAT_DROPPED: u32 = 1;
 pub const STAT_ERROR: u32 = 2;
 pub const STATS_PER_RB: u32 = 3;
-pub const STATS_LEN: u32 = RB_COUNT * STATS_PER_RB;
+/// First of the `RB_COUNT` suppressed slots, one per ring buffer
+pub const STATS_SUPPRESSED_BASE: u32 = RB_COUNT * STATS_PER_RB;
+/// On-change runs that found no socket storage and wrote a full record
+pub const STATS_STATE_ERR: u32 = STATS_SUPPRESSED_BASE + RB_COUNT;
+pub const STATS_LEN: u32 = STATS_STATE_ERR + 1;
 
 /// Slots whose sum is the number of probe invocations of a ring buffer
-pub const fn invocation_slots(rb: u32) -> [u32; 3] {
-    [slot(rb, STAT_HANDLED), slot(rb, STAT_DROPPED), slot(rb, STAT_ERROR)]
+pub const fn invocation_slots(rb: u32) -> [u32; 4] {
+    [
+        slot(rb, STAT_HANDLED),
+        slot(rb, STAT_DROPPED),
+        slot(rb, STAT_ERROR),
+        suppressed_slot(rb),
+    ]
+}
+
+/// Slot of the runs an on-change probe of this ring buffer suppressed
+pub const fn suppressed_slot(rb: u32) -> u32 {
+    STATS_SUPPRESSED_BASE + rb
 }
 
 #[inline(always)]
@@ -86,3 +102,24 @@ pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
     rb("MPTCP_PM_EVENTS", TraceFile::MptcpPm, "mptcp_pm", 1),
     rb("TCP_EVENTS", TraceFile::TcpEvents, "tcp_events", 4),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appended_slots_follow_the_per_ring_slots() {
+        // The first RB_COUNT * STATS_PER_RB slots keep their layout in every mode
+        assert_eq!(slot(RB_TCP_EVENTS, STAT_ERROR), RB_COUNT * STATS_PER_RB - 1);
+        assert_eq!(suppressed_slot(0), RB_COUNT * STATS_PER_RB);
+        assert_eq!(suppressed_slot(RB_TCP_EVENTS) + 1, STATS_STATE_ERR);
+        assert_eq!(RB_TCP_EVENTS, RB_COUNT - 1);
+        assert_eq!(STATS_LEN, 61);
+        let all: Vec<u32> = (0..RB_COUNT).flat_map(invocation_slots).collect();
+        let mut sorted = all.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), all.len(), "a slot counts for two rings");
+        assert!(!all.contains(&STATS_STATE_ERR));
+    }
+}

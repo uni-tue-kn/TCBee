@@ -3,8 +3,9 @@
  * STATS counters, same slot layout as tcbee-common/src/stats.rs.
  *
  * A probe invocation that passes the filter counts exactly one of reserve() failing
- * (dropped), commit() (handled) or count_error(), so the invocations of a ring buffer are
- * handled + dropped + error. Filtered out events touch no counter.
+ * (dropped), commit() (handled), count_error() or, in on-change mode, count_suppressed(), so
+ * the invocations of a ring buffer are handled + dropped + error + suppressed. Filtered out
+ * events touch no counter.
  */
 #ifndef __TCBEE_COUNTERS_H
 #define __TCBEE_COUNTERS_H
@@ -35,7 +36,15 @@
 #define STAT_ERROR 2
 #define STATS_PER_RB 3
 
-_Static_assert(RB_COUNT * STATS_PER_RB == TCBEE_STATS_LEN, "STATS length");
+/*
+ * Appended after the per-ring slots: the runs an on-change probe suppressed, one slot per
+ * ring, then the runs that found no socket storage and wrote a full record. Both stay 0 in
+ * the default mode.
+ */
+#define STATS_SUPPRESSED_BASE (RB_COUNT * STATS_PER_RB)
+#define STATS_STATE_ERR (STATS_SUPPRESSED_BASE + RB_COUNT)
+
+_Static_assert(STATS_STATE_ERR + 1 == TCBEE_STATS_LEN, "STATS length");
 
 /*
  * fentry and tracepoint programs only run with migration disabled, so a softirq can
@@ -91,6 +100,23 @@ static __always_inline void count(__u32 rb, __u32 stat)
 static __always_inline void count_error(__u32 rb)
 {
 	count(rb, STAT_ERROR);
+}
+
+/* An on-change run whose watched fields did not change: no hook_seq, no record */
+static __always_inline void count_suppressed(__u32 rb)
+{
+	__u32 slot = STATS_SUPPRESSED_BASE + rb;
+
+	if (rb_owned(rb))
+		add_stat_owned(slot, 1);
+	else
+		add_stat(slot, 1);
+}
+
+/* Several programs share this slot, so it always takes the atomic add */
+static __always_inline void count_state_err(void)
+{
+	add_stat(STATS_STATE_ERR, 1);
 }
 
 /*

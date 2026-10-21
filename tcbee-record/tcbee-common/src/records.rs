@@ -3,7 +3,7 @@
 //!
 //! The trace files are bincode serialised field by field, so changing a field's order or
 //! type here changes the on-disk format. The size asserts catch accidental changes.
-#![allow(non_camel_case_types, non_snake_case)]
+#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
 include!("records_gen.rs");
 
@@ -26,3 +26,41 @@ const _: () = assert!(size_of::<tcp_event_entry>() == 96);
 const _: () = assert!(size_of::<IpTuple>() == 38);
 const _: () = assert!(size_of::<hook_seq_key>() == 40);
 const _: () = assert!(size_of::<FilterIp>() == 16);
+
+// The watchable socket fields in tcbee-trace mirror enum tcbee_sock_field (bpf/onchange.h)
+mod sock_fields {
+    use super::*;
+    use tcbee_trace::onchange::SockField as F;
+
+    macro_rules! same {
+        ($($rust:ident = $c:ident),* $(,)?) => {
+            $(const _: () = assert!(F::$rust as u32 == $c);)*
+            const _: () = assert!(F::ALL.len() as u32 == SF_COUNT);
+        };
+    }
+
+    same!(
+        PacingRate = SF_pacing_rate,
+        MaxPacingRate = SF_max_pacing_rate,
+        Backoff = SF_backoff,
+        Rto = SF_rto,
+        RcvMss = SF_rcv_mss,
+        SndCwnd = SF_snd_cwnd,
+        BytesAcked = SF_bytes_acked,
+        SndSsthresh = SF_snd_ssthresh,
+        TotalRetrans = SF_total_retrans,
+        Probes = SF_probes,
+        Lost = SF_lost,
+        SackedOut = SF_sacked_out,
+        Retrans = SF_retrans,
+        RcvSsthresh = SF_rcv_ssthresh,
+        Rttvar = SF_rttvar,
+        Advmss = SF_advmss,
+        Reordering = SF_reordering,
+        RcvRtt = SF_rcv_rtt,
+        RcvSpace = SF_rcv_space,
+        BytesReceived = SF_bytes_received,
+        SegsOut = SF_segs_out,
+        SegsIn = SF_segs_in,
+    );
+}

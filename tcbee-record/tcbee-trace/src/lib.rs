@@ -1,3 +1,5 @@
+pub mod onchange;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -30,6 +32,11 @@ pub enum TraceFile {
     Tcp6Send,
     MptcpPm,
     TcpEvents,
+    /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
+    SendSockOc,
+    RecvSockOc,
+    SendCwndOc,
+    RecvCwndOc,
 }
 
 impl TraceFile {
@@ -50,6 +57,10 @@ impl TraceFile {
             TraceFile::Tcp6Send => "tcp6_send.tcp",
             TraceFile::MptcpPm => "mptcp_pm.tcp",
             TraceFile::TcpEvents => "tcp_events.tcp",
+            TraceFile::SendSockOc => "send_sock_oc.tcp",
+            TraceFile::RecvSockOc => "recv_sock_oc.tcp",
+            TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
+            TraceFile::RecvCwndOc => "recv_cwnd_oc.tcp",
         }
     }
 
@@ -70,6 +81,10 @@ impl TraceFile {
             TraceFile::Tcp6Send,
             TraceFile::MptcpPm,
             TraceFile::TcpEvents,
+            TraceFile::SendSockOc,
+            TraceFile::RecvSockOc,
+            TraceFile::SendCwndOc,
+            TraceFile::RecvCwndOc,
         ]
     }
 }

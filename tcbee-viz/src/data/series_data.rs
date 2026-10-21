@@ -28,6 +28,9 @@ pub struct SeriesData {
     pub loaded_range: Option<(f64, f64)>,
     /// Minimum time distance used when loading the current points.
     pub loaded_sample_interval: f64,
+    /// An on-change series (tcbee-record --on-change): a step function whose points are the
+    /// changes. It is drawn as steps and never thinned or trimmed.
+    pub step: bool,
 }
 
 impl SeriesData {
@@ -57,6 +60,7 @@ impl SeriesData {
             color,
             loaded_range: None,
             loaded_sample_interval: 0.0,
+            step: false,
         }
     }
 

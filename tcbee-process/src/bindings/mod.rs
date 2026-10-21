@@ -38,6 +38,17 @@ pub struct Binding {
     pub encoded_size: fn() -> usize,
 }
 
+/// On-change files (`*_oc.tcp`) hold the same records as their full counterparts, but as step
+/// series: their own sources keep them apart from the full series of a flow.
+static SOCK_OC: EventTable = EventTable {
+    source: "sock_oc",
+    columns: <sock_trace_entry as Event>::TABLE.columns,
+};
+static CWND_OC: EventTable = EventTable {
+    source: "cwnd_oc",
+    columns: <cwnd_trace_entry as Event>::TABLE.columns,
+};
+
 fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
     Binding {
         dir,
@@ -47,6 +58,16 @@ fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
         missing_columns: &[],
         #[cfg(test)]
         encoded_size: || bincode::serialized_size(&E::default()).unwrap() as usize,
+    }
+}
+
+fn on_change_binding_of<E: Event + Default + serde::Serialize>(
+    table: &'static EventTable,
+    dir: Dir,
+) -> Binding {
+    Binding {
+        table,
+        ..binding_of::<E>(dir)
     }
 }
 
@@ -67,6 +88,10 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::Bbr => binding_of::<bbr_trace_entry>(Dir::None),
         TraceFile::MptcpPm => binding_of::<mptcp_pm_entry>(Dir::None),
         TraceFile::TcpEvents => binding_of::<tcp_event_entry>(Dir::None),
+        TraceFile::SendSockOc => on_change_binding_of::<sock_trace_entry>(&SOCK_OC, Dir::Send),
+        TraceFile::RecvSockOc => on_change_binding_of::<sock_trace_entry>(&SOCK_OC, Dir::Recv),
+        TraceFile::SendCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Send),
+        TraceFile::RecvCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Recv),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
 }
@@ -83,7 +108,11 @@ pub fn binding_for(file: TraceFile, path: &Path) -> io::Result<Option<Binding>> 
     }
     Ok(Some(match legacy::probe(path, current.entry_size, old)? {
         legacy::Layout::Current => current,
-        legacy::Layout::Legacy(l) => (l.binding)(current.dir),
+        // the rows stay in the file's own table (sock_oc keeps its step series apart)
+        legacy::Layout::Legacy(l) => Binding {
+            table: current.table,
+            ..(l.binding)(current.dir)
+        },
     }))
 }
 
