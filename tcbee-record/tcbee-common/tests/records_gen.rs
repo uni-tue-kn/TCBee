@@ -4,8 +4,9 @@
 //! test regenerates it and fails if it differs. After changing records.h, rewrite it with
 //! `TCBEE_REGEN_RECORDS=1 cargo test -p tcbee-common --test records_gen`.
 //!
-//! The first line holds a hash of records.h, so that the recorder's build fails when records.h
-//! changed without regenerating (tcbee/build.rs), also without libclang.
+//! The first line holds a hash of records.h and the headers it includes, so that the recorder's
+//! build fails when one of them changed without regenerating (tcbee/build.rs), also without
+//! libclang.
 
 use std::{env, fs, path::PathBuf, process::Command};
 
@@ -48,6 +49,24 @@ impl ParseCallbacks for Callbacks {
     fn add_derives(&self, _info: &DeriveInfo<'_>) -> Vec<String> {
         vec!["serde::Serialize".into(), "serde::Deserialize".into()]
     }
+}
+
+/// records.h followed by every header it includes with `#include "..."` (onchange.h), in
+/// order: the layout of the records depends on all of them
+fn records_sources(records_h: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = std::fs::read(records_h)?;
+    let dir = records_h.parent().unwrap_or(std::path::Path::new("."));
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    for line in text.lines() {
+        if let Some(name) = line
+            .trim()
+            .strip_prefix("#include \"")
+            .and_then(|rest| rest.split('"').next())
+        {
+            bytes.extend(std::fs::read(dir.join(name))?);
+        }
+    }
+    Ok(bytes)
 }
 
 /// FNV-1a, the same hash as in tcbee/build.rs
@@ -93,7 +112,7 @@ fn generate() -> String {
         .generate()
         .expect("bindgen failed on records.h")
         .to_string();
-    let hash = fnv1a(&fs::read(&records_h).expect("reading records.h"));
+    let hash = fnv1a(&records_sources(&records_h).expect("reading records.h"));
     format!("// records.h FNV-1a: {hash:#018x}\n{bindings}")
 }
 

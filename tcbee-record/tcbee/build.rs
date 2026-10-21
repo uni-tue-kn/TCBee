@@ -19,11 +19,30 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     })
 }
 
+/// records.h followed by every header it includes with `#include "..."` (onchange.h), in
+/// order: the layout of the records depends on all of them
+fn records_sources(records_h: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = std::fs::read(records_h)?;
+    let dir = records_h.parent().unwrap_or(std::path::Path::new("."));
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    for line in text.lines() {
+        if let Some(name) = line
+            .trim()
+            .strip_prefix("#include \"")
+            .and_then(|rest| rest.split('"').next())
+        {
+            bytes.extend(std::fs::read(dir.join(name))?);
+        }
+    }
+    Ok(bytes)
+}
+
 /// The Rust record types (tcbee-common/src/records_gen.rs) are generated from records.h by a
-/// test, not at build time. Its first line holds the hash of the records.h it was generated
-/// from: the eBPF programs and the writer must not disagree on the layout.
+/// test, not at build time. Its first line holds the hash of the records.h (and the headers it
+/// includes) it was generated from: the eBPF programs and the writer must not disagree on the
+/// layout.
 fn check_records_generated() -> anyhow::Result<()> {
-    let records_h = fs::read(RECORDS_H).context(RECORDS_H)?;
+    let records_h = records_sources(std::path::Path::new(RECORDS_H)).context(RECORDS_H)?;
     let generated = fs::read_to_string(RECORDS_GEN).context(RECORDS_GEN)?;
     let expected = format!("// records.h FNV-1a: {:#018x}", fnv1a(&records_h));
     if generated.lines().next() != Some(expected.as_str()) {
