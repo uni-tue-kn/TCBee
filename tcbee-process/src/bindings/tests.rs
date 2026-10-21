@@ -913,6 +913,16 @@ fn legacy_layouts_are_detected_and_decoded() {
     );
     assert_eq!(col(&batch, b.table, "app_limited"), 0);
     assert_eq!(conns, [0]);
+    // the on-change files of build 4d3cffb7 hold the same records and keep their table
+    let oc_path = dir.path().join("send_sock_oc.tcp");
+    write_records(&oc_path, &[r201; 3], 0);
+    let b = binding_for(TraceFile::SendSockOc, &oc_path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (b.entry_size, b.table.source, b.missing_columns),
+        (201, "sock_oc", legacy::SOCK201_MISSING)
+    );
 
     let r202 = legacy::Sock202Entry {
         p,
