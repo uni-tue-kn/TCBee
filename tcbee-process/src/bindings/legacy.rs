@@ -108,6 +108,7 @@ fn cwnd70(dir: Dir) -> Binding {
 }
 
 /// Which layout a file is in
+#[derive(Clone, Copy)]
 pub enum Layout {
     Current,
     Legacy(&'static Legacy),
@@ -115,23 +116,53 @@ pub enum Layout {
 
 /// Records whose dividers are looked at to tell the layouts apart
 const PROBE_RECORDS: usize = 8;
+/// Records looked at when the first `PROBE_RECORDS` fit several layouts
+const PROBE_RECORDS_DEEP: usize = 4096;
 
 /// The layout of the trace file at `path`: the one size, among the current and the legacy
 /// ones, at which the dividers of the first complete records all sit. A file without a complete
 /// record in any layout (an empty file of an unused probe group) gets the current layout; a
-/// partial last record (a writer that was killed) is ignored. If short files fit several sizes,
-/// the size that the file's length is a multiple of decides; a file that still fits several is
-/// an error, never a guess.
+/// partial last record (a writer that was killed) is ignored. If the first records fit several
+/// sizes, up to `PROBE_RECORDS_DEEP` records decide, then the size that the file's length is a
+/// multiple of; a file that still fits several is an error, never a guess. The deeper look
+/// can rule out every size when a killed writer left its preallocated zeros within those
+/// records; the length then decides among the sizes that fit the first records.
 pub fn probe(path: &Path, current: usize, legacy: &'static [Legacy]) -> io::Result<Layout> {
-    let max = legacy
-        .iter()
-        .map(|l| l.entry_size)
-        .chain([current])
-        .max()
-        .unwrap_or(current);
-    let mut head = vec![0u8; PROBE_RECORDS * max];
+    let layouts: Vec<(usize, Layout)> = std::iter::once((current, Layout::Current))
+        .chain(legacy.iter().map(|l| (l.entry_size, Layout::Legacy(l))))
+        .collect();
     let file = File::open(path)?;
     let len = file.metadata()?.len();
+    let mut fits = fitting(&file, layouts, PROBE_RECORDS)?;
+    let fit_first_records = fits.len();
+    if fits.len() > 1 {
+        let deep = fitting(&file, fits.clone(), PROBE_RECORDS_DEEP)?;
+        if !deep.is_empty() {
+            fits = deep;
+        }
+    }
+    if fits.len() > 1 {
+        fits.retain(|(size, _)| len % *size as u64 == 0);
+    }
+    match (fit_first_records, fits.len()) {
+        (0, _) => Ok(Layout::Current),
+        (_, 1) => Ok(fits.pop().unwrap().1),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: the records fit several record layouts", path.display()),
+        )),
+    }
+}
+
+/// The `layouts` at whose size the dividers of the first (up to) `records` complete records
+/// of `file` all sit
+fn fitting(
+    file: &File,
+    layouts: Vec<(usize, Layout)>,
+    records: usize,
+) -> io::Result<Vec<(usize, Layout)>> {
+    let max = layouts.iter().map(|(size, _)| *size).max().unwrap_or(0);
+    let mut head = vec![0u8; records * max];
     let mut got = 0;
     while got < head.len() {
         match file.read_at(&mut head[got..], got as u64)? {
@@ -140,33 +171,16 @@ pub fn probe(path: &Path, current: usize, legacy: &'static [Legacy]) -> io::Resu
         }
     }
     let dividers_at = |size: usize| {
-        let records = (got / size).min(PROBE_RECORDS);
-        records > 0
-            && (0..records).all(|i| {
+        let complete = (got / size).min(records);
+        complete > 0
+            && (0..complete).all(|i| {
                 head[(i + 1) * size - RECORD_DELIMITER.len()..(i + 1) * size] == RECORD_DELIMITER
             })
     };
-    let mut fits: Vec<(usize, Layout)> = Vec::new();
-    if dividers_at(current) {
-        fits.push((current, Layout::Current));
-    }
-    for l in legacy {
-        if dividers_at(l.entry_size) {
-            fits.push((l.entry_size, Layout::Legacy(l)));
-        }
-    }
-    let fitting = fits.len();
-    if fitting > 1 {
-        fits.retain(|(size, _)| len % *size as u64 == 0);
-    }
-    match (fitting, fits.len()) {
-        (0, _) => Ok(Layout::Current),
-        (_, 1) => Ok(fits.pop().unwrap().1),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{}: the records fit several record layouts", path.display()),
-        )),
-    }
+    Ok(layouts
+        .into_iter()
+        .filter(|(size, _)| dividers_at(*size))
+        .collect())
 }
 
 /// The fields every sock layout starts with, up to `rcv_wscale` (164 bytes encoded)

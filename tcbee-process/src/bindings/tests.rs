@@ -958,7 +958,7 @@ fn legacy_layouts_are_detected_and_decoded() {
 }
 
 /// Empty files and files whose last record was cut off get a layout; records that fit several
-/// layouts are an error, unless the file's length decides.
+/// layouts are an error, unless later records or the file's length decide.
 #[test]
 fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -1012,4 +1012,31 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     // 201 * 202 B of 0xFF divide into both: refused, not guessed
     fs::write(&path, vec![0xFFu8; 201 * 202]).unwrap();
     assert!(binding_for(TraceFile::SendSock, &path).is_err());
+    // the same length, the first records 0xFF, then dividers only every 202 B: the later
+    // records decide
+    let mut data = vec![0u8; 201 * 202];
+    data[..8 * 226].fill(0xFF);
+    for end in (202..=data.len()).step_by(202) {
+        data[end - RECORD_DELIMITER.len()..end].copy_from_slice(&RECORD_DELIMITER);
+    }
+    fs::write(&path, data).unwrap();
+    assert_eq!(
+        binding_for(TraceFile::SendSock, &path)
+            .unwrap()
+            .unwrap()
+            .entry_size,
+        202
+    );
+    // a killed writer's preallocated zeros within the deeper records rule out every size: the
+    // length decides among the sizes that fit the first records
+    let mut data = vec![0u8; 20 * 202];
+    data[..8 * 226].fill(0xFF);
+    fs::write(&path, data).unwrap();
+    assert_eq!(
+        binding_for(TraceFile::SendSock, &path)
+            .unwrap()
+            .unwrap()
+            .entry_size,
+        202
+    );
 }
