@@ -453,7 +453,8 @@ impl EbpfRunner {
             rodata.ONCHG_SHADOW = on_change.shadow as u8;
         }
         let on_change = self.config.on_change.map(|o| o.hooks);
-        if let Some(hooks) = on_change {
+        let on_change_probes = self.config.kernel || self.config.cwnd;
+        if let Some(hooks) = on_change.filter(|_| on_change_probes && btf.available()) {
             // Every hook must exist, or the whole skeleton fails to load
             for hook in hooks.hooks() {
                 for target in hook.kernel_hooks() {

@@ -657,7 +657,8 @@ int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
 /*
  * Sockets the on-change programs skip like filtered events (no counter): listeners, which
  * tcp_rcv_state_process sees for every SYN, and closed sockets. tcp_done unhashes a socket
- * and clears its local port, so a record of the close would carry another tuple.
+ * and clears its local port, so a record of the close would carry another tuple. This also
+ * skips the egress run of an RST that tcp_close or tcp_disconnect sends after the close.
  */
 static __always_inline bool onchg_skip(struct sock *sk)
 {
