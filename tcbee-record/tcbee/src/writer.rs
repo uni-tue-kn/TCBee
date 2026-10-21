@@ -1095,6 +1095,10 @@ impl From<io::Error> for JobError {
 }
 
 #[cfg(test)]
+#[path = "writer_bench.rs"]
+mod bench;
+
+#[cfg(test)]
 mod tests {
     use std::{env, sync::Mutex};
 
@@ -1104,10 +1108,10 @@ mod tests {
     use crate::placement::tests::allowed_cpus;
 
     /// xorshift64*, enough to fill records with arbitrary bytes
-    struct Rng(u64);
+    pub(super) struct Rng(pub(super) u64);
 
     impl Rng {
-        fn bytes(&mut self, len: usize) -> Vec<u8> {
+        pub(super) fn bytes(&mut self, len: usize) -> Vec<u8> {
             (0..len)
                 .map(|_| {
                     self.0 ^= self.0 >> 12;
