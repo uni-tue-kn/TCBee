@@ -20,7 +20,7 @@ mod generate {
         TCBEE_MPTCP_SUBFLOW_CONNECT, TCBEE_MPTCP_SUB_ESTABLISHED, TCBEE_MPTCP_TOKEN_DESTROYED,
     };
 
-    use crate::{bindings::sock::OldSockEntry, event::Event};
+    use crate::{bindings::legacy::Sock172Entry, event::Event};
 
     const T0: u64 = 1_000_000_000_000;
     const AF_INET: u16 = 2;
@@ -212,14 +212,14 @@ mod generate {
         let bytes = fs::read(small.join("send_sock.tcp")).unwrap();
         fs::write(
             small.join("send_sock_oc.tcp"),
-            &bytes[..200 * OldSockEntry::ENTRY_SIZE],
+            &bytes[..200 * Sock172Entry::ENTRY_SIZE],
         )
         .unwrap();
 
         // First 10 sock records of the real send_sock.tcp (old layout) plus 17 bytes of the
         // eleventh.
         let mut bytes = fs::read(small.join("send_sock.tcp")).unwrap();
-        bytes.truncate(10 * OldSockEntry::ENTRY_SIZE + 17);
+        bytes.truncate(10 * Sock172Entry::ENTRY_SIZE + 17);
         fs::write(trunc.join("send_sock.tcp"), bytes).unwrap();
     }
 }
@@ -227,7 +227,7 @@ mod generate {
 mod checks {
     use std::{collections::HashSet, fs, path::PathBuf};
 
-    use crate::{bindings::sock::OldSockEntry, event::Event};
+    use crate::{bindings::legacy::Sock172Entry, event::Event};
     use tcbee_common::records::{
         bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry,
         tcp4_packet_trace, tcp6_packet_trace, tcp_probe_entry,
@@ -271,9 +271,9 @@ mod checks {
         check::<mptcp_pm_entry>("mptcp_pm.tcp", 12);
         check::<cubic_trace_entry>("cubic.tcp", 2000);
         check::<tcp_probe_entry>("tcp_probe.tcp", 2000);
-        check::<OldSockEntry>("recv_sock.tcp", 2000);
+        check::<Sock172Entry>("recv_sock.tcp", 2000);
         check::<cwnd_trace_entry>("recv_cwnd.tcp", 0);
-        check::<OldSockEntry>("send_sock_oc.tcp", 200);
+        check::<Sock172Entry>("send_sock_oc.tcp", 200);
         check::<sock_trace_entry>("recv_sock_oc.tcp", 0);
         check::<cwnd_trace_entry>("send_cwnd_oc.tcp", 200);
         check::<cwnd_trace_entry>("recv_cwnd_oc.tcp", 0);
@@ -288,9 +288,9 @@ mod checks {
         }
 
         // Real data: u64::MAX and several flows.
-        let send = check::<OldSockEntry>("send_sock.tcp", 2000);
-        assert!(send.iter().any(|r| r.max_pacing_rate == u64::MAX));
-        assert!(send.iter().map(|r| r.sport).collect::<HashSet<_>>().len() > 1);
+        let send = check::<Sock172Entry>("send_sock.tcp", 2000);
+        assert!(send.iter().any(|r| r.p.max_pacing_rate == u64::MAX));
+        assert!(send.iter().map(|r| r.p.sport).collect::<HashSet<_>>().len() > 1);
 
         // Generated: duplicate timestamps within a flow, non-decreasing.
         let cw = check::<cwnd_trace_entry>("send_cwnd.tcp", 1000);
@@ -309,7 +309,7 @@ mod checks {
 
     #[test]
     fn truncated_fixture() {
-        let es = OldSockEntry::ENTRY_SIZE;
+        let es = Sock172Entry::ENTRY_SIZE;
         let trace = TCBeeTrace::open(dir("tcbee_truncated")).unwrap();
         assert_eq!(trace.available_traces(), vec![TraceFile::SendSock]);
 
@@ -321,8 +321,8 @@ mod checks {
     }
 
     fn load_bytes(b: &[u8]) -> usize {
-        b.chunks(OldSockEntry::ENTRY_SIZE)
-            .map(|c| OldSockEntry::decode(c).unwrap())
+        b.chunks(Sock172Entry::ENTRY_SIZE)
+            .map(|c| Sock172Entry::decode(c).unwrap())
             .count()
     }
 }

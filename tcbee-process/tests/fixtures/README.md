@@ -9,9 +9,9 @@
   `hook_seq`, which was inserted afterwards as the record index + 1 (recorded with shared ring
   buffers, so file order was hook order). The sock records also got `conn_id` = 0 (no MPTCP).
   They are in the old sock layout without `ca_state`, the delivery and the chrono fields, which
-  tcbee-process detects and decodes through `OldSockEntry` (172 B). The other older layouts
-  (sock 168 and 201 B, cwnd 70 B, `src/bindings/legacy.rs`) are tested with records written by
-  the tests themselves.
+  tcbee-process detects and decodes through `Sock172Entry` (172 B, `src/bindings/legacy.rs`).
+  The other older layouts (sock 168, 201 and 202 B, cwnd 70 B) are tested with records written
+  by the tests themselves.
 - **Generated** by `src/fixtures.rs`: `bbr`, `mptcp_pm`, `send_cwnd`, `send_cwnd_oc`, `send_sock_oc` (a
   copy of real records), `tcp6_*`, the empty files and
   `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
@@ -34,16 +34,16 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |
 | `tcp_bad_csum.tcp` | none | | 0 | generated |
 | `tcp_events.tcp` | none | | 0 | generated |
-| `send_sock.tcp` | `OldSockEntry` | 172 | 2000 | real |
-| `recv_sock.tcp` | `OldSockEntry` | 172 | 2000 | real |
+| `send_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
+| `recv_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `send_cwnd.tcp` | `cwnd_trace_entry` | 74 | 1000 | generated |
 | `recv_cwnd.tcp` | `cwnd_trace_entry` | 74 | 0 | generated |
 | `tcp4_receive.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
 | `tcp4_send.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
 | `tcp6_receive.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
 | `tcp6_send.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
-| `send_sock_oc.tcp` | `OldSockEntry` (source `sock_oc`) | 172 | 200 | real (first 200 of `send_sock.tcp`) |
-| `recv_sock_oc.tcp` | `sock_trace_entry` (source `sock_oc`) | 202 | 0 | generated |
+| `send_sock_oc.tcp` | `Sock172Entry` (source `sock_oc`) | 172 | 200 | real (first 200 of `send_sock.tcp`) |
+| `recv_sock_oc.tcp` | `sock_trace_entry` (source `sock_oc`) | 226 | 0 | generated |
 | `send_cwnd_oc.tcp` | `cwnd_trace_entry` (source `cwnd_oc`) | 74 | 200 | generated |
 | `recv_cwnd_oc.tcp` | `cwnd_trace_entry` (source `cwnd_oc`) | 74 | 0 | generated |
 

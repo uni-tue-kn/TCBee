@@ -6,8 +6,8 @@
 //!
 //! | table | size | written by | missing |
 //! |---|---|---|---|
-//! | sock | 168 | the per-CPU and on-change lines (no `conn_id`) | `sock::ADDED_COLUMNS` |
-//! | sock | 172 | dev with MPTCP (`OldSockEntry`) | `sock::ADDED_COLUMNS` |
+//! | sock | 168 | the per-CPU and on-change lines (no `conn_id`) | `SOCK172_MISSING` |
+//! | sock | 172 | dev with MPTCP, before run metadata | `SOCK172_MISSING` |
 //! | sock | 201 | on-change with the TCP_INFO fields, build 4d3cffb7 (no `conn_id`) | delivery rate and chrono |
 //! | sock | 202 | dev with run metadata (before the rest of TCP_INFO) | the rest of TCP_INFO |
 //! | cwnd | 70 | the per-CPU and on-change lines (no `conn_id`) | – |
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tcbee_common::records::{cwnd_trace_entry, sock_trace_entry, RECORD_DELIMITER};
 use ts_storage::{Dir, EventBatch, EventTable, IpTuple};
 
-use super::{binding_of, sock, Binding};
+use super::{binding_of, Binding};
 use crate::event::{decode_record, DecodeError, Event};
 
 /// An older layout of a table's records
@@ -62,16 +62,36 @@ static CWND: [Legacy; 1] = [Legacy {
     binding: cwnd70,
 }];
 
+/// Columns of the current sock record that the 172 and 168 B layouts do not have: the
+/// run-metadata fields and the rest of TCP_INFO
+pub const SOCK172_MISSING: &[&str] = &[
+    "ca_state",
+    "packets_out",
+    "delivered",
+    "delivered_ce",
+    "app_limited",
+    "chrono_type",
+    "chrono_busy",
+    "chrono_rwnd_limited",
+    "chrono_sndbuf_limited",
+    "srtt",
+    "mdev",
+    "min_rtt",
+    "snd_una",
+    "snd_nxt",
+    "lost_out",
+];
+
 fn sock172(dir: Dir) -> Binding {
     Binding {
-        missing_columns: sock::ADDED_COLUMNS,
-        ..binding_of::<sock::OldSockEntry>(dir)
+        missing_columns: SOCK172_MISSING,
+        ..binding_of::<Sock172Entry>(dir)
     }
 }
 
 fn sock168(dir: Dir) -> Binding {
     Binding {
-        missing_columns: sock::ADDED_COLUMNS,
+        missing_columns: SOCK172_MISSING,
         ..binding_of::<Sock168Entry>(dir)
     }
 }
@@ -262,6 +282,22 @@ impl SockPrefix {
     }
 }
 
+/// The sock record of dev with MPTCP, before the run-metadata fields: the prefix and `conn_id`
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Sock172Entry {
+    pub p: SockPrefix,
+    pub conn_id: u32,
+}
+
+impl Sock172Entry {
+    fn current(&self) -> sock_trace_entry {
+        sock_trace_entry {
+            conn_id: self.conn_id,
+            ..self.p.current()
+        }
+    }
+}
+
 /// The sock record of the per-CPU and on-change lines: the prefix, no `conn_id`
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Sock168Entry {
@@ -405,6 +441,7 @@ macro_rules! legacy_event {
     };
 }
 
+legacy_event!(Sock172Entry, sock_trace_entry, 172);
 legacy_event!(Sock168Entry, sock_trace_entry, 168);
 legacy_event!(Sock201Entry, sock_trace_entry, 201);
 legacy_event!(Sock202Entry, sock_trace_entry, 202);

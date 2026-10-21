@@ -120,7 +120,7 @@ fn sock_send() {
         ],
     };
     // The fixture is a real recording in the old layout
-    check::<sock::OldSockEntry>(&x);
+    check::<legacy::Sock172Entry>(&x);
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn sock_recv() {
             0, 14480, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ],
     };
-    check::<sock::OldSockEntry>(&x);
+    check::<legacy::Sock172Entry>(&x);
 }
 
 #[test]
@@ -636,7 +636,7 @@ fn sock_layout_is_detected_per_file() {
         .unwrap()
         .unwrap();
     assert_eq!(old.entry_size, 172);
-    assert_eq!(old.missing_columns, sock::ADDED_COLUMNS);
+    assert_eq!(old.missing_columns, legacy::SOCK172_MISSING);
     assert_eq!(old.table.source, "sock");
 
     let dir = tempfile::tempdir().unwrap();
@@ -742,11 +742,11 @@ fn tcp_event_round_trip() {
     assert_eq!(cell(&batch, 10, 0), 10);
 }
 
-/// The old sock layout is the current one without the added columns: an old record is the
+/// The 172 B sock layout is the current one without `SOCK172_MISSING`: an old record is the
 /// prefix of a current one up to rcv_wscale, followed by conn_id. When the sock layout changes
-/// again, freeze the current one in another struct like `OldSockEntry`.
+/// again, freeze the current one in `legacy.rs` like the other old layouts.
 #[test]
-fn old_sock_layout_is_the_current_one_without_the_added_columns() {
+fn sock172_layout_is_the_current_one_without_the_missing_columns() {
     let mut rec = sock_trace_entry {
         time: 1,
         hook_seq: 2,
@@ -763,11 +763,11 @@ fn old_sock_layout_is_the_current_one_without_the_added_columns() {
         ..Default::default()
     };
     let current = bincode::serialize(&rec).unwrap();
-    let old_len = sock::OldSockEntry::ENTRY_SIZE - RECORD_DELIMITER.len();
+    let old_len = legacy::Sock172Entry::ENTRY_SIZE - RECORD_DELIMITER.len();
     let mut old = current[..old_len - 4].to_vec();
     old.extend_from_slice(&rec.conn_id.to_le_bytes());
     old.extend_from_slice(&RECORD_DELIMITER);
-    let decoded = sock::OldSockEntry::decode(&old).unwrap();
+    let decoded = legacy::Sock172Entry::decode(&old).unwrap();
 
     let mut want = EventBatch::new(sock_trace_entry::TABLE, 1);
     want.push_header(0, Dir::Send, 1, 2);
@@ -778,7 +778,7 @@ fn old_sock_layout_is_the_current_one_without_the_added_columns() {
     assert_eq!(got.columns(), want.columns());
     assert_eq!(Event::flow_key(&decoded), Event::flow_key(&rec));
 
-    // The added columns stay 0 for old records
+    // The missing columns stay 0 for old records
     rec.ca_state = 4;
     let mut changed = EventBatch::new(sock_trace_entry::TABLE, 1);
     changed.push_header(0, Dir::Send, 1, 2);
@@ -876,7 +876,7 @@ fn legacy_layouts_are_detected_and_decoded() {
     let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
     assert_eq!(
         (b.entry_size, b.missing_columns),
-        (168, sock::ADDED_COLUMNS)
+        (168, legacy::SOCK172_MISSING)
     );
     let (batch, conns) = decode_first(&b, &path);
     assert_eq!(
@@ -1039,4 +1039,11 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
             .entry_size,
         202
     );
+}
+
+/// The 172 B layout lacks the run-metadata fields and everything the 202 B layout lacks, so
+/// that a field added to the sock record later goes into both lists
+#[test]
+fn sock172_missing_ends_with_sock202_missing() {
+    assert!(legacy::SOCK172_MISSING.ends_with(legacy::SOCK202_MISSING));
 }
