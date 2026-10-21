@@ -370,6 +370,10 @@ impl EbpfRunner {
         .map(|(_, name)| name.to_string())
         .collect();
         groups.extend(optional.iter().map(|group| group.name().to_string()));
+        if let Some(on_change) = c.on_change.filter(|_| c.kernel || c.cwnd) {
+            let hooks: Vec<_> = on_change.hooks.hooks().map(|hook| hook.name()).collect();
+            groups.push(format!("on-change: {}", hooks.join(", ")));
+        }
         RunMetadata::collect(Recorder {
             argv: std::env::args().collect(),
             groups,
