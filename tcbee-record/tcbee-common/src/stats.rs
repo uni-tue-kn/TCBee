@@ -21,7 +21,8 @@ pub const RB_BAD_CSUM: u32 = 10;
 pub const RB_CUBIC: u32 = 11;
 pub const RB_BBR: u32 = 12;
 pub const RB_MPTCP_PM: u32 = 13;
-pub const RB_COUNT: u32 = 14;
+pub const RB_TCP_EVENTS: u32 = 14;
+pub const RB_COUNT: u32 = 15;
 
 pub const STAT_HANDLED: u32 = 0;
 pub const STAT_DROPPED: u32 = 1;
@@ -83,4 +84,5 @@ pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
     rb("CUBIC_EVENTS", TraceFile::Cubic, "cubic", 8),
     rb("BBR_EVENTS", TraceFile::Bbr, "bbr", 8),
     rb("MPTCP_PM_EVENTS", TraceFile::MptcpPm, "mptcp_pm", 1),
+    rb("TCP_EVENTS", TraceFile::TcpEvents, "tcp_events", 4),
 ];

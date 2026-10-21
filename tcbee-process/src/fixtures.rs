@@ -15,12 +15,12 @@ mod generate {
 
     use serde::Serialize;
     use tcbee_common::records::{
-        bbr_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry, tcp6_packet_trace,
-        RECORD_DELIMITER, TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
+        bbr_trace_entry, cwnd_trace_entry, mptcp_pm_entry, tcp6_packet_trace, RECORD_DELIMITER,
+        TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
         TCBEE_MPTCP_SUBFLOW_CONNECT, TCBEE_MPTCP_SUB_ESTABLISHED, TCBEE_MPTCP_TOKEN_DESTROYED,
     };
 
-    use crate::event::Event;
+    use crate::{bindings::sock::OldSockEntry, event::Event};
 
     const T0: u64 = 1_000_000_000_000;
     const AF_INET: u16 = 2;
@@ -195,13 +195,19 @@ mod generate {
         write(&small, "send_cwnd.tcp", (0..1000).map(cwnd));
         write(&small, "tcp6_receive.tcp", (0..500).map(|i| tcp6(i, true)));
         write(&small, "tcp6_send.tcp", (0..500).map(|i| tcp6(i, false)));
-        for empty in ["tcp_retransmit_synack", "tcp_bad_csum", "recv_cwnd"] {
+        for empty in [
+            "tcp_retransmit_synack",
+            "tcp_bad_csum",
+            "recv_cwnd",
+            "tcp_events",
+        ] {
             fs::write(small.join(format!("{empty}.tcp")), b"").unwrap();
         }
 
-        // First 10 sock records of the real send_sock.tcp plus 17 bytes of the eleventh.
+        // First 10 sock records of the real send_sock.tcp (old layout) plus 17 bytes of the
+        // eleventh.
         let mut bytes = fs::read(small.join("send_sock.tcp")).unwrap();
-        bytes.truncate(10 * sock_trace_entry::ENTRY_SIZE + 17);
+        bytes.truncate(10 * OldSockEntry::ENTRY_SIZE + 17);
         fs::write(trunc.join("send_sock.tcp"), bytes).unwrap();
     }
 }
@@ -209,10 +215,10 @@ mod generate {
 mod checks {
     use std::{collections::HashSet, fs, path::PathBuf};
 
-    use crate::event::Event;
+    use crate::{bindings::sock::OldSockEntry, event::Event};
     use tcbee_common::records::{
-        bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry,
-        tcp4_packet_trace, tcp6_packet_trace, tcp_probe_entry,
+        bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, tcp4_packet_trace,
+        tcp6_packet_trace, tcp_probe_entry,
     };
     use tcbee_trace::{TCBeeTrace, TraceFile};
 
@@ -253,7 +259,7 @@ mod checks {
         check::<mptcp_pm_entry>("mptcp_pm.tcp", 12);
         check::<cubic_trace_entry>("cubic.tcp", 2000);
         check::<tcp_probe_entry>("tcp_probe.tcp", 2000);
-        check::<sock_trace_entry>("recv_sock.tcp", 2000);
+        check::<OldSockEntry>("recv_sock.tcp", 2000);
         check::<cwnd_trace_entry>("recv_cwnd.tcp", 0);
         check::<tcp4_packet_trace>("tcp4_receive.tcp", 2000);
         check::<tcp4_packet_trace>("tcp4_send.tcp", 2000);
@@ -266,7 +272,7 @@ mod checks {
         }
 
         // Real data: u64::MAX and several flows.
-        let send = check::<sock_trace_entry>("send_sock.tcp", 2000);
+        let send = check::<OldSockEntry>("send_sock.tcp", 2000);
         assert!(send.iter().any(|r| r.max_pacing_rate == u64::MAX));
         assert!(send.iter().map(|r| r.sport).collect::<HashSet<_>>().len() > 1);
 
@@ -287,7 +293,7 @@ mod checks {
 
     #[test]
     fn truncated_fixture() {
-        let es = sock_trace_entry::ENTRY_SIZE;
+        let es = OldSockEntry::ENTRY_SIZE;
         let trace = TCBeeTrace::open(dir("tcbee_truncated")).unwrap();
         assert_eq!(trace.available_traces(), vec![TraceFile::SendSock]);
 
@@ -299,8 +305,8 @@ mod checks {
     }
 
     fn load_bytes(b: &[u8]) -> usize {
-        b.chunks(sock_trace_entry::ENTRY_SIZE)
-            .map(|c| sock_trace_entry::decode(c).unwrap())
+        b.chunks(OldSockEntry::ENTRY_SIZE)
+            .map(|c| OldSockEntry::decode(c).unwrap())
             .count()
     }
 }

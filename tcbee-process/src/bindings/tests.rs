@@ -100,7 +100,8 @@ const SOCK_COLS: &str = "pacing_rate:U64 max_pacing_rate:U64 backoff:U8 rto:U32 
     rcv_mss:U16 snd_cwnd:U32 bytes_acked:U64 snd_ssthresh:U32 total_retrans:U32 probes:U8 \
     lost:U32 sacked_out:U32 retrans:U32 rcv_ssthresh:U32 rttvar:U32 advmss:U16 reordering:U32 \
     rcv_rtt:U32 rcv_space:U32 bytes_received:U64 segs_out:U32 segs_in:U32 snd_wscale:U16 \
-    rcv_wscale:U16";
+    rcv_wscale:U16 ca_state:U8 packets_out:U32 delivered:U32 delivered_ce:U32 app_limited:U32 \
+    chrono_type:U8 chrono_busy:U32 chrono_rwnd_limited:U32 chrono_sndbuf_limited:U32";
 
 #[test]
 fn sock_send() {
@@ -114,10 +115,11 @@ fn sock_send() {
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
             MAX, MAX, 0, 1000, 0, 88, 10, 0, 2147483647, 0, 0, 0, 0, 0, 64240, 0, 1460, 3, 0, 0, 0,
-            0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ],
     };
-    check::<sock_trace_entry>(&x);
+    // The fixture is a real recording in the old layout
+    check::<sock::OldSockEntry>(&x);
 }
 
 #[test]
@@ -132,10 +134,10 @@ fn sock_recv() {
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
             1157216, MAX, 0, 225, 0, 536, 10, 1, 2147483647, 0, 4, 0, 0, 0, 64088, 200000, 1448, 3,
-            0, 14480, 0, 4, 2, 0, 0,
+            0, 14480, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ],
     };
-    check::<sock_trace_entry>(&x);
+    check::<sock::OldSockEntry>(&x);
 }
 
 #[test]
@@ -506,6 +508,7 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::Cubic, "cubic", Dir::None),
         (TraceFile::Bbr, "bbr", Dir::None),
         (TraceFile::MptcpPm, "mptcp_pm", Dir::None),
+        (TraceFile::TcpEvents, "tcp_event", Dir::None),
     ];
     for (file, source, dir) in want {
         let b = binding(file).unwrap();
@@ -523,7 +526,7 @@ fn file_table_maps_every_trace_file() {
         .filter_map(|f| binding(*f).map(|b| (b.table.source, b.entry_size, b.table.columns.len())))
         .collect();
     for (s, size, n) in [
-        ("sock", 172, 25),
+        ("sock", 202, 34),
         ("tcp_probe", 124, 10),
         ("cubic", 122, 14),
         ("bbr", 118, 12),
@@ -531,6 +534,7 @@ fn file_table_maps_every_trace_file() {
         ("tcp6", 67, 4),
         ("tcp4", 43, 4),
         ("mptcp_pm", 123, 17),
+        ("tcp_event", 99, 13),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -539,7 +543,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 8);
+    assert_eq!(names.len(), 9);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.
@@ -556,8 +560,9 @@ fn entry_sizes_match_the_record_encoding() {
 /// Decoding a record through the file table reaches the same row as the typed path.
 #[test]
 fn decode_fn_fills_a_batch() {
-    let b = binding(TraceFile::SendSock).unwrap();
-    let file = fs::File::open(fixture("send_sock.tcp")).unwrap();
+    let path = fixture("send_sock.tcp");
+    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    let file = fs::File::open(&path).unwrap();
     let mut batch = EventBatch::new(b.table, 10);
     let mut keys = Vec::new();
     (b.decode)(&file, 5..8, &mut |seq, row| {
@@ -572,4 +577,204 @@ fn decode_fn_fills_a_batch() {
     assert_eq!(batch.dirs(), [1, 1, 1]);
     assert_eq!(keys.len(), 3);
     assert_eq!(b.table.columns[0].ty, ColType::U64);
+}
+
+/// A record in the current sock layout carries the added columns.
+#[test]
+fn current_sock_record_has_the_added_columns() {
+    let rec = sock_trace_entry {
+        time: 5,
+        hook_seq: 1,
+        snd_cwnd: 10,
+        ca_state: 4,
+        packets_out: 7,
+        delivered: 1000,
+        delivered_ce: 3,
+        app_limited: 999,
+        chrono_type: 1,
+        chrono_busy: 11,
+        chrono_rwnd_limited: 12,
+        chrono_sndbuf_limited: 13,
+        conn_id: 0xABCD,
+        ..Default::default()
+    };
+    let mut bytes = bincode::serialize(&rec).unwrap();
+    bytes.extend_from_slice(&RECORD_DELIMITER);
+    assert_eq!(bytes.len(), sock_trace_entry::ENTRY_SIZE);
+    let e = sock_trace_entry::decode(&bytes).unwrap();
+    assert_eq!(Event::connection_key(&e), 0xABCD);
+    let mut batch = EventBatch::new(sock_trace_entry::TABLE, 1);
+    batch.push_header(0, Dir::Send, e.ts_ns(), 0);
+    e.push_row(&mut batch);
+    let col = |name: &str| {
+        let c = sock_trace_entry::TABLE
+            .columns
+            .iter()
+            .position(|c| c.name == name)
+            .unwrap();
+        cell(&batch, c, 0)
+    };
+    assert_eq!(col("snd_cwnd"), 10);
+    assert_eq!(col("ca_state"), 4);
+    assert_eq!(col("delivered"), 1000);
+    assert_eq!(col("app_limited"), 999);
+    assert_eq!(col("chrono_sndbuf_limited"), 13);
+}
+
+/// Sock files are told apart by where their dividers are, and the old layout reports the
+/// columns it does not have.
+#[test]
+fn sock_layout_is_detected_per_file() {
+    let old = binding_for(TraceFile::SendSock, &fixture("send_sock.tcp"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.entry_size, 172);
+    assert_eq!(old.missing_columns, sock::ADDED_COLUMNS);
+    assert_eq!(old.table.source, "sock");
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("send_sock.tcp");
+    let mut bytes = Vec::new();
+    for i in 0..3u64 {
+        bytes.extend(
+            bincode::serialize(&sock_trace_entry {
+                time: i,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        bytes.extend_from_slice(&RECORD_DELIMITER);
+    }
+    fs::write(&path, &bytes).unwrap();
+    let current = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    assert_eq!(current.entry_size, 202);
+    assert!(current.missing_columns.is_empty());
+
+    // An empty file gets the current binding
+    fs::write(&path, b"").unwrap();
+    assert_eq!(
+        binding_for(TraceFile::SendSock, &path)
+            .unwrap()
+            .unwrap()
+            .entry_size,
+        202
+    );
+    // Other files are not looked at
+    assert!(binding_for(TraceFile::TcpBadCsum, &path).unwrap().is_none());
+}
+
+/// Event labels name the kind and, for state changes, both states.
+#[test]
+fn tcp_event_labels() {
+    use tcbee_common::records::{
+        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_RETRANSMIT, TCBEE_TCP_RTO, TCBEE_TCP_STATE,
+    };
+    let e = |kind, old_state, new_state, backoff| tcp_event_entry {
+        kind: kind as u8,
+        old_state,
+        new_state,
+        backoff,
+        ..Default::default()
+    };
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_RETRANSMIT, 0, 0, 0)),
+        "retransmit"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_STATE, 1, 4, 0)),
+        "ESTABLISHED → FIN_WAIT1"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_CA_STATE, 0, 3, 0)),
+        "Open → Recovery"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_CA_STATE, 0, 9, 0)),
+        "Open → 9"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_RTO, 0, 0, 2)),
+        "RTO, backoff 2"
+    );
+    assert_eq!(tcp_event::label(&e(200, 0, 0, 0)), "event 200");
+}
+
+/// A TCP event decodes, keys its flow local -> remote like the sock records and fills every
+/// column.
+#[test]
+fn tcp_event_round_trip() {
+    use tcbee_common::records::{tcp_event_entry, TCBEE_TCP_RETRANSMIT};
+    let rec = tcp_event_entry {
+        time: 9,
+        hook_seq: 2,
+        // local 10.0.0.1 in the high half, remote 10.0.0.2 in the low half
+        addr_v4: (u64::from(u32::from_le_bytes([10, 0, 0, 1])) << 32)
+            | u64::from(u32::from_le_bytes([10, 0, 0, 2])),
+        sport: 40000,
+        dport: 5201,
+        family: 2,
+        kind: TCBEE_TCP_RETRANSMIT as u8,
+        seq: 77,
+        snd_cwnd: 10,
+        ..Default::default()
+    };
+    let mut bytes = bincode::serialize(&rec).unwrap();
+    bytes.extend_from_slice(&RECORD_DELIMITER);
+    assert_eq!(bytes.len(), tcp_event_entry::ENTRY_SIZE);
+    let e = tcp_event_entry::decode(&bytes).unwrap();
+    assert_eq!(e.flow_key(), tuple("10.0.0.1", "10.0.0.2", 40000, 5201));
+    let mut batch = EventBatch::new(tcp_event_entry::TABLE, 1);
+    batch.push_header(0, Dir::None, e.ts_ns(), e.hook_seq());
+    e.push_row(&mut batch);
+    batch.validate().unwrap();
+    match &batch.columns()[0] {
+        ColumnData::Text(v) => assert_eq!(v, &["retransmit"]),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(cell(&batch, 7, 0), 77);
+    assert_eq!(cell(&batch, 10, 0), 10);
+}
+
+/// The old sock layout is the current one without the added columns: an old record is the
+/// prefix of a current one up to rcv_wscale, followed by conn_id. When the sock layout changes
+/// again, freeze the current one in another struct like `OldSockEntry`.
+#[test]
+fn old_sock_layout_is_the_current_one_without_the_added_columns() {
+    let mut rec = sock_trace_entry {
+        time: 1,
+        hook_seq: 2,
+        addr_v4: 3,
+        sport: 4,
+        dport: 5,
+        family: 2,
+        pacing_rate: 6,
+        backoff: 7,
+        snd_cwnd: 8,
+        bytes_received: 9,
+        rcv_wscale: 10,
+        conn_id: 11,
+        ..Default::default()
+    };
+    let current = bincode::serialize(&rec).unwrap();
+    let old_len = sock::OldSockEntry::ENTRY_SIZE - RECORD_DELIMITER.len();
+    let mut old = current[..old_len - 4].to_vec();
+    old.extend_from_slice(&rec.conn_id.to_le_bytes());
+    old.extend_from_slice(&RECORD_DELIMITER);
+    let decoded = sock::OldSockEntry::decode(&old).unwrap();
+
+    let mut want = EventBatch::new(sock_trace_entry::TABLE, 1);
+    want.push_header(0, Dir::Send, 1, 2);
+    rec.push_row(&mut want);
+    let mut got = EventBatch::new(sock_trace_entry::TABLE, 1);
+    got.push_header(0, Dir::Send, 1, 2);
+    decoded.push_row(&mut got);
+    assert_eq!(got.columns(), want.columns());
+    assert_eq!(Event::flow_key(&decoded), Event::flow_key(&rec));
+
+    // The added columns stay 0 for old records
+    rec.ca_state = 4;
+    let mut changed = EventBatch::new(sock_trace_entry::TABLE, 1);
+    changed.push_header(0, Dir::Send, 1, 2);
+    rec.push_row(&mut changed);
+    assert_ne!(got.columns(), changed.columns());
 }

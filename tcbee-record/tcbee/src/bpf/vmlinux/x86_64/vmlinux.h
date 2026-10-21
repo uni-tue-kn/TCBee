@@ -132,6 +132,7 @@ struct sock_common {
 	__be16 skc_dport;
 	__u16 skc_num;
 	unsigned short skc_family;
+	volatile unsigned char skc_state;
 	struct in6_addr skc_v6_daddr;
 	struct in6_addr skc_v6_rcv_saddr;
 };
@@ -140,20 +141,39 @@ struct sock {
 	struct sock_common __sk_common;
 	unsigned long sk_pacing_rate;
 	unsigned long sk_max_pacing_rate;
+	u16 sk_protocol;
 };
 
 struct sk_buff {
+	struct sock *sk;
+	char cb[48];
 	unsigned int len;
+	int skb_iif;
+	__be16 protocol;
+	__u16 transport_header;
+	__u16 network_header;
+	unsigned char *head;
+};
+
+/* Only its existence is checked: 5.17 and newer */
+enum skb_drop_reason {
+	SKB_DROP_REASON_NOT_SPECIFIED = 2,
 };
 
 struct inet_connection_sock {
 	__u32 icsk_rto;
+	__u8 icsk_ca_state: 5;
 	__u8 icsk_backoff;
 	struct {
 		__u16 rcv_mss;
 	} icsk_ack;
 	u64 icsk_ca_priv[13];
 	void *icsk_ulp_data;
+};
+
+struct inet_sock {
+	struct sock sk;
+	__be16 inet_sport;
 };
 
 struct tcp_sock {
@@ -180,6 +200,13 @@ struct tcp_sock {
 	u8 keepalive_probes;
 	u32 total_retrans;
 	bool is_mptcp;
+	u32 snd_una;
+	u32 packets_out;
+	u32 delivered;
+	u32 delivered_ce;
+	u32 app_limited;
+	u8 chrono_type: 2;
+	u32 chrono_stat[3];
 };
 
 struct in_addr {

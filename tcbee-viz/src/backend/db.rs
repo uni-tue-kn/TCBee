@@ -126,6 +126,8 @@ pub struct DbBackend {
     connection_flows: OnceCell<Vec<ConnectionFlow>>,
     /// Flow id to "connection/subflow" labels, see `connection_label`
     connection_labels: OnceCell<HashMap<i64, String>>,
+    /// The meta table, read on first use
+    meta: OnceCell<Vec<(String, String)>>,
     /// Last read error that was logged, so a failing plot reload logs once, not every frame.
     last_error: RefCell<Option<String>>,
 }
@@ -208,6 +210,17 @@ impl DbBackend {
             labels
         });
         labels.get(&flow_id).map_or("", String::as_str)
+    }
+
+    /// All meta entries ordered by key, read on first use.
+    pub fn meta(&self) -> &[(String, String)] {
+        let Some(db) = &self.store else { return &[] };
+        self.meta.get_or_init(|| {
+            db.meta().unwrap_or_else(|e| {
+                self.report(format!("reading the meta table failed: {e}"));
+                Vec::new()
+            })
+        })
     }
 
     pub fn get_flow_by_id(&self, id: i64) -> Option<&Flow> {
@@ -596,6 +609,17 @@ mod tests {
             },
         );
         assert_eq!(format_flow(&flow), "ID:3 10.31.2.1:58139 -> 10.31.1.2:5501");
+    }
+
+    #[test]
+    fn meta_has_the_writer() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let meta = db.meta();
+            assert!(meta.contains(&("writer".into(), "tcbee-viz test".into())));
+            assert!(meta.windows(2).all(|w| w[0].0 < w[1].0));
+        }
+        assert!(DbBackend::default().meta().is_empty());
     }
 
     #[test]

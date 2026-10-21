@@ -30,5 +30,9 @@ const volatile __u8 MPTCP_TAG = 0;
 #define ETH_P_IPV6 0x86DD
 #define IP_OFFSET 0x1FFF
 #define TC_ACT_UNSPEC (-1)
+#define TCP_TIME_WAIT 6
+#define TCP_CLOSE 7
+#define TCP_LISTEN 10
+#define TCP_NEW_SYN_RECV 12
 
 #endif /* __TCBEE_CONFIG_H */

@@ -45,6 +45,7 @@ macro_rules! all_cases {
             round_trip_text
             u64_saturates_in_the_catalog
             engine_is_detected
+            meta_lists_caller_entries_and_ours
             points_are_ordered_by_ts_then_seq
             ranges_are_inclusive
             ranges_round_inward

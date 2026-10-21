@@ -232,6 +232,172 @@ fn send_and_receive_sock_are_separate_series() {
     }
 }
 
+/// Sock records in the current layout have series for the added fields; the old-layout
+/// fixture has none of them, as its records hold 0 there.
+#[test]
+fn added_sock_fields_are_series_only_where_recorded() {
+    use tcbee_common::records::sock_trace_entry;
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_current");
+        fs::create_dir_all(&trace).unwrap();
+        let recs: Vec<_> = (0..4u64)
+            .map(|i| sock_trace_entry {
+                time: 1_000 + i,
+                hook_seq: i + 1,
+                addr_v4: 0x0200_000A_0100_000A,
+                sport: 40000,
+                dport: 5201,
+                family: 2,
+                ca_state: if i == 2 { 4 } else { 0 },
+                delivered: 10 * i as u32,
+                ..Default::default()
+            })
+            .collect();
+        write_records(&trace, "send_sock.tcp", &recs);
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let store = ts_storage::open(&out).unwrap();
+        let series = store.series(1).unwrap();
+        let ca = series.iter().find(|s| s.name == "ca_state").unwrap();
+        assert_eq!((ca.n, ca.v_max), (4, Some(4.0)));
+        let delivered = series.iter().find(|s| s.name == "delivered").unwrap();
+        assert_eq!(delivered.v_max, Some(30.0));
+
+        let old = tempfile::tempdir().unwrap();
+        let (out, _) = process(engine, ext, old.path(), &fixture("tcbee_small"), None);
+        let store = ts_storage::open(&out).unwrap();
+        for f in store.flows().unwrap() {
+            let names: Vec<String> = store
+                .series(f.id)
+                .unwrap()
+                .into_iter()
+                .filter(|s| s.source == "sock")
+                .map(|s| s.name)
+                .collect();
+            assert!(!names.iter().any(|n| n == "ca_state" || n == "delivered"));
+            assert!(names.is_empty() || names.iter().any(|n| n == "snd_cwnd"));
+        }
+        // The ids stay dense after leaving series out
+        let all: Vec<i64> = store
+            .flows()
+            .unwrap()
+            .iter()
+            .flat_map(|f| store.series(f.id).unwrap())
+            .map(|s| s.id)
+            .collect();
+        let mut sorted = all.clone();
+        sorted.sort();
+        assert_eq!(sorted, (1..=all.len() as i64).collect::<Vec<_>>());
+    }
+}
+
+/// TCP events become rows of their flow with a text series of labels, the markers of the
+/// visualizer.
+#[test]
+fn tcp_events_become_labelled_series() {
+    use tcbee_common::records::{
+        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_RETRANSMIT, TCBEE_TCP_RTO,
+    };
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_events");
+        fs::create_dir_all(&trace).unwrap();
+        let ev = |i: u64, kind, old_state, new_state| tcp_event_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: 0x0200_000A_0100_000A,
+            sport: 40000,
+            dport: 5201,
+            family: 2,
+            kind: kind as u8,
+            old_state,
+            new_state,
+            ..Default::default()
+        };
+        let recs = [
+            ev(0, TCBEE_TCP_RETRANSMIT, 0, 0),
+            ev(1, TCBEE_TCP_CA_STATE, 0, 4),
+            ev(2, TCBEE_TCP_RTO, 0, 0),
+        ];
+        write_records(&trace, "tcp_events.tcp", &recs);
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+        assert_eq!(summary.rows, 3);
+        let store = ts_storage::open(&out).unwrap();
+        let flows = store.flows().unwrap();
+        assert_eq!(flows.len(), 1);
+        let series = store.series(flows[0].id).unwrap();
+        let event = series
+            .iter()
+            .find(|s| s.source == "tcp_event" && s.name == "event")
+            .unwrap();
+        let mut labels = Vec::new();
+        store
+            .for_each_point(event, None, &mut |p| labels.push(format!("{:?}", p.value)))
+            .unwrap();
+        assert_eq!(
+            labels,
+            [
+                "String(\"retransmit\")",
+                "String(\"Open → Loss\")",
+                "String(\"RTO\")"
+            ]
+        );
+    }
+}
+
+/// Drops are labelled with the names of the recorder's drop reasons, which also become meta
+/// rows; a reason the recording does not name keeps its number.
+#[test]
+fn drops_are_labelled_with_the_reason_names() {
+    use tcbee_common::records::{tcp_event_entry, TCBEE_TCP_DROP};
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_drops");
+        fs::create_dir_all(&trace).unwrap();
+        let drop = |i: u64, reason| tcp_event_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: 0x0200_000A_0100_000A,
+            sport: 40000,
+            dport: 5201,
+            family: 2,
+            kind: TCBEE_TCP_DROP as u8,
+            reason,
+            ..Default::default()
+        };
+        write_records(
+            &trace,
+            "tcp_events.tcp",
+            &[drop(0, 3), drop(1, 77), drop(2, 0x10002)],
+        );
+        fs::write(
+            trace.join(tcbee_trace::DROP_REASONS_FILE),
+            r#"{"2": "NOT_SPECIFIED", "3": "NO_SOCKET"}"#,
+        )
+        .unwrap();
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, Some(2));
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let store = ts_storage::open(&out).unwrap();
+        let meta: BTreeMap<String, String> = store.meta().unwrap().into_iter().collect();
+        assert_eq!(meta["drop_reason.3"], "NO_SOCKET");
+        let series = store.series(1).unwrap();
+        let event = series.iter().find(|s| s.name == "event").unwrap();
+        let mut labels = Vec::new();
+        store
+            .for_each_point(event, None, &mut |p| labels.push(format!("{:?}", p.value)))
+            .unwrap();
+        assert_eq!(
+            labels,
+            [
+                "String(\"drop NO_SOCKET\")",
+                "String(\"drop, reason 77\")",
+                "String(\"drop, reason 0x10002\")"
+            ]
+        );
+    }
+}
+
 #[test]
 fn engines_and_thread_counts_agree_point_by_point() {
     let mut dumps = Vec::new();
@@ -498,6 +664,39 @@ fn write_tcp4_trace(
     }
     fs::write(trace.join(file), bytes).unwrap();
     trace
+}
+
+/// The metadata file of the recorder ends up as `run.*` meta rows; a broken one is a warning.
+#[test]
+fn run_metadata_becomes_meta_rows() {
+    for (engine, ext) in engines() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace = write_tcp4_trace(dir.path(), "tcbee_meta", "tcp4_send.tcp", 3, &[]);
+        fs::write(
+            trace.join(tcbee_trace::METADATA_FILE),
+            r#"{"format":1,"kernel":{"release":"6.8.0"},"interfaces":[{"name":"eth0"}]}"#,
+        )
+        .unwrap();
+        let (out, summary) = process(engine, ext, dir.path(), &trace, None);
+        assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+        let meta: BTreeMap<String, String> = ts_storage::open(&out)
+            .unwrap()
+            .meta()
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(meta["run.format"], "1");
+        assert_eq!(meta["run.kernel.release"], "6.8.0");
+        assert_eq!(meta["run.interfaces.0.name"], "eth0");
+        assert!(meta.contains_key("writer"));
+
+        fs::write(trace.join(tcbee_trace::METADATA_FILE), "{").unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let (out, summary) = process(engine, ext, out_dir.path(), &trace, None);
+        assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+        let meta = ts_storage::open(&out).unwrap().meta().unwrap();
+        assert!(meta.iter().all(|(k, _)| !k.starts_with("run.")));
+    }
 }
 
 /// A trace directory with one tcp4 file whose record 3 has a broken divider.

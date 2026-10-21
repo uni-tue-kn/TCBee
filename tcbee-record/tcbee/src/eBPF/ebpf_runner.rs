@@ -1,7 +1,7 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt,
+    fmt, fs,
     mem::MaybeUninit,
     path::Path,
     sync::{Arc, Mutex},
@@ -16,7 +16,7 @@ use log::{debug, error, info, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
     RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
-    RB_TCP_PROBE, RINGBUFS,
+    RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -36,12 +36,14 @@ use crate::{
             headers::{uses_tcx, TCTracer, TcAttachment},
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
+            tcp_events::TcpEventTracer,
             tracepoints::TracepointTracer,
         },
         rings,
         skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
     },
-    metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats},
+    metadata::{NamedRingCounters, Recorder, RunMetadata},
+    metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
@@ -67,6 +69,10 @@ pub struct EbpfRunner {
     /// CPUs with a ring buffer per probe output
     ring_cpus: u32,
     started: Option<Instant>,
+    /// Requested hooks that are not recorded, with the reason, for the run metadata
+    skipped: Vec<String>,
+    /// Written at start and completed at stop with `--metadata`
+    metadata: Option<RunMetadata>,
 }
 
 /// Last libbpf warnings, shown when loading fails. They name the program, map or the
@@ -173,7 +179,8 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
 
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
-    let groups: [(bool, &[u32]); 7] = [
+    let tcp_events = optional.iter().any(|group| group.is_tcp_event());
+    let groups: [(bool, &[u32]); 8] = [
         (
             config.headers,
             &[
@@ -192,6 +199,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         (config.algorithms, &[RB_CUBIC]),
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
+        (tcp_events, &[RB_TCP_EVENTS]),
     ];
     groups
         .into_iter()
@@ -217,6 +225,8 @@ impl EbpfRunner {
             ringbuf_sizes: Vec::new(),
             ring_cpus: 0,
             started: None,
+            skipped: Vec::new(),
+            metadata: None,
         }
     }
 
@@ -280,6 +290,91 @@ impl EbpfRunner {
                 self.write_metrics(duration_s, &reports, programs);
             }
         }
+
+        if let Some(mut metadata) = self.metadata.take() {
+            metadata.finish(self.ring_counters());
+            self.write_metadata(&metadata);
+        }
+    }
+
+    /// The event counters of the ring buffers that were created
+    fn ring_counters(&self) -> Option<Vec<NamedRingCounters>> {
+        let snapshot = self
+            .stats
+            .as_ref()?
+            .snapshot()
+            .inspect_err(|err| error!("Could not read event counters for metadata: {}", err))
+            .ok()?;
+        Some(
+            RINGBUFS
+                .iter()
+                .zip(&self.ringbuf_sizes)
+                .enumerate()
+                .filter(|(_, (_, size))| size.is_some())
+                .map(|(rb, (ringbuf, _))| NamedRingCounters {
+                    name: ringbuf.map.to_string(),
+                    counters: RingCounters::of(&snapshot, rb as u32),
+                })
+                .collect(),
+        )
+    }
+
+    fn write_metadata(&self, metadata: &RunMetadata) {
+        let path = Path::new(&self.config.dir).join(tcbee_trace::METADATA_FILE);
+        if let Err(err) = metadata.write(&path) {
+            error!("Could not write {}: {}", path.display(), err);
+        }
+    }
+
+    /// Writes the kernel's drop reasons, value to name without the SKB_DROP_REASON_ prefix
+    fn write_drop_reasons(&self, btf: &mut KernelBtf) {
+        let reasons: BTreeMap<String, String> = btf
+            .enum_values("skb_drop_reason")
+            .into_iter()
+            .map(|(value, name)| {
+                let name = name.strip_prefix("SKB_DROP_REASON_").unwrap_or(&name);
+                (value.to_string(), name.to_string())
+            })
+            .collect();
+        if reasons.is_empty() {
+            warn!("The kernel has no drop reasons (before 5.17), drops are recorded without");
+            return;
+        }
+        let path = Path::new(&self.config.dir).join(tcbee_trace::DROP_REASONS_FILE);
+        let written = fs::File::create(&path).and_then(|file| {
+            serde_json::to_writer_pretty(file, &reasons).map_err(std::io::Error::from)
+        });
+        if let Err(err) = written {
+            error!("Could not write {}: {}", path.display(), err);
+        }
+    }
+
+    /// Collects the run metadata once everything is attached
+    fn collect_metadata(&self, optional: &BTreeSet<OptionalGroup>) -> RunMetadata {
+        let c = &self.config;
+        let mut groups: Vec<String> = [
+            (c.headers, "headers"),
+            (c.kernel, "kernel"),
+            (c.cwnd, "cwnd"),
+            (c.tracepoints, "tracepoints"),
+            (c.algorithms, "cubic"),
+        ]
+        .into_iter()
+        .filter(|(enabled, _)| *enabled)
+        .map(|(_, name)| name.to_string())
+        .collect();
+        groups.extend(optional.iter().map(|group| group.name().to_string()));
+        RunMetadata::collect(Recorder {
+            argv: std::env::args().collect(),
+            groups,
+            skipped: self.skipped.clone(),
+            interface: c.headers.then(|| c.iface.clone()),
+            ringbuf_sizes: RINGBUFS
+                .iter()
+                .zip(&self.ringbuf_sizes)
+                .filter_map(|(ringbuf, size)| Some((ringbuf.map.to_string(), (*size)?)))
+                .collect(),
+        })
     }
 
     fn write_metrics(
@@ -322,14 +417,16 @@ impl EbpfRunner {
 
     /// Opens the skeleton and configures it from the config: rodata constants, one ring
     /// buffer slot per CPU and which programs are loaded. The optional groups in `disabled`
-    /// are not loaded. Returns the skeleton and the enabled optional groups.
+    /// are not loaded. Returns the skeleton, the enabled optional groups and the requested
+    /// hooks that the kernel lacks.
     fn open_configured(
         &self,
         tcx: bool,
         disabled: &BTreeSet<OptionalGroup>,
         btf: &mut KernelBtf,
         cpus: &rings::Cpus,
-    ) -> Result<(OpenTcbeeSkel<'static>, BTreeSet<OptionalGroup>), Box<dyn Error>> {
+    ) -> Result<(OpenTcbeeSkel<'static>, BTreeSet<OptionalGroup>, Vec<String>), Box<dyn Error>>
+    {
         let mut open = open_skel()?;
 
         // Configuration is read-only for the programs, so the verifier sees constants
@@ -364,10 +461,27 @@ impl EbpfRunner {
             optional.insert(OptionalGroup::Bbr);
         }
         let pm = self.config.mptcp.pm && !disabled.contains(&OptionalGroup::MptcpPm);
-        if MptcpPmTracer::configure(open.open_object_mut(), pm, btf) {
+        let (any_pm, mut missing) = MptcpPmTracer::configure(open.open_object_mut(), pm, btf);
+        if any_pm {
             optional.insert(OptionalGroup::MptcpPm);
         }
-        Ok((open, optional))
+        let disabled_hooks: Vec<usize> = disabled
+            .iter()
+            .filter_map(|group| match group {
+                OptionalGroup::TcpEvent(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let (hooks, missing_events) = TcpEventTracer::configure(
+            open.open_object_mut(),
+            self.config.events,
+            self.config.drops,
+            &disabled_hooks,
+            btf,
+        );
+        optional.extend(hooks.into_iter().map(OptionalGroup::TcpEvent));
+        missing.extend(missing_events);
+        Ok((open, optional, missing))
     }
 
     /// Without MPTCP in the kernel, -M records nothing: a warning, or an error if it is the
@@ -379,7 +493,14 @@ impl EbpfRunner {
             return Ok(());
         }
         let c = &self.config;
-        if !(c.headers || c.tracepoints || c.kernel || c.cwnd || c.algorithms) {
+        if !(c.headers
+            || c.tracepoints
+            || c.kernel
+            || c.cwnd
+            || c.algorithms
+            || c.events
+            || c.drops)
+        {
             return Err("The kernel has no MPTCP (CONFIG_MPTCP), -M has nothing to record".into());
         }
         warn!("The kernel has no MPTCP (CONFIG_MPTCP), -M records nothing");
@@ -409,10 +530,11 @@ impl EbpfRunner {
         let mut btf = KernelBtf::default();
         self.check_kernel_mptcp(&mut btf)?;
         let mut disabled = BTreeSet::new();
-        let (skel, optional) = loop {
-            let (open, optional) = self.open_configured(tcx, &disabled, &mut btf, &cpus)?;
+        let (skel, mut optional, missing) = loop {
+            let (open, optional, missing) =
+                self.open_configured(tcx, &disabled, &mut btf, &cpus)?;
             match load(open) {
-                Ok(skel) => break (skel, optional),
+                Ok(skel) => break (skel, optional, missing),
                 Err(err) => match optional::to_disable(&optional, &err.warnings) {
                     Some(groups) => {
                         // The failed object was closed when load() returned, its programs
@@ -424,7 +546,23 @@ impl EbpfRunner {
                 },
             }
         };
+        if self.config.drops {
+            self.write_drop_reasons(&mut btf);
+        }
         drop(btf);
+        self.skipped.extend(missing);
+        for group in &disabled {
+            self.skipped.push(format!(
+                "{}: the kernel rejected its programs",
+                group.name()
+            ));
+        }
+        if self.config.algorithms
+            && !optional.contains(&OptionalGroup::Bbr)
+            && !disabled.contains(&OptionalGroup::Bbr)
+        {
+            self.skipped.push("BBR: tcp_bbr is not loaded".to_string());
+        }
         let skel = self.skel.insert(skel);
         configure_filter(skel, &self.config.filter)?;
 
@@ -494,6 +632,7 @@ impl EbpfRunner {
                     Ok(()) => watcher_config.graphs.bbr = true,
                     Err(err) => {
                         links.truncate(attached);
+                        self.skipped.push(format!("BBR: attaching failed: {}", err));
                         error!(
                             "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
                             err
@@ -505,6 +644,13 @@ impl EbpfRunner {
 
         if optional.contains(&OptionalGroup::MptcpPm) {
             MptcpPmTracer::spawn(skel, dir, writer, links)?;
+        }
+
+        if optional.iter().any(|group| group.is_tcp_event()) {
+            for (hook, message) in TcpEventTracer::spawn(skel, dir, writer, links)? {
+                optional.remove(&OptionalGroup::TcpEvent(hook));
+                self.skipped.push(message);
+            }
         }
 
         // TODO: should be true by default in get_watcher_config()
@@ -531,6 +677,12 @@ impl EbpfRunner {
         }));
 
         info!("Finished starting TUI!");
+
+        if self.config.metadata {
+            let metadata = self.collect_metadata(&optional);
+            self.write_metadata(&metadata);
+            self.metadata = Some(metadata);
+        }
 
         Ok(())
     }

@@ -1,6 +1,10 @@
 //! Facts about the running kernel that decide which programs can be loaded and how.
 
-use std::{ffi::CString, path::Path, ptr::NonNull};
+use std::{
+    ffi::{CStr, CString},
+    path::Path,
+    ptr::NonNull,
+};
 
 use libbpf_rs::libbpf_sys;
 
@@ -59,15 +63,61 @@ impl KernelBtf {
 
     /// Whether vmlinux has a struct named `name`
     pub fn has_struct(&mut self, name: &str) -> bool {
+        self.has_kind(name, libbpf_sys::BTF_KIND_STRUCT)
+    }
+
+    /// Whether vmlinux has the tracepoint `name`. Every tracepoint has a typedef
+    /// `btf_trace_<name>` of its probe function, which BTF enabled tracepoint programs
+    /// (tp_btf) attach through.
+    pub fn has_tracepoint(&mut self, name: &str) -> bool {
+        self.has_kind(&format!("btf_trace_{name}"), libbpf_sys::BTF_KIND_TYPEDEF)
+    }
+
+    /// The values and names of the vmlinux enum `name`, empty if it does not exist
+    pub fn enum_values(&mut self, name: &str) -> Vec<(u32, String)> {
+        let Ok(name) = CString::new(name) else {
+            return Vec::new();
+        };
+        let Some(btf) = self.vmlinux() else {
+            return Vec::new();
+        };
+        unsafe {
+            let id = libbpf_sys::btf__find_by_name_kind(
+                btf.as_ptr(),
+                name.as_ptr(),
+                libbpf_sys::BTF_KIND_ENUM,
+            );
+            if id <= 0 {
+                return Vec::new();
+            }
+            let ty = libbpf_sys::btf__type_by_id(btf.as_ptr(), id as u32);
+            if ty.is_null() {
+                return Vec::new();
+            }
+            // The members (struct btf_enum) follow the type, their number is the low 16 bits
+            // of info
+            let members = ty.add(1) as *const libbpf_sys::btf_enum;
+            (0..((*ty).info & 0xffff) as usize)
+                .filter_map(|i| {
+                    let member = &*members.add(i);
+                    let name = libbpf_sys::btf__name_by_offset(btf.as_ptr(), member.name_off);
+                    (!name.is_null()).then(|| {
+                        (
+                            member.val as u32,
+                            CStr::from_ptr(name).to_string_lossy().into_owned(),
+                        )
+                    })
+                })
+                .collect()
+        }
+    }
+
+    fn has_kind(&mut self, name: &str, kind: u32) -> bool {
         let Ok(name) = CString::new(name) else {
             return false;
         };
         self.vmlinux().is_some_and(|btf| unsafe {
-            libbpf_sys::btf__find_by_name_kind(
-                btf.as_ptr(),
-                name.as_ptr(),
-                libbpf_sys::BTF_KIND_STRUCT,
-            ) > 0
+            libbpf_sys::btf__find_by_name_kind(btf.as_ptr(), name.as_ptr(), kind) > 0
         })
     }
 
@@ -114,4 +164,27 @@ pub fn kernel_version() -> Option<(u32, u32)> {
         .split(|c: char| !c.is_ascii_digit())
         .map(|part| part.parse::<u32>().ok());
     Some((parts.next()??, parts.next()??))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads the BTF of the kernel running the tests; skipped where there is none
+    #[test]
+    fn tracepoints_and_enums_of_the_running_kernel() {
+        let mut btf = KernelBtf::default();
+        if !btf.available() {
+            return;
+        }
+        assert!(btf.has_tracepoint("tcp_retransmit_skb"));
+        assert!(!btf.has_tracepoint("tcbee_no_such_tracepoint"));
+        assert!(btf.enum_values("tcbee_no_such_enum").is_empty());
+        if kernel_version().is_some_and(|version| version >= (5, 17)) {
+            let reasons = btf.enum_values("skb_drop_reason");
+            assert!(reasons
+                .iter()
+                .any(|(_, name)| name == "SKB_DROP_REASON_NOT_SPECIFIED"));
+        }
+    }
 }

@@ -75,6 +75,34 @@ pub fn engine_is_detected(engine: Engine) {
     assert_eq!(detect_engine(&env.path).unwrap(), engine);
 }
 
+pub fn meta_lists_caller_entries_and_ours(engine: Engine) {
+    let env = Env::new();
+    let session = session_with_tables(engine, &env);
+    session
+        .finish(Catalog {
+            meta: vec![
+                ("writer".into(), "contract test".into()),
+                ("run.kernel.release".into(), "6.8.0".into()),
+            ],
+            ..Catalog::default()
+        })
+        .unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
+    let meta = st.meta().unwrap();
+    let keys: Vec<&str> = meta.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "created_at",
+            "run.kernel.release",
+            "schema_version",
+            "writer"
+        ]
+    );
+    assert_eq!(meta[1].1, "6.8.0");
+    assert_eq!(meta[2].1, "3");
+}
+
 // ---------------------------------------------------------------------------------------------
 // Ordering and ranges
 

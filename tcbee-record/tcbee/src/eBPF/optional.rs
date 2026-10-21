@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::eBPF::probes::mptcp::PM_HOOKS;
+use crate::eBPF::probes::{mptcp::PM_HOOKS, tcp_events::TCP_EVENT_HOOKS};
 
 /// The program names of `PM_HOOKS`
 const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
@@ -27,21 +27,34 @@ pub enum OptionalGroup {
     /// The MPTCP code in the sock and cwnd programs (MPTCP_TAG); without it they still load
     MptcpTag,
     MptcpPm,
+    /// One TCP event program, the index into `TCP_EVENT_HOOKS`
+    TcpEvent(usize),
 }
 
 impl OptionalGroup {
-    pub const ALL: [OptionalGroup; 3] = [
-        OptionalGroup::Bbr,
-        OptionalGroup::MptcpTag,
-        OptionalGroup::MptcpPm,
-    ];
+    pub const ALL: [OptionalGroup; 3 + TCP_EVENT_HOOKS.len()] = {
+        let mut all = [OptionalGroup::Bbr; 3 + TCP_EVENT_HOOKS.len()];
+        all[1] = OptionalGroup::MptcpTag;
+        all[2] = OptionalGroup::MptcpPm;
+        let mut i = 0;
+        while i < TCP_EVENT_HOOKS.len() {
+            all[3 + i] = OptionalGroup::TcpEvent(i);
+            i += 1;
+        }
+        all
+    };
 
     pub fn name(self) -> &'static str {
         match self {
             OptionalGroup::Bbr => "BBR",
             OptionalGroup::MptcpTag => "MPTCP tagging",
             OptionalGroup::MptcpPm => "MPTCP path manager events",
+            OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].name,
         }
+    }
+
+    pub fn is_tcp_event(self) -> bool {
+        matches!(self, OptionalGroup::TcpEvent(_))
     }
 
     /// The group's programs, as libbpf names them (the C function names)
@@ -55,6 +68,7 @@ impl OptionalGroup {
                 "cwnd_sock_recvmsg",
             ],
             OptionalGroup::MptcpPm => &MPTCP_PM_PROGRAMS,
+            OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].programs,
         }
     }
 
@@ -175,6 +189,20 @@ mod tests {
         assert_eq!(
             to_disable(&enabled, &w),
             Some(BTreeSet::from([OptionalGroup::MptcpPm]))
+        );
+    }
+
+    #[test]
+    fn failing_tcp_event_program_disables_only_its_hook() {
+        let w = warnings(&["libbpf: prog 'tcp_event_rst_sent': failed to load: -13"]);
+        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        let rst_sent = TCP_EVENT_HOOKS
+            .iter()
+            .position(|hook| hook.programs == ["tcp_event_rst_sent"])
+            .unwrap();
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::TcpEvent(rst_sent)]))
         );
     }
 

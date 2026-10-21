@@ -11,6 +11,7 @@ mod event;
 #[cfg(test)]
 mod fixtures;
 mod ip;
+mod metadata;
 mod pipeline;
 mod registry;
 

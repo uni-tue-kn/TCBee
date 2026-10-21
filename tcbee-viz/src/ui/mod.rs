@@ -3,6 +3,7 @@ pub mod series_table;
 pub mod tab_home;
 pub mod tab_mptcp;
 pub mod tab_multi_flow;
+pub mod tab_overview;
 pub mod tab_process;
 pub mod tab_settings;
 pub mod tab_single_flow;

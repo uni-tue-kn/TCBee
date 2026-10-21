@@ -60,6 +60,47 @@ static __always_inline bool hook_seq_tuple(const struct ip_tuple *t, __u8 family
 	return false;
 }
 
+/*
+ * hook_seq of a tuple based event of a flow that already has a counter at rb. Events from
+ * packets without a socket (drops, RSTs of the stack) use it, so that traffic to no socket,
+ * a port scan for instance, takes no map entries. Without a counter the event is skipped
+ * like a filtered one.
+ */
+static __always_inline bool hook_seq_known_tuple(const struct ip_tuple *t, __u8 family, __u8 rb,
+						 __u64 *hook_seq)
+{
+	struct hook_seq_key key;
+	__u64 *counter;
+
+	__builtin_memset(&key, 0, sizeof(key));
+	key.tuple = *t;
+	key.rb = rb;
+	key.family = family;
+	counter = bpf_map_lookup_elem(&HOOK_SEQ, &key);
+	if (!counter && family == AF_INET) {
+		/*
+		 * An IPv4 flow of a dual-stack socket (AF_INET6, v4-mapped addresses) has its
+		 * counter under the mapped addresses, as tuple_from_sk() takes them
+		 */
+		__u8 src[4], dst[4];
+
+		__builtin_memcpy(src, t->src_ip, 4);
+		__builtin_memcpy(dst, t->dst_ip, 4);
+		__builtin_memset(key.tuple.src_ip, 0, 16);
+		__builtin_memset(key.tuple.dst_ip, 0, 16);
+		key.tuple.src_ip[10] = key.tuple.src_ip[11] = 0xff;
+		key.tuple.dst_ip[10] = key.tuple.dst_ip[11] = 0xff;
+		__builtin_memcpy(&key.tuple.src_ip[12], src, 4);
+		__builtin_memcpy(&key.tuple.dst_ip[12], dst, 4);
+		key.family = AF_INET6;
+		counter = bpf_map_lookup_elem(&HOOK_SEQ, &key);
+	}
+	if (!counter)
+		return false;
+	*hook_seq = __sync_fetch_and_add(counter, 1) + 1;
+	return true;
+}
+
 /* hook_seq of a socket based event, the tuple is local -> remote */
 static __always_inline bool hook_seq_sk(struct sock *sk, __u16 sport, __u16 dport, __u8 rb,
 					__u64 *hook_seq)

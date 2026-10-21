@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -26,9 +26,10 @@ use ts_storage::{
 };
 
 use crate::{
-    bindings::{binding, event_tables, Binding},
+    bindings::{binding_for, event_tables, tcp_event, Binding},
     connections::{self, TaggedFlows},
     decode::{RangeError, RowError},
+    metadata,
     registry::FlowRegistry,
     Args,
 };
@@ -176,7 +177,9 @@ fn plan(
         let len = std::fs::metadata(&path)
             .with_context(|| format!("cannot stat {}", path.display()))?
             .len();
-        let Some(binding) = binding(file) else {
+        let binding =
+            binding_for(file, &path).with_context(|| format!("cannot read {}", path.display()))?;
+        let Some(binding) = binding else {
             info!("Skipping {name}: {NO_DECODER}");
             if len > 0 {
                 summary.skipped.push(name);
@@ -196,6 +199,12 @@ fn plan(
         }
         if records == 0 {
             continue;
+        }
+        if !binding.missing_columns.is_empty() {
+            info!(
+                "{name}: older record layout without {}; their series are left out",
+                binding.missing_columns.join(", ")
+            );
         }
         let bar = bars.add(ProgressBar::new(records));
         bar.set_style(bar_style());
@@ -259,6 +268,8 @@ struct Shared<'a> {
     registry: &'a FlowRegistry,
     files: &'a [FilePlan],
     units: &'a [Unit],
+    /// Names of the kernel's drop reasons for the event labels
+    drop_reasons: Arc<BTreeMap<u32, String>>,
     next_unit: AtomicUsize,
     abort: AtomicBool,
     first_error: Mutex<Option<anyhow::Error>>,
@@ -337,6 +348,7 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
         .context("cannot open a batch writer")?;
     let mut cache = shared.registry.cache();
     let mut output = WorkerOutput::default();
+    tcp_event::set_drop_reasons(shared.drop_reasons.clone());
 
     loop {
         if shared.aborted() {
@@ -442,21 +454,38 @@ fn build_catalog(
     tagged: TaggedFlows,
     pm_events: &[connections::PmEvent],
     trace: &TCBeeTrace,
+    run_meta: Vec<(String, String)>,
+    files: &[FilePlan],
 ) -> Catalog {
     let flows = registry.into_flows();
     let (connections, connection_flows) = connections::assemble(tagged, pm_events, &flows);
+    // Columns a file's records do not have hold 0; a series of them would look recorded
+    let mut series = stats.into_series(1);
+    series.retain(|s| {
+        !files.iter().any(|f| {
+            f.binding.table.source == s.source
+                && f.binding.dir == s.dir
+                && f.binding.missing_columns.contains(&s.name.as_str())
+        })
+    });
+    for (id, s) in (1..).zip(series.iter_mut()) {
+        s.id = id;
+    }
     Catalog {
         flows,
         connections,
         connection_flows,
-        series: stats.into_series(1),
+        series,
         meta: vec![
             (
                 "writer".to_string(),
                 format!("tcbee-process {}", env!("CARGO_PKG_VERSION")),
             ),
             ("trace_dir".to_string(), trace.dir().display().to_string()),
-        ],
+        ]
+        .into_iter()
+        .chain(run_meta)
+        .collect(),
     }
 }
 
@@ -495,11 +524,21 @@ pub fn run(args: &Args) -> Result<Summary> {
         .clamp(1, units.len().max(1));
 
     let registry = FlowRegistry::new();
+    let drop_reasons = metadata::drop_reasons(trace.dir()).unwrap_or_else(|msg| {
+        warn!("{msg}");
+        summary.warnings.push(msg);
+        BTreeMap::new()
+    });
+    let drop_reason_rows: Vec<(String, String)> = drop_reasons
+        .iter()
+        .map(|(value, name)| (format!("drop_reason.{value}"), name.clone()))
+        .collect();
     let shared = Shared {
         session: &*session,
         registry: &registry,
         files: &files,
         units: &units,
+        drop_reasons: Arc::new(drop_reasons),
         next_unit: AtomicUsize::new(0),
         abort: AtomicBool::new(false),
         first_error: Mutex::new(None),
@@ -529,7 +568,21 @@ pub fn run(args: &Args) -> Result<Summary> {
         Some(f) => connections::read_pm_events(&f.path, 0..f.records)?,
         None => Vec::new(),
     };
-    let catalog = build_catalog(registry, output.stats, output.tagged, &pm_events, &trace);
+    let run_meta = metadata::read(trace.dir()).unwrap_or_else(|msg| {
+        warn!("{msg}");
+        summary.warnings.push(msg);
+        Vec::new()
+    });
+    let run_meta = run_meta.into_iter().chain(drop_reason_rows).collect();
+    let catalog = build_catalog(
+        registry,
+        output.stats,
+        output.tagged,
+        &pm_events,
+        &trace,
+        run_meta,
+        &files,
+    );
     summary.connections = catalog.connections.len();
     summary.flows = catalog.flows.len();
     summary.series = catalog.series.len();

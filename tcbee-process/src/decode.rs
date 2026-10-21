@@ -117,7 +117,9 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::*;
-    use tcbee_common::records::{sock_trace_entry, tcp4_packet_trace};
+    use tcbee_common::records::tcp4_packet_trace;
+
+    use crate::bindings::sock::OldSockEntry;
 
     fn fixture(dir: &str, file: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -170,11 +172,11 @@ mod tests {
     #[test]
     fn range_past_the_end_delivers_whole_records_then_reports_the_missing_one() {
         let file = File::open(fixture("tcbee_truncated", "send_sock.tcp")).unwrap();
-        assert_eq!(collect::<sock_trace_entry>(&file, 0..10).unwrap().len(), 10);
+        assert_eq!(collect::<OldSockEntry>(&file, 0..10).unwrap().len(), 10);
 
         // The eleventh record is only 17 bytes long: records 0..10 arrive, then the error.
         let mut seen = Vec::new();
-        let res = decode_range::<sock_trace_entry, ()>(&file, 0..11, |seq, _| {
+        let res = decode_range::<OldSockEntry, ()>(&file, 0..11, |seq, _| {
             seen.push(seq);
             Ok(())
         });
@@ -187,11 +189,11 @@ mod tests {
         }
         assert_eq!(seen, (0..10).collect::<Vec<_>>());
 
-        match collect::<sock_trace_entry>(&file, 10..11) {
+        match collect::<OldSockEntry>(&file, 10..11) {
             Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 1720),
             other => panic!("expected an I/O error, got {other:?}"),
         }
-        match collect::<sock_trace_entry>(&file, 12..14) {
+        match collect::<OldSockEntry>(&file, 12..14) {
             Err(RangeError::Io { offset, .. }) => assert_eq!(offset, 12 * 172),
             other => panic!("expected an I/O error, got {other:?}"),
         }

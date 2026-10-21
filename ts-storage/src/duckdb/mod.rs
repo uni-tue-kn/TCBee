@@ -631,6 +631,12 @@ impl Store for DuckStore {
         self.get_series(id)
     }
 
+    fn meta(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut st = self.conn.prepare(sql::SELECT_META)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     fn for_each_point(
         &self,
         s: &SeriesInfo,

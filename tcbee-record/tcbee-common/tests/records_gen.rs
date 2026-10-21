@@ -23,6 +23,8 @@ const RECORDS: &[&str] = &[
     "tcp_bad_csum_entry",
     "mptcp_pm_entry",
     "tcbee_mptcp_event",
+    "tcp_event_entry",
+    "tcbee_tcp_event",
     "ip_tuple",
     "hook_seq_key",
     "filter_ip",

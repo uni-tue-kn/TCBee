@@ -500,6 +500,15 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 		/* struct tcp_options_received, not read yet */
 		rec->snd_wscale = 0;
 		rec->rcv_wscale = 0;
+		rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+		rec->packets_out = tp->packets_out;
+		rec->delivered = tp->delivered;
+		rec->delivered_ce = tp->delivered_ce;
+		rec->app_limited = tp->app_limited;
+		rec->chrono_type = BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
+		rec->chrono_busy = tp->chrono_stat[0];
+		rec->chrono_rwnd_limited = tp->chrono_stat[1];
+		rec->chrono_sndbuf_limited = tp->chrono_stat[2];
 		rec->conn_id = mptcp_conn_id(tp);
 		commit(rec, rb);
 	}
@@ -659,6 +668,338 @@ SEC("fentry/bbr_cwnd_event")
 int BPF_PROG(bbr_cwnd_event, struct sock *sk)
 {
 	return trace_bbr(sk);
+}
+
+/* ---- TCP events (-e) --------------------------------------------------------------- */
+
+/*
+ * One record per discrete event of a flow, all into TCP_EVENTS. The programs of a flow share
+ * its hook_seq counter at RB_TCP_EVENTS, so the numbers order all its events. The socket
+ * hooks run under the socket lock. Each program is optional on its own: a missing hook or
+ * one the kernel rejects only loses its kind of event.
+ */
+
+/* Socket fields of the event, from a full TCP socket; a BTF pointer from the hook's arguments */
+static __always_inline void tcp_event_sock_fields(struct tcp_event_entry *rec, struct sock *sk)
+{
+	struct tcp_sock *tp = bpf_skc_to_tcp_sock(sk);
+
+	if (!tp)
+		return;
+	rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+	rec->backoff = tp->inet_conn.icsk_backoff;
+	rec->snd_una = tp->snd_una;
+	rec->snd_cwnd = tp->snd_cwnd;
+	rec->packets_out = tp->packets_out;
+	rec->total_retrans = tp->total_retrans;
+}
+
+/*
+ * Reserves the event of kind on socket sk with ports sport and dport (sk_ports()) and its
+ * header: NULL if the filter rejects it or it is counted as dropped or error. The caller
+ * fills the rest and commits.
+ */
+static __always_inline struct tcp_event_entry *tcp_event_reserve_ports(struct sock *sk,
+									__u16 sport, __u16 dport,
+									__u8 kind)
+{
+	struct tcp_event_entry *rec;
+	__u64 hook_seq;
+
+	if (!filter_sock(sk, sport, dport))
+		return NULL;
+	if (!hook_seq_sk(sk, sport, dport, RB_TCP_EVENTS, &hook_seq))
+		return NULL;
+	rec = reserve(&TCP_EVENTS, RB_TCP_EVENTS, rec);
+	if (!rec)
+		return NULL;
+	fill_header(rec, sk, sport, dport, hook_seq);
+	rec->kind = kind;
+	return rec;
+}
+
+static __always_inline struct tcp_event_entry *tcp_event_reserve_sk(struct sock *sk, __u8 kind)
+{
+	__u16 sport, dport;
+
+	sk_ports(sk, &sport, &dport);
+	return tcp_event_reserve_ports(sk, sport, dport, kind);
+}
+
+/* An event on socket sk that carries nothing but the socket fields */
+static __always_inline int trace_tcp_event_sk(struct sock *sk, __u8 kind)
+{
+	struct tcp_event_entry *rec = tcp_event_reserve_sk(sk, kind);
+
+	if (!rec)
+		return 0;
+	tcp_event_sock_fields(rec, sk);
+	commit(rec, RB_TCP_EVENTS);
+	return 0;
+}
+
+/*
+ * Tuple source -> destination and sequence number of the TCP packet in skb, from its
+ * headers. False if skb holds no TCP packet with readable headers.
+ */
+static __always_inline bool tuple_from_skb(const struct sk_buff *skb, struct ip_tuple *t,
+					   __u16 *family, __u32 *seq)
+{
+	unsigned char *head = BPF_CORE_READ(skb, head);
+	__u16 network = BPF_CORE_READ(skb, network_header);
+	__u16 transport = BPF_CORE_READ(skb, transport_header);
+	__be16 proto = BPF_CORE_READ(skb, protocol);
+	struct tc_tcp_hdr tcp;
+
+	__builtin_memset(t, 0, sizeof(*t));
+	t->protocol = IPPROTO_TCP;
+	if (proto == bpf_htons(ETH_P_IP)) {
+		struct tc_ipv4_hdr ip;
+
+		if (bpf_probe_read_kernel(&ip, sizeof(ip), head + network) ||
+		    (ip.version_ihl >> 4) != 4 || ip.protocol != IPPROTO_TCP)
+			return false;
+		__builtin_memcpy(t->src_ip, &ip.saddr, 4);
+		__builtin_memcpy(t->dst_ip, &ip.daddr, 4);
+		*family = AF_INET;
+		/* Not set yet (0xffff) on some paths: the TCP header follows the IP header */
+		if (transport == (__u16)~0U || transport <= network)
+			transport = network + ((ip.version_ihl & 0x0F) << 2);
+	} else if (proto == bpf_htons(ETH_P_IPV6)) {
+		struct tc_ipv6_hdr ip6;
+
+		if (bpf_probe_read_kernel(&ip6, sizeof(ip6), head + network) ||
+		    (bpf_ntohl(ip6.version_tc_flow) >> 28) != 6 || ip6.nexthdr != IPPROTO_TCP)
+			return false;
+		__builtin_memcpy(t->src_ip, ip6.saddr, 16);
+		__builtin_memcpy(t->dst_ip, ip6.daddr, 16);
+		*family = AF_INET6;
+		if (transport == (__u16)~0U || transport <= network)
+			transport = network + sizeof(ip6);
+	} else {
+		return false;
+	}
+	if (bpf_probe_read_kernel(&tcp, sizeof(tcp), head + transport))
+		return false;
+	t->sport = bpf_ntohs(tcp.source);
+	t->dport = bpf_ntohs(tcp.dest);
+	*seq = bpf_ntohl(tcp.seq);
+	return true;
+}
+
+static __always_inline void tuple_swap(struct ip_tuple *t)
+{
+	__u8 addr[16];
+	__u16 port;
+
+	__builtin_memcpy(addr, t->src_ip, sizeof(addr));
+	__builtin_memcpy(t->src_ip, t->dst_ip, sizeof(addr));
+	__builtin_memcpy(t->dst_ip, addr, sizeof(addr));
+	port = t->sport;
+	t->sport = t->dport;
+	t->dport = port;
+}
+
+/*
+ * An event of the packet in skb, for a flow without a full socket at the hook. The tuple is
+ * turned local -> remote: the addresses and ports of a received packet are swapped. Only flows
+ * that already have a counter are recorded, see hook_seq_known_tuple().
+ */
+static __always_inline int trace_tcp_event_skb(const struct sk_buff *skb, bool received,
+					       __u8 kind, __u32 reason)
+{
+	struct tcp_event_entry *rec;
+	struct ip_tuple t;
+	__u16 family;
+	__u64 hook_seq;
+	__u32 seq;
+
+	if (!tuple_from_skb(skb, &t, &family, &seq))
+		return 0;
+	if (received)
+		tuple_swap(&t);
+	if (!filter_ports_match(t.sport, t.dport))
+		return 0;
+	if (filter_needs_tuple() && !filter_tuple_match(&t))
+		return 0;
+	if (!hook_seq_known_tuple(&t, family, RB_TCP_EVENTS, &hook_seq))
+		return 0;
+	rec = reserve(&TCP_EVENTS, RB_TCP_EVENTS, rec);
+	if (!rec)
+		return 0;
+	fill_header_tuple(rec, &t, family, hook_seq);
+	rec->kind = kind;
+	rec->reason = reason;
+	rec->seq = seq;
+	rec->len = BPF_CORE_READ(skb, len);
+	commit(rec, RB_TCP_EVENTS);
+	return 0;
+}
+
+SEC("tp_btf/tcp_retransmit_skb")
+int BPF_PROG(tcp_event_retransmit, const struct sock *sk, const struct sk_buff *skb)
+{
+	struct tcp_event_entry *rec;
+
+	if (!sk)
+		return 0;
+	rec = tcp_event_reserve_sk((struct sock *)sk, TCBEE_TCP_RETRANSMIT);
+	if (!rec)
+		return 0;
+	tcp_event_sock_fields(rec, (struct sock *)sk);
+	if (skb) {
+		/* TCP_SKB_CB(skb)->seq, the first field of struct tcp_skb_cb in skb->cb */
+		bpf_core_read(&rec->seq, sizeof(rec->seq), &skb->cb);
+		rec->len = skb->len;
+	}
+	commit(rec, RB_TCP_EVENTS);
+	return 0;
+}
+
+/*
+ * sk may be NULL or no full socket (a RST from the control socket, for a request or
+ * TIME_WAIT socket); then the tuple comes from skb, the packet the RST answers. From 6.12 on
+ * skb is NULL for an active reset, which always has a full socket.
+ */
+SEC("tp_btf/tcp_send_reset")
+int BPF_PROG(tcp_event_rst_sent, const struct sock *sk, const struct sk_buff *skb)
+{
+	if (sk && bpf_skc_to_tcp_sock((struct sock *)sk))
+		return trace_tcp_event_sk((struct sock *)sk, TCBEE_TCP_RST_SENT);
+	/* skb is the packet the RST answers, which this host received */
+	if (skb)
+		return trace_tcp_event_skb(skb, true, TCBEE_TCP_RST_SENT, 0);
+	return 0;
+}
+
+SEC("tp_btf/tcp_receive_reset")
+int BPF_PROG(tcp_event_rst_received, struct sock *sk)
+{
+	if (!sk)
+		return 0;
+	return trace_tcp_event_sk(sk, TCBEE_TCP_RST_RECEIVED);
+}
+
+/*
+ * Listening sockets have no flow and are left out, as are sockets without both ports: an
+ * active open enters SYN_SENT before it has its local port. A change to CLOSE comes after
+ * the socket released its port (skc_num is 0 then); inet_sport still holds it.
+ */
+SEC("tp_btf/inet_sock_set_state")
+int BPF_PROG(tcp_event_state, const struct sock *sk, int oldstate, int newstate)
+{
+	struct sock *s = (struct sock *)sk;
+	struct tcp_event_entry *rec;
+	__u16 sport, dport;
+
+	if (!s || s->sk_protocol != IPPROTO_TCP)
+		return 0;
+	if (oldstate == TCP_LISTEN || newstate == TCP_LISTEN)
+		return 0;
+	sk_ports(s, &sport, &dport);
+	if (!sport && newstate == TCP_CLOSE)
+		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)s, inet_sport));
+	if (!sport || !dport)
+		return 0;
+	rec = tcp_event_reserve_ports(s, sport, dport, TCBEE_TCP_STATE);
+	if (!rec)
+		return 0;
+	tcp_event_sock_fields(rec, s);
+	rec->old_state = oldstate;
+	rec->new_state = newstate;
+	commit(rec, RB_TCP_EVENTS);
+	return 0;
+}
+
+/* Kernel 5.19 and newer. Runs before the state is changed, so the socket still has the old one. */
+SEC("tp_btf/tcp_cong_state_set")
+int BPF_PROG(tcp_event_ca_state, struct sock *sk, const __u8 ca_state)
+{
+	struct tcp_event_entry *rec;
+	struct tcp_sock *tp;
+	__u8 old;
+
+	if (!sk)
+		return 0;
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp)
+		return 0;
+	old = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+	if (old == ca_state)
+		return 0;
+	rec = tcp_event_reserve_sk(sk, TCBEE_TCP_CA_STATE);
+	if (!rec)
+		return 0;
+	tcp_event_sock_fields(rec, sk);
+	rec->old_state = old;
+	rec->new_state = ca_state;
+	commit(rec, RB_TCP_EVENTS);
+	return 0;
+}
+
+/* Only the retransmission timer calls tcp_enter_loss */
+SEC("fentry/tcp_enter_loss")
+int BPF_PROG(tcp_event_rto, struct sock *sk)
+{
+	return trace_tcp_event_sk(sk, TCBEE_TCP_RTO);
+}
+
+/*
+ * Before 5.19, without tcp_cong_state_set. The call for ECN marks comes from a static function
+ * of the same file and may be inlined into it, so this may only see local congestion.
+ */
+SEC("fentry/tcp_enter_cwr")
+int BPF_PROG(tcp_event_cwr, struct sock *sk)
+{
+	return trace_tcp_event_sk(sk, TCBEE_TCP_CWR);
+}
+
+/* ---- TCP drops (--drops) ------------------------------------------------------------ */
+
+/*
+ * kfree_skb runs for every packet the kernel drops, on every path and without the socket
+ * lock, so the program leaves early for anything but IP. A packet of a socket that is not a
+ * full TCP socket (listener, request or TIME_WAIT socket) is keyed by its headers like one
+ * without a socket. The drop reason is an argument from 5.17 on; enum skb_drop_reason came
+ * with it, so its existence tells whether ctx[2] may be read.
+ */
+SEC("tp_btf/kfree_skb")
+int BPF_PROG(tcp_event_drop, struct sk_buff *skb, void *location)
+{
+	struct tcp_event_entry *rec;
+	__u16 sport, dport;
+	__u32 reason = 0;
+	struct sock *sk;
+	__be16 proto;
+	__u8 state;
+
+	if (!skb)
+		return 0;
+	proto = skb->protocol;
+	if (proto != bpf_htons(ETH_P_IP) && proto != bpf_htons(ETH_P_IPV6))
+		return 0;
+	if (bpf_core_type_exists(enum skb_drop_reason))
+		reason = (__u32)((volatile __u64 *)ctx)[2];
+
+	sk = skb->sk;
+	if (sk && sk->sk_protocol == IPPROTO_TCP) {
+		state = sk->__sk_common.skc_state;
+		sk_ports(sk, &sport, &dport);
+		/* The control socket that sends RSTs and TIME_WAIT ACKs has no remote port */
+		if (state != TCP_LISTEN && state != TCP_TIME_WAIT && state != TCP_NEW_SYN_RECV &&
+		    sport && dport) {
+			/* sk is a pointer read from skb, not one the verifier trusts for helpers */
+			rec = tcp_event_reserve_ports(sk, sport, dport, TCBEE_TCP_DROP);
+			if (!rec)
+				return 0;
+			rec->reason = reason;
+			rec->len = skb->len;
+			commit(rec, RB_TCP_EVENTS);
+			return 0;
+		}
+	}
+	/* skb_iif is the interface a packet came in on, 0 for packets this host generated */
+	return trace_tcp_event_skb(skb, BPF_CORE_READ(skb, skb_iif) != 0, TCBEE_TCP_DROP, reason);
 }
 
 /* ---- MPTCP path manager (-M pm) ---------------------------------------------------- */

@@ -5,6 +5,13 @@ use std::{
 
 use chrono::Local;
 
+/// Run metadata that tcbee-record writes with `--metadata` (JSON)
+pub const METADATA_FILE: &str = "metadata.json";
+
+/// Values and names of the kernel's drop reasons, written with `--drops` (JSON): the values
+/// differ between kernels
+pub const DROP_REASONS_FILE: &str = "drop_reasons.json";
+
 /// All trace file types produced by tcbee-record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceFile {
@@ -22,6 +29,7 @@ pub enum TraceFile {
     Tcp6Receive,
     Tcp6Send,
     MptcpPm,
+    TcpEvents,
 }
 
 impl TraceFile {
@@ -41,6 +49,7 @@ impl TraceFile {
             TraceFile::Tcp6Receive => "tcp6_receive.tcp",
             TraceFile::Tcp6Send => "tcp6_send.tcp",
             TraceFile::MptcpPm => "mptcp_pm.tcp",
+            TraceFile::TcpEvents => "tcp_events.tcp",
         }
     }
 
@@ -60,6 +69,7 @@ impl TraceFile {
             TraceFile::Tcp6Receive,
             TraceFile::Tcp6Send,
             TraceFile::MptcpPm,
+            TraceFile::TcpEvents,
         ]
     }
 }
