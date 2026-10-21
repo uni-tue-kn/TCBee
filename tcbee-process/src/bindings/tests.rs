@@ -778,3 +778,207 @@ fn old_sock_layout_is_the_current_one_without_the_added_columns() {
     rec.push_row(&mut changed);
     assert_ne!(got.columns(), changed.columns());
 }
+
+/// Every legacy layout's entry size is its frozen struct's bincode encoding plus the divider,
+/// and no two layouts of a table have the same size.
+#[test]
+fn legacy_entry_sizes_match_their_encoding() {
+    for (source, current) in [("sock", sock_trace_entry::ENTRY_SIZE), ("cwnd", 74)] {
+        let mut sizes = vec![current];
+        for l in legacy::layouts(source) {
+            let b = (l.binding)(Dir::Send);
+            assert_eq!(b.entry_size, l.entry_size, "{source}");
+            assert_eq!(
+                b.entry_size,
+                (b.encoded_size)() + RECORD_DELIMITER.len(),
+                "{source} {}",
+                l.entry_size
+            );
+            assert_eq!(b.table.source, source);
+            sizes.push(l.entry_size);
+        }
+        let n = sizes.len();
+        sizes.sort();
+        sizes.dedup();
+        assert_eq!(sizes.len(), n, "{source}: two layouts of the same size");
+    }
+    assert_eq!(
+        legacy::layouts("sock")
+            .iter()
+            .map(|l| l.entry_size)
+            .collect::<Vec<_>>(),
+        [172, 168, 201]
+    );
+    assert_eq!(
+        legacy::layouts("cwnd")
+            .iter()
+            .map(|l| l.entry_size)
+            .collect::<Vec<_>>(),
+        [70]
+    );
+}
+
+fn write_records<T: serde::Serialize>(path: &std::path::Path, recs: &[T], tail: usize) {
+    let mut bytes = Vec::new();
+    for r in recs {
+        bytes.extend(bincode::serialize(r).unwrap());
+        bytes.extend_from_slice(&RECORD_DELIMITER);
+    }
+    bytes.extend(std::iter::repeat_n(0u8, tail));
+    fs::write(path, &bytes).unwrap();
+}
+
+fn decode_first(b: &Binding, path: &std::path::Path) -> (EventBatch, Vec<u32>) {
+    let file = fs::File::open(path).unwrap();
+    let mut batch = EventBatch::new(b.table, 4);
+    let mut conns = Vec::new();
+    (b.decode)(&file, 0..1, &mut |seq, row| {
+        batch.push_header(0, b.dir, row.ts_ns(), seq as i64);
+        row.push_row(&mut batch);
+        conns.push(row.connection_key());
+        Ok(())
+    })
+    .unwrap();
+    (batch, conns)
+}
+
+fn col(b: &EventBatch, table: &EventTable, name: &str) -> i128 {
+    cell(
+        b,
+        table.columns.iter().position(|c| c.name == name).unwrap(),
+        0,
+    )
+}
+
+/// Files in each older layout are detected, report the columns they lack and decode into the
+/// current table; layouts without conn_id belong to no connection.
+#[test]
+fn legacy_layouts_are_detected_and_decoded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("send_sock.tcp");
+    let p = legacy::SockPrefix {
+        time: 7,
+        hook_seq: 1,
+        snd_cwnd: 33,
+        rcv_wscale: 9,
+        family: 2,
+        ..Default::default()
+    };
+
+    write_records(&path, &[legacy::Sock168Entry { p }; 3], 0);
+    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.missing_columns),
+        (168, sock::ADDED_COLUMNS)
+    );
+    let (batch, conns) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "snd_cwnd"),
+            col(&batch, b.table, "rcv_wscale")
+        ),
+        (33, 9)
+    );
+    assert_eq!(conns, [0]);
+
+    let r201 = legacy::Sock201Entry {
+        p,
+        srtt: 100,
+        packets_out: 5,
+        delivered: 77,
+        ca_state: 4,
+        ..Default::default()
+    };
+    write_records(&path, &[r201; 3], 0);
+    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.missing_columns),
+        (201, legacy::SOCK201_MISSING)
+    );
+    let (batch, conns) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "packets_out"),
+            col(&batch, b.table, "delivered"),
+            col(&batch, b.table, "ca_state")
+        ),
+        (5, 77, 4)
+    );
+    assert_eq!(col(&batch, b.table, "app_limited"), 0);
+    assert_eq!(conns, [0]);
+
+    let cpath = dir.path().join("send_cwnd.tcp");
+    write_records(
+        &cpath,
+        &[legacy::Cwnd70Entry {
+            time: 3,
+            hook_seq: 1,
+            snd_cwnd: 21,
+            family: 2,
+            ..Default::default()
+        }; 2],
+        0,
+    );
+    let b = binding_for(TraceFile::SendCwnd, &cpath).unwrap().unwrap();
+    assert_eq!((b.entry_size, b.table.source), (70, "cwnd"));
+    let (batch, conns) = decode_first(&b, &cpath);
+    assert_eq!(col(&batch, b.table, "perf_snd_cwnd"), 21);
+    assert_eq!(conns, [0]);
+}
+
+/// Empty files and files whose last record was cut off get a layout; records that fit several
+/// layouts are an error, unless the file's length decides.
+#[test]
+fn layout_probe_handles_empty_cut_and_ambiguous_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("send_sock.tcp");
+    fs::write(&path, b"").unwrap();
+    assert_eq!(
+        binding_for(TraceFile::SendSock, &path)
+            .unwrap()
+            .unwrap()
+            .entry_size,
+        202
+    );
+    // only a partial first record: no complete record in any layout -> the current one
+    fs::write(&path, [0u8; 50]).unwrap();
+    assert_eq!(
+        binding_for(TraceFile::SendSock, &path)
+            .unwrap()
+            .unwrap()
+            .entry_size,
+        202
+    );
+    // a 201 B file whose last record was cut off by a kill
+    let p = legacy::SockPrefix {
+        time: 1,
+        ..Default::default()
+    };
+    write_records(
+        &path,
+        &[legacy::Sock201Entry {
+            p,
+            ..Default::default()
+        }; 3],
+        17,
+    );
+    assert_eq!(
+        binding_for(TraceFile::SendSock, &path)
+            .unwrap()
+            .unwrap()
+            .entry_size,
+        201
+    );
+    // all 0xFF: dividers at every size; 606 B only divides into 202 B records
+    fs::write(&path, [0xFFu8; 606]).unwrap();
+    assert_eq!(
+        binding_for(TraceFile::SendSock, &path)
+            .unwrap()
+            .unwrap()
+            .entry_size,
+        202
+    );
+    // 201 * 202 B of 0xFF divide into both: refused, not guessed
+    fs::write(&path, vec![0xFFu8; 201 * 202]).unwrap();
+    assert!(binding_for(TraceFile::SendSock, &path).is_err());
+}

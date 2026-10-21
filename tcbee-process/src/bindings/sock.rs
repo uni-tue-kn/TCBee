@@ -1,7 +1,5 @@
-use std::{fs::File, io, os::unix::fs::FileExt, path::Path};
-
 use serde::{Deserialize, Serialize};
-use tcbee_common::records::{sock_trace_entry, RECORD_DELIMITER};
+use tcbee_common::records::sock_trace_entry;
 use ts_storage::{EventBatch, EventTable, IpTuple};
 
 use crate::{
@@ -78,8 +76,8 @@ pub const ADDED_COLUMNS: &[&str] = &[
     "chrono_sndbuf_limited",
 ];
 
-/// The sock record before `ADDED_COLUMNS` were recorded, so that older recordings still
-/// decode. Its rows go into the same table with 0 in the added columns; the pipeline leaves
+/// The sock record of dev with MPTCP (172 B), before `ADDED_COLUMNS` were recorded, so that
+/// older recordings still decode (one of the `legacy` layouts). Its rows go into the same table with 0 in the added columns; the pipeline leaves
 /// the series of those columns out.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OldSockEntry {
@@ -186,29 +184,4 @@ impl Event for OldSockEntry {
     fn push_row(&self, batch: &mut EventBatch) {
         Event::push_row(&self.current(), batch)
     }
-}
-
-/// Records whose dividers are looked at to tell the layouts apart
-const LAYOUT_PROBE_RECORDS: usize = 8;
-
-/// Whether a sock trace file is in the old layout: the dividers of its first records sit at
-/// the old record size and not at the current one.
-pub fn has_old_layout(path: &Path) -> io::Result<bool> {
-    let mut head = vec![0u8; LAYOUT_PROBE_RECORDS * sock_trace_entry::ENTRY_SIZE];
-    let file = File::open(path)?;
-    let mut got = 0;
-    while got < head.len() {
-        match file.read_at(&mut head[got..], got as u64)? {
-            0 => break,
-            n => got += n,
-        }
-    }
-    let dividers_at = |size: usize| {
-        let records = got / size;
-        records > 0
-            && (0..records).all(|i| {
-                head[(i + 1) * size - RECORD_DELIMITER.len()..(i + 1) * size] == RECORD_DELIMITER
-            })
-    };
-    Ok(!dividers_at(sock_trace_entry::ENTRY_SIZE) && dividers_at(OldSockEntry::ENTRY_SIZE))
 }

@@ -3,6 +3,7 @@
 pub mod bbr;
 pub mod cubic;
 pub mod cwnd;
+pub mod legacy;
 pub mod mptcp_pm;
 pub mod sock;
 pub mod tcp4_packet;
@@ -70,19 +71,20 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
     })
 }
 
-/// The binding of the trace file at `path`: `binding(file)`, except for sock files in the old
-/// layout, which get the binding of `OldSockEntry`.
+/// The binding of the trace file at `path`: `binding(file)`, or the binding of an older record
+/// layout of the same table (`legacy`) if the file was written in one.
 pub fn binding_for(file: TraceFile, path: &Path) -> io::Result<Option<Binding>> {
     let Some(current) = binding(file) else {
         return Ok(None);
     };
-    if current.table.source == sock_trace_entry::TABLE.source && sock::has_old_layout(path)? {
-        return Ok(Some(Binding {
-            missing_columns: sock::ADDED_COLUMNS,
-            ..binding_of::<sock::OldSockEntry>(current.dir)
-        }));
+    let old = legacy::layouts(current.table.source);
+    if old.is_empty() {
+        return Ok(Some(current));
     }
-    Ok(Some(current))
+    Ok(Some(match legacy::probe(path, current.entry_size, old)? {
+        legacy::Layout::Current => current,
+        legacy::Layout::Legacy(l) => (l.binding)(current.dir),
+    }))
 }
 
 /// Every event table, once, in the order of `TraceFile::all()`.

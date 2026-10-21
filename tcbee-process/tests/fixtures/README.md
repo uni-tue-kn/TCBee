@@ -9,7 +9,9 @@
   `hook_seq`, which was inserted afterwards as the record index + 1 (recorded with shared ring
   buffers, so file order was hook order). The sock records also got `conn_id` = 0 (no MPTCP).
   They are in the old sock layout without `ca_state`, the delivery and the chrono fields, which
-  tcbee-process detects and decodes through `OldSockEntry`.
+  tcbee-process detects and decodes through `OldSockEntry` (172 B). The other older layouts
+  (sock 168 and 201 B, cwnd 70 B, `src/bindings/legacy.rs`) are tested with records written by
+  the tests themselves.
 - **Generated** by `src/fixtures.rs`: `bbr`, `mptcp_pm`, `send_cwnd`, `tcp6_*`, the empty files and
   `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
   each flow from 1. Regenerate with
