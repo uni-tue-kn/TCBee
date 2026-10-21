@@ -39,7 +39,7 @@ The examples call the script as `./tcbee` from the unzipped release. After a sou
 
 ### tcbee-record
 
-Written in C with libbpf. Loads the eBPF programs and writes the raw events. A source flag picks what to record: `-h IFACE` for headers, `-t` for tracepoints, `-k` for fentry hooks, `-w` for the congestion window only, `-a` for Cubic and BBR internals, `-M` for MPTCP (path manager events, and with `-k` or `-w` the connection of every subflow record). With `--on-change`, `-k` and `-w` write a record only when a watched field changes. Filters (`-p`, `--ports`, `--ips`) limit the recording to some flows. Flags, kernel requirements and the static release build are in [tcbee-record/README.md](tcbee-record/README.md).
+Written in C with libbpf. Loads the eBPF programs and writes the raw events. A source flag picks what to record: `-h IFACE` for headers, `-t` for tracepoints, `-k` for fentry hooks, `-w` for the congestion window only, `-a` for Cubic and BBR internals, `-M` for MPTCP (path manager events, and with `-k` or `-w` the connection of every subflow record). With `--on-change`, `-k` and `-w` write a record only when a watched field changes, compared after received segments and retransmission timers. Filters (`-p`, `--ports`, `--ips`) limit the recording to some flows. Flags, kernel requirements and the static release build are in [tcbee-record/README.md](tcbee-record/README.md).
 
 ```bash
 sudo ./tcbee record -h eth0 -k -p 5001 --duration 60

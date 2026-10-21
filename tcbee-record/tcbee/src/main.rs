@@ -212,7 +212,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut on_change_hooks).add_option(
             &["--on-change-hooks"],
             Store,
-            "With --on-change: comma-separated kernel hooks to compare at. ingress = after each received segment (fexit/tcp_rcv_established), timer = after each retransmission, loss probe or zero window probe timer (fexit/tcp_write_timer_handler), both into the recv_*_oc.tcp files; egress = before each transmitted segment (fentry/__tcp_transmit_skb), into send_*_oc.tcp, one probe run per segment. Default: ingress,timer. In sock records, bits 8-15 of ato tell the hook (1 ingress, 2 timer, 3 egress).",
+            "With --on-change: comma-separated kernel hooks to compare at. ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process), timer = after each retransmission, loss probe, RACK reordering or zero window probe timer (fexit/tcp_write_timer_handler), both into the recv_*_oc.tcp files; egress = before each transmitted segment (fentry/__tcp_transmit_skb), into send_*_oc.tcp, one probe run per segment. Default: ingress,timer. In sock records, bits 8-15 of ato tell the hook (1 ingress, 2 timer, 3 egress).",
         );
         argparser.refer(&mut on_change_shadow).add_option(
             &["--on-change-shadow"],

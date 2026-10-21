@@ -81,6 +81,7 @@ At least one metric source is required.
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 | `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-M` records, comma-separated: `tag`, `pm` |
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
+| `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
@@ -95,27 +96,53 @@ Raw data is written as `*.tcp` files to the recording directory. Filter flags ar
 ## On-change mode
 
 `--on-change FIELDS` makes the sock (`-k`) and cwnd (`-w`) probes write a record only when a
-watched field or the socket state changed since the flow's last record at that hook, on a
-flow's first run and after a dropped record. Unchanged runs are counted as `suppressed` per
-ring buffer in `metrics.json` and take no `hook_seq`, so gaps in `hook_seq` are still exactly
-the dropped records. The default mode is unchanged.
+watched field or the socket state changed since the connection's last record, on a flow's
+first run and after a dropped record. Unchanged runs are counted as `suppressed` per ring
+buffer in `metrics.json` and take no `hook_seq`, so gaps in `hook_seq` are still exactly the
+dropped records. The default mode is unchanged.
 
-- `FIELDS` is `cc` (`snd_cwnd`, `snd_ssthresh`, `total_retrans`, `backoff`, `rto`,
-  `reordering`, `rcv_mss`) or a comma-separated list of `sock_trace_entry` fields; the cwnd
-  probe watches `snd_cwnd`. Fields that change on almost every packet (`bytes_acked`,
-  `bytes_received`, `segs_in`, `segs_out`, `rttvar`, `pacing_rate`) bring back nearly every
-  record; tcbee-record warns about them. Quantised fields are not supported yet.
-- The records go to `send_sock_oc.tcp`, `recv_sock_oc.tcp`, `send_cwnd_oc.tcp` and
-  `recv_cwnd_oc.tcp`, next to a `manifest.json` that lists the watched fields. tcbee-process
-  stores them as the sources `sock_oc` and `cwnd_oc`, and tcbee-viz draws the watched fields
-  as steps: a value holds until the next record. The other columns of these files are samples
-  taken when a watched field changed.
-- The receive side hooks `fexit/tcp_rcv_established` in this mode, so a record carries the
-  state after the packet was processed. The default `-k`/`-w` programs use fentry and record
-  the state before it.
-- Each socket keeps the last written values in BPF socket storage (about 370 bytes, freed
+- `FIELDS` is a preset or a comma-separated list of `sock_trace_entry` fields; the cwnd probe
+  watches `snd_cwnd`. `cc` watches the sender's congestion control state (`snd_cwnd`,
+  `snd_ssthresh`, `total_retrans`, `backoff`, `rto`, `reordering`, `rcv_mss`), `rcv` the
+  receiver's (`rcv_mss`, `rcv_space`, `rcv_ssthresh`, `rcv_rtt`). Fields that change on
+  almost every packet (`bytes_acked`, `bytes_received`, `segs_in`, `segs_out`, `rttvar`,
+  `pacing_rate`) bring back nearly every record; tcbee-record warns about them. Quantised
+  fields are not supported yet.
+- `--on-change-hooks` picks the kernel hooks that compare (default `ingress,timer`):
+
+  | Hook | Kernel hook | Runs | File |
+  |------|-------------|------|------|
+  | `ingress` | `fexit/tcp_rcv_established`, `fexit/tcp_rcv_state_process` | after each received segment (ESTABLISHED; the other states except LISTEN and CLOSE) | `recv_*_oc.tcp` |
+  | `timer` | `fexit/tcp_write_timer_handler` | after each retransmission, loss probe, RACK reordering or zero window probe timer, also when deferred to `tcp_release_cb` | `recv_*_oc.tcp` |
+  | `egress` | `fentry/__tcp_transmit_skb` | before each transmitted segment | `send_*_oc.tcp` |
+
+  On a sender almost every change of `cc` comes from ACK processing (ingress); the timer hook
+  adds what the retransmission timers change while no ACK arrives (Loss, `total_retrans`,
+  `backoff`, `rto`). Changes of the send path (cwnd restart after idle, app-limited cwnd
+  reduction) are seen by ingress at the next ACK; `egress` records them at once, at the cost of
+  one probe run per transmitted segment. Ingress and timer records carry the state after the
+  segment or timer was processed, egress records the state before the transmit. The default
+  `-k`/`-w` programs use fentry on both sides and record the state before.
+- The sock and cwnd probes each keep one last state per connection, which every hook
+  compares with and updates, so a change is written once, by the first hook that sees it.
+  Ingress and timer records share the receive file and its `hook_seq`; send and receive file
+  have their own `hook_seq`, so with `egress` the order between the two files is only the
+  order of their timestamps.
+- The records go to `recv_sock_oc.tcp` and `recv_cwnd_oc.tcp`, with `egress` also to
+  `send_sock_oc.tcp` and `send_cwnd_oc.tcp`, next to a `manifest.json` that lists the watched
+  fields and the kernel hooks of every file. tcbee-process stores them as the sources
+  `sock_oc` and `cwnd_oc`, and tcbee-viz draws the watched fields as steps: a value holds
+  until the next record. The other columns of these files are samples taken when a watched
+  field changed. With `egress`, the state of a connection is the send and receive file merged
+  by time; tcbee-viz still draws each file as its own series.
+- Listeners and closed sockets write no records, so neither the close nor an RST sent after
+  it is recorded.
+- In on-change sock records, bits 8-15 of `ato` tell the hook that wrote the record
+  (1 ingress, 2 timer, 3 egress); tcbee-process stores the raw value in the `ato` column
+  (256, 512, 768). cwnd records carry no hook.
+- Each socket keeps the last written values in BPF socket storage (about 190 bytes, freed
   with the socket). A socket without storage writes every run and counts as `state_errors`.
-- `--on-change-shadow` writes every run anyway and puts the decision into `ato`:
+- `--on-change-shadow` writes every run anyway and puts the decision into bits 0-7 of `ato`:
   1 suppressed, 2 a watched field changed, 3 first run or after a drop, 4 socket state
   changed, 5 no socket storage. A replay of such a trace checks the decisions record by
   record (`testing/onchange_smoke.sh`).
@@ -126,7 +153,8 @@ the dropped records. The default mode is unchanged.
 - 5.12: every probe numbers its events per flow with a fetch-and-add atomic (`hook_seq`).
   Ring buffers (5.8), fentry programs and `bpf_skc_to_tcp_sock` (5.9) are older; the
   `tcp_bad_csum` tracepoint of `-t` appeared in 5.11.
-- `--on-change` uses BPF socket storage in fentry/fexit programs (5.11).
+- `--on-change` uses BPF socket storage in fentry/fexit programs (5.11). The timer hook needs
+  `tcp_write_timer_handler` as a traceable (not inlined) function with BTF; checked on 6.8.
 - `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
   `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
   and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.
