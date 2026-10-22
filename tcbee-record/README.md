@@ -87,8 +87,8 @@ At least one metric source is required.
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
-8 MiB, tcp6 and tcp_probe 4 MiB) need about 40 MiB per CPU with `-h` and 110 MiB per CPU with
-all probes; the log at startup prints the total. Records of one flow come from several CPUs,
+8 MiB, tcp6 and tcp_probe 4 MiB, sock_timer 1 MiB) need about 40 MiB per CPU with `-h` and
+110 MiB per CPU with all probes; the log at startup prints the total. Records of one flow come from several CPUs,
 so their file order is not their order at the hook: every record carries `hook_seq`, its
 position among the events of its flow direction at its hook.
 
@@ -158,17 +158,22 @@ dropped records. The default mode is unchanged.
 
 `-k` also writes the socket after every run of the write timer handler
 (`fexit/tcp_write_timer_handler`, also when deferred to `tcp_release_cb`) to `timer_sock.tcp`:
-retransmission timeouts, loss probes, RACK reordering timeouts and zero window probes. The
-records carry the state after the timer was handled, and 2 (timer) in bits 8-15 of `ato`, as
-on-change timer records do. The record does not say which timer ran; a retransmission timeout
-shows as a higher `backoff` and `total_retrans` than in the previous record of the flow, and
-runs that found no timer due change nothing. `timer_sock.tcp` has its own ring buffer and
-`hook_seq`, so its order with `send_sock.tcp` and `recv_sock.tcp` is only the order of the
-timestamps. The hook is optional: if the kernel lacks the function or rejects the program,
-tcbee-record runs without it and lists it as skipped in the metadata; `--no-timer-hook` leaves it
-out on purpose. In on-change mode the
-`timer` hook writes into `recv_sock_oc.tcp` instead. tcbee-process reads `timer_sock.tcp`
-into the table `sock_timer`, with the columns of `sock`.
+retransmission timeouts, loss probes, RACK reordering timeouts and zero window probes.
+
+- The records carry the state after the timer was handled, and 2 (timer) in bits 8-15 of
+  `ato`, as on-change timer records do. They do not say which timer ran: a retransmission
+  timeout shows as a higher `backoff` and `total_retrans` than in the flow's previous record,
+  and runs that found no timer due change nothing.
+- `timer_sock.tcp` has its own ring buffer (1 MiB per CPU, size group `sock_timer`) and its own
+  `hook_seq`, so its order with `send_sock.tcp` and `recv_sock.tcp` is only the order of the
+  timestamps. Its `hook_seq` counters take one more entry per flow in the `HOOK_SEQ` map
+  (262144 entries for all hooks).
+- The hook is optional: if the kernel lacks the function or rejects the program, tcbee-record
+  runs without it and lists it as skipped in the metadata. `--no-timer-hook` leaves it out on
+  purpose, which the metadata lists too.
+- In on-change mode the `timer` hook writes into `recv_sock_oc.tcp` instead.
+- tcbee-process reads `timer_sock.tcp` into the table `sock_timer`, with the columns of
+  `sock`. The TUI counts the timer runs with the receive side.
 
 ## Kernel requirements
 
