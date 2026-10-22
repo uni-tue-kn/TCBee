@@ -195,6 +195,27 @@ impl MptcpModes {
     }
 }
 
+/// `--no-timer-hook` switches off the write timer program of -k; on-change mode picks its
+/// hooks with `--on-change-hooks` instead
+pub fn check_no_timer_hook(
+    no_timer_hook: bool,
+    kernel: bool,
+    on_change: bool,
+) -> anyhow::Result<()> {
+    if !no_timer_hook {
+        return Ok(());
+    }
+    if !kernel {
+        return Err(anyhow!("--no-timer-hook needs -k"));
+    }
+    if on_change {
+        return Err(anyhow!(
+            "--no-timer-hook is for the default mode, use --on-change-hooks with --on-change"
+        ));
+    }
+    Ok(())
+}
+
 /// `--on-change FIELDS`, `--on-change-hooks HOOKS` and `--on-change-shadow`, None in the
 /// default mode. An empty `hooks` is the default set (ingress and timer).
 pub fn parse_on_change(
@@ -324,6 +345,8 @@ pub struct EbpfRunnerConfig {
     pub poll_mode: PollMode,
     pub writer_cpus: Vec<usize>,
     pub on_change: Option<OnChange>,
+    /// `--no-timer-hook`: -k without its write timer program
+    pub no_timer_hook: bool,
 }
 
 #[derive(Default)]
@@ -391,6 +414,11 @@ impl EbpfRunnerConfig {
 
     pub fn kernel(mut self, set: bool) -> EbpfRunnerConfig {
         self.kernel = set;
+        self
+    }
+
+    pub fn no_timer_hook(mut self, set: bool) -> EbpfRunnerConfig {
+        self.no_timer_hook = set;
         self
     }
 
@@ -493,6 +521,14 @@ mod tests {
         assert_eq!(get("TCP6_PACKETS_EGRESS"), 1 << 20);
         assert_eq!(get("TCP_RECV_SOCK_EVENTS"), 8192);
         assert_eq!(get("TCP_SEND_SOCK_EVENTS"), 1 << 20);
+    }
+
+    #[test]
+    fn no_timer_hook_only_for_the_default_sock_probe() {
+        assert!(check_no_timer_hook(false, false, false).is_ok());
+        assert!(check_no_timer_hook(true, true, false).is_ok());
+        assert!(check_no_timer_hook(true, false, false).is_err());
+        assert!(check_no_timer_hook(true, true, true).is_err());
     }
 
     #[test]

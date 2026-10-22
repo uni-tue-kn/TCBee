@@ -83,6 +83,7 @@ At least one metric source is required.
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
+| `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records) |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
@@ -158,7 +159,8 @@ shows as a higher `backoff` and `total_retrans` than in the previous record of t
 runs that found no timer due change nothing. `timer_sock.tcp` has its own ring buffer and
 `hook_seq`, so its order with `send_sock.tcp` and `recv_sock.tcp` is only the order of the
 timestamps. The hook is optional: if the kernel lacks the function or rejects the program,
-tcbee-record runs without it and lists it as skipped in the metadata. In on-change mode the
+tcbee-record runs without it and lists it as skipped in the metadata; `--no-timer-hook` leaves it
+out on purpose. In on-change mode the
 `timer` hook writes into `recv_sock_oc.tcp` instead. tcbee-process reads `timer_sock.tcp`
 into the table `sock_timer`, with the columns of `sock`.
 

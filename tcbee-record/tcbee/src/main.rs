@@ -11,8 +11,8 @@ use std::net::IpAddr;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_to_filter_addr, on_change_manifest, parse_on_change, parse_ringbuf_sizes, EbpfRunnerConfig,
-    FilterConfig, MptcpModes,
+    check_no_timer_hook, ip_to_filter_addr, on_change_manifest, parse_on_change,
+    parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig, MptcpModes,
 };
 use tcbee_trace::TCBeeTrace;
 use writer::PollMode;
@@ -87,6 +87,7 @@ fn main() -> anyhow::Result<()> {
     let mut on_change: String = String::new();
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
+    let mut no_timer_hook: bool = false;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -172,7 +173,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_kernel).add_option(
             &["-k", "--kernel"],
             StoreTrue,
-            "Record the socket (all TCP metrics) at every transmitted (__tcp_transmit_skb) and received (tcp_rcv_established) segment, and after every run of the write timer (tcp_write_timer_handler).",
+            "Record the socket (all TCP metrics) at every transmitted (__tcp_transmit_skb) and received (tcp_rcv_established) segment, and after every run of the write timer (tcp_write_timer_handler, see --no-timer-hook).",
         );
         argparser.refer(&mut metrics).add_option(
             &["-m", "--metrics"],
@@ -218,6 +219,11 @@ fn main() -> anyhow::Result<()> {
             &["--on-change-shadow"],
             StoreTrue,
             "With --on-change and -k: write every sock run anyway, with the decision as a reason code in bits 0-7 of the ato field (1 suppressed, 2 changed, 3 first or after a drop, 4 state change, 5 no socket storage).",
+        );
+        argparser.refer(&mut no_timer_hook).add_option(
+            &["--no-timer-hook"],
+            StoreTrue,
+            "With -k: do not record the socket after each run of the write timer (timer_sock.tcp).",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -308,6 +314,7 @@ fn main() -> anyhow::Result<()> {
         trace_kernel,
         trace_cwnd,
     )?;
+    check_no_timer_hook(no_timer_hook, trace_kernel, on_change.is_some())?;
 
     // Create a timestamped recording directory inside the requested base dir
     let trace = TCBeeTrace::create(&dir)
@@ -344,6 +351,7 @@ fn main() -> anyhow::Result<()> {
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())
         .on_change(on_change)
+        .no_timer_hook(no_timer_hook)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints

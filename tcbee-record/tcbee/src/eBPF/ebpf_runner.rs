@@ -486,7 +486,8 @@ impl EbpfRunner {
         TCTracer::configure(&mut open.progs, self.config.headers, tcx);
         // The write timer program of -k fails softly: without the function or if the kernel
         // rejects it, the recording runs without it
-        let timer_wanted = !disabled.contains(&OptionalGroup::SockTimer);
+        let timer_wanted =
+            !self.config.no_timer_hook && !disabled.contains(&OptionalGroup::SockTimer);
         let has_timer = !btf.available() || btf.has_func(None, "tcp_write_timer_handler");
         let timer =
             KernelTracer::timer_hook(self.config.kernel, on_change, timer_wanted, has_timer);
@@ -605,6 +606,10 @@ impl EbpfRunner {
                 "{}: the kernel rejected its programs",
                 group.name()
             ));
+        }
+        if self.config.kernel && self.config.no_timer_hook {
+            self.skipped
+                .push("write timer hook: off (--no-timer-hook)".to_string());
         }
         if self.config.algorithms
             && !optional.contains(&OptionalGroup::Bbr)
