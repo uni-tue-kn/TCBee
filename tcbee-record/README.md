@@ -92,6 +92,12 @@ all probes; the log at startup prints the total. Records of one flow come from s
 so their file order is not their order at the hook: every record carries `hook_seq`, its
 position among the events of its flow direction at its hook.
 
+Next to every trace file with records, `<file>.cpu` tells which CPU's ring buffer each record
+came from: one 12-byte entry per run of consecutive records from the same CPU, the u64 index of
+the run's first record and the u32 CPU id, little endian. A last entry with CPU id `0xFFFFFFFF`
+holds the number of records; without it the file was cut short. With the per-CPU drop counters
+of `metrics.json`, it places a gap in a flow's `hook_seq` on the CPU whose ring was full.
+
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
 
 ## On-change mode

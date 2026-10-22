@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, ErrorKind},
+    io::{self, BufWriter, ErrorKind, Write},
     mem,
     os::fd::AsRawFd,
     path::{Path, PathBuf},
@@ -97,13 +97,14 @@ impl Writer {
         self.bytes_written.clone()
     }
 
-    /// Register the ring buffer maps of one output file. Spawns a dedicated worker thread
-    /// immediately. `rb` is the ring buffer index from `tcbee_common::stats`. The handles
-    /// keep the maps open, so the thread can drain them after the eBPF object is closed.
+    /// Register the ring buffer maps of one output file, with the CPU of each. Spawns a
+    /// dedicated worker thread immediately. `rb` is the ring buffer index from
+    /// `tcbee_common::stats`. The handles keep the maps open, so the thread can drain them
+    /// after the eBPF object is closed.
     pub fn register<T>(
         &mut self,
         rb: u32,
-        maps: Vec<MapHandle>,
+        maps: Vec<(u32, MapHandle)>,
         trace_dir: impl AsRef<Path>,
     ) -> Result<(), WriterError>
     where
@@ -117,7 +118,7 @@ impl Writer {
     pub fn register_as<T>(
         &mut self,
         rb: u32,
-        maps: Vec<MapHandle>,
+        maps: Vec<(u32, MapHandle)>,
         file: TraceFile,
         trace_dir: impl AsRef<Path>,
     ) -> Result<(), WriterError>
@@ -218,7 +219,7 @@ fn pin_to_cpu(cpu_id: usize) {
 
 fn job_loop<T>(
     job: MapWriterJob<T>,
-    maps: Vec<MapHandle>,
+    maps: Vec<(u32, MapHandle)>,
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
     poll_mode: PollMode,
@@ -236,8 +237,10 @@ where
     let job = RefCell::new(job);
     let rb = (|| {
         let mut builder = RingBufferBuilder::new();
-        for map in &maps {
-            builder.add(map, |data| job.borrow_mut().write(data))?;
+        let job = &job;
+        for (cpu, map) in &maps {
+            let cpu = *cpu;
+            builder.add(map, move |data| job.borrow_mut().write_from(cpu, data))?;
         }
         builder.build()
     })();
@@ -619,6 +622,8 @@ where
     counted: u64,
     /// Error that made the callback stop consuming
     error: Option<JobError>,
+    /// The CPU of every written record, `<file>.cpu`
+    cpus: CpuRuns,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -656,6 +661,7 @@ where
         );
 
         Ok(Self {
+            cpus: CpuRuns::new(&file_path),
             bytes_written,
             sink: Some(sink),
             file_path,
@@ -672,8 +678,18 @@ where
         self.file_path.to_str().unwrap_or("<unknown>")
     }
 
-    /// Ring buffer callback, writes one record. A non-zero return value stops libbpf from
-    /// consuming further records, the error is kept for the writer loop.
+    /// Ring buffer callback of the ring of `cpu`: writes one record and notes its CPU
+    fn write_from(&mut self, cpu: u32, entry: &[u8]) -> i32 {
+        let index = self.records;
+        let ret = self.write(entry);
+        if ret == 0 {
+            self.cpus.note(index, cpu);
+        }
+        ret
+    }
+
+    /// Writes one record. A non-zero return value stops libbpf from consuming further
+    /// records, the error is kept for the writer loop.
     fn write(&mut self, entry: &[u8]) -> i32 {
         match self.try_write(entry) {
             Ok(()) => {
@@ -726,10 +742,97 @@ where
     }
 
     fn flush(&mut self) -> Result<(), JobError> {
+        // The side file is finished even if the trace is not, it describes the records written
+        self.cpus.finish(self.records);
         if let Some(sink) = self.sink.take() {
             sink.finish().map_err(JobError::Io)?;
         }
         Ok(())
+    }
+}
+
+/// `<file>.cpu` next to a trace file: the CPU (ring buffer) each record came from, as one
+/// 12-byte entry per run of records from the same CPU: u64 index of the run's first record
+/// and u32 CPU id, little endian. A last entry with CPU `CPU_SIDE_END` holds the number of
+/// records; a file without it was cut short. The records of a flow are spread over the CPUs'
+/// rings, so this tells which ring a gap in a flow's hook_seq belongs to. Entries are written
+/// as the runs start, so memory stays flat; the file is created with the first record, and a
+/// failure to write it only loses the side file, never the trace.
+const CPU_SIDE_END: u32 = u32::MAX;
+
+fn cpu_side_path(trace: &Path) -> PathBuf {
+    let mut path = trace.to_path_buf().into_os_string();
+    path.push(".cpu");
+    path.into()
+}
+
+struct CpuRuns {
+    path: PathBuf,
+    out: Option<BufWriter<File>>,
+    last: Option<u32>,
+    failed: bool,
+}
+
+impl CpuRuns {
+    fn new(trace: &Path) -> Self {
+        Self {
+            path: cpu_side_path(trace),
+            out: None,
+            last: None,
+            failed: false,
+        }
+    }
+
+    /// Notes that record `index` came from `cpu`
+    #[inline]
+    fn note(&mut self, index: u64, cpu: u32) {
+        if self.last == Some(cpu) || self.failed {
+            return;
+        }
+        self.last = Some(cpu);
+        self.entry(index, cpu);
+    }
+
+    fn entry(&mut self, index: u64, cpu: u32) {
+        let mut entry = [0u8; 12];
+        entry[..8].copy_from_slice(&index.to_le_bytes());
+        entry[8..].copy_from_slice(&cpu.to_le_bytes());
+        if let Err(err) = self.out().and_then(|out| out.write_all(&entry)) {
+            self.fail(err);
+        }
+    }
+
+    fn out(&mut self) -> io::Result<&mut BufWriter<File>> {
+        if self.out.is_none() {
+            let file = File::create(&self.path)?;
+            self.out = Some(BufWriter::with_capacity(64 << 10, file));
+        }
+        Ok(self.out.as_mut().expect("just created"))
+    }
+
+    /// Ends a side file that has entries with the number of records written
+    fn finish(&mut self, records: u64) {
+        if self.out.is_none() {
+            return;
+        }
+        self.entry(records, CPU_SIDE_END);
+        if let Some(mut out) = self.out.take() {
+            if let Err(err) = out.flush() {
+                self.fail(err);
+            }
+        }
+    }
+
+    /// An incomplete side file would point records at the wrong CPU, so it is removed
+    fn fail(&mut self, err: io::Error) {
+        error!(
+            "Writing {} failed, recording without it: {}",
+            self.path.display(),
+            err
+        );
+        self.failed = true;
+        self.out = None;
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -918,6 +1021,73 @@ mod tests {
         let kept = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(kept, RECORD_DELIMITER);
+    }
+
+    fn cpu_side_file(path: &Path) -> Vec<(u64, u32)> {
+        std::fs::read(cpu_side_path(path))
+            .unwrap()
+            .chunks(12)
+            .map(|e| {
+                (
+                    u64::from_le_bytes(e[..8].try_into().unwrap()),
+                    u32::from_le_bytes(e[8..].try_into().unwrap()),
+                )
+            })
+            .collect()
+    }
+
+    /// The side file has one entry per run of records from one CPU, with the CPU's real id
+    #[test]
+    fn side_file_notes_the_cpu_of_every_run() {
+        let path = env::temp_dir().join(format!("tcbee-cpu-side-{}", std::process::id()));
+        let mut job =
+            MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+                .unwrap();
+        let entry = vec![0u8; mem::size_of::<tcp4_packet_trace>()];
+        for cpu in [0, 0, 2, 5, 5, 0] {
+            assert_eq!(job.write_from(cpu, &entry), 0);
+        }
+        // A record that is not written starts no run
+        assert_ne!(job.write_from(7, &entry[..3]), 0);
+        job.flush().unwrap();
+        let runs = cpu_side_file(&path);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(job.cpus.path).unwrap();
+        assert_eq!(runs, [(0, 0), (2, 2), (3, 5), (5, 0), (6, CPU_SIDE_END)]);
+    }
+
+    /// Without records there is no side file
+    #[test]
+    fn no_side_file_without_records() {
+        let path = env::temp_dir().join(format!("tcbee-cpu-none-{}", std::process::id()));
+        let mut job =
+            MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+                .unwrap();
+        job.flush().unwrap();
+        remove_if_empty(&path);
+        assert!(!cpu_side_path(&path).exists());
+    }
+
+    /// A side file that cannot be written is given up, the trace is still written
+    #[test]
+    fn failing_side_file_keeps_the_trace() {
+        let path = env::temp_dir().join(format!("tcbee-cpu-fail-{}", std::process::id()));
+        let side = cpu_side_path(&path);
+        std::fs::create_dir_all(&side).unwrap();
+        let mut job =
+            MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+                .unwrap();
+        let entry = vec![0u8; mem::size_of::<tcp4_packet_trace>()];
+        for cpu in [0, 1, 0] {
+            assert_eq!(job.write_from(cpu, &entry), 0);
+        }
+        job.flush().unwrap();
+        let written = std::fs::metadata(&path).unwrap().len();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&side).unwrap();
+        assert!(job.cpus.failed);
+        assert_eq!(job.records, 3);
+        assert!(written > 0);
     }
 
     #[test]
