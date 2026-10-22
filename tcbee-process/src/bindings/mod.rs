@@ -67,7 +67,8 @@ fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
     }
 }
 
-fn on_change_binding_of<E: Event + Default + serde::Serialize>(
+/// As `binding_of`, into `table` instead of the record's own table
+fn binding_into<E: Event + Default + serde::Serialize>(
     table: &'static EventTable,
     dir: Dir,
 ) -> Binding {
@@ -94,11 +95,11 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::Bbr => binding_of::<bbr_trace_entry>(Dir::None),
         TraceFile::MptcpPm => binding_of::<mptcp_pm_entry>(Dir::None),
         TraceFile::TcpEvents => binding_of::<tcp_event_entry>(Dir::None),
-        TraceFile::SendSockOc => on_change_binding_of::<sock_trace_entry>(&SOCK_OC, Dir::Send),
-        TraceFile::RecvSockOc => on_change_binding_of::<sock_trace_entry>(&SOCK_OC, Dir::Recv),
-        TraceFile::SendCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Send),
-        TraceFile::RecvCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Recv),
-        TraceFile::TimerSock => on_change_binding_of::<sock_trace_entry>(&SOCK_TIMER, Dir::None),
+        TraceFile::SendSockOc => binding_into::<sock_trace_entry>(&SOCK_OC, Dir::Send),
+        TraceFile::RecvSockOc => binding_into::<sock_trace_entry>(&SOCK_OC, Dir::Recv),
+        TraceFile::SendCwndOc => binding_into::<cwnd_trace_entry>(&CWND_OC, Dir::Send),
+        TraceFile::RecvCwndOc => binding_into::<cwnd_trace_entry>(&CWND_OC, Dir::Recv),
+        TraceFile::TimerSock => binding_into::<sock_trace_entry>(&SOCK_TIMER, Dir::None),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
 }
