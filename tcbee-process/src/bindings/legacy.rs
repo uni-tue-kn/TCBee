@@ -29,11 +29,11 @@ pub struct Legacy {
     pub binding: fn(Dir) -> Binding,
 }
 
-/// The older layouts of the table with this source name (the on-change files hold the same
-/// records as their full counterparts)
+/// The older layouts of the table with this source name (the on-change and timer files hold
+/// the same records as their full counterparts)
 pub fn layouts(source: &str) -> &'static [Legacy] {
     match source {
-        "sock" | "sock_oc" => &SOCK,
+        "sock" | "sock_oc" | "sock_timer" => &SOCK,
         "cwnd" | "cwnd_oc" => &CWND,
         _ => &[],
     }

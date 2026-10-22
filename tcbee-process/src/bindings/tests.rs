@@ -510,6 +510,7 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::Bbr, "bbr", Dir::None),
         (TraceFile::MptcpPm, "mptcp_pm", Dir::None),
         (TraceFile::TcpEvents, "tcp_event", Dir::None),
+        (TraceFile::TimerSock, "sock_timer", Dir::None),
         (TraceFile::SendSockOc, "sock_oc", Dir::Send),
         (TraceFile::RecvSockOc, "sock_oc", Dir::Recv),
         (TraceFile::SendCwndOc, "cwnd_oc", Dir::Send),
@@ -542,6 +543,7 @@ fn file_table_maps_every_trace_file() {
         ("tcp_event", 99, 13),
         ("sock_oc", 226, 40),
         ("cwnd_oc", 74, 1),
+        ("sock_timer", 226, 40),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -550,7 +552,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 11);
+    assert_eq!(names.len(), 12);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.
@@ -1056,4 +1058,27 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
 #[test]
 fn sock172_missing_ends_with_sock202_missing() {
     assert!(legacy::SOCK172_MISSING.ends_with(legacy::SOCK202_MISSING));
+}
+
+/// Write timer records (-k) decode into their own table and keep the hook tag in ato.
+#[test]
+fn timer_records_go_to_their_own_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("timer_sock.tcp");
+    let rec = tcbee_common::records::sock_trace_entry {
+        time: 7,
+        hook_seq: 1,
+        snd_cwnd: 1,
+        backoff: 2,
+        ato: 2 << 8,
+        ..Default::default()
+    };
+    write_records(&path, &[rec; 3], 0);
+    let b = binding_for(TraceFile::TimerSock, &path).unwrap().unwrap();
+    assert_eq!((b.table.source, b.dir), ("sock_timer", Dir::None));
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (col(&batch, b.table, "backoff"), col(&batch, b.table, "ato")),
+        (2, 512)
+    );
 }

@@ -159,7 +159,8 @@ runs that found no timer due change nothing. `timer_sock.tcp` has its own ring b
 `hook_seq`, so its order with `send_sock.tcp` and `recv_sock.tcp` is only the order of the
 timestamps. The hook is optional: if the kernel lacks the function or rejects the program,
 tcbee-record runs without it and lists it as skipped in the metadata. In on-change mode the
-`timer` hook writes into `recv_sock_oc.tcp` instead.
+`timer` hook writes into `recv_sock_oc.tcp` instead. tcbee-process reads `timer_sock.tcp`
+into the table `sock_timer`, with the columns of `sock`.
 
 ## Kernel requirements
 
