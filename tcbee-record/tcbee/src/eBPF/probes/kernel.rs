@@ -7,7 +7,7 @@ use tcbee_trace::{
     TraceFile,
 };
 
-use tcbee_common::stats::{RB_SOCK_RECV, RB_SOCK_SEND};
+use tcbee_common::stats::{RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER};
 
 use crate::{
     eBPF::{
@@ -21,8 +21,26 @@ use crate::{
 pub struct KernelTracer {}
 
 impl KernelTracer {
-    /// The on-change programs of the hooks in `on_change` replace the default ones
-    pub fn configure(progs: &mut OpenTcbeeProgs<'_>, enabled: bool, on_change: Option<HookSet>) {
+    /// Whether the write timer program of the default mode loads: with -k, not in on-change
+    /// mode (it has its own timer hook), not switched off or disabled after a failed load,
+    /// and only if the kernel has the function (`has_target`, true without BTF to check)
+    pub fn timer_hook(
+        enabled: bool,
+        on_change: Option<HookSet>,
+        wanted: bool,
+        has_target: bool,
+    ) -> bool {
+        enabled && on_change.is_none() && wanted && has_target
+    }
+
+    /// The on-change programs of the hooks in `on_change` replace the default ones. `timer`
+    /// loads the write timer program of the default mode, see `timer_hook`.
+    pub fn configure(
+        progs: &mut OpenTcbeeProgs<'_>,
+        enabled: bool,
+        on_change: Option<HookSet>,
+        timer: bool,
+    ) {
         let hooked = |hook| enabled && on_change.is_some_and(|h| h.contains(hook));
         progs
             .sock_sendmsg
@@ -30,6 +48,7 @@ impl KernelTracer {
         progs
             .sock_recvmsg
             .set_autoload(enabled && on_change.is_none());
+        progs.sock_timer.set_autoload(timer);
         progs.sock_oc_sendmsg.set_autoload(hooked(Hook::Egress));
         progs.sock_oc_recvmsg.set_autoload(hooked(Hook::Ingress));
         progs.sock_oc_rcv_state.set_autoload(hooked(Hook::Ingress));
@@ -82,5 +101,59 @@ impl KernelTracer {
         }
 
         Ok(())
+    }
+
+    /// The write timer program and its writer. Started after all other writers, so that
+    /// they keep their place in the writer CPU rotation.
+    pub fn spawn_timer(
+        skel: &TcbeeSkel<'_>,
+        dir: &str,
+        writer: &mut Writer,
+        links: &mut Vec<Link>,
+    ) -> Result<(), Box<dyn Error>> {
+        attach(&skel.progs.sock_timer, links)?;
+        writer.register_as::<sock_trace_entry>(
+            RB_SOCK_TIMER,
+            rings::of(&skel.maps.TCP_TIMER_SOCK_EVENTS)?,
+            TraceFile::TimerSock,
+            dir,
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::MaybeUninit;
+
+    use libbpf_rs::skel::{OpenSkel, SkelBuilder};
+
+    use super::*;
+    use crate::eBPF::skel::TcbeeSkelBuilder;
+
+    #[test]
+    fn timer_hook_only_in_the_default_mode_of_k() {
+        let on_change = Some(HookSet::DEFAULT);
+        assert!(KernelTracer::timer_hook(true, None, true, true));
+        assert!(!KernelTracer::timer_hook(false, None, true, true));
+        assert!(!KernelTracer::timer_hook(true, on_change, true, true));
+        assert!(!KernelTracer::timer_hook(true, None, false, true));
+        assert!(!KernelTracer::timer_hook(true, None, true, false));
+    }
+
+    #[test]
+    fn on_change_mode_loads_only_its_own_timer_program() {
+        let mut storage = MaybeUninit::uninit();
+        let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
+        KernelTracer::configure(&mut open.progs, true, None, true);
+        assert!(open.progs.sock_timer.autoload());
+        assert!(!open.progs.sock_oc_timer.autoload());
+        KernelTracer::configure(&mut open.progs, true, None, false);
+        assert!(!open.progs.sock_timer.autoload());
+        assert!(open.progs.sock_recvmsg.autoload());
+        let timer = KernelTracer::timer_hook(true, Some(HookSet::DEFAULT), true, true);
+        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), timer);
+        assert!(!open.progs.sock_timer.autoload());
+        assert!(open.progs.sock_oc_timer.autoload());
     }
 }

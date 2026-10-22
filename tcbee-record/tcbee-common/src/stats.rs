@@ -24,7 +24,8 @@ pub const RB_CUBIC: u32 = 11;
 pub const RB_BBR: u32 = 12;
 pub const RB_MPTCP_PM: u32 = 13;
 pub const RB_TCP_EVENTS: u32 = 14;
-pub const RB_COUNT: u32 = 15;
+pub const RB_SOCK_TIMER: u32 = 15;
+pub const RB_COUNT: u32 = 16;
 
 pub const STAT_HANDLED: u32 = 0;
 pub const STAT_DROPPED: u32 = 1;
@@ -101,6 +102,14 @@ pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
     rb("BBR_EVENTS", TraceFile::Bbr, "bbr", 8),
     rb("MPTCP_PM_EVENTS", TraceFile::MptcpPm, "mptcp_pm", 1),
     rb("TCP_EVENTS", TraceFile::TcpEvents, "tcp_events", 4),
+    // The write timer runs a few times per RTO at most; its own group, so that a sock size
+    // does not apply to it
+    rb(
+        "TCP_TIMER_SOCK_EVENTS",
+        TraceFile::TimerSock,
+        "sock_timer",
+        1,
+    ),
 ];
 
 #[cfg(test)]
@@ -110,16 +119,23 @@ mod tests {
     #[test]
     fn appended_slots_follow_the_per_ring_slots() {
         // The first RB_COUNT * STATS_PER_RB slots keep their layout in every mode
-        assert_eq!(slot(RB_TCP_EVENTS, STAT_ERROR), RB_COUNT * STATS_PER_RB - 1);
+        assert_eq!(slot(RB_SOCK_TIMER, STAT_ERROR), RB_COUNT * STATS_PER_RB - 1);
         assert_eq!(suppressed_slot(0), RB_COUNT * STATS_PER_RB);
-        assert_eq!(suppressed_slot(RB_TCP_EVENTS) + 1, STATS_STATE_ERR);
-        assert_eq!(RB_TCP_EVENTS, RB_COUNT - 1);
-        assert_eq!(STATS_LEN, 61);
+        assert_eq!(suppressed_slot(RB_SOCK_TIMER) + 1, STATS_STATE_ERR);
+        assert_eq!(RB_SOCK_TIMER, RB_COUNT - 1);
+        assert_eq!(STATS_LEN, 65);
         let all: Vec<u32> = (0..RB_COUNT).flat_map(invocation_slots).collect();
         let mut sorted = all.clone();
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), all.len(), "a slot counts for two rings");
         assert!(!all.contains(&STATS_STATE_ERR));
+    }
+
+    #[test]
+    fn rings_added_later_keep_the_older_slots() {
+        // Readers of older metrics address the first 15 rings by these slots
+        assert_eq!(slot(RB_TCP_EVENTS, STAT_ERROR), 44);
+        assert_eq!(slot(RB_SOCK_TIMER, STAT_HANDLED), 45);
     }
 }

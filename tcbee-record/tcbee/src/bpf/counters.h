@@ -29,7 +29,8 @@
 #define RB_BBR 12
 #define RB_MPTCP_PM 13
 #define RB_TCP_EVENTS 14
-#define RB_COUNT 15
+#define RB_SOCK_TIMER 15
+#define RB_COUNT 16
 
 #define STAT_HANDLED 0
 #define STAT_DROPPED 1

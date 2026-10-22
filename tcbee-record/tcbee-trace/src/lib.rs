@@ -32,6 +32,8 @@ pub enum TraceFile {
     Tcp6Send,
     MptcpPm,
     TcpEvents,
+    /// Socket state after each run of the write timer (full mode)
+    TimerSock,
     /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
     SendSockOc,
     RecvSockOc,
@@ -57,6 +59,7 @@ impl TraceFile {
             TraceFile::Tcp6Send => "tcp6_send.tcp",
             TraceFile::MptcpPm => "mptcp_pm.tcp",
             TraceFile::TcpEvents => "tcp_events.tcp",
+            TraceFile::TimerSock => "timer_sock.tcp",
             TraceFile::SendSockOc => "send_sock_oc.tcp",
             TraceFile::RecvSockOc => "recv_sock_oc.tcp",
             TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
@@ -81,6 +84,7 @@ impl TraceFile {
             TraceFile::Tcp6Send,
             TraceFile::MptcpPm,
             TraceFile::TcpEvents,
+            TraceFile::TimerSock,
             TraceFile::SendSockOc,
             TraceFile::RecvSockOc,
             TraceFile::SendCwndOc,

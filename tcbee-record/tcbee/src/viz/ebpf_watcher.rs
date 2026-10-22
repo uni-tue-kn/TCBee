@@ -30,8 +30,8 @@ use ratatui::{
 };
 use tcbee_common::stats::{
     invocation_slots, slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND,
-    RB_RETRANSMIT_SYNACK, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, STAT_DROPPED, STAT_HANDLED,
+    RB_RETRANSMIT_SYNACK, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER, RB_TCP4_EGRESS,
+    RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, STAT_DROPPED, STAT_HANDLED,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -81,7 +81,11 @@ impl EBPFWatcher {
             RateWatcher::new(attempts(&[RB_TCP4_INGRESS, RB_TCP6_INGRESS]), "pps");
         let egress_counter = RateWatcher::new(attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]), "pps");
         let tcp_sock_send = RateWatcher::new(attempts(&[RB_SOCK_SEND, RB_CWND_SEND]), "Calls/s");
-        let tcp_sock_recv = RateWatcher::new(attempts(&[RB_SOCK_RECV, RB_CWND_RECV]), "Calls/s");
+        // The write timer runs counted with the receive side
+        let tcp_sock_recv = RateWatcher::new(
+            attempts(&[RB_SOCK_RECV, RB_CWND_RECV, RB_SOCK_TIMER]),
+            "Calls/s",
+        );
         let cubic_events = RateWatcher::new(attempts(&[RB_CUBIC]), "Calls/s");
         let bbr_events = RateWatcher::new(attempts(&[RB_BBR]), "Calls/s");
         let tracepoint_events = RateWatcher::new(

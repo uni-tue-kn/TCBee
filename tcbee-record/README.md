@@ -59,7 +59,7 @@ At least one metric source is required.
 |---|---|
 | `-h IFACE` | TCP headers via TC on the given interface |
 | `-t` | `tcp_probe` and related tracepoints (most TCP metrics) |
-| `-k` | fentry on `__tcp_transmit_skb` and `tcp_rcv_established` (all TCP metrics) |
+| `-k` | fentry on `__tcp_transmit_skb` and `tcp_rcv_established` (all TCP metrics), and fexit on `tcp_write_timer_handler` (`timer_sock.tcp`, see below) |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
 | `-e` | Discrete TCP events (`tcp_events.tcp`): retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss) and retransmission timeouts. Each hook is optional: one the kernel lacks or rejects is left out with a warning |
@@ -146,6 +146,20 @@ dropped records. The default mode is unchanged.
   1 suppressed, 2 a watched field changed, 3 first run or after a drop, 4 socket state
   changed, 5 no socket storage. A replay of such a trace checks the decisions record by
   record (`testing/onchange_smoke.sh`).
+
+## Write timer records
+
+`-k` also writes the socket after every run of the write timer handler
+(`fexit/tcp_write_timer_handler`, also when deferred to `tcp_release_cb`) to `timer_sock.tcp`:
+retransmission timeouts, loss probes, RACK reordering timeouts and zero window probes. The
+records carry the state after the timer was handled, and 2 (timer) in bits 8-15 of `ato`, as
+on-change timer records do. The record does not say which timer ran; a retransmission timeout
+shows as a higher `backoff` and `total_retrans` than in the previous record of the flow, and
+runs that found no timer due change nothing. `timer_sock.tcp` has its own ring buffer and
+`hook_seq`, so its order with `send_sock.tcp` and `recv_sock.tcp` is only the order of the
+timestamps. The hook is optional: if the kernel lacks the function or rejects the program,
+tcbee-record runs without it and lists it as skipped in the metadata. In on-change mode the
+`timer` hook writes into `recv_sock_oc.tcp` instead.
 
 ## Kernel requirements
 

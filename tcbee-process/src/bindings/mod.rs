@@ -92,7 +92,9 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::RecvSockOc => on_change_binding_of::<sock_trace_entry>(&SOCK_OC, Dir::Recv),
         TraceFile::SendCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Send),
         TraceFile::RecvCwndOc => on_change_binding_of::<cwnd_trace_entry>(&CWND_OC, Dir::Recv),
-        TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
+        TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum | TraceFile::TimerSock => {
+            return None
+        }
     })
 }
 

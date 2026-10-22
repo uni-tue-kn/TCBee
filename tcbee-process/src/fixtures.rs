@@ -201,6 +201,7 @@ mod generate {
             "tcp_bad_csum",
             "recv_cwnd",
             "tcp_events",
+            "timer_sock",
             "recv_sock_oc",
             "recv_cwnd_oc",
         ] {

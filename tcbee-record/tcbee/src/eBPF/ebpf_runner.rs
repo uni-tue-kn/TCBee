@@ -15,8 +15,8 @@ use libbpf_rs::{
 use log::{debug, error, info, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
-    RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
-    RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
+    RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS,
+    RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -184,7 +184,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
     let (send, receive) = config
         .on_change
         .map_or((true, true), |o| (o.hooks.send(), o.hooks.receive()));
-    let groups: [(bool, &[u32]); 10] = [
+    let groups: [(bool, &[u32]); 11] = [
         (
             config.headers,
             &[
@@ -196,6 +196,10 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         ),
         (config.kernel && send, &[RB_SOCK_SEND]),
         (config.kernel && receive, &[RB_SOCK_RECV]),
+        (
+            optional.contains(&OptionalGroup::SockTimer),
+            &[RB_SOCK_TIMER],
+        ),
         (config.cwnd && send, &[RB_CWND_SEND]),
         (config.cwnd && receive, &[RB_CWND_RECV]),
         (
@@ -480,7 +484,13 @@ impl EbpfRunner {
         // A skeleton loads all programs, the ones of disabled groups must be switched off.
         // Their attach targets may not even exist on this kernel.
         TCTracer::configure(&mut open.progs, self.config.headers, tcx);
-        KernelTracer::configure(&mut open.progs, self.config.kernel, on_change);
+        // The write timer program of -k fails softly: without the function or if the kernel
+        // rejects it, the recording runs without it
+        let timer_wanted = !disabled.contains(&OptionalGroup::SockTimer);
+        let has_timer = !btf.available() || btf.has_func(None, "tcp_write_timer_handler");
+        let timer =
+            KernelTracer::timer_hook(self.config.kernel, on_change, timer_wanted, has_timer);
+        KernelTracer::configure(&mut open.progs, self.config.kernel, on_change, timer);
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
         CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
@@ -492,8 +502,15 @@ impl EbpfRunner {
         if BBRTracer::configure(&mut open.progs, bbr, btf) {
             optional.insert(OptionalGroup::Bbr);
         }
+        if timer {
+            optional.insert(OptionalGroup::SockTimer);
+        }
         let pm = self.config.mptcp.pm && !disabled.contains(&OptionalGroup::MptcpPm);
         let (any_pm, mut missing) = MptcpPmTracer::configure(open.open_object_mut(), pm, btf);
+        if !has_timer && KernelTracer::timer_hook(self.config.kernel, on_change, timer_wanted, true)
+        {
+            missing.push("write timer hook: the kernel has no tcp_write_timer_handler".to_string());
+        }
         if any_pm {
             optional.insert(OptionalGroup::MptcpPm);
         }
@@ -697,6 +714,20 @@ impl EbpfRunner {
             }
         }
 
+        // Last, so the other writers keep their writer CPUs. Fails softly like BBR.
+        if optional.contains(&OptionalGroup::SockTimer) {
+            let attached = links.len();
+            if let Err(err) = KernelTracer::spawn_timer(skel, dir, writer, links) {
+                links.truncate(attached);
+                optional.remove(&OptionalGroup::SockTimer);
+                // Its ring exists but holds nothing, the metadata lists only the rings in use
+                self.ringbuf_sizes[RB_SOCK_TIMER as usize] = None;
+                self.skipped
+                    .push(format!("write timer hook: attaching failed: {}", err));
+                warn!("Recording without the write timer hook: {}", err);
+            }
+        }
+
         // TODO: should be true by default in get_watcher_config()
         watcher_config.graphs.events = true;
 
@@ -729,5 +760,24 @@ impl EbpfRunner {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eBPF::ebpf_runner_config::parse_on_change;
+
+    #[test]
+    fn timer_ring_follows_the_timer_group() {
+        let config = EbpfRunnerConfig::new().kernel(true);
+        let none = BTreeSet::new();
+        let timer = BTreeSet::from([OptionalGroup::SockTimer]);
+        assert!(!enabled_ringbufs(&config, &none).contains(&RB_SOCK_TIMER));
+        assert!(enabled_ringbufs(&config, &timer).contains(&RB_SOCK_TIMER));
+        let on_change = parse_on_change("cc", "", false, true, false).unwrap();
+        let config = EbpfRunnerConfig::new().kernel(true).on_change(on_change);
+        let rings = enabled_ringbufs(&config, &none);
+        assert!(rings.contains(&RB_SOCK_RECV) && !rings.contains(&RB_SOCK_TIMER));
     }
 }

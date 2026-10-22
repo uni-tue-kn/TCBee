@@ -574,8 +574,9 @@ static __always_inline void fill_sock_fields(struct sock_trace_entry *rec, struc
 	fill_sock_extra(rec, tp);
 }
 
+/* hook_tag goes into ato; 0 in the default programs, so their code does not change */
 static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
-				      __u32 rb)
+				      __u32 rb, __u32 hook_tag)
 {
 	struct sock_trace_entry *rec;
 	struct tcp_sock *tp;
@@ -594,6 +595,8 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 	} else if ((rec = reserve(ringbufs, rb, rec))) {
 		fill_header(rec, sk, sport, dport, hook_seq);
 		fill_sock_fields(rec, sk, tp);
+		if (hook_tag)
+			rec->ato = hook_tag;
 		commit(rec, rb);
 	}
 
@@ -604,14 +607,27 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 SEC("fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND);
+	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, 0);
 }
 
 /* Only triggers in established state */
 SEC("fentry/tcp_rcv_established")
 int BPF_PROG(sock_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV);
+	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, 0);
+}
+
+/*
+ * The socket after every run of the write timer handler: RTO, loss probe, zero window
+ * probe, and runs that find no timer due. Optional (soft fail) and own ring, so its
+ * hook_seq series and counters stay apart from the ingress ones. The hook tag in ato is the
+ * one on-change records carry for the timer.
+ */
+SEC("?fexit/tcp_write_timer_handler")
+int BPF_PROG(sock_timer, struct sock *sk)
+{
+	return trace_sock(sk, NULL, &TCP_TIMER_SOCK_EVENTS, RB_SOCK_TIMER,
+			  ONCHG_HOOK_TIMER << ONCHG_HOOK_SHIFT);
 }
 
 /* Lighter variants of the above that only record the cwnd */

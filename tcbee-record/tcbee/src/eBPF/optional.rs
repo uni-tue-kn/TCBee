@@ -24,6 +24,8 @@ const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OptionalGroup {
     Bbr,
+    /// The write timer program of -k (fexit/tcp_write_timer_handler)
+    SockTimer,
     /// The MPTCP code in the sock and cwnd programs (MPTCP_TAG); without it they still load
     MptcpTag,
     MptcpPm,
@@ -32,13 +34,16 @@ pub enum OptionalGroup {
 }
 
 impl OptionalGroup {
-    pub const ALL: [OptionalGroup; 3 + TCP_EVENT_HOOKS.len()] = {
-        let mut all = [OptionalGroup::Bbr; 3 + TCP_EVENT_HOOKS.len()];
-        all[1] = OptionalGroup::MptcpTag;
-        all[2] = OptionalGroup::MptcpPm;
+    /// A program in several groups belongs to the first one here: sock_timer is also in
+    /// MPTCP tagging, but its own group is the one to drop when it fails
+    pub const ALL: [OptionalGroup; 4 + TCP_EVENT_HOOKS.len()] = {
+        let mut all = [OptionalGroup::Bbr; 4 + TCP_EVENT_HOOKS.len()];
+        all[1] = OptionalGroup::SockTimer;
+        all[2] = OptionalGroup::MptcpTag;
+        all[3] = OptionalGroup::MptcpPm;
         let mut i = 0;
         while i < TCP_EVENT_HOOKS.len() {
-            all[3 + i] = OptionalGroup::TcpEvent(i);
+            all[4 + i] = OptionalGroup::TcpEvent(i);
             i += 1;
         }
         all
@@ -47,6 +52,7 @@ impl OptionalGroup {
     pub fn name(self) -> &'static str {
         match self {
             OptionalGroup::Bbr => "BBR",
+            OptionalGroup::SockTimer => "write timer hook",
             OptionalGroup::MptcpTag => "MPTCP tagging",
             OptionalGroup::MptcpPm => "MPTCP path manager events",
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].name,
@@ -61,9 +67,11 @@ impl OptionalGroup {
     pub fn programs(self) -> &'static [&'static str] {
         match self {
             OptionalGroup::Bbr => &["bbr_cong_control", "bbr_cwnd_event"],
+            OptionalGroup::SockTimer => &["sock_timer"],
             OptionalGroup::MptcpTag => &[
                 "sock_sendmsg",
                 "sock_recvmsg",
+                "sock_timer",
                 "cwnd_sock_sendmsg",
                 "cwnd_sock_recvmsg",
                 "sock_oc_sendmsg",
@@ -203,6 +211,16 @@ mod tests {
             Some(BTreeSet::from([OptionalGroup::MptcpTag]))
         );
         assert_eq!(to_disable(&bbr(), &w), None);
+    }
+
+    #[test]
+    fn failing_timer_program_disables_only_the_timer_hook() {
+        let w = warnings(&["libbpf: prog 'sock_timer': failed to load: -524"]);
+        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::SockTimer]))
+        );
     }
 
     #[test]
