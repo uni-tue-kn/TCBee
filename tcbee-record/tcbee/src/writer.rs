@@ -462,6 +462,24 @@ const MAX_MMAP_GROWTH: usize = 1 << 30;
 /// helper every few kilobytes
 const MIN_BACKGROUND_GROWTH: usize = 16 << 20;
 
+/// Capacity after growing a file of `capacity` that must hold `required` bytes: geometric
+/// steps between MIN_BACKGROUND_GROWTH and MAX_MMAP_GROWTH, in multiples of `growth`
+fn next_capacity(capacity: usize, growth: usize, required: usize) -> usize {
+    let step = capacity.clamp(growth.max(MIN_BACKGROUND_GROWTH), MAX_MMAP_GROWTH);
+    required
+        .max(capacity.saturating_add(step))
+        .next_multiple_of(growth)
+}
+
+/// Whether to grow in the background once `required` bytes are used: when less than half of
+/// the file, and less than the next step, is free. Growing whenever half of the file was used
+/// kept the file at twice the bytes written once the step reached its maximum, and the helper
+/// zeroed new tmpfs pages at twice the write rate. Below the maximum step a step is as large
+/// as the file, so the half bound keeps small files small.
+fn starts_growth(capacity: usize, required: usize, new_capacity: usize) -> bool {
+    capacity.saturating_sub(required) < (new_capacity - capacity).min(capacity / 2)
+}
+
 struct MmapBackedFile {
     file: File,
     map: Option<MmapMut>,
@@ -512,12 +530,7 @@ impl MmapBackedFile {
     /// Next capacity when the file has to grow to hold `required` bytes. Grows
     /// geometrically so that remapping stays rare at high record rates.
     fn next_capacity(&self, required: usize) -> usize {
-        let step = self
-            .capacity
-            .clamp(self.growth.max(MIN_BACKGROUND_GROWTH), MAX_MMAP_GROWTH);
-        required
-            .max(self.capacity.saturating_add(step))
-            .next_multiple_of(self.growth)
+        next_capacity(self.capacity, self.growth, required)
     }
 
     /// Extends the file to `new_capacity` and maps all of it
@@ -598,10 +611,12 @@ impl MmapBackedFile {
             }
         }
 
-        // Start the next growth while half of the file is still free
-        if self.pending.is_none() && required > self.capacity / 2 {
+        // Start the next growth while one growth step is still free
+        if self.pending.is_none() {
             let new_capacity = self.next_capacity(required);
-            self.start_growth(new_capacity)?;
+            if starts_growth(self.capacity, required, new_capacity) {
+                self.start_growth(new_capacity)?;
+            }
         }
 
         Ok(())
@@ -1105,6 +1120,37 @@ mod tests {
         let written = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(written == expected);
+    }
+
+    /// The free space ahead of the writer stays within a few growth steps, also for large files
+    #[test]
+    fn growth_stays_close_to_the_data() {
+        let growth = 1000 * WRITER_BUFFER_SIZE;
+        let mut capacity = growth.max(MIN_MMAP_GROWTH);
+        let mut grown = 0;
+        let mut position = 0;
+        while position < 50 << 30 {
+            position += 1 << 20;
+            if position > capacity {
+                capacity = next_capacity(capacity, growth, position);
+            }
+            let next = next_capacity(capacity, growth, position);
+            if starts_growth(capacity, position, next) {
+                capacity = next;
+                grown += 1;
+            }
+            assert!(
+                capacity - position <= 3 * MAX_MMAP_GROWTH,
+                "{capacity} for {position}"
+            );
+        }
+        // About one growth per step written, not one whenever half of the file is used
+        assert!(grown < 60, "{grown} growths");
+
+        // A file with a few records stays at its first size
+        let capacity = growth.max(MIN_MMAP_GROWTH);
+        let next = next_capacity(capacity, growth, 300);
+        assert!(!starts_growth(capacity, 300, next));
     }
 
     /// Helpers run on the CPUs without a writer, not on the CPU of the thread that starts them
