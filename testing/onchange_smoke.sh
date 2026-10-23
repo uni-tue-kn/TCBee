@@ -89,7 +89,7 @@ from pathlib import Path
 default, oc, oc_all, drops, shadow, shadow_all, rto, rto_ingress = map(Path, sys.argv[1:])
 # Record layout as in tcbee-common/src/records.rs (size asserts) and the process bindings
 HDR = 62
-SIZES = {"sock": 226, "cwnd": 74}
+SIZES = {"sock": 262, "cwnd": 74}
 RINGS = {"send_sock": "TCP_SEND_SOCK_EVENTS", "recv_sock": "TCP_RECV_SOCK_EVENTS",
          "send_cwnd": "TCP_SEND_CWND_EVENTS", "recv_cwnd": "TCP_RECEIVE_CWND_EVENTS"}
 # The programs writing each file, by hook

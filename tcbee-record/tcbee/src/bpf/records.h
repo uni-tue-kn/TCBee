@@ -121,6 +121,19 @@ struct sock_trace_entry {
 	uint32_t snd_una;
 	uint32_t snd_nxt;
 	uint32_t lost_out; /* = tcpi_lost (the record's `lost` is tp->lost) */
+	/* The last delivery rate sample: packets delivered over its interval (= tcpi_delivery_rate
+	 * once multiplied by the MSS) */
+	uint32_t rate_delivered;
+	uint32_t rate_interval_us;
+	/* Earliest departure time of the next packet (EDT pacing), ns of CLOCK_MONOTONIC */
+	uint64_t wstamp_ns;
+	uint32_t reord_seen;  /* reorderings seen (= tcpi_reord_seen) */
+	uint32_t dsack_dups;  /* segments the receiver reported as duplicates (DSACK) */
+	/* Send buffer: bytes queued in the socket, its limit, and bytes written but not yet sent
+	 * (write_seq - snd_nxt, = tcpi_notsent_bytes) */
+	uint32_t wmem_queued;
+	uint32_t sndbuf;
+	uint32_t notsent;
 	/* Token of the MPTCP connection of a subflow (-m tag), 0 otherwise. Last field. */
 	uint32_t conn_id;
 };
@@ -384,7 +397,7 @@ struct filter_ip {
 /* Sizes are mirrored by const asserts in tcbee-common */
 _Static_assert(sizeof(struct tcp4_packet_trace) == 40, "tcp4_packet_trace size");
 _Static_assert(sizeof(struct tcp6_packet_trace) == 64, "tcp6_packet_trace size");
-_Static_assert(sizeof(struct sock_trace_entry) == 248, "sock_trace_entry size");
+_Static_assert(sizeof(struct sock_trace_entry) == 280, "sock_trace_entry size");
 _Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
 _Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
 _Static_assert(sizeof(struct bbr_trace_entry) == 120, "bbr_trace_entry size");

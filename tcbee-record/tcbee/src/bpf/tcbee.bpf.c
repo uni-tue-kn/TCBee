@@ -517,7 +517,18 @@ static __always_inline __u64 sock_field(struct sock *sk, struct tcp_sock *tp,
  * congestion state, the delivery rate sample, the time spent limited, the rest of TCP_INFO
  * and the MPTCP connection (mptcp.h). Stored in record order after the ones above.
  */
-static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct tcp_sock *tp)
+/*
+ * The send buffer fields of struct sock. A flavour (libbpf drops the ___ suffix and relocates
+ * against struct sock), so that struct sock in vmlinux.h keeps its size and the offsets of the
+ * structs that embed it, which the default programs' code is compared by.
+ */
+struct sock___sndbuf {
+	int sk_wmem_queued;
+	int sk_sndbuf;
+} __attribute__((preserve_access_index));
+
+static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct sock *sk,
+					    struct tcp_sock *tp)
 {
 	rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
 	rec->packets_out = tp->packets_out;
@@ -534,6 +545,14 @@ static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct
 	rec->snd_una = tp->snd_una;
 	rec->snd_nxt = tp->snd_nxt;
 	rec->lost_out = tp->lost_out;
+	rec->rate_delivered = tp->rate_delivered;
+	rec->rate_interval_us = tp->rate_interval_us;
+	rec->wstamp_ns = tp->tcp_wstamp_ns;
+	rec->reord_seen = tp->reord_seen;
+	rec->dsack_dups = tp->dsack_dups;
+	rec->wmem_queued = ((struct sock___sndbuf *)sk)->sk_wmem_queued;
+	rec->sndbuf = ((struct sock___sndbuf *)sk)->sk_sndbuf;
+	rec->notsent = tp->write_seq - tp->snd_nxt;
 	rec->conn_id = mptcp_conn_id(tp);
 }
 
@@ -571,7 +590,7 @@ static __always_inline void fill_sock_fields(struct sock_trace_entry *rec, struc
 	/* struct tcp_options_received, not read yet */
 	rec->snd_wscale = 0;
 	rec->rcv_wscale = 0;
-	fill_sock_extra(rec, tp);
+	fill_sock_extra(rec, sk, tp);
 }
 
 /*
@@ -896,7 +915,7 @@ static __always_inline void fill_sock_fields_watched(struct sock_trace_entry *re
 	rec->ato = 0;
 	rec->snd_wscale = 0;
 	rec->rcv_wscale = 0;
-	fill_sock_extra(rec, tp);
+	fill_sock_extra(rec, sk, tp);
 }
 
 static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 rb,

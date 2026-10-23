@@ -7,7 +7,7 @@ use crate::{
 };
 
 event_schema! {
-    sock_trace_entry => "sock", 226 {
+    sock_trace_entry => "sock", 262 {
         pacing_rate: U64,
         max_pacing_rate: U64,
         backoff: U8,
@@ -48,6 +48,14 @@ event_schema! {
         snd_una: U32,
         snd_nxt: U32,
         lost_out: U32,
+        rate_delivered: U32,
+        rate_interval_us: U32,
+        wstamp_ns: U64,
+        reord_seen: U32,
+        dsack_dups: U32,
+        wmem_queued: U32,
+        sndbuf: U32,
+        notsent: U32,
     }
     {
         fn flow_key(&self) -> IpTuple {

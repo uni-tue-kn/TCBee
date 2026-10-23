@@ -10,6 +10,7 @@
 //! | sock | 172 | dev with MPTCP, before run metadata | `SOCK172_MISSING` |
 //! | sock | 201 | on-change with the TCP_INFO fields, build 4d3cffb7 (no `conn_id`) | delivery rate and chrono |
 //! | sock | 202 | dev with run metadata (before the rest of TCP_INFO) | the rest of TCP_INFO |
+//! | sock | 226 | dev with the rest of TCP_INFO, before the send buffer and rate fields | those |
 //! | cwnd | 70 | the per-CPU and on-change lines (no `conn_id`) | – |
 //!
 //! Layouts without `conn_id` belong to no MPTCP connection (`connection_key` 0).
@@ -33,13 +34,13 @@ pub struct Legacy {
 /// the same records as their full counterparts)
 pub fn layouts(source: &str) -> &'static [Legacy] {
     match source {
-        "sock" | "sock_oc" | "sock_timer" => &SOCK,
+        "sock" | "sock_oc" | "sock_timer" | "sock_ingress" | "sock_event" => &SOCK,
         "cwnd" | "cwnd_oc" => &CWND,
         _ => &[],
     }
 }
 
-static SOCK: [Legacy; 4] = [
+static SOCK: [Legacy; 5] = [
     Legacy {
         entry_size: 172,
         binding: sock172,
@@ -55,6 +56,10 @@ static SOCK: [Legacy; 4] = [
     Legacy {
         entry_size: 202,
         binding: sock202,
+    },
+    Legacy {
+        entry_size: 226,
+        binding: sock226,
     },
 ];
 static CWND: [Legacy; 1] = [Legacy {
@@ -80,6 +85,14 @@ pub const SOCK172_MISSING: &[&str] = &[
     "snd_una",
     "snd_nxt",
     "lost_out",
+    "rate_delivered",
+    "rate_interval_us",
+    "wstamp_ns",
+    "reord_seen",
+    "dsack_dups",
+    "wmem_queued",
+    "sndbuf",
+    "notsent",
 ];
 
 fn sock172(dir: Dir) -> Binding {
@@ -104,6 +117,14 @@ pub const SOCK201_MISSING: &[&str] = &[
     "chrono_busy",
     "chrono_rwnd_limited",
     "chrono_sndbuf_limited",
+    "rate_delivered",
+    "rate_interval_us",
+    "wstamp_ns",
+    "reord_seen",
+    "dsack_dups",
+    "wmem_queued",
+    "sndbuf",
+    "notsent",
 ];
 
 fn sock201(dir: Dir) -> Binding {
@@ -114,12 +135,46 @@ fn sock201(dir: Dir) -> Binding {
 }
 
 /// Columns of the current sock record that the 202 B layout does not have
-pub const SOCK202_MISSING: &[&str] = &["srtt", "mdev", "min_rtt", "snd_una", "snd_nxt", "lost_out"];
+pub const SOCK202_MISSING: &[&str] = &[
+    "srtt",
+    "mdev",
+    "min_rtt",
+    "snd_una",
+    "snd_nxt",
+    "lost_out",
+    "rate_delivered",
+    "rate_interval_us",
+    "wstamp_ns",
+    "reord_seen",
+    "dsack_dups",
+    "wmem_queued",
+    "sndbuf",
+    "notsent",
+];
 
 fn sock202(dir: Dir) -> Binding {
     Binding {
         missing_columns: SOCK202_MISSING,
         ..binding_of::<Sock202Entry>(dir)
+    }
+}
+
+/// Columns of the current sock record that the 226 B layout does not have
+pub const SOCK226_MISSING: &[&str] = &[
+    "rate_delivered",
+    "rate_interval_us",
+    "wstamp_ns",
+    "reord_seen",
+    "dsack_dups",
+    "wmem_queued",
+    "sndbuf",
+    "notsent",
+];
+
+fn sock226(dir: Dir) -> Binding {
+    Binding {
+        missing_columns: SOCK226_MISSING,
+        ..binding_of::<Sock226Entry>(dir)
     }
 }
 
@@ -378,6 +433,52 @@ impl Sock202Entry {
     }
 }
 
+/// The sock record with the rest of TCP_INFO, before the send buffer and delivery rate fields
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Sock226Entry {
+    pub p: SockPrefix,
+    pub ca_state: u8,
+    pub packets_out: u32,
+    pub delivered: u32,
+    pub delivered_ce: u32,
+    pub app_limited: u32,
+    pub chrono_type: u8,
+    pub chrono_busy: u32,
+    pub chrono_rwnd_limited: u32,
+    pub chrono_sndbuf_limited: u32,
+    pub srtt: u32,
+    pub mdev: u32,
+    pub min_rtt: u32,
+    pub snd_una: u32,
+    pub snd_nxt: u32,
+    pub lost_out: u32,
+    pub conn_id: u32,
+}
+
+impl Sock226Entry {
+    fn current(&self) -> sock_trace_entry {
+        sock_trace_entry {
+            srtt: self.srtt,
+            mdev: self.mdev,
+            min_rtt: self.min_rtt,
+            snd_una: self.snd_una,
+            snd_nxt: self.snd_nxt,
+            lost_out: self.lost_out,
+            ca_state: self.ca_state,
+            packets_out: self.packets_out,
+            delivered: self.delivered,
+            delivered_ce: self.delivered_ce,
+            app_limited: self.app_limited,
+            chrono_type: self.chrono_type,
+            chrono_busy: self.chrono_busy,
+            chrono_rwnd_limited: self.chrono_rwnd_limited,
+            chrono_sndbuf_limited: self.chrono_sndbuf_limited,
+            conn_id: self.conn_id,
+            ..self.p.current()
+        }
+    }
+}
+
 /// The cwnd record without `conn_id`
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Cwnd70Entry {
@@ -445,4 +546,5 @@ legacy_event!(Sock172Entry, sock_trace_entry, 172);
 legacy_event!(Sock168Entry, sock_trace_entry, 168);
 legacy_event!(Sock201Entry, sock_trace_entry, 201);
 legacy_event!(Sock202Entry, sock_trace_entry, 202);
+legacy_event!(Sock226Entry, sock_trace_entry, 226);
 legacy_event!(Cwnd70Entry, cwnd_trace_entry, 70);

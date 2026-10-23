@@ -34,9 +34,9 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |
 | `tcp_bad_csum.tcp` | none | | 0 | generated |
 | `tcp_events.tcp` | none | | 0 | generated |
-| `timer_sock.tcp` | `sock_trace_entry` (source `sock_timer`) | 226 | 0 | generated |
-| `ingress_sock.tcp` | `sock_trace_entry` (source `sock_ingress`) | 226 | 0 | generated |
-| `event_sock.tcp` | `sock_trace_entry` (source `sock_event`) | 226 | 0 | generated |
+| `timer_sock.tcp` | `sock_trace_entry` (source `sock_timer`) | 262 | 0 | generated |
+| `ingress_sock.tcp` | `sock_trace_entry` (source `sock_ingress`) | 262 | 0 | generated |
+| `event_sock.tcp` | `sock_trace_entry` (source `sock_event`) | 262 | 0 | generated |
 | `send_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `recv_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `send_cwnd.tcp` | `cwnd_trace_entry` | 74 | 1000 | generated |
@@ -46,7 +46,7 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `tcp6_receive.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
 | `tcp6_send.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
 | `send_sock_oc.tcp` | `Sock172Entry` (source `sock_oc`) | 172 | 200 | real (first 200 of `send_sock.tcp`) |
-| `recv_sock_oc.tcp` | `sock_trace_entry` (source `sock_oc`) | 226 | 0 | generated |
+| `recv_sock_oc.tcp` | `sock_trace_entry` (source `sock_oc`) | 262 | 0 | generated |
 | `send_cwnd_oc.tcp` | `cwnd_trace_entry` (source `cwnd_oc`) | 74 | 200 | generated |
 | `recv_cwnd_oc.tcp` | `cwnd_trace_entry` (source `cwnd_oc`) | 74 | 0 | generated |
 

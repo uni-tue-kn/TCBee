@@ -223,6 +223,12 @@ struct tcp_sock {
 	u32 app_limited;
 	u8 chrono_type: 2;
 	u32 chrono_stat[3];
+	u32 write_seq;
+	u32 rate_delivered;
+	u32 rate_interval_us;
+	u64 tcp_wstamp_ns;
+	u32 dsack_dups;
+	u32 reord_seen;
 };
 
 struct in_addr {
