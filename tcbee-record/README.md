@@ -83,12 +83,12 @@ At least one metric source is required.
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
-| `--sock-hooks LIST` | `egress,ingress-entry,timer` | With `-k`: the kernel hooks to record the socket at, `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`), `timer` (`timer_sock.tcp`), `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). A list of only `+name` and `-name` items changes the default. With `--on-change` the same as `--on-change-hooks` |
+| `--sock-hooks LIST` | `egress,ingress-entry,timer` | With `-k`: the kernel hooks to record the socket at, `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`), `timer` (`timer_sock.tcp`), `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`), and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). A list of only `+name` and `-name` items changes the default. With `--on-change` the same as `--on-change-hooks` |
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
-8 MiB, tcp6 and tcp_probe 4 MiB, sock_timer 1 MiB) need about 40 MiB per CPU with `-h` and
+8 MiB, tcp6 and tcp_probe 4 MiB, sock_timer and sock_event 1 MiB) need about 40 MiB per CPU with `-h` and
 110 MiB per CPU with all probes; the log at startup prints the total. Records of one flow come from several CPUs,
 so their file order is not their order at the hook: every record carries `hook_seq`, its
 position among the events of its flow direction at its hook.
@@ -175,6 +175,27 @@ retransmission timeouts, loss probes, RACK reordering timeouts and zero window p
 - In on-change mode the `timer` hook writes into `recv_sock_oc.tcp` instead.
 - tcbee-process reads `timer_sock.tcp` into the table `sock_timer`, with the columns of
   `sock`. The TUI counts the timer runs with the receive side.
+
+## Socket event records
+
+The socket event hooks of `--sock-hooks` write the socket at TCP events, not per packet, to
+`event_sock.tcp` (tcbee-process table `sock_event`):
+
+| Hook | Kernel hook | Runs |
+|------|-------------|------|
+| `state` | `tp_btf/inet_sock_set_state` | at each TCP state change |
+| `ca-state` | `tp_btf/tcp_cong_state_set` (5.19) | at each congestion state change (Open, Disorder, CWR, Recovery, Loss) |
+| `retransmit` | `tp_btf/tcp_retransmit_skb` | at each retransmitted segment |
+| `restart` | `fexit/tcp_cwnd_restart` | after the cwnd was cut for an idle period |
+| `rcvbuf` | `tp_btf/tcp_rcvbuf_grow` (recent kernels) | when receive autotuning grows the buffer |
+
+- Bits 8-15 of `ato` tell the hook (4 state, 5 ca-state, 6 retransmit, 7 restart, 8 rcvbuf).
+  The state tracepoints run before the change, so the record still holds the old state and
+  carries the new one in bits 16-23 of `ato`.
+- All hooks share one ring buffer (1 MiB per CPU, size group `sock_event`) and one `hook_seq`
+  series per flow, so their records are in order with each other.
+- Each hook is optional: one the kernel lacks or rejects is left out with a warning and listed
+  as skipped in the metadata.
 
 ## Kernel requirements
 

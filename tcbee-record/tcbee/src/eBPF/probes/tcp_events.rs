@@ -11,7 +11,7 @@ use crate::{
     writer::Writer,
 };
 
-/// Where a TCP event program attaches
+/// Where a TCP or socket event program attaches
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Tracepoint(&'static str),

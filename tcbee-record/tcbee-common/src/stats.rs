@@ -26,7 +26,8 @@ pub const RB_MPTCP_PM: u32 = 13;
 pub const RB_TCP_EVENTS: u32 = 14;
 pub const RB_SOCK_TIMER: u32 = 15;
 pub const RB_SOCK_INGRESS: u32 = 16;
-pub const RB_COUNT: u32 = 17;
+pub const RB_SOCK_EVENT: u32 = 17;
+pub const RB_COUNT: u32 = 18;
 
 pub const STAT_HANDLED: u32 = 0;
 pub const STAT_DROPPED: u32 = 1;
@@ -118,6 +119,13 @@ pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
         "sock",
         16,
     ),
+    // At TCP events, not per packet
+    rb(
+        "TCP_EVENT_SOCK_EVENTS",
+        TraceFile::EventSock,
+        "sock_event",
+        1,
+    ),
 ];
 
 #[cfg(test)]
@@ -127,14 +135,11 @@ mod tests {
     #[test]
     fn appended_slots_follow_the_per_ring_slots() {
         // The first RB_COUNT * STATS_PER_RB slots keep their layout in every mode
-        assert_eq!(
-            slot(RB_SOCK_INGRESS, STAT_ERROR),
-            RB_COUNT * STATS_PER_RB - 1
-        );
+        assert_eq!(slot(RB_SOCK_EVENT, STAT_ERROR), RB_COUNT * STATS_PER_RB - 1);
         assert_eq!(suppressed_slot(0), RB_COUNT * STATS_PER_RB);
-        assert_eq!(suppressed_slot(RB_SOCK_INGRESS) + 1, STATS_STATE_ERR);
-        assert_eq!(RB_SOCK_INGRESS, RB_COUNT - 1);
-        assert_eq!(STATS_LEN, 69);
+        assert_eq!(suppressed_slot(RB_SOCK_EVENT) + 1, STATS_STATE_ERR);
+        assert_eq!(RB_SOCK_EVENT, RB_COUNT - 1);
+        assert_eq!(STATS_LEN, 73);
         let all: Vec<u32> = (0..RB_COUNT).flat_map(invocation_slots).collect();
         let mut sorted = all.clone();
         sorted.sort_unstable();
@@ -149,5 +154,6 @@ mod tests {
         assert_eq!(slot(RB_TCP_EVENTS, STAT_ERROR), 44);
         assert_eq!(slot(RB_SOCK_TIMER, STAT_HANDLED), 45);
         assert_eq!(slot(RB_SOCK_INGRESS, STAT_HANDLED), 48);
+        assert_eq!(slot(RB_SOCK_EVENT, STAT_HANDLED), 51);
     }
 }

@@ -36,6 +36,7 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `tcp_events.tcp` | none | | 0 | generated |
 | `timer_sock.tcp` | `sock_trace_entry` (source `sock_timer`) | 226 | 0 | generated |
 | `ingress_sock.tcp` | `sock_trace_entry` (source `sock_ingress`) | 226 | 0 | generated |
+| `event_sock.tcp` | `sock_trace_entry` (source `sock_event`) | 226 | 0 | generated |
 | `send_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `recv_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `send_cwnd.tcp` | `cwnd_trace_entry` | 74 | 1000 | generated |

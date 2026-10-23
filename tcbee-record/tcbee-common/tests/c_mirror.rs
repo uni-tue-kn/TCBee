@@ -59,6 +59,7 @@ fn ring_buffer_ids_match_counters_h() {
         RB_TCP_EVENTS,
         RB_SOCK_TIMER,
         RB_SOCK_INGRESS,
+        RB_SOCK_EVENT,
     );
     assert_eq!(c, rust);
     let mut ids: Vec<u32> = rust.into_values().collect();

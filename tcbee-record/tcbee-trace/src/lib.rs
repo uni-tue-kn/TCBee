@@ -36,6 +36,8 @@ pub enum TraceFile {
     TimerSock,
     /// Socket state after each received segment (full mode, `--sock-hooks ingress`)
     IngressSock,
+    /// Socket state at TCP events (full mode, the socket event hooks)
+    EventSock,
     /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
     SendSockOc,
     RecvSockOc,
@@ -63,6 +65,7 @@ impl TraceFile {
             TraceFile::TcpEvents => "tcp_events.tcp",
             TraceFile::TimerSock => "timer_sock.tcp",
             TraceFile::IngressSock => "ingress_sock.tcp",
+            TraceFile::EventSock => "event_sock.tcp",
             TraceFile::SendSockOc => "send_sock_oc.tcp",
             TraceFile::RecvSockOc => "recv_sock_oc.tcp",
             TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
@@ -89,6 +92,7 @@ impl TraceFile {
             TraceFile::TcpEvents,
             TraceFile::TimerSock,
             TraceFile::IngressSock,
+            TraceFile::EventSock,
             TraceFile::SendSockOc,
             TraceFile::RecvSockOc,
             TraceFile::SendCwndOc,

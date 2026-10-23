@@ -62,6 +62,14 @@ static SOCK_INGRESS: EventTable = EventTable {
     columns: <sock_trace_entry as Event>::TABLE.columns,
 };
 
+/// Sock records written at TCP events (-k): state and congestion state changes,
+/// retransmissions, cwnd restarts, receive buffer growth. The hook is in bits 8-15 of `ato`,
+/// the new state of a state change in bits 16-23.
+static SOCK_EVENT: EventTable = EventTable {
+    source: "sock_event",
+    columns: <sock_trace_entry as Event>::TABLE.columns,
+};
+
 fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
     Binding {
         dir,
@@ -108,6 +116,7 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::RecvCwndOc => binding_into::<cwnd_trace_entry>(&CWND_OC, Dir::Recv),
         TraceFile::TimerSock => binding_into::<sock_trace_entry>(&SOCK_TIMER, Dir::None),
         TraceFile::IngressSock => binding_into::<sock_trace_entry>(&SOCK_INGRESS, Dir::None),
+        TraceFile::EventSock => binding_into::<sock_trace_entry>(&SOCK_EVENT, Dir::None),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
 }

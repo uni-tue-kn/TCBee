@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::eBPF::probes::{mptcp::PM_HOOKS, tcp_events::TCP_EVENT_HOOKS};
+use crate::eBPF::probes::{
+    mptcp::PM_HOOKS, sock_events::SOCK_EVENT_HOOKS, tcp_events::TCP_EVENT_HOOKS,
+};
 
 /// The program names of `PM_HOOKS`
 const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
@@ -31,19 +33,31 @@ pub enum OptionalGroup {
     MptcpPm,
     /// One TCP event program, the index into `TCP_EVENT_HOOKS`
     TcpEvent(usize),
+    /// One socket event program of -k, the index into `SOCK_EVENT_HOOKS`
+    SockEvent(usize),
 }
 
 impl OptionalGroup {
-    /// A program in several groups belongs to the first one here: sock_timer is also in
-    /// MPTCP tagging, but its own group is the one to drop when it fails
-    pub const ALL: [OptionalGroup; 4 + TCP_EVENT_HOOKS.len()] = {
-        let mut all = [OptionalGroup::Bbr; 4 + TCP_EVENT_HOOKS.len()];
+    /// A program in several groups belongs to the first one here: sock_timer and the socket
+    /// event programs are also in MPTCP tagging, but their own group is the one to drop when
+    /// they fail
+    pub const ALL: [OptionalGroup; 4 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()] = {
+        let mut all = [OptionalGroup::Bbr; 4 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()];
         all[1] = OptionalGroup::SockTimer;
-        all[2] = OptionalGroup::MptcpTag;
-        all[3] = OptionalGroup::MptcpPm;
+        let mut n = 2;
+        let mut i = 0;
+        while i < SOCK_EVENT_HOOKS.len() {
+            all[n] = OptionalGroup::SockEvent(i);
+            n += 1;
+            i += 1;
+        }
+        all[n] = OptionalGroup::MptcpTag;
+        all[n + 1] = OptionalGroup::MptcpPm;
+        n += 2;
         let mut i = 0;
         while i < TCP_EVENT_HOOKS.len() {
-            all[4 + i] = OptionalGroup::TcpEvent(i);
+            all[n] = OptionalGroup::TcpEvent(i);
+            n += 1;
             i += 1;
         }
         all
@@ -56,11 +70,16 @@ impl OptionalGroup {
             OptionalGroup::MptcpTag => "MPTCP tagging",
             OptionalGroup::MptcpPm => "MPTCP path manager events",
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].name,
+            OptionalGroup::SockEvent(i) => SOCK_EVENT_HOOKS[i].name,
         }
     }
 
     pub fn is_tcp_event(self) -> bool {
         matches!(self, OptionalGroup::TcpEvent(_))
+    }
+
+    pub fn is_sock_event(self) -> bool {
+        matches!(self, OptionalGroup::SockEvent(_))
     }
 
     /// The group's programs, as libbpf names them (the C function names)
@@ -84,9 +103,15 @@ impl OptionalGroup {
                 "cwnd_oc_timer",
                 "sock_ingress",
                 "sock_ingress_state",
+                "sock_event_state",
+                "sock_event_ca_state",
+                "sock_event_retransmit",
+                "sock_event_restart",
+                "sock_event_rcvbuf",
             ],
             OptionalGroup::MptcpPm => &MPTCP_PM_PROGRAMS,
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].programs,
+            OptionalGroup::SockEvent(i) => SOCK_EVENT_HOOKS[i].programs,
         }
     }
 
@@ -246,6 +271,17 @@ mod tests {
         assert_eq!(
             to_disable(&enabled, &w),
             Some(BTreeSet::from([OptionalGroup::TcpEvent(rst_sent)]))
+        );
+    }
+
+    /// The socket event programs are in MPTCP tagging too; their own group goes first
+    #[test]
+    fn failing_sock_event_program_disables_only_its_hook() {
+        let w = warnings(&["libbpf: prog 'sock_event_rcvbuf': failed to load: -13"]);
+        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::SockEvent(4)]))
         );
     }
 

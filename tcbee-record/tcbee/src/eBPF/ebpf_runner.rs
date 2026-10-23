@@ -15,8 +15,8 @@ use libbpf_rs::{
 use log::{debug, error, info, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
-    RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
+    RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER, RB_TCP4_EGRESS,
+    RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -36,6 +36,7 @@ use crate::{
             headers::{uses_tcx, TCTracer, TcAttachment},
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
+            sock_events::SockEventTracer,
             tcp_events::TcpEventTracer,
             tracepoints::TracepointTracer,
         },
@@ -181,6 +182,7 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
+    let sock_events = optional.iter().any(|group| group.is_sock_event());
     // In on-change mode, the hooks decide which of the send and receive rings are written;
     // without, the sock probe's hooks and every cwnd hook
     let (send, receive) = config
@@ -193,7 +195,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
             config.sock_hooks.contains(Hook::IngressEntry),
         ),
     };
-    let groups: [(bool, &[u32]); 14] = [
+    let groups: [(bool, &[u32]); 15] = [
         (
             config.headers,
             &[
@@ -227,6 +229,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
         (tcp_events, &[RB_TCP_EVENTS]),
+        (sock_events, &[RB_SOCK_EVENT]),
     ];
     groups
         .into_iter()
@@ -557,6 +560,24 @@ impl EbpfRunner {
         );
         optional.extend(hooks.into_iter().map(OptionalGroup::TcpEvent));
         missing.extend(missing_events);
+        // The socket event hooks of -k, without on-change
+        let sock_event_hooks =
+            (self.config.kernel && on_change.is_none()).then_some(self.config.sock_hooks);
+        let disabled_sock_events: Vec<usize> = disabled
+            .iter()
+            .filter_map(|group| match group {
+                OptionalGroup::SockEvent(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let (hooks, missing_sock_events) = SockEventTracer::configure(
+            open.open_object_mut(),
+            sock_event_hooks,
+            &disabled_sock_events,
+            btf,
+        );
+        optional.extend(hooks.into_iter().map(OptionalGroup::SockEvent));
+        missing.extend(missing_sock_events);
         Ok((open, optional, missing))
     }
 
@@ -747,6 +768,13 @@ impl EbpfRunner {
         if optional.iter().any(|group| group.is_tcp_event()) {
             for (hook, message) in TcpEventTracer::spawn(skel, dir, writer, links)? {
                 optional.remove(&OptionalGroup::TcpEvent(hook));
+                self.skipped.push(message);
+            }
+        }
+
+        if optional.iter().any(|group| group.is_sock_event()) {
+            for (hook, message) in SockEventTracer::spawn(skel, dir, writer, links)? {
+                optional.remove(&OptionalGroup::SockEvent(hook));
                 self.skipped.push(message);
             }
         }

@@ -192,10 +192,36 @@ pub enum Hook {
     /// Before a received segment is processed in ESTABLISHED (fentry/tcp_rcv_established),
     /// with the state before it. Only without on-change.
     IngressEntry,
+    /// The socket event hooks, only without on-change: a TCP state change, a congestion
+    /// state change, a retransmitted segment, the cwnd restart after idle, receive buffer
+    /// growth
+    State,
+    CaState,
+    Retransmit,
+    Restart,
+    Rcvbuf,
 }
 
 impl Hook {
-    pub const ALL: [Hook; 4] = [Hook::Ingress, Hook::Timer, Hook::Egress, Hook::IngressEntry];
+    pub const ALL: [Hook; 9] = [
+        Hook::Ingress,
+        Hook::Timer,
+        Hook::Egress,
+        Hook::IngressEntry,
+        Hook::State,
+        Hook::CaState,
+        Hook::Retransmit,
+        Hook::Restart,
+        Hook::Rcvbuf,
+    ];
+    /// The socket event hooks, which write `event_sock.tcp`
+    pub const SOCK_EVENTS: [Hook; 5] = [
+        Hook::State,
+        Hook::CaState,
+        Hook::Retransmit,
+        Hook::Restart,
+        Hook::Rcvbuf,
+    ];
     /// The hooks that on-change mode can compare at
     pub const ON_CHANGE: [Hook; 3] = [Hook::Ingress, Hook::Timer, Hook::Egress];
 
@@ -205,6 +231,11 @@ impl Hook {
             Hook::Timer => "timer",
             Hook::Egress => "egress",
             Hook::IngressEntry => "ingress-entry",
+            Hook::State => "state",
+            Hook::CaState => "ca-state",
+            Hook::Retransmit => "retransmit",
+            Hook::Restart => "restart",
+            Hook::Rcvbuf => "rcvbuf",
         }
     }
 
@@ -215,18 +246,29 @@ impl Hook {
             Hook::Timer => &["fexit/tcp_write_timer_handler"],
             Hook::Egress => &["fentry/__tcp_transmit_skb"],
             Hook::IngressEntry => &["fentry/tcp_rcv_established"],
+            Hook::State => &["tp_btf/inet_sock_set_state"],
+            Hook::CaState => &["tp_btf/tcp_cong_state_set"],
+            Hook::Retransmit => &["tp_btf/tcp_retransmit_skb"],
+            Hook::Restart => &["fexit/tcp_cwnd_restart"],
+            Hook::Rcvbuf => &["tp_btf/tcp_rcvbuf_grow"],
         }
     }
 
     /// The hook as sock records carry it in bits 8-15 of `ato`, `enum tcbee_onchg_hook` in
     /// `bpf/onchange.h` (checked in tcbee-common). 0 for the egress and ingress-entry
-    /// programs without on-change, which leave `ato` at 0.
+    /// programs without on-change, which leave `ato` at 0. State and congestion state
+    /// records carry the new state in bits 16-23.
     pub const fn tag(self) -> u32 {
         match self {
             Hook::Ingress => 1,
             Hook::Timer => 2,
             Hook::Egress => 3,
             Hook::IngressEntry => 0,
+            Hook::State => 4,
+            Hook::CaState => 5,
+            Hook::Retransmit => 6,
+            Hook::Restart => 7,
+            Hook::Rcvbuf => 8,
         }
     }
 
@@ -234,14 +276,14 @@ impl Hook {
         Hook::ALL.into_iter().find(|h| h.name() == name)
     }
 
-    const fn bit(self) -> u8 {
-        1 << self as u8
+    const fn bit(self) -> u16 {
+        1 << self as u16
     }
 }
 
 /// The hooks the sock probe runs at
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HookSet(u8);
+pub struct HookSet(u16);
 
 impl Default for HookSet {
     fn default() -> HookSet {

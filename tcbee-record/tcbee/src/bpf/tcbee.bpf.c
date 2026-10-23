@@ -574,16 +574,17 @@ static __always_inline void fill_sock_fields(struct sock_trace_entry *rec, struc
 	fill_sock_extra(rec, tp);
 }
 
-/* hook_tag goes into ato; 0 in the default programs, so their code does not change */
-static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
-				      __u32 rb, __u32 hook_tag)
+/*
+ * The socket record of sk with ports sport and dport. hook_tag goes into ato; 0 in the
+ * default programs, so their code does not change.
+ */
+static __always_inline int trace_sock_ports(struct sock *sk, __u16 sport, __u16 dport,
+					    void *ringbufs, __u32 rb, __u32 hook_tag)
 {
 	struct sock_trace_entry *rec;
 	struct tcp_sock *tp;
-	__u16 sport, dport;
 	__u64 hook_seq;
 
-	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
 	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq))
@@ -602,6 +603,15 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 
 	flow_track_sk(sk, sport, dport);
 	return 0;
+}
+
+static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
+				      __u32 rb, __u32 hook_tag)
+{
+	__u16 sport, dport;
+
+	sk_ports(sk, &sport, &dport);
+	return trace_sock_ports(sk, sport, dport, ringbufs, rb, hook_tag);
 }
 
 SEC("fentry/__tcp_transmit_skb")
@@ -656,6 +666,81 @@ SEC("?fexit/tcp_rcv_state_process")
 int BPF_PROG(sock_ingress_state, struct sock *sk)
 {
 	return trace_sock_ingress(sk);
+}
+
+/*
+ * The socket at TCP events (-k, event_sock.tcp): state and congestion state changes,
+ * retransmissions, the cwnd restart after idle and receive buffer growth. They run at events,
+ * not per packet. The hook is in bits 8-15 of ato, for state changes the new state in bits
+ * 16-23: the tracepoints run before the change, so the record still has the old one. One
+ * ring for all, so their hook_seq orders them within a flow; each hook is optional.
+ */
+static __always_inline int trace_sock_event(struct sock *sk, __u32 hook, __u32 new_state)
+{
+	return trace_sock(sk, NULL, &TCP_EVENT_SOCK_EVENTS, RB_SOCK_EVENT,
+			  hook << ONCHG_HOOK_SHIFT | new_state << SOCK_EVENT_STATE_SHIFT);
+}
+
+/*
+ * Listeners and sockets without both ports have no flow. A change to CLOSE comes after the
+ * socket released its port; inet_sport still holds it.
+ */
+SEC("?tp_btf/inet_sock_set_state")
+int BPF_PROG(sock_event_state, const struct sock *sk, int oldstate, int newstate)
+{
+	struct sock *s = (struct sock *)sk;
+	__u16 sport, dport;
+
+	if (!s || s->sk_protocol != IPPROTO_TCP)
+		return 0;
+	if (oldstate == TCP_LISTEN || newstate == TCP_LISTEN)
+		return 0;
+	sk_ports(s, &sport, &dport);
+	if (!sport && newstate == TCP_CLOSE)
+		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)s, inet_sport));
+	if (!sport || !dport)
+		return 0;
+	return trace_sock_ports(s, sport, dport, &TCP_EVENT_SOCK_EVENTS, RB_SOCK_EVENT,
+				ONCHG_HOOK_STATE << ONCHG_HOOK_SHIFT |
+					(__u32)newstate << SOCK_EVENT_STATE_SHIFT);
+}
+
+/* Kernel 5.19 and newer; also runs when the state does not change, which is left out */
+SEC("?tp_btf/tcp_cong_state_set")
+int BPF_PROG(sock_event_ca_state, struct sock *sk, const __u8 ca_state)
+{
+	struct tcp_sock *tp;
+
+	if (!sk)
+		return 0;
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp || BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state) == ca_state)
+		return 0;
+	return trace_sock_event(sk, ONCHG_HOOK_CA_STATE, ca_state);
+}
+
+SEC("?tp_btf/tcp_retransmit_skb")
+int BPF_PROG(sock_event_retransmit, const struct sock *sk)
+{
+	if (!sk)
+		return 0;
+	return trace_sock_event((struct sock *)sk, ONCHG_HOOK_RETRANSMIT, 0);
+}
+
+/* After the cwnd was cut for the idle time, when the sender starts again */
+SEC("?fexit/tcp_cwnd_restart")
+int BPF_PROG(sock_event_restart, struct sock *sk)
+{
+	return trace_sock_event(sk, ONCHG_HOOK_RESTART, 0);
+}
+
+/* Recent kernels only: the receive buffer grew for autotuning */
+SEC("?tp_btf/tcp_rcvbuf_grow")
+int BPF_PROG(sock_event_rcvbuf, struct sock *sk)
+{
+	if (!sk)
+		return 0;
+	return trace_sock_event(sk, ONCHG_HOOK_RCVBUF, 0);
 }
 
 /* Lighter variants of the above that only record the cwnd */
