@@ -1085,6 +1085,7 @@ mod tests {
         assert_packed_matches_bincode::<cwnd_trace_entry>();
         assert_packed_matches_bincode::<cubic_trace_entry>();
         assert_packed_matches_bincode::<bbr_trace_entry>();
+        assert_packed_matches_bincode::<reno_trace_entry>();
         assert_packed_matches_bincode::<tcp_probe_entry>();
         assert_packed_matches_bincode::<tcp_retransmit_synack_entry>();
         assert_packed_matches_bincode::<tcp_bad_csum_entry>();

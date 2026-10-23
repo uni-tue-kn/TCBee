@@ -147,12 +147,12 @@ struct cwnd_trace_entry {
 };
 
 /*
- * Hook of a congestion control record (cubic_trace_entry, bbr_trace_entry), its hook field.
+ * Hook of a congestion control record (cubic, bbr and reno_trace_entry), its hook field.
  * The hooks of one algorithm write one ring buffer and share its hook_seq, so the records of
  * a flow are in order across them.
  */
 enum tcbee_cc_hook {
-	/* Per ACK: fentry cubictcp_cong_avoid (in congestion avoidance), fentry bbr_main */
+	/* Per ACK: fentry cubictcp_cong_avoid, fentry bbr_main, fexit tcp_reno_cong_avoid */
 	TCBEE_CC_HOOK_ACK = 1,
 	/*
 	 * fentry of the cwnd_event operation. From 7.2 on it only runs at the first transmission
@@ -160,7 +160,10 @@ enum tcbee_cc_hook {
 	 * CA_EVENT_*, of which CUBIC and BBR only act on TX_START
 	 */
 	TCBEE_CC_HOOK_CWND_EVENT = 2,
-	/* After the slow start threshold was recalculated: fexit cubictcp_recalc_ssthresh */
+	/*
+	 * After the slow start threshold was recalculated: fexit cubictcp_recalc_ssthresh,
+	 * fexit tcp_reno_ssthresh
+	 */
 	TCBEE_CC_HOOK_SSTHRESH = 3,
 	/* After a congestion state change: fexit cubictcp_state */
 	TCBEE_CC_HOOK_STATE = 4,
@@ -232,6 +235,30 @@ struct bbr_trace_entry {
 	int64_t rs_rtt_us;
 	int64_t rs_losses;
 	uint8_t rs_is_app_limited;
+};
+
+/*
+ * RENO_EVENTS: the socket after Reno's congestion avoidance (tcp_reno_cong_avoid) and
+ * ssthresh (tcp_reno_ssthresh) functions. Other algorithms call them too, DCTCP, Vegas and
+ * Veno among others, so ca_name tells which algorithm the socket runs. DCTCP has its own
+ * ssthresh, which is not hooked.
+ */
+struct reno_trace_entry {
+	TCBEE_SOCK_HEADER
+	/* enum tcbee_cc_hook: ACK or SSTHRESH */
+	uint8_t hook;
+	/* TCP_CA_Open, Disorder, CWR, Recovery, Loss */
+	uint8_t ca_state;
+	uint32_t snd_cwnd;
+	uint32_t snd_ssthresh;
+	/* The ACKs counted towards the next cwnd increase in congestion avoidance */
+	uint32_t snd_cwnd_cnt;
+	/* ACK: the packets the ACK acknowledged (the acked argument) */
+	uint32_t acked;
+	/* SSTHRESH: the new slow start threshold, which the caller then sets */
+	uint32_t new_ssthresh;
+	/* The first 8 bytes of the algorithm's name (icsk_ca_ops->name), NUL padded, little endian */
+	uint64_t ca_name;
 };
 
 /* tracepoint tcp/tcp_probe, TCP_PROBE_QUEUE. saddr/daddr hold a sockaddr_in(6). */
@@ -453,6 +480,7 @@ _Static_assert(sizeof(struct sock_trace_entry) == 280, "sock_trace_entry size");
 _Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
 _Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
 _Static_assert(sizeof(struct bbr_trace_entry) == 176, "bbr_trace_entry size");
+_Static_assert(sizeof(struct reno_trace_entry) == 96, "reno_trace_entry size");
 _Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
 _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");

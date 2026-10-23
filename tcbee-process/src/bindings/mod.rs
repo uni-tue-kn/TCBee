@@ -5,6 +5,7 @@ pub mod cubic;
 pub mod cwnd;
 pub mod legacy;
 pub mod mptcp_pm;
+pub mod reno;
 pub mod sock;
 pub mod tcp4_packet;
 pub mod tcp6_packet;
@@ -14,8 +15,8 @@ pub mod tcp_probe;
 use std::{io, path::Path};
 
 use tcbee_common::records::{
-    bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry,
-    tcp4_packet_trace, tcp6_packet_trace, tcp_event_entry, tcp_probe_entry,
+    bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, reno_trace_entry,
+    sock_trace_entry, tcp4_packet_trace, tcp6_packet_trace, tcp_event_entry, tcp_probe_entry,
 };
 use tcbee_trace::TraceFile;
 use ts_storage::{Dir, EventTable};
@@ -108,6 +109,7 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::TcpProbe => binding_of::<tcp_probe_entry>(Dir::None),
         TraceFile::Cubic => binding_of::<cubic_trace_entry>(Dir::None),
         TraceFile::Bbr => binding_of::<bbr_trace_entry>(Dir::None),
+        TraceFile::Reno => binding_of::<reno_trace_entry>(Dir::None),
         TraceFile::MptcpPm => binding_of::<mptcp_pm_entry>(Dir::None),
         TraceFile::TcpEvents => binding_of::<tcp_event_entry>(Dir::None),
         TraceFile::SendSockOc => binding_into::<sock_trace_entry>(&SOCK_OC, Dir::Send),

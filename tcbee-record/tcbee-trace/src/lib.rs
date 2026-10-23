@@ -38,6 +38,8 @@ pub enum TraceFile {
     IngressSock,
     /// Socket state at TCP events (full mode, the socket event hooks)
     EventSock,
+    /// Reno's congestion avoidance and ssthresh, also when other algorithms use them (-a)
+    Reno,
     /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
     SendSockOc,
     RecvSockOc,
@@ -66,6 +68,7 @@ impl TraceFile {
             TraceFile::TimerSock => "timer_sock.tcp",
             TraceFile::IngressSock => "ingress_sock.tcp",
             TraceFile::EventSock => "event_sock.tcp",
+            TraceFile::Reno => "reno.tcp",
             TraceFile::SendSockOc => "send_sock_oc.tcp",
             TraceFile::RecvSockOc => "recv_sock_oc.tcp",
             TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
@@ -93,6 +96,7 @@ impl TraceFile {
             TraceFile::TimerSock,
             TraceFile::IngressSock,
             TraceFile::EventSock,
+            TraceFile::Reno,
             TraceFile::SendSockOc,
             TraceFile::RecvSockOc,
             TraceFile::SendCwndOc,

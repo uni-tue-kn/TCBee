@@ -32,7 +32,8 @@
 #define RB_SOCK_TIMER 15
 #define RB_SOCK_INGRESS 16
 #define RB_SOCK_EVENT 17
-#define RB_COUNT 18
+#define RB_RENO 18
+#define RB_COUNT 19
 
 #define STAT_HANDLED 0
 #define STAT_DROPPED 1

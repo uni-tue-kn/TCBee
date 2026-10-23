@@ -14,9 +14,10 @@ use libbpf_rs::{
 };
 use log::{debug, error, info, warn};
 use tcbee_common::stats::{
-    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
-    RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER, RB_TCP4_EGRESS,
-    RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
+    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RENO,
+    RB_RETRANSMIT_SYNACK, RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
+    RB_SOCK_TIMER, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS,
+    RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -36,6 +37,7 @@ use crate::{
             headers::{uses_tcx, TCTracer, TcAttachment},
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
+            reno::RenoTracer,
             sock_events::SockEventTracer,
             tcp_events::TcpEventTracer,
             tracepoints::TracepointTracer,
@@ -220,7 +222,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
             config.sock_hooks.contains(Hook::IngressEntry),
         ),
     };
-    let groups: [(bool, &[u32]); 15] = [
+    let groups: [(bool, &[u32]); 16] = [
         (
             config.headers,
             &[
@@ -255,6 +257,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
         (tcp_events, &[RB_TCP_EVENTS]),
         (sock_events, &[RB_SOCK_EVENT]),
+        (optional.contains(&OptionalGroup::Reno), &[RB_RENO]),
     ];
     groups
         .into_iter()
@@ -559,6 +562,11 @@ impl EbpfRunner {
         if BBRTracer::configure(&mut open.progs, bbr, btf) {
             optional.insert(OptionalGroup::Bbr);
         }
+        let reno = self.config.algorithms && !disabled.contains(&OptionalGroup::Reno);
+        let reno = RenoTracer::configure(&mut open.progs, reno, btf);
+        if reno == Ok(true) {
+            optional.insert(OptionalGroup::Reno);
+        }
         if timer {
             optional.insert(OptionalGroup::SockTimer);
         }
@@ -572,6 +580,7 @@ impl EbpfRunner {
             optional.insert(OptionalGroup::MptcpPm);
         }
         missing.extend(missing_cubic);
+        missing.extend(reno.err());
         let disabled_hooks: Vec<usize> = disabled
             .iter()
             .filter_map(|group| match group {
@@ -791,6 +800,19 @@ impl EbpfRunner {
             }
         }
 
+        if optional.contains(&OptionalGroup::Reno) {
+            // Fails softly like BBR
+            let attached = links.len();
+            if let Err(err) = RenoTracer::spawn(skel, dir, writer, links) {
+                links.truncate(attached);
+                optional.remove(&OptionalGroup::Reno);
+                self.ringbuf_sizes[RB_RENO as usize] = None;
+                self.skipped
+                    .push(format!("Reno: attaching failed: {}", err));
+                warn!("Recording without Reno: {}", err);
+            }
+        }
+
         if optional.contains(&OptionalGroup::MptcpPm) {
             MptcpPmTracer::spawn(skel, dir, writer, links)?;
         }
@@ -920,5 +942,15 @@ mod tests {
         assert!(!sock_hooks_left(&with_headers, &none).unwrap());
         let ingress = config.sock_hooks(HookSet::parse("ingress").unwrap());
         assert!(sock_hooks_left(&ingress, &none).unwrap());
+    }
+
+    #[test]
+    fn reno_ring_follows_the_reno_group() {
+        let config = EbpfRunnerConfig::new().algorithms(true);
+        let none = BTreeSet::new();
+        let reno = BTreeSet::from([OptionalGroup::Reno]);
+        assert!(enabled_ringbufs(&config, &none).contains(&RB_CUBIC));
+        assert!(!enabled_ringbufs(&config, &none).contains(&RB_RENO));
+        assert!(enabled_ringbufs(&config, &reno).contains(&RB_RENO));
     }
 }

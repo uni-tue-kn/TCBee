@@ -63,6 +63,23 @@ struct rate_sample___tcbee {
 	bool is_app_limited;
 } __attribute__((preserve_access_index));
 
+/*
+ * The algorithm of a socket and Reno's ACK counter. Flavors of the vmlinux structs, so that
+ * the minimal vmlinux.h stays as it is; the loads through a cast tcp_sock are relocated
+ * against the kernel's struct inet_connection_sock (at offset 0 of tcp_sock) and tcp_sock.
+ */
+struct tcp_congestion_ops___tcbee {
+	char name[16];
+} __attribute__((preserve_access_index));
+
+struct inet_connection_sock___tcbee {
+	const struct tcp_congestion_ops___tcbee *icsk_ca_ops;
+} __attribute__((preserve_access_index));
+
+struct tcp_sock___tcbee {
+	u32 snd_cwnd_cnt;
+} __attribute__((preserve_access_index));
+
 /* Helpers of the running kernel, see bpf_core_enum_value_exists() */
 enum bpf_func_id___tcbee {
 	BPF_FUNC_get_func_arg_cnt___tcbee = 185,

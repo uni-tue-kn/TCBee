@@ -524,6 +524,7 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::TimerSock, "sock_timer", Dir::None),
         (TraceFile::IngressSock, "sock_ingress", Dir::None),
         (TraceFile::EventSock, "sock_event", Dir::None),
+        (TraceFile::Reno, "reno", Dir::None),
         (TraceFile::SendSockOc, "sock_oc", Dir::Send),
         (TraceFile::RecvSockOc, "sock_oc", Dir::Recv),
         (TraceFile::SendCwndOc, "cwnd_oc", Dir::Send),
@@ -559,6 +560,7 @@ fn file_table_maps_every_trace_file() {
         ("sock_timer", 262, 48),
         ("sock_ingress", 262, 48),
         ("sock_event", 262, 48),
+        ("reno", 96, 8),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -567,7 +569,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 14);
+    assert_eq!(names.len(), 15);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.
@@ -1237,5 +1239,37 @@ fn timer_records_go_to_their_own_table() {
     assert_eq!(
         (col(&batch, b.table, "backoff"), col(&batch, b.table, "ato")),
         (2, 512)
+    );
+}
+
+/// Reno records decode into their table; ca_name holds the first 8 bytes of the name.
+#[test]
+fn reno_records_carry_the_algorithm_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reno.tcp");
+    let rec = reno_trace_entry {
+        time: 7,
+        hook_seq: 1,
+        family: 2,
+        hook: tcbee_common::records::TCBEE_CC_HOOK_SSTHRESH as u8,
+        ca_state: 3,
+        snd_cwnd: 40,
+        new_ssthresh: 20,
+        ca_name: u64::from_le_bytes(*b"dctcp\0\0\0"),
+        ..Default::default()
+    };
+    write_records(&path, &[rec; 3], 0);
+    let b = binding_for(TraceFile::Reno, &path).unwrap().unwrap();
+    assert_eq!((b.table.source, b.dir), ("reno", Dir::None));
+    let (batch, _) = decode_first(&b, &path);
+    let name = col(&batch, b.table, "ca_name") as u64;
+    assert_eq!(&name.to_le_bytes()[..5], b"dctcp");
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "ca_state"),
+            col(&batch, b.table, "new_ssthresh")
+        ),
+        (3, 3, 20)
     );
 }

@@ -1239,6 +1239,66 @@ int BPF_PROG(bbr_cwnd_event, struct sock *sk)
 	return trace_bbr(sk, TCBEE_CC_HOOK_CWND_EVENT, NULL);
 }
 
+/* ---- Reno (-a) --------------------------------------------------------------------- */
+
+/*
+ * Reno keeps no private state, so the record holds the tcp_sock fields it changes. Both
+ * functions are exported and also called by other algorithms (DCTCP, Vegas, Veno, ...),
+ * which ca_name tells apart.
+ */
+static __always_inline int trace_reno(struct sock *sk, enum tcbee_cc_hook hook, __u32 acked,
+				      __u32 new_ssthresh)
+{
+	struct inet_connection_sock___tcbee *icsk;
+	struct reno_trace_entry *rec;
+	struct tcp_sock *tp;
+	__u16 sport, dport;
+	__u64 hook_seq;
+
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, RB_RENO, &hook_seq))
+		return 0;
+
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
+		count_error(RB_RENO);
+	} else if ((rec = reserve(&RENO_EVENTS, RB_RENO, rec))) {
+		fill_header(rec, sk, sport, dport, hook_seq);
+		rec->hook = hook;
+		rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+		rec->snd_cwnd = tp->snd_cwnd;
+		rec->snd_ssthresh = tp->snd_ssthresh;
+		rec->snd_cwnd_cnt = ((struct tcp_sock___tcbee *)tp)->snd_cwnd_cnt;
+		rec->acked = acked;
+		rec->new_ssthresh = new_ssthresh;
+		icsk = (void *)tp;
+		bpf_probe_read_kernel(&rec->ca_name, sizeof(rec->ca_name), icsk->icsk_ca_ops->name);
+		commit(rec, RB_RENO);
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+/* After each ACK that may grow the cwnd, in slow start or congestion avoidance */
+SEC("?fexit/tcp_reno_cong_avoid")
+int BPF_PROG(reno_cong_avoid, struct sock *sk, __u32 ack, __u32 acked)
+{
+	return trace_reno(sk, TCBEE_CC_HOOK_ACK, acked, 0);
+}
+
+/*
+ * After the loss reaction (entering Recovery, CWR or Loss), with the new ssthresh it returns.
+ * DCTCP brings its own ssthresh (dctcp_ssthresh), which is not hooked.
+ */
+SEC("?fexit/tcp_reno_ssthresh")
+int BPF_PROG(reno_ssthresh, struct sock *sk, __u32 ret)
+{
+	return trace_reno(sk, TCBEE_CC_HOOK_SSTHRESH, 0, ret);
+}
+
 /* ---- TCP events (-e) --------------------------------------------------------------- */
 
 /*

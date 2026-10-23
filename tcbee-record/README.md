@@ -62,7 +62,7 @@ At least one metric source is required.
 | `--tp LIST` | The tracepoints of `-t` to record, implies `-t`. Names: `probe`, `synack`, `bad_csum`, `retransmit`, `rst_sent`, `rst_received`, `state`, `ca_state`, `rto`, `destroy`, and `drops`, which `-t` leaves out: the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason, and `drop_reasons.json` with the reason names of the running kernel. `all` and `default` name the sets. A list of only `+name` and `-name` items changes the default set, e.g. `--tp +drops,-probe` |
 | `-k` | The socket (all TCP metrics) at the hooks of `--sock-hooks`: by default after every run of the write timer (`timer_sock.tcp`, see below) and at TCP events (`event_sock.tcp`), none per packet. On a sender, `--sock-hooks +ingress` adds the state after every ACK |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
-| `-a` | Congestion control internals (Cubic and BBR) |
+| `-a` | Congestion control internals of CUBIC, BBR and Reno, see [Congestion control records](#congestion-control-records) |
 | `-e`, `--drops` | Kept for old command lines: `-e` records the TCP events of `-t` only, `--drops` those and the drops |
 | `-m` | MPTCP (`-M` works too): path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
 
@@ -87,9 +87,9 @@ At least one metric source is required.
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
-CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
+CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic, bbr and reno
 8 MiB, tcp6 and tcp_probe 4 MiB, sock_timer and sock_event 1 MiB) need about 40 MiB per CPU with `-h` and
-110 MiB per CPU with all probes; the log at startup prints the total. Records of one flow come from several CPUs,
+118 MiB per CPU with all probes; the log at startup prints the total. Records of one flow come from several CPUs,
 so their file order is not their order at the hook: every record carries `hook_seq`, its
 position among the events of its flow direction at its hook.
 
@@ -224,6 +224,22 @@ The socket event hooks of `--sock-hooks` write the socket at TCP events, not per
   over `rs_interval_us`, `rs_rtt_us`, `rs_losses`, `rs_is_app_limited`; -1 marks a missing
   sample, 0 on kernels before 5.17). Fields that only BBRv1 has (`max_bw`, the `lt_*` fields,
   `packet_conservation`) are 0 with other BBR versions.
+
+Reno keeps no private state. `-a` writes the socket's `snd_cwnd`, `snd_ssthresh`,
+`snd_cwnd_cnt` and congestion state after Reno's functions to `reno.tcp` (tcbee-process table
+`reno`), with their own ring buffer (8 MiB per CPU, size group `reno`) and `hook_seq`:
+
+| Hook | Kernel hook | Runs | `hook` |
+|------|-------------|------|--------|
+| ACK | `fexit/tcp_reno_cong_avoid` | after each ACK that may grow the cwnd; `acked` is the number of packets it acknowledged | 1 |
+| ssthresh | `fexit/tcp_reno_ssthresh` | after the loss reaction; `new_ssthresh` is the threshold the caller sets next | 3 |
+
+- Other algorithms call these functions too (DCTCP, Vegas, Veno and others for their Reno
+  phases), so `ca_name` holds the first 8 bytes of the socket's algorithm name as a
+  little-endian u64 (`reno` is `0x6f6e6572`). DCTCP has its own ssthresh function, which is
+  not hooked: its cwnd cut on ECN marks shows in `-k` or `-t` records only.
+- Both hooks are optional together: if the kernel lacks or rejects one, `-a` records without
+  Reno and lists it as skipped in the metadata.
 
 ## Kernel requirements
 

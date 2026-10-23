@@ -29,6 +29,8 @@ pub enum OptionalGroup {
     /// The CUBIC hooks of -a after the ssthresh recalculation and the congestion state change
     CubicSsthresh,
     CubicState,
+    /// The Reno hooks of -a (fexit tcp_reno_cong_avoid, tcp_reno_ssthresh)
+    Reno,
     /// The write timer program of -k (fexit/tcp_write_timer_handler)
     SockTimer,
     /// The MPTCP code in the sock and cwnd programs (MPTCP_TAG); without it they still load
@@ -45,13 +47,14 @@ impl OptionalGroup {
     /// comes before the timer and socket event groups: its code is in every sock program, so
     /// a tagging relocation that fails would otherwise drop them one by one until -k records
     /// nothing. A program that still fails without tagging is then blamed on its own group.
-    pub const ALL: [OptionalGroup; 6 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()] = {
-        let mut all = [OptionalGroup::Bbr; 6 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()];
+    pub const ALL: [OptionalGroup; 7 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()] = {
+        let mut all = [OptionalGroup::Bbr; 7 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()];
         all[1] = OptionalGroup::CubicSsthresh;
         all[2] = OptionalGroup::CubicState;
-        all[3] = OptionalGroup::MptcpTag;
-        all[4] = OptionalGroup::SockTimer;
-        let mut n = 5;
+        all[3] = OptionalGroup::Reno;
+        all[4] = OptionalGroup::MptcpTag;
+        all[5] = OptionalGroup::SockTimer;
+        let mut n = 6;
         let mut i = 0;
         while i < SOCK_EVENT_HOOKS.len() {
             all[n] = OptionalGroup::SockEvent(i);
@@ -74,6 +77,7 @@ impl OptionalGroup {
             OptionalGroup::Bbr => "BBR",
             OptionalGroup::CubicSsthresh => "CUBIC ssthresh hook",
             OptionalGroup::CubicState => "CUBIC state hook",
+            OptionalGroup::Reno => "Reno",
             OptionalGroup::SockTimer => "write timer hook",
             OptionalGroup::MptcpTag => "MPTCP tagging",
             OptionalGroup::MptcpPm => "MPTCP path manager events",
@@ -96,6 +100,7 @@ impl OptionalGroup {
             OptionalGroup::Bbr => &["bbr_cong_control", "bbr_cwnd_event"],
             OptionalGroup::CubicSsthresh => &["cubic_ssthresh"],
             OptionalGroup::CubicState => &["cubic_state"],
+            OptionalGroup::Reno => &["reno_cong_avoid", "reno_ssthresh"],
             OptionalGroup::SockTimer => &["sock_timer"],
             OptionalGroup::MptcpTag => &[
                 "sock_sendmsg",

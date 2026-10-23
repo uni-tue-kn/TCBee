@@ -26,6 +26,7 @@ const SOURCE_ORDER: &[&str] = &[
     "cwnd",
     "cubic",
     "bbr",
+    "reno",
 ];
 
 fn tier(required: &str, name: &str) -> Option<Tier> {

@@ -208,6 +208,7 @@ mod generate {
             "timer_sock",
             "ingress_sock",
             "event_sock",
+            "reno",
             "recv_sock_oc",
             "recv_cwnd_oc",
         ] {
