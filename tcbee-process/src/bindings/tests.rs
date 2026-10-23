@@ -676,7 +676,8 @@ fn sock_layout_is_detected_per_file() {
 #[test]
 fn tcp_event_labels() {
     use tcbee_common::records::{
-        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_RETRANSMIT, TCBEE_TCP_RTO, TCBEE_TCP_STATE,
+        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_DESTROY, TCBEE_TCP_RETRANSMIT,
+        TCBEE_TCP_RTO, TCBEE_TCP_STATE,
     };
     let e = |kind, old_state, new_state, backoff| tcp_event_entry {
         kind: kind as u8,
@@ -704,6 +705,10 @@ fn tcp_event_labels() {
     assert_eq!(
         tcp_event::label(&e(TCBEE_TCP_RTO, 0, 0, 2)),
         "RTO, backoff 2"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_DESTROY, 0, 0, 0)),
+        "socket destroyed"
     );
     assert_eq!(tcp_event::label(&e(200, 0, 0, 0)), "event 200");
 }

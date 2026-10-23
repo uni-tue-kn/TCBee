@@ -43,7 +43,7 @@ const fn hook(
 
 /// The programs of `-e` and `--drops`. Each one is optional on its own
 /// (`OptionalGroup::TcpEvent`).
-pub const TCP_EVENT_HOOKS: [TcpEventHook; 8] = [
+pub const TCP_EVENT_HOOKS: [TcpEventHook; 9] = [
     hook(
         &["tcp_event_retransmit"],
         Target::Tracepoint("tcp_retransmit_skb"),
@@ -78,6 +78,11 @@ pub const TCP_EVENT_HOOKS: [TcpEventHook; 8] = [
         &["tcp_event_cwr"],
         Target::Function("tcp_enter_cwr"),
         "TCP window reductions (CWR)",
+    ),
+    hook(
+        &["tcp_event_destroy"],
+        Target::Tracepoint("tcp_destroy_sock"),
+        "TCP sockets destroyed",
     ),
     TcpEventHook {
         drops: true,

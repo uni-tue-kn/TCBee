@@ -317,6 +317,8 @@ enum tcbee_tcp_event {
 	TCBEE_TCP_CWR = 7,
 	/* The kernel dropped a packet of the flow: reason is the kernel's skb_drop_reason */
 	TCBEE_TCP_DROP = 8,
+	/* The socket was destroyed after it closed; the socket fields are its last values */
+	TCBEE_TCP_DESTROY = 9,
 };
 
 /*

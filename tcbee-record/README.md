@@ -62,7 +62,7 @@ At least one metric source is required.
 | `-k` | fentry on `__tcp_transmit_skb` and `tcp_rcv_established` (all TCP metrics), and fexit on `tcp_write_timer_handler` (`timer_sock.tcp`, see below) |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
-| `-e` | Discrete TCP events (`tcp_events.tcp`): retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss) and retransmission timeouts. Each hook is optional: one the kernel lacks or rejects is left out with a warning |
+| `-e` | Discrete TCP events (`tcp_events.tcp`): retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each hook is optional: one the kernel lacks or rejects is left out with a warning |
 | `--drops` | Also record the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason; implies `-e`. Writes `drop_reasons.json` with the reason names of the running kernel |
 | `-m` | MPTCP (`-M` works too): path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
 

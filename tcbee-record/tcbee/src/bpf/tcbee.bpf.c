@@ -1300,6 +1300,32 @@ int BPF_PROG(tcp_event_cwr, struct sock *sk)
 	return trace_tcp_event_sk(sk, TCBEE_TCP_CWR);
 }
 
+/*
+ * Runs when the socket is freed, in CLOSE and after it released its port (skc_num is 0
+ * then); inet_sport still holds it. Listeners and sockets that never connected have no
+ * remote port and are left out.
+ */
+SEC("?tp_btf/tcp_destroy_sock")
+int BPF_PROG(tcp_event_destroy, struct sock *sk)
+{
+	struct tcp_event_entry *rec;
+	__u16 sport, dport;
+
+	if (!sk)
+		return 0;
+	sk_ports(sk, &sport, &dport);
+	if (!sport)
+		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)sk, inet_sport));
+	if (!sport || !dport)
+		return 0;
+	rec = tcp_event_reserve_ports(sk, sport, dport, TCBEE_TCP_DESTROY);
+	if (!rec)
+		return 0;
+	tcp_event_sock_fields(rec, sk);
+	commit(rec, RB_TCP_EVENTS);
+	return 0;
+}
+
 /* ---- TCP drops (--drops) ------------------------------------------------------------ */
 
 /*
