@@ -513,11 +513,6 @@ static __always_inline __u64 sock_field(struct sock *sk, struct tcp_sock *tp,
 }
 
 /*
- * The fields of a sock record after rcv_wscale, which on-change mode does not watch: the
- * congestion state, the delivery rate sample, the time spent limited, the rest of TCP_INFO
- * and the MPTCP connection (mptcp.h). Stored in record order after the ones above.
- */
-/*
  * The send buffer fields of struct sock. A flavour (libbpf drops the ___ suffix and relocates
  * against struct sock), so that struct sock in vmlinux.h keeps its size and the offsets of the
  * structs that embed it, which the default programs' code is compared by.
@@ -527,6 +522,12 @@ struct sock___sndbuf {
 	int sk_sndbuf;
 } __attribute__((preserve_access_index));
 
+/*
+ * The fields of a sock record after rcv_wscale, which on-change mode does not watch: the
+ * congestion state, the delivery rate sample, the time spent limited, the rest of TCP_INFO,
+ * the send buffer and the MPTCP connection (mptcp.h). Stored in record order after the ones
+ * above.
+ */
 static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct sock *sk,
 					    struct tcp_sock *tp)
 {
@@ -711,10 +712,22 @@ static __always_inline bool retransmit_failed(unsigned long long *ctx)
  * 16-23: the tracepoints run before the change, so the record still has the old one. One
  * ring for all, so their hook_seq orders them within a flow; each hook is optional.
  */
+static __always_inline int trace_sock_event_ports(struct sock *sk, __u16 sport, __u16 dport,
+						  __u32 hook, __u32 new_state)
+{
+	if (!sport || !dport)
+		return 0;
+	return trace_sock_ports(sk, sport, dport, &TCP_EVENT_SOCK_EVENTS, RB_SOCK_EVENT,
+				hook << ONCHG_HOOK_SHIFT | new_state << SOCK_EVENT_STATE_SHIFT);
+}
+
+/* Sockets without both ports (not connected yet, or after the close) have no flow */
 static __always_inline int trace_sock_event(struct sock *sk, __u32 hook, __u32 new_state)
 {
-	return trace_sock(sk, NULL, &TCP_EVENT_SOCK_EVENTS, RB_SOCK_EVENT,
-			  hook << ONCHG_HOOK_SHIFT | new_state << SOCK_EVENT_STATE_SHIFT);
+	__u16 sport, dport;
+
+	sk_ports(sk, &sport, &dport);
+	return trace_sock_event_ports(sk, sport, dport, hook, new_state);
 }
 
 /*
@@ -734,11 +747,7 @@ int BPF_PROG(sock_event_state, const struct sock *sk, int oldstate, int newstate
 	sk_ports(s, &sport, &dport);
 	if (!sport && newstate == TCP_CLOSE)
 		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)s, inet_sport));
-	if (!sport || !dport)
-		return 0;
-	return trace_sock_ports(s, sport, dport, &TCP_EVENT_SOCK_EVENTS, RB_SOCK_EVENT,
-				ONCHG_HOOK_STATE << ONCHG_HOOK_SHIFT |
-					(__u32)newstate << SOCK_EVENT_STATE_SHIFT);
+	return trace_sock_event_ports(s, sport, dport, ONCHG_HOOK_STATE, newstate);
 }
 
 /* Kernel 5.19 and newer; also runs when the state does not change, which is left out */
