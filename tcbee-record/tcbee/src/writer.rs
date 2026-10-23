@@ -670,15 +670,15 @@ struct PackedLayout {
 }
 
 impl PackedLayout {
-    /// Derives the ranges from bincode itself: a value whose byte `i` is `i` serializes to
-    /// the source offset of every output byte. A second pattern checks that the output is
-    /// a plain copy of the input bytes. None if that does not hold for `T` (or `T` is too
-    /// large to number its bytes), the caller then uses bincode.
+    /// Derives the ranges from bincode itself: values whose byte `i` is the low and the high
+    /// byte of `i` serialize to the source offset of every output byte. Their complements
+    /// check that the output is a plain copy of the input bytes. None if that does not hold
+    /// for `T` (or `T` is too large to number its bytes), the caller then uses bincode.
     ///
     /// `T` must be plain old data, valid for any bit pattern, like all record types.
     fn of<T: Serialize + Copy>() -> Option<Self> {
         let size = mem::size_of::<T>();
-        if size == 0 || size > usize::from(u8::MAX) + 1 {
+        if size == 0 || size > usize::from(u16::MAX) + 1 {
             return None;
         }
         let encode = |pattern: &dyn Fn(usize) -> u8| -> Option<Vec<u8>> {
@@ -686,16 +686,24 @@ impl PackedLayout {
             let value = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const T) };
             bincode::serialize(&value).ok()
         };
-        let offsets = encode(&|i| i as u8)?;
-        let check = encode(&|i| !(i as u8))?;
-        if offsets.len() != check.len()
-            || offsets.iter().zip(&check).any(|(&off, &byte)| byte != !off)
+        let low = encode(&|i| i as u8)?;
+        let high = encode(&|i| (i >> 8) as u8)?;
+        let low_check = encode(&|i| !(i as u8))?;
+        let high_check = encode(&|i| !((i >> 8) as u8))?;
+        if [&high, &low_check, &high_check]
+            .iter()
+            .any(|encoded| encoded.len() != low.len())
+            || (0..low.len()).any(|k| low_check[k] != !low[k] || high_check[k] != !high[k])
         {
             return None;
         }
+        let offsets = low
+            .iter()
+            .zip(&high)
+            .map(|(&lo, &hi)| usize::from(lo) | usize::from(hi) << 8);
 
         let mut runs: Vec<(usize, usize)> = Vec::new();
-        for off in offsets.iter().map(|&off| usize::from(off)) {
+        for off in offsets {
             match runs.last_mut() {
                 Some((start, len)) if *start + *len == off => *len += 1,
                 _ => runs.push((off, 1)),
