@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use libbpf_rs::{skel::Skel, Link, OpenObject};
+use libbpf_rs::{Link, OpenObject};
 use log::warn;
 use tcbee_common::{records::tcp_event_entry, stats::RB_TCP_EVENTS};
 
@@ -8,7 +8,7 @@ use crate::{
     eBPF::{
         host::KernelBtf,
         probes::{
-            attach,
+            optional_hooks::{self, OptionalHook, Target},
             tracepoints::{Tracepoint, TracepointSet},
         },
         rings,
@@ -17,24 +17,8 @@ use crate::{
     writer::Writer,
 };
 
-/// Where a TCP or socket event program attaches
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
-    Tracepoint(&'static str),
-    Function(&'static str),
-}
-
-/// A TCP event program and the hook it records
-#[derive(Clone, Copy, Debug)]
-pub struct TcpEventHook {
-    /// One program per hook, a slice so that it can serve as an optional group's programs
-    pub programs: &'static [&'static str],
-    pub target: Target,
-    /// Name for messages and the run metadata
-    pub name: &'static str,
-    /// The tracepoint of `-t` that selects it
-    pub tracepoint: Tracepoint,
-}
+/// A TCP event program, selected by its tracepoint of `-t`
+pub type TcpEventHook = OptionalHook<Tracepoint>;
 
 const fn hook(
     programs: &'static [&'static str],
@@ -42,11 +26,11 @@ const fn hook(
     name: &'static str,
     tracepoint: Tracepoint,
 ) -> TcpEventHook {
-    TcpEventHook {
+    OptionalHook {
         programs,
         target,
         name,
-        tracepoint,
+        selector: tracepoint,
     }
 }
 
@@ -109,6 +93,10 @@ pub const TCP_EVENT_HOOKS: [TcpEventHook; 9] = [
     ),
 ];
 
+fn not_recorded(name: &str) -> String {
+    format!("{name} are not recorded")
+}
+
 /// Index of the hook running `program`
 const fn hook_index(program: &str) -> usize {
     let mut i = 0;
@@ -141,34 +129,23 @@ fn hooks_to_load(
     exists: &[bool],
     disabled: &[usize],
 ) -> (Vec<bool>, Vec<String>) {
-    let requested = |hook: &TcpEventHook| set.contains(hook.tracepoint);
-    let mut skipped = Vec::new();
-    for (i, hook) in TCP_EVENT_HOOKS.iter().enumerate() {
-        if !requested(hook) || exists[i] {
-            continue;
-        }
-        let target = match hook.target {
-            Target::Tracepoint(tp) => format!("tracepoint {tp}"),
-            Target::Function(func) => format!("kernel function {func}"),
-        };
-        if i == CA_STATE_HOOK {
+    let requested = |tracepoint| set.contains(tracepoint);
+    let (mut load, missing) =
+        optional_hooks::to_load(&TCP_EVENT_HOOKS, requested, exists, disabled);
+    let skipped = missing
+        .into_iter()
+        .map(|i| {
+            let hook = &TCP_EVENT_HOOKS[i];
+            if i != CA_STATE_HOOK {
+                return optional_hooks::report_missing(hook, not_recorded);
+            }
+            let target = hook.target;
             warn!("The {target} does not exist (before 5.19), only RTOs and CWR are recorded");
-            skipped.push(format!(
+            format!(
                 "{}: no {target} in this kernel, only RTOs and CWR",
                 hook.name
-            ));
-        } else {
-            warn!(
-                "The {target} does not exist, {} are not recorded",
-                hook.name
-            );
-            skipped.push(format!("{}: no {target} in this kernel", hook.name));
-        }
-    }
-    let mut load: Vec<bool> = TCP_EVENT_HOOKS
-        .iter()
-        .enumerate()
-        .map(|(i, hook)| requested(hook) && exists[i] && !disabled.contains(&i))
+            )
+        })
         .collect();
     if load[CA_STATE_HOOK] {
         load[CWR_HOOK] = false;
@@ -188,65 +165,30 @@ impl TcpEventTracer {
         disabled: &[usize],
         btf: &mut KernelBtf,
     ) -> (Vec<usize>, Vec<String>) {
-        let check = TCP_EVENT_HOOKS
-            .iter()
-            .any(|hook| set.contains(hook.tracepoint))
-            && btf.available();
-        let exists: Vec<bool> = TCP_EVENT_HOOKS
-            .iter()
-            .map(|hook| {
-                !check
-                    || match hook.target {
-                        Target::Tracepoint(tp) => btf.has_tracepoint(tp),
-                        Target::Function(func) => btf.has_func(None, func),
-                    }
-            })
-            .collect();
+        let exists = optional_hooks::existing(&TCP_EVENT_HOOKS, |tp| set.contains(tp), btf);
         let (load, skipped) = hooks_to_load(set, &exists, disabled);
-        for mut program in object.progs_mut() {
-            let name = program.name().to_string_lossy();
-            if let Some(i) = TCP_EVENT_HOOKS
-                .iter()
-                .position(|hook| hook.programs.contains(&name.as_ref()))
-            {
-                program.set_autoload(load[i]);
-            }
-        }
-        let loaded = (0..load.len()).filter(|i| load[*i]).collect();
+        let loaded = optional_hooks::set_autoload(&TCP_EVENT_HOOKS, object, &load);
         (loaded, skipped)
     }
 
     /// Attaches the loaded programs. A program that does not attach is left out with a
     /// warning, like one the kernel lacks; returns its hook index and a message for each.
+    /// Without any attached program the ring gets no writer and no file.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
         writer: &mut Writer,
         links: &mut Vec<Link>,
     ) -> Result<Vec<(usize, String)>, Box<dyn Error>> {
-        let mut failed = Vec::new();
-        for program in skel.object().progs_mut() {
-            let name = program.name().to_string_lossy();
-            let Some(i) = TCP_EVENT_HOOKS
-                .iter()
-                .position(|hook| hook.programs.contains(&name.as_ref()))
-            else {
-                continue;
-            };
-            if !program.autoload() {
-                continue;
-            }
-            if let Err(err) = attach(&program, links) {
-                let hook = &TCP_EVENT_HOOKS[i];
-                warn!("{}, {} are not recorded", err, hook.name);
-                failed.push((i, format!("{}: attaching failed: {}", hook.name, err)));
-            }
+        let (attached, failed) =
+            optional_hooks::attach_loaded(&TCP_EVENT_HOOKS, skel, links, not_recorded);
+        if attached {
+            writer.register::<tcp_event_entry>(
+                RB_TCP_EVENTS,
+                rings::of(&skel.maps.TCP_EVENTS)?,
+                dir,
+            )?;
         }
-        writer.register::<tcp_event_entry>(
-            RB_TCP_EVENTS,
-            rings::of(&skel.maps.TCP_EVENTS)?,
-            dir,
-        )?;
         Ok(failed)
     }
 }

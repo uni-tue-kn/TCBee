@@ -908,6 +908,10 @@ impl EbpfRunner {
                 optional.remove(&OptionalGroup::TcpEvent(hook));
                 self.skipped.push(message);
             }
+            if !optional.iter().any(|group| group.is_tcp_event()) {
+                // Its ring exists but holds nothing, like the socket events' below
+                self.ringbuf_sizes[RB_TCP_EVENTS as usize] = None;
+            }
         }
 
         if optional.iter().any(|group| group.is_sock_event()) {

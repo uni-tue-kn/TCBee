@@ -1,7 +1,6 @@
 use std::error::Error;
 
-use libbpf_rs::{skel::Skel, Link, OpenObject};
-use log::warn;
+use libbpf_rs::{Link, OpenObject};
 use tcbee_common::{records::sock_trace_entry, stats::RB_SOCK_EVENT};
 use tcbee_trace::{
     sock_hooks::{Hook, HookSet},
@@ -11,58 +10,55 @@ use tcbee_trace::{
 use crate::{
     eBPF::{
         host::KernelBtf,
-        probes::{attach, tcp_events::Target},
+        probes::optional_hooks::{self, OptionalHook, Target},
         rings,
         skel::TcbeeSkel,
     },
     writer::Writer,
 };
 
-/// A program that records the socket at a TCP event (`-k`, `event_sock.tcp`)
-#[derive(Clone, Copy, Debug)]
-pub struct SockEventHook {
-    pub hook: Hook,
-    /// One program per hook, a slice so that it can serve as an optional group's programs
-    pub programs: &'static [&'static str],
-    pub target: Target,
-    /// Name for messages and the run metadata
-    pub name: &'static str,
-}
+/// A program that records the socket at a TCP event (`-k`, `event_sock.tcp`), selected by
+/// its sock hook
+pub type SockEventHook = OptionalHook<Hook>;
 
 /// The socket event programs, in the order of `Hook::SOCK_EVENTS`. Each one is optional on
 /// its own (`OptionalGroup::SockEvent`).
 pub const SOCK_EVENT_HOOKS: [SockEventHook; 5] = [
-    SockEventHook {
-        hook: Hook::State,
+    OptionalHook {
+        selector: Hook::State,
         programs: &["sock_event_state"],
         target: Target::Tracepoint("inet_sock_set_state"),
         name: "socket at TCP state changes",
     },
-    SockEventHook {
-        hook: Hook::CaState,
+    OptionalHook {
+        selector: Hook::CaState,
         programs: &["sock_event_ca_state"],
         target: Target::Tracepoint("tcp_cong_state_set"),
         name: "socket at congestion state changes",
     },
-    SockEventHook {
-        hook: Hook::Retransmit,
+    OptionalHook {
+        selector: Hook::Retransmit,
         programs: &["sock_event_retransmit"],
         target: Target::Tracepoint("tcp_retransmit_skb"),
         name: "socket at retransmissions",
     },
-    SockEventHook {
-        hook: Hook::Restart,
+    OptionalHook {
+        selector: Hook::Restart,
         programs: &["sock_event_restart"],
         target: Target::Function("tcp_cwnd_restart"),
         name: "socket at cwnd restarts after idle",
     },
-    SockEventHook {
-        hook: Hook::Rcvbuf,
+    OptionalHook {
+        selector: Hook::Rcvbuf,
         programs: &["sock_event_rcvbuf"],
         target: Target::Tracepoint("tcp_rcvbuf_grow"),
         name: "socket at receive buffer growth",
     },
 ];
+
+fn not_recorded(name: &str) -> String {
+    format!("the {name} is not recorded")
+}
 
 /// Which hooks to load: those in `hooks` that exist in the kernel and are not `disabled`,
 /// with a message for each one in `hooks` that the kernel lacks. None loads nothing.
@@ -71,29 +67,11 @@ fn hooks_to_load(
     exists: &[bool],
     disabled: &[usize],
 ) -> (Vec<bool>, Vec<String>) {
-    let wanted = |hook| hooks.is_some_and(|h| h.contains(hook));
-    let mut skipped = Vec::new();
-    let load = SOCK_EVENT_HOOKS
-        .iter()
-        .enumerate()
-        .map(|(i, event)| {
-            if !wanted(event.hook) {
-                return false;
-            }
-            if !exists[i] {
-                let target = match event.target {
-                    Target::Tracepoint(tp) => format!("tracepoint {tp}"),
-                    Target::Function(func) => format!("kernel function {func}"),
-                };
-                warn!(
-                    "The {target} does not exist, the {} is not recorded",
-                    event.name
-                );
-                skipped.push(format!("{}: no {target} in this kernel", event.name));
-                return false;
-            }
-            !disabled.contains(&i)
-        })
+    let requested = |hook| hooks.is_some_and(|h| h.contains(hook));
+    let (load, missing) = optional_hooks::to_load(&SOCK_EVENT_HOOKS, requested, exists, disabled);
+    let skipped = missing
+        .into_iter()
+        .map(|i| optional_hooks::report_missing(&SOCK_EVENT_HOOKS[i], not_recorded))
         .collect();
     (load, skipped)
 }
@@ -110,29 +88,10 @@ impl SockEventTracer {
         disabled: &[usize],
         btf: &mut KernelBtf,
     ) -> (Vec<usize>, Vec<String>) {
-        let check = btf.available();
-        let exists: Vec<bool> = SOCK_EVENT_HOOKS
-            .iter()
-            .map(|event| {
-                !check
-                    || !hooks.is_some_and(|h| h.contains(event.hook))
-                    || match event.target {
-                        Target::Tracepoint(tp) => btf.has_tracepoint(tp),
-                        Target::Function(func) => btf.has_func(None, func),
-                    }
-            })
-            .collect();
+        let requested = |hook| hooks.is_some_and(|h| h.contains(hook));
+        let exists = optional_hooks::existing(&SOCK_EVENT_HOOKS, requested, btf);
         let (load, skipped) = hooks_to_load(hooks, &exists, disabled);
-        for mut program in object.progs_mut() {
-            let name = program.name().to_string_lossy();
-            if let Some(i) = SOCK_EVENT_HOOKS
-                .iter()
-                .position(|event| event.programs.contains(&name.as_ref()))
-            {
-                program.set_autoload(load[i]);
-            }
-        }
-        let loaded = (0..load.len()).filter(|i| load[*i]).collect();
+        let loaded = optional_hooks::set_autoload(&SOCK_EVENT_HOOKS, object, &load);
         (loaded, skipped)
     }
 
@@ -145,37 +104,16 @@ impl SockEventTracer {
         writer: &mut Writer,
         links: &mut Vec<Link>,
     ) -> Result<Vec<(usize, String)>, Box<dyn Error>> {
-        let mut failed = Vec::new();
-        let mut attached = 0;
-        for program in skel.object().progs_mut() {
-            let name = program.name().to_string_lossy();
-            let Some(i) = SOCK_EVENT_HOOKS
-                .iter()
-                .position(|event| event.programs.contains(&name.as_ref()))
-            else {
-                continue;
-            };
-            if !program.autoload() {
-                continue;
-            }
-            match attach(&program, links) {
-                Ok(()) => attached += 1,
-                Err(err) => {
-                    let event = &SOCK_EVENT_HOOKS[i];
-                    warn!("{}, the {} is not recorded", err, event.name);
-                    failed.push((i, format!("{}: attaching failed: {}", event.name, err)));
-                }
-            }
+        let (attached, failed) =
+            optional_hooks::attach_loaded(&SOCK_EVENT_HOOKS, skel, links, not_recorded);
+        if attached {
+            writer.register_as::<sock_trace_entry>(
+                RB_SOCK_EVENT,
+                rings::of(&skel.maps.TCP_EVENT_SOCK_EVENTS)?,
+                TraceFile::EventSock,
+                dir,
+            )?;
         }
-        if attached == 0 {
-            return Ok(failed);
-        }
-        writer.register_as::<sock_trace_entry>(
-            RB_SOCK_EVENT,
-            rings::of(&skel.maps.TCP_EVENT_SOCK_EVENTS)?,
-            TraceFile::EventSock,
-            dir,
-        )?;
         Ok(failed)
     }
 }
@@ -188,7 +126,10 @@ mod tests {
 
     #[test]
     fn hooks_follow_the_order_of_the_socket_events() {
-        let hooks: Vec<Hook> = SOCK_EVENT_HOOKS.iter().map(|event| event.hook).collect();
+        let hooks: Vec<Hook> = SOCK_EVENT_HOOKS
+            .iter()
+            .map(|event| event.selector)
+            .collect();
         assert_eq!(hooks, Hook::SOCK_EVENTS);
     }
 
