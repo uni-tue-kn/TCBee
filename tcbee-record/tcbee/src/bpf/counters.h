@@ -30,7 +30,8 @@
 #define RB_MPTCP_PM 13
 #define RB_TCP_EVENTS 14
 #define RB_SOCK_TIMER 15
-#define RB_COUNT 16
+#define RB_SOCK_INGRESS 16
+#define RB_COUNT 17
 
 #define STAT_HANDLED 0
 #define STAT_DROPPED 1

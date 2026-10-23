@@ -82,6 +82,8 @@ impl OptionalGroup {
                 "sock_oc_timer",
                 "cwnd_oc_rcv_state",
                 "cwnd_oc_timer",
+                "sock_ingress",
+                "sock_ingress_state",
             ],
             OptionalGroup::MptcpPm => &MPTCP_PM_PROGRAMS,
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].programs,

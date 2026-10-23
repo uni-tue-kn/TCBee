@@ -83,7 +83,7 @@ At least one metric source is required.
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
-| `--sock-hooks LIST` | `egress,ingress-entry,timer` | With `-k`: the kernel hooks to record the socket at, `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`), `timer` (`timer_sock.tcp`). A list of only `+name` and `-name` items changes the default. With `--on-change` the same as `--on-change-hooks` |
+| `--sock-hooks LIST` | `egress,ingress-entry,timer` | With `-k`: the kernel hooks to record the socket at, `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`), `timer` (`timer_sock.tcp`), `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). A list of only `+name` and `-name` items changes the default. With `--on-change` the same as `--on-change-hooks` |
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another

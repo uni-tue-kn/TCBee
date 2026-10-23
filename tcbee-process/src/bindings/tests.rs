@@ -511,6 +511,7 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::MptcpPm, "mptcp_pm", Dir::None),
         (TraceFile::TcpEvents, "tcp_event", Dir::None),
         (TraceFile::TimerSock, "sock_timer", Dir::None),
+        (TraceFile::IngressSock, "sock_ingress", Dir::None),
         (TraceFile::SendSockOc, "sock_oc", Dir::Send),
         (TraceFile::RecvSockOc, "sock_oc", Dir::Recv),
         (TraceFile::SendCwndOc, "cwnd_oc", Dir::Send),
@@ -544,6 +545,7 @@ fn file_table_maps_every_trace_file() {
         ("sock_oc", 226, 40),
         ("cwnd_oc", 74, 1),
         ("sock_timer", 226, 40),
+        ("sock_ingress", 226, 40),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -552,7 +554,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 12);
+    assert_eq!(names.len(), 13);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.

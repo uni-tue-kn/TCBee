@@ -15,8 +15,8 @@ use libbpf_rs::{
 use log::{debug, error, info, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
-    RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS,
-    RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
+    RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -193,7 +193,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
             config.sock_hooks.contains(Hook::IngressEntry),
         ),
     };
-    let groups: [(bool, &[u32]); 13] = [
+    let groups: [(bool, &[u32]); 14] = [
         (
             config.headers,
             &[
@@ -205,6 +205,12 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         ),
         (config.kernel && sock_send, &[RB_SOCK_SEND]),
         (config.kernel && sock_receive, &[RB_SOCK_RECV]),
+        (
+            config.kernel
+                && config.on_change.is_none()
+                && config.sock_hooks.contains(Hook::Ingress),
+            &[RB_SOCK_INGRESS],
+        ),
         (
             optional.contains(&OptionalGroup::SockTimer),
             &[RB_SOCK_TIMER],

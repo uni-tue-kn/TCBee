@@ -58,6 +58,7 @@ fn ring_buffer_ids_match_counters_h() {
         RB_MPTCP_PM,
         RB_TCP_EVENTS,
         RB_SOCK_TIMER,
+        RB_SOCK_INGRESS,
     );
     assert_eq!(c, rust);
     let mut ids: Vec<u32> = rust.into_values().collect();
@@ -142,7 +143,9 @@ fn every_trace_file_has_one_ring_buffer() {
         assert_eq!(sends, file.contains("send"), "{} -> {file}", ringbuf.map);
         assert_eq!(
             receives,
-            file.contains("recv") || file.contains("receive"),
+            ["recv", "receive", "ingress"]
+                .iter()
+                .any(|w| file.contains(w)),
             "{} -> {file}",
             ringbuf.map
         );

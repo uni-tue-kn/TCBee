@@ -17,7 +17,16 @@ enum Tier {
 }
 
 /// Sources in order of preference. Unknown sources come after the last one.
-const SOURCE_ORDER: &[&str] = &["tcp_probe", "sock", "tcp4", "tcp6", "cwnd", "cubic", "bbr"];
+const SOURCE_ORDER: &[&str] = &[
+    "tcp_probe",
+    "sock",
+    "sock_ingress",
+    "tcp4",
+    "tcp6",
+    "cwnd",
+    "cubic",
+    "bbr",
+];
 
 fn tier(required: &str, name: &str) -> Option<Tier> {
     if name == required {

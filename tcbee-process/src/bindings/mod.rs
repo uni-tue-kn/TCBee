@@ -55,6 +55,13 @@ static SOCK_TIMER: EventTable = EventTable {
     columns: <sock_trace_entry as Event>::TABLE.columns,
 };
 
+/// Sock records written after each received segment (-k with --sock-hooks ingress), the
+/// state after ACK processing; their own source, like the timer records.
+static SOCK_INGRESS: EventTable = EventTable {
+    source: "sock_ingress",
+    columns: <sock_trace_entry as Event>::TABLE.columns,
+};
+
 fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
     Binding {
         dir,
@@ -100,6 +107,7 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::SendCwndOc => binding_into::<cwnd_trace_entry>(&CWND_OC, Dir::Send),
         TraceFile::RecvCwndOc => binding_into::<cwnd_trace_entry>(&CWND_OC, Dir::Recv),
         TraceFile::TimerSock => binding_into::<sock_trace_entry>(&SOCK_TIMER, Dir::None),
+        TraceFile::IngressSock => binding_into::<sock_trace_entry>(&SOCK_INGRESS, Dir::None),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
 }

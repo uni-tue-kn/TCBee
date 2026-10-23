@@ -630,6 +630,34 @@ int BPF_PROG(sock_timer, struct sock *sk)
 			  ONCHG_HOOK_TIMER << ONCHG_HOOK_SHIFT);
 }
 
+/*
+ * The socket after every received segment was processed (--sock-hooks ingress): after ACK
+ * processing and the transmits it clocked, which tcp_rcv_established runs itself. Sends that
+ * TSQ, the pacing timer or tcp_release_cb defer come later. tcp_rcv_state_process handles the
+ * states but ESTABLISHED; listeners and closed sockets have no flow. Own ring, like the timer.
+ */
+static __always_inline int trace_sock_ingress(struct sock *sk)
+{
+	__u8 state = sk->__sk_common.skc_state;
+
+	if (state == TCP_LISTEN || state == TCP_CLOSE)
+		return 0;
+	return trace_sock(sk, NULL, &TCP_INGRESS_SOCK_EVENTS, RB_SOCK_INGRESS,
+			  ONCHG_HOOK_INGRESS << ONCHG_HOOK_SHIFT);
+}
+
+SEC("?fexit/tcp_rcv_established")
+int BPF_PROG(sock_ingress, struct sock *sk)
+{
+	return trace_sock_ingress(sk);
+}
+
+SEC("?fexit/tcp_rcv_state_process")
+int BPF_PROG(sock_ingress_state, struct sock *sk)
+{
+	return trace_sock_ingress(sk);
+}
+
 /* Lighter variants of the above that only record the cwnd */
 SEC("fentry/__tcp_transmit_skb")
 int BPF_PROG(cwnd_sock_sendmsg, struct sock *sk)

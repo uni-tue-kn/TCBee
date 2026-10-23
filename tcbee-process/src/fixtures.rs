@@ -202,6 +202,7 @@ mod generate {
             "recv_cwnd",
             "tcp_events",
             "timer_sock",
+            "ingress_sock",
             "recv_sock_oc",
             "recv_cwnd_oc",
         ] {

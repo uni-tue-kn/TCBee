@@ -7,7 +7,7 @@ use tcbee_trace::{
     TraceFile,
 };
 
-use tcbee_common::stats::{RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER};
+use tcbee_common::stats::{RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER};
 
 use crate::{
     eBPF::{
@@ -49,6 +49,10 @@ impl KernelTracer {
         progs
             .sock_recvmsg
             .set_autoload(full_hooked(Hook::IngressEntry));
+        progs.sock_ingress.set_autoload(full_hooked(Hook::Ingress));
+        progs
+            .sock_ingress_state
+            .set_autoload(full_hooked(Hook::Ingress));
         progs.sock_timer.set_autoload(timer);
         progs.sock_oc_sendmsg.set_autoload(hooked(Hook::Egress));
         progs.sock_oc_recvmsg.set_autoload(hooked(Hook::Ingress));
@@ -87,6 +91,17 @@ impl KernelTracer {
                 if full.contains(Hook::IngressEntry) {
                     attach(&skel.progs.sock_recvmsg, links)?;
                     files.1 = Some(TraceFile::RecvSock);
+                }
+                // After each received segment, into its own file
+                if full.contains(Hook::Ingress) {
+                    attach(&skel.progs.sock_ingress, links)?;
+                    attach(&skel.progs.sock_ingress_state, links)?;
+                    writer.register_as::<sock_trace_entry>(
+                        RB_SOCK_INGRESS,
+                        rings::of(&skel.maps.TCP_INGRESS_SOCK_EVENTS)?,
+                        TraceFile::IngressSock,
+                        dir,
+                    )?;
                 }
                 files
             }
@@ -177,5 +192,12 @@ mod tests {
         assert!(open.progs.sock_recvmsg.autoload());
         assert!(!open.progs.sock_sendmsg.autoload());
         assert!(!open.progs.sock_oc_recvmsg.autoload());
+        assert!(!open.progs.sock_ingress.autoload());
+        let hooks = HookSet::parse("ingress").unwrap();
+        KernelTracer::configure(&mut open.progs, true, None, hooks, false);
+        assert!(open.progs.sock_ingress.autoload() && open.progs.sock_ingress_state.autoload());
+        assert!(!open.progs.sock_recvmsg.autoload() && !open.progs.sock_oc_recvmsg.autoload());
+        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), hooks, false);
+        assert!(!open.progs.sock_ingress.autoload());
     }
 }

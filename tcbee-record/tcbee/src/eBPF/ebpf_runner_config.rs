@@ -370,9 +370,6 @@ pub fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSe
         HookSet::parse_changes(spec, HookSet::FULL_DEFAULT)
             .map_err(|e| anyhow!("--sock-hooks: {}", e))?
     };
-    if hooks.contains(Hook::Ingress) {
-        return Err(anyhow!("--sock-hooks: ingress needs --on-change"));
-    }
     if no_timer_hook {
         if hooks == HookSet::parse("timer").unwrap() {
             return Err(anyhow!("--no-timer-hook leaves -k without hooks"));
@@ -685,7 +682,10 @@ mod tests {
             HookSet::parse("ingress-entry,timer").unwrap()
         );
         assert!(full_sock_hooks("timer", true).is_err());
-        assert!(full_sock_hooks("ingress", false).is_err());
+        assert_eq!(
+            full_sock_hooks("ingress,timer", false).unwrap(),
+            HookSet::DEFAULT
+        );
         assert!(full_sock_hooks("rx", false).is_err());
     }
 

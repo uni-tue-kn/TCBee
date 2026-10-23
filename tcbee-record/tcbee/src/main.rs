@@ -235,7 +235,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut sock_hooks).add_option(
             &["--sock-hooks"],
             Store,
-            "Comma-separated kernel hooks at which -k records the socket. egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp); ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp); timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); ingress = after each received segment, with --on-change only so far. A list of only +name and -name items changes the default, egress,ingress-entry,timer. With --on-change it is the same as --on-change-hooks.",
+            "Comma-separated kernel hooks at which -k records the socket. egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp); ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp); timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp). A list of only +name and -name items changes the default, egress,ingress-entry,timer. With --on-change it is the same as --on-change-hooks.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
