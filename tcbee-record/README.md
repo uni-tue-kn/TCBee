@@ -201,12 +201,18 @@ The socket event hooks of `--sock-hooks` write the socket at TCP events, not per
 ## Congestion control records
 
 `-a` writes the private state of CUBIC (`struct bictcp`, `cubic.tcp`) and BBR (`struct bbr`,
-`bbr.tcp`) of every socket that uses them, as the hook found it:
+`bbr.tcp`) of every socket that uses them, before (fentry) or after (fexit) the hooked function:
 
 | Hook | Kernel hook | Runs | `hook` |
 |------|-------------|------|--------|
 | ACK | `fentry/cubictcp_cong_avoid`, `fentry/bbr_main` | at each ACK that may grow the cwnd (CUBIC), at each ACK (BBR) | 1 |
 | cwnd event | `fentry/cubictcp_cwnd_event_tx_start`, `fentry/bbr_cwnd_event_tx_start` (before 7.2 `*_cwnd_event`) | at the first transmission after idle (before 7.2 at every congestion avoidance event) | 2 |
+| ssthresh | `fexit/cubictcp_recalc_ssthresh` | after CUBIC's loss reaction (entering Recovery, CWR or Loss): `last_max_cwnd` with fast convergence, the epoch ended | 3 |
+| state | `fexit/cubictcp_state` | after each congestion state change; entering Loss resets the CUBIC state | 4 |
+
+- The CUBIC ssthresh and state hooks are optional: one the kernel lacks or rejects is left out
+  with a warning and listed as skipped in the metadata. The new `snd_ssthresh` is set by the
+  caller after the ssthresh hook; `-k` or `-t` record it.
 
 - The hooks of one algorithm share its ring buffer and one `hook_seq` series per flow, so their
   records are in order with each other.

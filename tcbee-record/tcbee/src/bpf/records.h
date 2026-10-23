@@ -160,9 +160,13 @@ enum tcbee_cc_hook {
 	 * CA_EVENT_*, of which CUBIC and BBR only act on TX_START
 	 */
 	TCBEE_CC_HOOK_CWND_EVENT = 2,
+	/* After the slow start threshold was recalculated: fexit cubictcp_recalc_ssthresh */
+	TCBEE_CC_HOOK_SSTHRESH = 3,
+	/* After a congestion state change: fexit cubictcp_state */
+	TCBEE_CC_HOOK_STATE = 4,
 };
 
-/* CUBIC_EVENTS: struct bictcp as the hook found it */
+/* CUBIC_EVENTS: struct bictcp before (fentry) or after (fexit) the hooked function */
 struct cubic_trace_entry {
 	TCBEE_SOCK_HEADER
 	/* enum tcbee_cc_hook */

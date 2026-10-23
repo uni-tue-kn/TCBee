@@ -1109,6 +1109,28 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 	return trace_cubic(sk, TCBEE_CC_HOOK_CWND_EVENT);
 }
 
+/*
+ * After the loss reaction (the ssthresh operation, on entering Recovery, CWR or Loss): the new
+ * epoch, last_max_cwnd with fast convergence applied. tcp_sock's snd_ssthresh is only set by
+ * the caller from the return value.
+ */
+SEC("?fexit/cubictcp_recalc_ssthresh")
+int BPF_PROG(cubic_ssthresh, struct sock *sk)
+{
+	return trace_cubic(sk, TCBEE_CC_HOOK_SSTHRESH);
+}
+
+/*
+ * After a congestion state change. fexit, because the only change CUBIC makes here is the
+ * reset of its state on entering Loss (an RTO), which fentry would miss; the state before
+ * it is in the record of the ssthresh hook that tcp_enter_loss() runs just before.
+ */
+SEC("?fexit/cubictcp_state")
+int BPF_PROG(cubic_state, struct sock *sk)
+{
+	return trace_cubic(sk, TCBEE_CC_HOOK_STATE);
+}
+
 /* ---- BBR (-a) ---------------------------------------------------------------------- */
 
 /*

@@ -549,8 +549,9 @@ impl EbpfRunner {
         );
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
-        CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
-        let mut optional = BTreeSet::new();
+        let (cubic_hooks, missing_cubic) =
+            CubicTracer::configure(&mut open.progs, self.config.algorithms, disabled, btf)?;
+        let mut optional = BTreeSet::from_iter(cubic_hooks);
         if mptcp_tag {
             optional.insert(OptionalGroup::MptcpTag);
         }
@@ -570,6 +571,7 @@ impl EbpfRunner {
         if any_pm {
             optional.insert(OptionalGroup::MptcpPm);
         }
+        missing.extend(missing_cubic);
         let disabled_hooks: Vec<usize> = disabled
             .iter()
             .filter_map(|group| match group {
@@ -766,7 +768,10 @@ impl EbpfRunner {
         }
 
         if self.config.algorithms {
-            CubicTracer::spawn(skel, dir, writer, links)?;
+            for (group, message) in CubicTracer::spawn(skel, dir, writer, links)? {
+                optional.remove(&group);
+                self.skipped.push(message);
+            }
             watcher_config.graphs.cubic = true;
             if optional.contains(&OptionalGroup::Bbr) {
                 // BBR fails softly, so a program that was attached before the error has

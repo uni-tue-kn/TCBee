@@ -26,6 +26,9 @@ const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OptionalGroup {
     Bbr,
+    /// The CUBIC hooks of -a after the ssthresh recalculation and the congestion state change
+    CubicSsthresh,
+    CubicState,
     /// The write timer program of -k (fexit/tcp_write_timer_handler)
     SockTimer,
     /// The MPTCP code in the sock and cwnd programs (MPTCP_TAG); without it they still load
@@ -42,11 +45,13 @@ impl OptionalGroup {
     /// comes before the timer and socket event groups: its code is in every sock program, so
     /// a tagging relocation that fails would otherwise drop them one by one until -k records
     /// nothing. A program that still fails without tagging is then blamed on its own group.
-    pub const ALL: [OptionalGroup; 4 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()] = {
-        let mut all = [OptionalGroup::Bbr; 4 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()];
-        all[1] = OptionalGroup::MptcpTag;
-        all[2] = OptionalGroup::SockTimer;
-        let mut n = 3;
+    pub const ALL: [OptionalGroup; 6 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()] = {
+        let mut all = [OptionalGroup::Bbr; 6 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()];
+        all[1] = OptionalGroup::CubicSsthresh;
+        all[2] = OptionalGroup::CubicState;
+        all[3] = OptionalGroup::MptcpTag;
+        all[4] = OptionalGroup::SockTimer;
+        let mut n = 5;
         let mut i = 0;
         while i < SOCK_EVENT_HOOKS.len() {
             all[n] = OptionalGroup::SockEvent(i);
@@ -67,6 +72,8 @@ impl OptionalGroup {
     pub fn name(self) -> &'static str {
         match self {
             OptionalGroup::Bbr => "BBR",
+            OptionalGroup::CubicSsthresh => "CUBIC ssthresh hook",
+            OptionalGroup::CubicState => "CUBIC state hook",
             OptionalGroup::SockTimer => "write timer hook",
             OptionalGroup::MptcpTag => "MPTCP tagging",
             OptionalGroup::MptcpPm => "MPTCP path manager events",
@@ -87,6 +94,8 @@ impl OptionalGroup {
     pub fn programs(self) -> &'static [&'static str] {
         match self {
             OptionalGroup::Bbr => &["bbr_cong_control", "bbr_cwnd_event"],
+            OptionalGroup::CubicSsthresh => &["cubic_ssthresh"],
+            OptionalGroup::CubicState => &["cubic_state"],
             OptionalGroup::SockTimer => &["sock_timer"],
             OptionalGroup::MptcpTag => &[
                 "sock_sendmsg",
@@ -307,6 +316,19 @@ mod tests {
             to_disable(&enabled, &w),
             Some(BTreeSet::from([OptionalGroup::SockEvent(4)]))
         );
+    }
+
+    #[test]
+    fn failing_cubic_hook_disables_only_that_hook() {
+        let w = warnings(&["libbpf: prog 'cubic_state': failed to load: -524"]);
+        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::CubicState]))
+        );
+        // The default CUBIC programs are not optional
+        let w = warnings(&["libbpf: prog 'cubic_cong_control': failed to load: -22"]);
+        assert_eq!(to_disable(&enabled, &w), None);
     }
 
     #[test]
