@@ -1,5 +1,6 @@
 pub mod name_list;
 pub mod onchange;
+pub mod sock_hooks;
 
 use std::{
     fs,

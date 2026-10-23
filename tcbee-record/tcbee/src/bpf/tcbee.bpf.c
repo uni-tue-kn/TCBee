@@ -784,7 +784,7 @@ SEC("?fexit/tcp_write_timer_handler")
 int BPF_PROG(sock_timer, struct sock *sk)
 {
 	return trace_sock(sk, NULL, &TCP_TIMER_SOCK_EVENTS, RB_SOCK_TIMER,
-			  ONCHG_HOOK_TIMER << ONCHG_HOOK_SHIFT);
+			  SOCK_HOOK_TIMER << SOCK_HOOK_SHIFT);
 }
 
 /*
@@ -800,7 +800,7 @@ static __always_inline int trace_sock_ingress(struct sock *sk)
 	if (state == TCP_LISTEN || state == TCP_CLOSE)
 		return 0;
 	return trace_sock(sk, NULL, &TCP_INGRESS_SOCK_EVENTS, RB_SOCK_INGRESS,
-			  ONCHG_HOOK_INGRESS << ONCHG_HOOK_SHIFT);
+			  SOCK_HOOK_INGRESS << SOCK_HOOK_SHIFT);
 }
 
 SEC("?fexit/tcp_rcv_established")
@@ -845,7 +845,7 @@ static __always_inline int trace_sock_event_ports(struct sock *sk, __u16 sport, 
 	if (!sport || !dport)
 		return 0;
 	return trace_sock_ports(sk, sport, dport, &TCP_EVENT_SOCK_EVENTS, RB_SOCK_EVENT,
-				hook << ONCHG_HOOK_SHIFT | new_state << SOCK_EVENT_STATE_SHIFT);
+				hook << SOCK_HOOK_SHIFT | new_state << SOCK_EVENT_STATE_SHIFT);
 }
 
 /* Sockets without both ports (not connected yet, or after the close) have no flow */
@@ -874,7 +874,7 @@ int BPF_PROG(sock_event_state, const struct sock *sk, int oldstate, int newstate
 	sk_ports(s, &sport, &dport);
 	if (!sport && newstate == TCP_CLOSE)
 		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)s, inet_sport));
-	return trace_sock_event_ports(s, sport, dport, ONCHG_HOOK_STATE, newstate);
+	return trace_sock_event_ports(s, sport, dport, SOCK_HOOK_STATE, newstate);
 }
 
 /* Kernel 5.19 and newer; also runs when the state does not change, which is left out */
@@ -888,7 +888,7 @@ int BPF_PROG(sock_event_ca_state, struct sock *sk, const __u8 ca_state)
 	tp = bpf_skc_to_tcp_sock(sk);
 	if (!tp || BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state) == ca_state)
 		return 0;
-	return trace_sock_event(sk, ONCHG_HOOK_CA_STATE, ca_state);
+	return trace_sock_event(sk, SOCK_HOOK_CA_STATE, ca_state);
 }
 
 SEC("?tp_btf/tcp_retransmit_skb")
@@ -896,14 +896,14 @@ int BPF_PROG(sock_event_retransmit, const struct sock *sk)
 {
 	if (!sk || retransmit_failed(ctx))
 		return 0;
-	return trace_sock_event((struct sock *)sk, ONCHG_HOOK_RETRANSMIT, 0);
+	return trace_sock_event((struct sock *)sk, SOCK_HOOK_RETRANSMIT, 0);
 }
 
 /* After the cwnd was cut for the idle time, when the sender starts again */
 SEC("?fexit/tcp_cwnd_restart")
 int BPF_PROG(sock_event_restart, struct sock *sk)
 {
-	return trace_sock_event(sk, ONCHG_HOOK_RESTART, 0);
+	return trace_sock_event(sk, SOCK_HOOK_RESTART, 0);
 }
 
 /* Newer kernels only (7.2 has it): the receive buffer grew for autotuning */
@@ -912,7 +912,7 @@ int BPF_PROG(sock_event_rcvbuf, struct sock *sk)
 {
 	if (!sk)
 		return 0;
-	return trace_sock_event(sk, ONCHG_HOOK_RCVBUF, 0);
+	return trace_sock_event(sk, SOCK_HOOK_RCVBUF, 0);
 }
 
 /* Lighter variants of the above that only record the cwnd */
@@ -1072,7 +1072,7 @@ static __always_inline void fill_sock_fields_watched(struct sock_trace_entry *re
 }
 
 static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 rb,
-					 enum tcbee_onchg_hook hook)
+					 enum tcbee_sock_hook hook)
 {
 	struct sock_trace_entry *rec;
 	struct onchg_state *st;
@@ -1131,7 +1131,7 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 	}
 	fill_header(rec, sk, sport, dport, hook_seq);
 	fill_sock_fields_watched(rec, sk, tp, snap);
-	rec->ato = hook << ONCHG_HOOK_SHIFT;
+	rec->ato = hook << SOCK_HOOK_SHIFT;
 	if (ONCHG_SHADOW)
 		rec->ato |= reason;
 	commit_shared(rec, rb);
@@ -1152,26 +1152,26 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 SEC("?fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_oc_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, ONCHG_HOOK_EGRESS);
+	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, SOCK_HOOK_EGRESS);
 }
 
 SEC("?fexit/tcp_rcv_established")
 int BPF_PROG(sock_oc_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_INGRESS);
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_INGRESS);
 }
 
 SEC("?fexit/tcp_rcv_state_process")
 int BPF_PROG(sock_oc_rcv_state, struct sock *sk)
 {
-	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_INGRESS);
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_INGRESS);
 }
 
 /* The write timer writes the receive file, see the section comment */
 SEC("?fexit/tcp_write_timer_handler")
 int BPF_PROG(sock_oc_timer, struct sock *sk)
 {
-	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_TIMER);
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_TIMER);
 }
 
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */

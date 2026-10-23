@@ -17,7 +17,7 @@ use eBPF::ebpf_runner_config::{
     check_no_timer_hook, full_sock_hooks, ip_to_filter_addr, on_change_manifest, parse_on_change,
     parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig, FilterConfig, HeadersAt, MptcpModes,
 };
-use tcbee_trace::{onchange::HookSet, TCBeeTrace};
+use tcbee_trace::{sock_hooks::HookSet, TCBeeTrace};
 use writer::PollMode;
 
 // Error handling

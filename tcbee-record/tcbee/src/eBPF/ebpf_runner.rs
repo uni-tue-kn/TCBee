@@ -54,7 +54,7 @@ use crate::{
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
 };
-use tcbee_trace::onchange::{Hook, HookSet};
+use tcbee_trace::sock_hooks::{Hook, HookSet};
 
 use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig, MptcpModes};
 

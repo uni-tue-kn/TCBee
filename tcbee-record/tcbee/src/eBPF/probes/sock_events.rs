@@ -4,7 +4,7 @@ use libbpf_rs::{skel::Skel, Link, OpenObject};
 use log::warn;
 use tcbee_common::{records::sock_trace_entry, stats::RB_SOCK_EVENT};
 use tcbee_trace::{
-    onchange::{Hook, HookSet},
+    sock_hooks::{Hook, HookSet},
     TraceFile,
 };
 

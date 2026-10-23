@@ -28,19 +28,30 @@ const _: () = assert!(size_of::<IpTuple>() == 38);
 const _: () = assert!(size_of::<hook_seq_key>() == 40);
 const _: () = assert!(size_of::<FilterIp>() == 16);
 
-// The hook tags of sock records in tcbee-trace mirror enum tcbee_onchg_hook
-mod onchg_hooks {
+// The hook tags of sock records in tcbee-trace mirror enum tcbee_sock_hook (bpf/onchange.h)
+mod sock_hooks {
     use super::*;
-    use tcbee_trace::onchange::Hook;
+    use tcbee_trace::sock_hooks::{Hook, HOOK_SHIFT, STATE_SHIFT};
 
-    const _: () = assert!(Hook::Ingress.tag() == ONCHG_HOOK_INGRESS);
-    const _: () = assert!(Hook::Timer.tag() == ONCHG_HOOK_TIMER);
-    const _: () = assert!(Hook::Egress.tag() == ONCHG_HOOK_EGRESS);
-    const _: () = assert!(Hook::State.tag() == ONCHG_HOOK_STATE);
-    const _: () = assert!(Hook::CaState.tag() == ONCHG_HOOK_CA_STATE);
-    const _: () = assert!(Hook::Retransmit.tag() == ONCHG_HOOK_RETRANSMIT);
-    const _: () = assert!(Hook::Restart.tag() == ONCHG_HOOK_RESTART);
-    const _: () = assert!(Hook::Rcvbuf.tag() == ONCHG_HOOK_RCVBUF);
+    macro_rules! same {
+        ($($rust:ident = $c:ident),* $(,)?) => {
+            $(const _: () = assert!(matches!(Hook::$rust.tag(), Some($c)));)*
+        };
+    }
+
+    same!(
+        Ingress = SOCK_HOOK_INGRESS,
+        Timer = SOCK_HOOK_TIMER,
+        Egress = SOCK_HOOK_EGRESS,
+        State = SOCK_HOOK_STATE,
+        CaState = SOCK_HOOK_CA_STATE,
+        Retransmit = SOCK_HOOK_RETRANSMIT,
+        Restart = SOCK_HOOK_RESTART,
+        Rcvbuf = SOCK_HOOK_RCVBUF,
+    );
+    const _: () = assert!(Hook::IngressEntry.tag().is_none());
+    const _: () = assert!(HOOK_SHIFT == SOCK_HOOK_SHIFT);
+    const _: () = assert!(STATE_SHIFT == SOCK_EVENT_STATE_SHIFT);
 }
 
 // The watchable socket fields in tcbee-trace mirror enum tcbee_sock_field (bpf/onchange.h)

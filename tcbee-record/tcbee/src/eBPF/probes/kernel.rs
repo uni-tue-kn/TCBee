@@ -3,7 +3,7 @@ use std::error::Error;
 use libbpf_rs::Link;
 use tcbee_common::records::sock_trace_entry;
 use tcbee_trace::{
-    onchange::{Hook, HookSet},
+    sock_hooks::{Hook, HookSet},
     TraceFile,
 };
 
@@ -169,7 +169,7 @@ mod tests {
     fn on_change_mode_loads_only_its_own_timer_program() {
         let mut storage = MaybeUninit::uninit();
         let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
-        let full = HookSet::PER_PACKET;
+        let full = HookSet::of(&[Hook::Egress, Hook::IngressEntry, Hook::Timer]);
         KernelTracer::configure(&mut open.progs, true, None, full, true);
         assert!(open.progs.sock_timer.autoload());
         assert!(!open.progs.sock_oc_timer.autoload());

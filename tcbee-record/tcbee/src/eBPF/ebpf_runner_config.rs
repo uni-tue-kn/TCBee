@@ -8,9 +8,8 @@ use crate::{
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
 use tcbee_trace::{
-    onchange::{
-        Hook, HookSet, Manifest, Sampling, SockField, SourceMeta, WatchSet, MANIFEST_VERSION,
-    },
+    onchange::{Manifest, Sampling, SockField, SourceMeta, WatchSet, MANIFEST_VERSION},
+    sock_hooks::{Hook, HookSet},
     TraceFile,
 };
 
