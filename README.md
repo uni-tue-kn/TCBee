@@ -39,7 +39,7 @@ The examples call the script as `./tcbee` from the unzipped release. After a sou
 
 ### tcbee-record
 
-Written in C with libbpf. Loads the eBPF programs and writes the raw events. A source flag picks what to record: `-h IFACE` for headers, `-t` for tracepoints, `-k` for fentry hooks, `-w` for the congestion window only, `-a` for Cubic and BBR internals, `-M` for MPTCP (path manager events, and with `-k` or `-w` the connection of every subflow record). With `--on-change`, `-k` and `-w` write a record only when a watched field changes, compared after received segments and retransmission timers. Filters (`-p`, `--ports`, `--ips`) limit the recording to some flows. Flags, kernel requirements and the static release build are in [tcbee-record/README.md](tcbee-record/README.md).
+Written in C with libbpf. Loads the eBPF programs and writes the raw events. A source flag picks what to record: `-h IFACE` for headers, `-t` for tracepoints, `-k` for fentry hooks, `-w` for the congestion window only, `-a` for Cubic and BBR internals, `-m` for MPTCP (path manager events, and with `-k` or `-w` the connection of every subflow record). With `--on-change`, `-k` and `-w` write a record only when a watched field changes, compared after received segments and retransmission timers. Filters (`-p`, `--ports`, `--ips`) limit the recording to some flows. Flags, kernel requirements and the static release build are in [tcbee-record/README.md](tcbee-record/README.md).
 
 ```bash
 sudo ./tcbee record -h eth0 -k -p 5001 --duration 60
@@ -55,7 +55,7 @@ Converts a recording into a database. The extension of `-o` picks the engine: `.
 
 ### tcbee-viz
 
-A desktop viewer built with egui. It plots single flows, compares two flows, and runs plugins that add derived series such as retransmissions. The Overview tab shows what wrote the database and, for recordings made with `--metadata`, the host, kernel, probes, clocks, TCP sysctls, interfaces and the counters that changed during the recording. For recordings made with `-M`, the MPTCP tab lists the connections with their side, plots chosen metrics of all subflows of one connection stacked on one time axis below a lane of its path manager events, coloured by what they mean, and below them shows a table of the subflows with their bytes and share and a filterable list of the events; the flow table shows the connection of each flow. It opens a database given as argument, or you load one from the Home tab.
+A desktop viewer built with egui. It plots single flows, compares two flows, and runs plugins that add derived series such as retransmissions. The Overview tab shows what wrote the database and, for recordings made with `--metadata`, the host, kernel, probes, clocks, TCP sysctls, interfaces and the counters that changed during the recording. For recordings made with `-m`, the MPTCP tab lists the connections with their side, plots chosen metrics of all subflows of one connection stacked on one time axis below a lane of its path manager events, coloured by what they mean, and below them shows a table of the subflows with their bytes and share and a filterable list of the events; the flow table shows the connection of each flow. It opens a database given as argument, or you load one from the Home tab.
 
 ```bash
 ./tcbee viz /tmp/myflow.duck

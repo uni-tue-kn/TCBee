@@ -121,7 +121,7 @@ struct sock_trace_entry {
 	uint32_t snd_una;
 	uint32_t snd_nxt;
 	uint32_t lost_out; /* = tcpi_lost (the record's `lost` is tp->lost) */
-	/* Token of the MPTCP connection of a subflow (-M tag), 0 otherwise. Last field. */
+	/* Token of the MPTCP connection of a subflow (-m tag), 0 otherwise. Last field. */
 	uint32_t conn_id;
 };
 
@@ -252,7 +252,7 @@ enum tcbee_mptcp_event {
 };
 
 /*
- * MPTCP path manager and connection lifecycle (-M pm), MPTCP_PM_EVENTS. The header holds the
+ * MPTCP path manager and connection lifecycle (-m pm), MPTCP_PM_EVENTS. The header holds the
  * tuple of the subflow, or for connection events the tuple of the connection, which is the one
  * of its first subflow. Fields that do not apply to an event are 0.
  */

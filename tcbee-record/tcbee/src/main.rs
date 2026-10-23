@@ -176,7 +176,7 @@ fn main() -> anyhow::Result<()> {
             "Record the socket (all TCP metrics) at every transmitted (__tcp_transmit_skb) and received (tcp_rcv_established) segment, and after every run of the write timer (tcp_write_timer_handler, see --no-timer-hook).",
         );
         argparser.refer(&mut metrics).add_option(
-            &["-m", "--metrics"],
+            &["--metrics"],
             StoreTrue,
             "Write per ring buffer event counters, records written and per program recursion misses to metrics.json in the recording directory after shutdown.",
         );
@@ -241,14 +241,14 @@ fn main() -> anyhow::Result<()> {
             "Also record the packets of TCP flows that the kernel drops (kfree_skb), with the drop reason. Implies -e.",
         );
         argparser.refer(&mut trace_mptcp).add_option(
-            &["-M", "--mptcp"],
+            &["-m", "-M", "--mptcp"],
             StoreTrue,
             "Record MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake, and with -k or -w the token of its MPTCP connection in the records of each subflow.",
         );
         argparser.refer(&mut mptcp_modes).add_option(
             &["--mptcp-modes"],
             Store,
-            "What -M records, comma-separated: tag (needs -k or -w), pm. Implies -M. Default is pm, plus tag with -k or -w.",
+            "What -m records, comma-separated: tag (needs -k or -w), pm. Implies -m. Default is pm, plus tag with -k or -w.",
         );
 
         // Will try to parse arguments or exit program on error!

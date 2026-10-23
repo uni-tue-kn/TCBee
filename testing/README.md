@@ -85,7 +85,7 @@ The connection opens over path 1 three seconds after the recorder starts and sen
 | 34 s | the path 2 endpoint is deleted | the subflow closes |
 | 40 s | the transfer ends | the connection closes |
 
-The launcher adds `-M` to the recording flags; record with `-k` (kernel functions, or the full trace) to get the metrics of every subflow. While the recorder's terminal UI runs, the steps are logged to `/tmp/tcbee-mptcp.log`. A headless run records 48 s. The scenario needs a kernel with MPTCP and tc ingress filters (`sch_ingress`, `cls_matchall`, `act_gact`), which drop the packets of path 2. `mptcp/traffic.py` generates the traffic, so iperf3 needs no MPTCP support.
+The launcher adds `-m` to the recording flags; record with `-k` (kernel functions, or the full trace) to get the metrics of every subflow. While the recorder's terminal UI runs, the steps are logged to `/tmp/tcbee-mptcp.log`. A headless run records 48 s. The scenario needs a kernel with MPTCP and tc ingress filters (`sch_ingress`, `cls_matchall`, `act_gact`), which drop the packets of path 2. `mptcp/traffic.py` generates the traffic, so iperf3 needs no MPTCP support.
 
 ## Tuning
 
@@ -102,7 +102,7 @@ Edit the constants at the top of `topology.py`:
 
 The scripts in `mptcp/` test MPTCP recording without Mininet. `mptcp/run.sh` checks one short recording. It builds two network namespaces joined
 by two veth pairs, so an MPTCP connection gets one subflow per path, records it next to a plain
-TCP connection with `tcbee-record -k -M`, and checks the recording with `mptcp/check_trace.py`.
+TCP connection with `tcbee-record -k -m`, and checks the recording with `mptcp/check_trace.py`.
 If a SQLite build of `tcbee-process` exists (`TCBEE_PROCESS`, default
 `target/release/tcbee-process`), it also processes the recording and checks the connections in
 the database. It needs root, iproute2 with `ip mptcp` and an MPTCP kernel, and uses the release

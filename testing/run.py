@@ -44,8 +44,8 @@ RECORD_FLAGS = [
     ("-a", "algorithms",    "CUBIC / BBR algorithm state"),
     ("-t", "tracepoints",   "tcp_probe tracepoint (main TCP metrics)"),
     ("-k", "kernel",        "tcp_sendmsg / tcp_recvmsg (all TCP metrics)"),
-    ("-M", "mptcp",         "MPTCP path manager events (added for the MPTCP scenario)"),
-    ("-m", "metrics",       "write metrics.json"),
+    ("-m", "mptcp",         "MPTCP path manager events (added for the MPTCP scenario)"),
+    ("--metrics", "metrics", "write metrics.json"),
 ]
 
 
@@ -56,7 +56,7 @@ def ask_record_args():
         ("algorithms            [-a]",           "-a"),
         ("tracepoints           [-t]",           "-t"),
         ("kernel functions      [-k]",           "-k"),
-        ("full trace            [-h tcbee-eth0 -w -t -k -a -m]", "-h tcbee-eth0 -w -t -k -a -m"),
+        ("full trace            [-h tcbee-eth0 -w -t -k -a --metrics]", "-h tcbee-eth0 -w -t -k -a --metrics"),
         ("custom",                               None),
     ]
     choice = menu("Select recording profile:", profiles)

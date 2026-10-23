@@ -20,7 +20,7 @@ const volatile __u64 RB_SUBMIT_FLAGS = BPF_RB_NO_WAKEUP;
 /* Set to 0 by userspace when the flow list is not displayed */
 const volatile __u8 FLOW_TRACKING = 1;
 
-/* Set to 1 by userspace (-M tag) to tag MPTCP subflow records with their connection, mptcp.h */
+/* Set to 1 by userspace (-m tag) to tag MPTCP subflow records with their connection, mptcp.h */
 const volatile __u8 MPTCP_TAG = 0;
 /*
  * On-change mode (--on-change, see onchange.h): the socket fields the sock probes compare,

@@ -534,12 +534,21 @@ impl EbpfRunner {
         Ok((open, optional, missing))
     }
 
-    /// Without MPTCP in the kernel, -M records nothing: a warning, or an error if it is the
+    /// Without MPTCP in the kernel, -m records nothing: a warning, or an error if it is the
     /// only thing to record. The kernel has struct mptcp_sock whenever it has MPTCP; missing
     /// path manager functions are handled per hook.
     fn check_kernel_mptcp(&mut self, btf: &mut KernelBtf) -> Result<(), Box<dyn Error>> {
         let wanted = self.config.mptcp.tag || self.config.mptcp.pm;
-        if !wanted || !btf.available() || btf.has_struct("mptcp_sock") {
+        if !wanted {
+            return Ok(());
+        }
+        if !btf.available() || btf.has_struct("mptcp_sock") {
+            let modes = &self.config.mptcp;
+            info!(
+                "Recording MPTCP:{}{}",
+                if modes.pm { " path manager events" } else { "" },
+                if modes.tag { " connection tags" } else { "" }
+            );
             return Ok(());
         }
         let c = &self.config;
@@ -551,9 +560,9 @@ impl EbpfRunner {
             || c.events
             || c.drops)
         {
-            return Err("The kernel has no MPTCP (CONFIG_MPTCP), -M has nothing to record".into());
+            return Err("The kernel has no MPTCP (CONFIG_MPTCP), -m has nothing to record".into());
         }
-        warn!("The kernel has no MPTCP (CONFIG_MPTCP), -M records nothing");
+        warn!("The kernel has no MPTCP (CONFIG_MPTCP), -m records nothing");
         self.config.mptcp = MptcpModes::default();
         Ok(())
     }

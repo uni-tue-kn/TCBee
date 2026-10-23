@@ -154,7 +154,7 @@ pub fn parse_ringbuf_sizes(arg: &str) -> anyhow::Result<Vec<(&'static str, u32)>
     Ok(sizes)
 }
 
-/// What `-M` records about MPTCP
+/// What `-m` records about MPTCP
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct MptcpModes {
     /// Tag the sock and cwnd records of a subflow with the token of its connection
@@ -166,7 +166,7 @@ pub struct MptcpModes {
 impl MptcpModes {
     const NAMES: &'static str = "tag, pm";
 
-    /// The modes of a plain `-M`: path manager events, and tagging if sock or cwnd records are
+    /// The modes of a plain `-m`: path manager events, and tagging if sock or cwnd records are
     /// recorded
     pub fn default_for(tagged_records: bool) -> MptcpModes {
         MptcpModes {

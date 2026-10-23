@@ -64,7 +64,7 @@ At least one metric source is required.
 | `-a` | Congestion control internals (Cubic and BBR) |
 | `-e` | Discrete TCP events (`tcp_events.tcp`): retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss) and retransmission timeouts. Each hook is optional: one the kernel lacks or rejects is left out with a warning |
 | `--drops` | Also record the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason; implies `-e`. Writes `drop_reasons.json` with the reason names of the running kernel |
-| `-M` | MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
+| `-m` | MPTCP (`-M` works too): path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
 
 | Flag | Default | Description |
 |---|---|---|
@@ -72,14 +72,14 @@ At least one metric source is required.
 | `--duration SECS` | `0` | Stop after this many seconds; 0 records until Ctrl+C |
 | `-c N` | `1` | Number of CPUs used for processing |
 | `-q` | | Disable the terminal UI |
-| `-m` | | Write a `metrics.json` summary file |
+| `--metrics` | | Write a `metrics.json` summary file |
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
 | `--tui-observation-window-s N` | `0` | Sliding window of the TUI graphs in seconds; 0 shows the whole recording |
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
-| `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-M` records, comma-separated: `tag`, `pm` |
+| `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-m` records, comma-separated: `tag`, `pm` |
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
@@ -196,7 +196,7 @@ retransmission timeouts, loss probes, RACK reordering timeouts and zero window p
   Drops of packets without a full socket are only recorded for flows that already have a TCP
   event record, so the drops of a flow that started before the recording show up after its
   first other event (or its first drop with a socket).
-- `-M` needs MPTCP in the kernel (`CONFIG_MPTCP`, 5.6). Without it, `conn_id` stays 0 and no path
+- `-m` needs MPTCP in the kernel (`CONFIG_MPTCP`, 5.6). Without it, `conn_id` stays 0 and no path
   manager events are recorded. A path manager hook whose kernel function is missing or inlined
   is left out with a warning. Not recorded: a stale subflow becoming active again and the
   fallback on the server side (both run through inlined code on 6.8).

@@ -1348,7 +1348,7 @@ int BPF_PROG(tcp_event_drop, struct sk_buff *skb, void *location)
 	return trace_tcp_event_skb(skb, BPF_CORE_READ(skb, skb_iif) != 0, TCBEE_TCP_DROP, reason);
 }
 
-/* ---- MPTCP path manager (-M pm) ---------------------------------------------------- */
+/* ---- MPTCP path manager (-m pm) ---------------------------------------------------- */
 
 /*
  * One record per path manager or lifecycle event of an MPTCP connection. These hooks run a
