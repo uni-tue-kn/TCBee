@@ -14,9 +14,9 @@ use serde::Serialize;
 use tcbee_common::{
     records::hook_seq_key,
     stats::{
-        RB_COUNT, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS,
-        RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RINGBUFS, STAT_DROPPED, STAT_ERROR,
-        STAT_HANDLED,
+        RB_COUNT, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
+        RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RINGBUFS, STAT_DROPPED,
+        STAT_ERROR, STAT_HANDLED,
     },
 };
 
@@ -178,7 +178,7 @@ impl Metrics {
             records_written: reports.iter().map(|r| r.records).sum(),
             ingress: attempts(&[RB_TCP4_INGRESS, RB_TCP6_INGRESS]),
             egress: attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]),
-            ingress_calls: attempts(&[RB_SOCK_RECV, RB_CWND_RECV]),
+            ingress_calls: attempts(&[RB_SOCK_RECV, RB_CWND_RECV, RB_SOCK_INGRESS]),
             egress_calls: attempts(&[RB_SOCK_SEND, RB_CWND_SEND]),
             ringbufs,
             programs,
