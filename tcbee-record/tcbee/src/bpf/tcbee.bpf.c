@@ -688,6 +688,23 @@ int BPF_PROG(sock_ingress_state, struct sock *sk)
 }
 
 /*
+ * Newer kernels pass tcp_retransmit_skb an error and run it for attempts that failed too (the
+ * device queue was busy, the skb could not be cloned); those sent nothing and are left out.
+ * The tracepoint's raw event got the err field with the argument, so its existence tells
+ * whether ctx[2] may be read.
+ */
+struct trace_event_raw_tcp_retransmit_skb___tcbee {
+	int err;
+} __attribute__((preserve_access_index));
+
+static __always_inline bool retransmit_failed(unsigned long long *ctx)
+{
+	if (!bpf_core_field_exists(struct trace_event_raw_tcp_retransmit_skb___tcbee, err))
+		return false;
+	return (int)ctx[2] != 0;
+}
+
+/*
  * The socket at TCP events (-k, event_sock.tcp): state and congestion state changes,
  * retransmissions, the cwnd restart after idle and receive buffer growth. They run at events,
  * not per packet. The hook is in bits 8-15 of ato, for state changes the new state in bits
@@ -741,7 +758,7 @@ int BPF_PROG(sock_event_ca_state, struct sock *sk, const __u8 ca_state)
 SEC("?tp_btf/tcp_retransmit_skb")
 int BPF_PROG(sock_event_retransmit, const struct sock *sk)
 {
-	if (!sk)
+	if (!sk || retransmit_failed(ctx))
 		return 0;
 	return trace_sock_event((struct sock *)sk, ONCHG_HOOK_RETRANSMIT, 0);
 }
@@ -1319,7 +1336,7 @@ int BPF_PROG(tcp_event_retransmit, const struct sock *sk, const struct sk_buff *
 {
 	struct tcp_event_entry *rec;
 
-	if (!sk)
+	if (!sk || retransmit_failed(ctx))
 		return 0;
 	rec = tcp_event_reserve_sk((struct sock *)sk, TCBEE_TCP_RETRANSMIT);
 	if (!rec)
