@@ -42,7 +42,7 @@ RECORD_FLAGS = [
     ("-h tcbee-eth0", "headers",       "TCP packet headers on tcbee-eth0"),
     ("-w", "cwnd",          "send_cwnd kernel calls"),
     ("-a", "algorithms",    "CUBIC / BBR algorithm state"),
-    ("-t", "tracepoints",   "tcp_probe tracepoint (main TCP metrics)"),
+    ("-t", "tracepoints",   "TCP tracepoints: tcp_probe and the TCP events"),
     ("-k", "kernel",        "socket (all TCP metrics) at timers and TCP events"),
     ("-m", "mptcp",         "MPTCP path manager events (added for the MPTCP scenario)"),
     ("--metrics", "metrics", "write metrics.json"),

@@ -47,7 +47,7 @@ use crate::{
 
 /// Shown when the database has no MPTCP connection
 pub const NO_MPTCP_HINT: &str =
-    "No MPTCP was recorded in this database. Record with tcbee-record -M to see MPTCP connections.";
+    "No MPTCP was recorded in this database. Record with tcbee-record -m to see MPTCP connections.";
 /// Plotted first if the subflows have it
 const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
 

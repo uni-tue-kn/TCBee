@@ -89,11 +89,13 @@ At least one metric source is required.
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
-CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic, bbr and reno
-8 MiB, tcp6 and tcp_probe 4 MiB, sock_timer and sock_event 1 MiB) need about 40 MiB per CPU with `-h` and
-118 MiB per CPU with all probes; the log at startup prints the total. Records of one flow come from several CPUs,
-so their file order is not their order at the hook: every record carries `hook_seq`, its
-position among the events of its flow direction at its hook.
+CPU to reserve space. The default sizes per CPU are 16 MiB for tcp4 and sock (which also
+sizes the ring of the `ingress` sock hook), 8 MiB for cwnd, cubic, bbr and reno, 4 MiB for
+tcp6, tcp_probe and tcp_events, and 1 MiB for the rest. `-h` needs about 40 MiB per CPU, as
+much again for the driver hooks, and all rings together 181 MiB; the log at startup prints the
+total. Records of one flow come from several CPUs, so their file order is not their order at
+the hook: every record carries `hook_seq`, its position among the events of its flow
+direction at its hook.
 
 Next to every trace file with records, `<file>.cpu` tells which CPU's ring buffer each record
 came from: one 12-byte entry per run of consecutive records from the same CPU, the u64 index of
@@ -228,7 +230,7 @@ The socket event hooks of `--sock-hooks` write the socket at TCP events, not per
 | `ca-state` | `tp_btf/tcp_cong_state_set` (5.19) | at each congestion state change (Open, Disorder, CWR, Recovery, Loss) |
 | `retransmit` | `tp_btf/tcp_retransmit_skb` | at each retransmitted segment |
 | `restart` | `fexit/tcp_cwnd_restart` | after the cwnd was cut for an idle period |
-| `rcvbuf` | `tp_btf/tcp_rcvbuf_grow` (recent kernels) | when receive autotuning grows the buffer |
+| `rcvbuf` | `tp_btf/tcp_rcvbuf_grow` (newer kernels, 7.2 has it) | when receive autotuning grows the buffer |
 
 - Bits 8-15 of `ato` tell the hook (4 state, 5 ca-state, 6 retransmit, 7 restart, 8 rcvbuf).
   The state tracepoints run before the change, so the record still holds the old state and

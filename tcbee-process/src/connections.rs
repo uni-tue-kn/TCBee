@@ -9,7 +9,7 @@
 //! connection once it is destroyed (TOKEN_DESTROYED). So the events of a token are cut into
 //! lifetimes at each TOKEN_DESTROYED, and every lifetime is one connection. A subflow belongs to
 //! the lifetime of its token that has not ended before the subflow's first record. Without path
-//! manager events (`-M tag` alone), a token is one connection.
+//! manager events (`-m` with `--mptcp-modes tag` alone), a token is one connection.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;

@@ -906,7 +906,7 @@ int BPF_PROG(sock_event_restart, struct sock *sk)
 	return trace_sock_event(sk, ONCHG_HOOK_RESTART, 0);
 }
 
-/* Recent kernels only: the receive buffer grew for autotuning */
+/* Newer kernels only (7.2 has it): the receive buffer grew for autotuning */
 SEC("?tp_btf/tcp_rcvbuf_grow")
 int BPF_PROG(sock_event_rcvbuf, struct sock *sk)
 {
