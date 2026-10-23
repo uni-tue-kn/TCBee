@@ -215,7 +215,7 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 	return 0;
 }
 
-/* ---- TC packet tracer (-h) ------------------------------------------------------- */
+/* ---- Packet header tracer (-h) --------------------------------------------------- */
 
 /*
  * Plain wire formats. The vmlinux.h variants carry preserve_access_index, which would
@@ -284,13 +284,77 @@ static __always_inline void *skb_header(struct __sk_buff *skb, __u32 off, void *
 	return buf;
 }
 
+/* skb_header() of an XDP program: the frame of a multi-buffer packet continues in frags */
+static __always_inline void *xdp_header(struct xdp_md *xdp, __u32 off, void *buf, __u32 len)
+{
+	void *data = (void *)(long)xdp->data;
+	void *data_end = (void *)(long)xdp->data_end;
+	void *ptr = data + off;
+
+	if (ptr + len <= data_end)
+		return ptr;
+	if (bpf_xdp_load_bytes(xdp, off, buf, len))
+		return NULL;
+	return buf;
+}
+
+/*
+ * skb_header() of a kernel sk_buff at net_dev_start_xmit, where data points at the MAC
+ * header. The stack builds the headers of a TCP packet in the linear data, the payload may
+ * be in frags, so only the linear data (len - data_len) is read.
+ */
+static __always_inline void *xmit_header(const struct sk_buff *skb, __u32 off, void *buf,
+					 __u32 len)
+{
+	if (off + len > skb->len - skb->data_len)
+		return NULL;
+	if (bpf_probe_read_kernel(buf, len, skb->data + off))
+		return NULL;
+	return buf;
+}
+
+/*
+ * The hooks that parse packet headers. The hook is a constant at every call, so each program
+ * keeps only its own branches.
+ */
+enum pkt_hook {
+	PKT_TC, /* TC program, ctx is a struct __sk_buff */
+	PKT_XDP, /* XDP program, ctx is a struct xdp_md */
+	PKT_XMIT, /* tp_btf/net_dev_start_xmit, ctx is a struct sk_buff */
+};
+
+static __always_inline void *pkt_header(void *ctx, enum pkt_hook hook, __u32 off, void *buf,
+					__u32 len)
+{
+	if (hook == PKT_TC)
+		return skb_header(ctx, off, buf, len);
+	if (hook == PKT_XDP)
+		return xdp_header(ctx, off, buf, len);
+	return xmit_header(ctx, off, buf, len);
+}
+
+/*
+ * skb->tstamp of a sent packet: the earliest departure time. XDP sees received frames, which
+ * have no skb yet.
+ */
+static __always_inline __u64 pkt_tstamp(void *ctx, enum pkt_hook hook)
+{
+	if (hook == PKT_TC)
+		return ((struct __sk_buff *)ctx)->tstamp;
+	if (hook == PKT_XMIT)
+		return ((const struct sk_buff *)ctx)->tstamp;
+	return 0;
+}
+
 /*
  * Every early return happens before the filter, so a packet that passes the filter is
  * always counted as handled or dropped. IPv6 extension headers
  * are not parsed, nexthdr must be TCP directly. Only sent packets carry skb->tstamp, the
  * departure time; on a received packet it would be the receive timestamp, if any.
+ *
+ * The return value is the TC verdict, the other hooks ignore it.
  */
-static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void *rb4,
+static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egress, void *rb4,
 					__u32 rb4_id, void *rb6, __u32 rb6_id)
 {
 	struct tc_tcp_hdr tcp_buf, *tcp;
@@ -299,7 +363,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void
 	struct ip_tuple t;
 	__u64 hook_seq;
 
-	proto = skb_header(skb, TC_ETH_PROTO_OFF, &proto_buf, sizeof(proto_buf));
+	proto = pkt_header(ctx, hook, TC_ETH_PROTO_OFF, &proto_buf, sizeof(proto_buf));
 	if (!proto)
 		return TC_ACT_UNSPEC;
 
@@ -311,7 +375,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void
 		struct tcp4_packet_trace *rec;
 		__u32 ip_hlen;
 
-		ip = skb_header(skb, TC_ETH_HLEN, &ip_buf, sizeof(ip_buf));
+		ip = pkt_header(ctx, hook, TC_ETH_HLEN, &ip_buf, sizeof(ip_buf));
 		if (!ip)
 			return TC_ACT_UNSPEC;
 		/* Non-first fragments carry no TCP header */
@@ -320,7 +384,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void
 		ip_hlen = (ip->version_ihl & 0x0F) << 2;
 		if (ip_hlen < sizeof(*ip))
 			ip_hlen = sizeof(*ip);
-		tcp = skb_header(skb, TC_ETH_HLEN + ip_hlen, &tcp_buf, sizeof(tcp_buf));
+		tcp = pkt_header(ctx, hook, TC_ETH_HLEN + ip_hlen, &tcp_buf, sizeof(tcp_buf));
 		if (!tcp)
 			return TC_ACT_UNSPEC;
 
@@ -350,7 +414,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void
 			rec->flags = tcp->flags;
 			rec->ecn = ip->tos & IP_ECN_MASK;
 			if (egress)
-				rec->tstamp = skb->tstamp;
+				rec->tstamp = pkt_tstamp(ctx, hook);
 			commit(rec, rb4_id);
 		}
 
@@ -359,12 +423,12 @@ static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void
 		struct tc_ipv6_hdr ip6_buf, *ip6;
 		struct tcp6_packet_trace *rec;
 
-		ip6 = skb_header(skb, TC_ETH_HLEN, &ip6_buf, sizeof(ip6_buf));
+		ip6 = pkt_header(ctx, hook, TC_ETH_HLEN, &ip6_buf, sizeof(ip6_buf));
 		if (!ip6)
 			return TC_ACT_UNSPEC;
 		if (ip6->nexthdr != IPPROTO_TCP)
 			return TC_ACT_UNSPEC;
-		tcp = skb_header(skb, TC_ETH_HLEN + sizeof(*ip6), &tcp_buf, sizeof(tcp_buf));
+		tcp = pkt_header(ctx, hook, TC_ETH_HLEN + sizeof(*ip6), &tcp_buf, sizeof(tcp_buf));
 		if (!tcp)
 			return TC_ACT_UNSPEC;
 
@@ -395,7 +459,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void
 			/* The traffic class follows the 4 version bits */
 			rec->ecn = (bpf_ntohl(ip6->version_tc_flow) >> 20) & IP_ECN_MASK;
 			if (egress)
-				rec->tstamp = skb->tstamp;
+				rec->tstamp = pkt_tstamp(ctx, hook);
 			commit(rec, rb6_id);
 		}
 
@@ -412,15 +476,15 @@ static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void
 SEC("tc")
 int tc_ingress_packet_tracer(struct __sk_buff *skb)
 {
-	return trace_packet(skb, false, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS,
+	return trace_packet(skb, PKT_TC, false, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS,
 			    &TCP6_PACKETS_INGRESS, RB_TCP6_INGRESS);
 }
 
 SEC("tc")
 int tc_egress_packet_tracer(struct __sk_buff *skb)
 {
-	return trace_packet(skb, true, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS, &TCP6_PACKETS_EGRESS,
-			    RB_TCP6_EGRESS);
+	return trace_packet(skb, PKT_TC, true, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS,
+			    &TCP6_PACKETS_EGRESS, RB_TCP6_EGRESS);
 }
 
 /* ---- Socket state (-k) and cwnd only (-w) ---------------------------------------- */

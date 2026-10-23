@@ -104,6 +104,16 @@ struct __sk_buff {
 	__u32 gso_segs;
 };
 
+/* The XDP context, a stable UAPI layout like struct __sk_buff */
+struct xdp_md {
+	__u32 data;
+	__u32 data_end;
+	__u32 data_meta;
+	__u32 ingress_ifindex;
+	__u32 rx_queue_index;
+	__u32 egress_ifindex;
+};
+
 struct trace_event_raw_tcp_probe {
 	__u8 saddr[28];
 	__u8 daddr[28];
@@ -173,6 +183,10 @@ struct sk_buff {
 	__u16 transport_header;
 	__u16 network_header;
 	unsigned char *head;
+	unsigned char *data;
+	unsigned int data_len;
+	/* union with skb_mstamp_ns */
+	__s64 tstamp;
 };
 
 /* Only its existence is checked: 5.17 and newer */
