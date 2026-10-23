@@ -60,7 +60,7 @@ At least one metric source is required.
 | `-h IFACE` | TCP headers via TC on the given interface |
 | `-t` | The TCP tracepoints: `tcp_probe` (most TCP metrics at every received segment), SYN-ACK retransmissions and bad checksums, and as discrete TCP events (`tcp_events.tcp`) retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each event hook is optional: one the kernel lacks or rejects is left out with a warning |
 | `--tp LIST` | The tracepoints of `-t` to record, implies `-t`. Names: `probe`, `synack`, `bad_csum`, `retransmit`, `rst_sent`, `rst_received`, `state`, `ca_state`, `rto`, `destroy`, and `drops`, which `-t` leaves out: the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason, and `drop_reasons.json` with the reason names of the running kernel. `all` and `default` name the sets. A list of only `+name` and `-name` items changes the default set, e.g. `--tp +drops,-probe` |
-| `-k` | The socket (all TCP metrics) at the hooks of `--sock-hooks`: by default fentry on `__tcp_transmit_skb` and `tcp_rcv_established`, and fexit on `tcp_write_timer_handler` (`timer_sock.tcp`, see below) |
+| `-k` | The socket (all TCP metrics) at the hooks of `--sock-hooks`: by default after every run of the write timer (`timer_sock.tcp`, see below) and at TCP events (`event_sock.tcp`), none per packet. On a sender, `--sock-hooks +ingress` adds the state after every ACK |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
 | `-e`, `--drops` | Kept for old command lines: `-e` records the TCP events of `-t` only, `--drops` those and the drops |
@@ -83,7 +83,7 @@ At least one metric source is required.
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
-| `--sock-hooks LIST` | `egress,ingress-entry,timer` | With `-k`: the kernel hooks to record the socket at, `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`), `timer` (`timer_sock.tcp`), `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`), and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). A list of only `+name` and `-name` items changes the default. With `--on-change` the same as `--on-change-hooks` |
+| `--sock-hooks LIST` | `timer,state,ca-state,retransmit,restart,rcvbuf` | With `-k`: the kernel hooks to record the socket at. Per packet: `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`) and `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). Not per packet: `timer` (`timer_sock.tcp`) and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). A list of only `+name` and `-name` items changes the default. With `--on-change` the same as `--on-change-hooks` |
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
@@ -129,8 +129,9 @@ dropped records. The default mode is unchanged.
   `backoff`, `rto`). Changes of the send path (cwnd restart after idle, app-limited cwnd
   reduction) are seen by ingress at the next ACK; `egress` records them at once, at the cost of
   one probe run per transmitted segment. Ingress and timer records carry the state after the
-  segment or timer was processed, egress records the state before the transmit. The default
-  `-k`/`-w` programs use fentry on both sides and record the state before.
+  segment or timer was processed, egress records the state before the transmit. The `egress`
+  and `ingress-entry` hooks of `-k` and the `-w` programs use fentry and record the state
+  before.
 - The sock and cwnd probes each keep one last state per connection, which every hook
   compares with and updates, so a change is written once, by the first hook that sees it.
   Ingress and timer records share the receive file and its `hook_seq`; send and receive file
@@ -157,7 +158,7 @@ dropped records. The default mode is unchanged.
 
 ## Write timer records
 
-`-k` also writes the socket after every run of the write timer handler
+`-k` writes the socket after every run of the write timer handler
 (`fexit/tcp_write_timer_handler`, also when deferred to `tcp_release_cb`) to `timer_sock.tcp`:
 retransmission timeouts, loss probes, RACK reordering timeouts and zero window probes.
 

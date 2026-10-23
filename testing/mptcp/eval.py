@@ -174,8 +174,9 @@ class Rep:
     def start_record(self, seconds: float):
         out = self.dir / "trace"
         out.mkdir()
-        cmd = [self.args.record, "-q", "--metrics", "-k", "-w", "-m", "--ports",
-               f"{MPTCP_PORT},{TCP_PORT}", "--poll", "wait", "-d", f"{out}/",
+        # verify.py reads the per-packet sock files
+        cmd = [self.args.record, "-q", "--metrics", "-k", "--sock-hooks", "+egress,+ingress-entry",
+               "-w", "-m", "--ports", f"{MPTCP_PORT},{TCP_PORT}", "--poll", "wait", "-d", f"{out}/",
                "--duration", f"{seconds:.0f}"]
         if self.args.pm_ring:
             cmd += ["--ringbuf-size", f"mptcp_pm={self.args.pm_ring}"]

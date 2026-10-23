@@ -361,8 +361,8 @@ pub fn check_no_timer_hook(
     Ok(())
 }
 
-/// The hooks of `-k` without on-change: `--sock-hooks` (default egress, ingress-entry and
-/// timer), less the timer with `--no-timer-hook`
+/// The hooks of `-k` without on-change: `--sock-hooks` (default the write timer and the
+/// socket events), less the timer with `--no-timer-hook`
 pub fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSet> {
     let hooks = if spec.is_empty() {
         HookSet::FULL_DEFAULT
@@ -675,11 +675,13 @@ mod tests {
         assert_eq!(full_sock_hooks("", false).unwrap(), HookSet::FULL_DEFAULT);
         assert_eq!(
             full_sock_hooks("", true).unwrap(),
-            HookSet::parse("egress,ingress-entry").unwrap()
+            HookSet::FULL_DEFAULT.without(Hook::Timer)
         );
+        let sender = full_sock_hooks("+ingress", false).unwrap();
+        assert!(sender.contains(Hook::Ingress) && sender.contains(Hook::State));
         assert_eq!(
-            full_sock_hooks("-egress", false).unwrap(),
-            HookSet::parse("ingress-entry,timer").unwrap()
+            full_sock_hooks("egress,ingress-entry,timer", true).unwrap(),
+            HookSet::parse("egress,ingress-entry").unwrap()
         );
         assert!(full_sock_hooks("timer", true).is_err());
         assert_eq!(

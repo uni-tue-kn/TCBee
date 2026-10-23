@@ -394,7 +394,7 @@ impl EbpfRunner {
         .map(|(_, name)| name.to_string())
         .collect();
         groups.extend(optional.iter().map(|group| group.name().to_string()));
-        if c.kernel && c.on_change.is_none() && c.sock_hooks != HookSet::FULL_DEFAULT {
+        if c.kernel && c.on_change.is_none() {
             let hooks: Vec<_> = c.sock_hooks.hooks().map(|hook| hook.name()).collect();
             groups.push(format!("sock hooks: {}", hooks.join(", ")));
         }

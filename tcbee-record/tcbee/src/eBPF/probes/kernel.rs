@@ -169,7 +169,7 @@ mod tests {
     fn on_change_mode_loads_only_its_own_timer_program() {
         let mut storage = MaybeUninit::uninit();
         let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
-        let full = HookSet::FULL_DEFAULT;
+        let full = HookSet::PER_PACKET;
         KernelTracer::configure(&mut open.progs, true, None, full, true);
         assert!(open.progs.sock_timer.autoload());
         assert!(!open.progs.sock_oc_timer.autoload());

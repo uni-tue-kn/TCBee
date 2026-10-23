@@ -43,7 +43,7 @@ RECORD_FLAGS = [
     ("-w", "cwnd",          "send_cwnd kernel calls"),
     ("-a", "algorithms",    "CUBIC / BBR algorithm state"),
     ("-t", "tracepoints",   "tcp_probe tracepoint (main TCP metrics)"),
-    ("-k", "kernel",        "tcp_sendmsg / tcp_recvmsg (all TCP metrics)"),
+    ("-k", "kernel",        "socket (all TCP metrics) at timers and TCP events"),
     ("-m", "mptcp",         "MPTCP path manager events (added for the MPTCP scenario)"),
     ("--metrics", "metrics", "write metrics.json"),
 ]

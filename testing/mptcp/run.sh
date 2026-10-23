@@ -60,7 +60,7 @@ disown -a
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
-"$RECORD" -q -k -m --ports "$MPTCP_PORT,$TCP_PORT" --poll wait -d "$OUT" \
+"$RECORD" -q -k --sock-hooks +egress,+ingress-entry -m --ports "$MPTCP_PORT,$TCP_PORT" --poll wait -d "$OUT" \
     --duration $((SECONDS_TRAFFIC + 3)) >"$OUT/record.log" 2>&1 &
 RECORDER=$!
 sleep 1.5

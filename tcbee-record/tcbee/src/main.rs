@@ -180,7 +180,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_kernel).add_option(
             &["-k", "--kernel"],
             StoreTrue,
-            "Record the socket (all TCP metrics) at every transmitted (__tcp_transmit_skb) and received (tcp_rcv_established) segment, and after every run of the write timer (tcp_write_timer_handler, see --no-timer-hook).",
+            "Record the socket (all TCP metrics) at the hooks of --sock-hooks: by default after every run of the write timer and at TCP events (state and congestion state changes, retransmissions, cwnd restarts, receive buffer growth), none per packet. Add +ingress for the state after every received segment.",
         );
         argparser.refer(&mut metrics).add_option(
             &["--metrics"],
@@ -235,7 +235,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut sock_hooks).add_option(
             &["--sock-hooks"],
             Store,
-            "Comma-separated kernel hooks at which -k records the socket. egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp); ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp); timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp). A list of only +name and -name items changes the default, egress,ingress-entry,timer. With --on-change it is the same as --on-change-hooks.",
+            "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. A list of only +name and -name items changes the default, e.g. +ingress on a sender. With --on-change it is the same as --on-change-hooks.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -344,6 +344,11 @@ fn main() -> anyhow::Result<()> {
     } else {
         full_sock_hooks(&sock_hooks, no_timer_hook)?
     };
+    if trace_kernel && on_change.is_none() && sock_hooks.hooks().all(|h| !h.per_packet()) {
+        eprintln!(
+            "Note: -k records the socket at timers and TCP events only; on a sender, --sock-hooks +ingress adds the state after every ACK"
+        );
+    }
 
     // Create a timestamped recording directory inside the requested base dir
     let trace = TCBeeTrace::create(&dir)

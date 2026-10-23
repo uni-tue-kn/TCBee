@@ -272,6 +272,11 @@ impl Hook {
         }
     }
 
+    /// Whether the hook runs once per transmitted or received segment
+    pub fn per_packet(self) -> bool {
+        matches!(self, Hook::Ingress | Hook::Egress | Hook::IngressEntry)
+    }
+
     pub fn from_name(name: &str) -> Option<Hook> {
         Hook::ALL.into_iter().find(|h| h.name() == name)
     }
@@ -317,9 +322,20 @@ impl HookSet {
     /// without a run per transmitted segment
     pub const DEFAULT: HookSet = HookSet(Hook::Ingress.bit() | Hook::Timer.bit());
 
-    /// The hooks of `-k` without on-change: one record per transmitted and received segment,
-    /// and after each write timer run
-    pub const FULL_DEFAULT: HookSet =
+    /// The hooks of `-k` without on-change: the write timer and the socket events, none that
+    /// runs per packet. A saturated sender loses goodput to a hook on its send path, and a
+    /// receiver to one per received segment, so those are opt-in.
+    pub const FULL_DEFAULT: HookSet = HookSet(
+        Hook::Timer.bit()
+            | Hook::State.bit()
+            | Hook::CaState.bit()
+            | Hook::Retransmit.bit()
+            | Hook::Restart.bit()
+            | Hook::Rcvbuf.bit(),
+    );
+    /// The hooks of `-k` before the socket events: every transmitted and received segment
+    /// and the write timer
+    pub const PER_PACKET: HookSet =
         HookSet(Hook::Egress.bit() | Hook::IngressEntry.bit() | Hook::Timer.bit());
 
     /// A comma-separated list of hook names. A list of only `+name` and `-name` items
@@ -509,8 +525,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_hook_changes() {
+    fn full_default_has_no_per_packet_hook() {
         let full = HookSet::FULL_DEFAULT;
+        assert!(full.hooks().all(|h| !h.per_packet()));
+        assert!(full.contains(Hook::Timer));
+        assert!(Hook::SOCK_EVENTS.iter().all(|h| full.contains(*h)));
+    }
+
+    #[test]
+    fn parse_hook_changes() {
+        let full = HookSet::PER_PACKET;
         assert_eq!(
             HookSet::parse_changes("ingress", full),
             HookSet::parse("ingress")
