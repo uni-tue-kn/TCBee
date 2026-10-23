@@ -4,8 +4,9 @@
 //! filter increments exactly one of `STAT_HANDLED` (record submitted), `STAT_DROPPED`
 //! (ring buffer full), `STAT_ERROR` (kernel read failed) or, in on-change mode, the ring's
 //! suppressed slot (watched fields unchanged, no record). The number of invocations is their
-//! sum. The suppressed slots and the state error slot follow the per-ring slots, so the
-//! layout of the first `RB_COUNT * STATS_PER_RB` slots does not depend on the mode.
+//! sum. The suppressed slots, the state error slot and the aggregated packet slots follow the
+//! per-ring slots, so the layout of the first `RB_COUNT * STATS_PER_RB` slots does not depend
+//! on the mode.
 
 use tcbee_trace::TraceFile;
 
@@ -42,7 +43,10 @@ pub const STATS_PER_RB: u32 = 3;
 pub const STATS_SUPPRESSED_BASE: u32 = RB_COUNT * STATS_PER_RB;
 /// On-change runs that found no socket storage and wrote a full record
 pub const STATS_STATE_ERR: u32 = STATS_SUPPRESSED_BASE + RB_COUNT;
-pub const STATS_LEN: u32 = STATS_STATE_ERR + 1;
+/// First of the `RB_COUNT` slots of the packets a header hook saw that stand for several
+/// segments (GSO, GRO, LRO), counted on top of the run's outcome
+pub const STATS_AGGREGATED_BASE: u32 = STATS_STATE_ERR + 1;
+pub const STATS_LEN: u32 = STATS_AGGREGATED_BASE + RB_COUNT;
 
 /// Slots whose sum is the number of probe invocations of a ring buffer
 pub const fn invocation_slots(rb: u32) -> [u32; 4] {
@@ -57,6 +61,11 @@ pub const fn invocation_slots(rb: u32) -> [u32; 4] {
 /// Slot of the runs an on-change probe of this ring buffer suppressed
 pub const fn suppressed_slot(rb: u32) -> u32 {
     STATS_SUPPRESSED_BASE + rb
+}
+
+/// Slot of the aggregated packets of this ring buffer's header hook
+pub const fn aggregated_slot(rb: u32) -> u32 {
+    STATS_AGGREGATED_BASE + rb
 }
 
 #[inline(always)]
@@ -164,13 +173,16 @@ mod tests {
         assert_eq!(suppressed_slot(0), RB_COUNT * STATS_PER_RB);
         assert_eq!(suppressed_slot(RB_TCP6_DRIVER_EGRESS) + 1, STATS_STATE_ERR);
         assert_eq!(RB_TCP6_DRIVER_EGRESS, RB_COUNT - 1);
-        assert_eq!(STATS_LEN, 93);
+        assert_eq!(aggregated_slot(0), STATS_STATE_ERR + 1);
+        assert_eq!(aggregated_slot(RB_COUNT - 1) + 1, STATS_LEN);
+        assert_eq!(STATS_LEN, 116);
         let all: Vec<u32> = (0..RB_COUNT).flat_map(invocation_slots).collect();
         let mut sorted = all.clone();
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), all.len(), "a slot counts for two rings");
         assert!(!all.contains(&STATS_STATE_ERR));
+        assert!((0..RB_COUNT).all(|rb| !all.contains(&aggregated_slot(rb))));
     }
 
     #[test]

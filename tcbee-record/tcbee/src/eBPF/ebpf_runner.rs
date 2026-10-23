@@ -365,9 +365,41 @@ impl EbpfRunner {
             }
         }
 
+        if self.config.headers {
+            self.warn_aggregated();
+        }
+
         if let Some(mut metadata) = self.metadata.take() {
             metadata.finish(self.ring_counters());
             self.write_metadata(&metadata);
+        }
+    }
+
+    /// Tells at the end of the run how many packets the header hooks saw as one that stand for
+    /// several segments
+    fn warn_aggregated(&self) {
+        let Some(snapshot) = self.stats.as_ref().and_then(|stats| stats.snapshot().ok()) else {
+            return;
+        };
+        let hooks = [
+            ("TC egress", [RB_TCP4_EGRESS, RB_TCP6_EGRESS]),
+            ("TC ingress", [RB_TCP4_INGRESS, RB_TCP6_INGRESS]),
+            (
+                "net_dev_start_xmit",
+                [RB_TCP4_DRIVER_EGRESS, RB_TCP6_DRIVER_EGRESS],
+            ),
+            ("XDP", [RB_TCP4_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS]),
+        ];
+        for (hook, rbs) in hooks {
+            let aggregated: u64 = rbs.iter().map(|rb| snapshot.aggregated(*rb)).sum();
+            if aggregated == 0 {
+                continue;
+            }
+            let packets: u64 = rbs.iter().map(|rb| snapshot.invocations(*rb)).sum();
+            eprintln!(
+                "Warning: {aggregated} of the {packets} packets at {hook} were aggregated \
+                 (GSO, GRO or LRO); each of their header records stands for several segments"
+            );
         }
     }
 
@@ -537,6 +569,7 @@ impl EbpfRunner {
         if self.config.headers && self.config.headers_at.driver {
             rodata.HEADERS_IFINDEX = if_index(&self.config.iface)? as u32;
             rodata.HEADERS_NETNS = DriverTracer::netns()?;
+            rodata.HEADERS_MTU = DriverTracer::mtu(&self.config.iface)?;
         }
         if let Some(on_change) = self.config.on_change {
             rodata.SOCK_WATCH_MASK = on_change.watch.mask();

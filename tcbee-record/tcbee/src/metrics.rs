@@ -43,6 +43,9 @@ pub struct RingCounters {
     pub error: u64,
     /// Runs an on-change probe suppressed (0 in the default mode)
     pub suppressed: u64,
+    /// Packets of a header hook that stand for several segments (GSO, GRO, LRO), counted on
+    /// top of the other counters
+    pub aggregated: u64,
 }
 
 impl RingCounters {
@@ -53,6 +56,7 @@ impl RingCounters {
             dropped: snapshot.rb(rb, STAT_DROPPED),
             error: snapshot.rb(rb, STAT_ERROR),
             suppressed: snapshot.suppressed(rb),
+            aggregated: snapshot.aggregated(rb),
         }
     }
 }
@@ -116,6 +120,8 @@ pub struct Metrics {
     pub suppressed: u64,
     /// On-change runs without socket storage, which wrote a full record
     pub state_errors: u64,
+    /// Packets of the header hooks that stand for several segments
+    pub aggregated: u64,
     pub records_written: u64,
     pub ingress: u64,
     pub egress: u64,
@@ -168,6 +174,7 @@ impl Metrics {
             error: snapshot.errors(),
             suppressed: snapshot.suppressed_total(),
             state_errors: snapshot.state_errors(),
+            aggregated: snapshot.aggregated_total(),
             records_written: reports.iter().map(|r| r.records).sum(),
             ingress: attempts(&[RB_TCP4_INGRESS, RB_TCP6_INGRESS]),
             egress: attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]),

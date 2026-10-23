@@ -187,6 +187,12 @@ struct sk_buff {
 	unsigned int data_len;
 	/* union with skb_mstamp_ns */
 	__s64 tstamp;
+	/* sk_buff_data_t: an offset from head on 64 bit */
+	unsigned int end;
+};
+
+struct skb_shared_info {
+	unsigned short gso_segs;
 };
 
 struct ns_common {

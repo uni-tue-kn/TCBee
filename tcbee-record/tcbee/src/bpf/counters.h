@@ -47,12 +47,14 @@
 /*
  * Appended after the per-ring slots: the runs an on-change probe suppressed, one slot per
  * ring, then the runs that found no socket storage and wrote a full record. Both stay 0 in
- * the default mode.
+ * the default mode. Last, per ring, the packets a header hook saw that stand for several
+ * segments (GSO, GRO or LRO); they are counted on top of the outcome of the run.
  */
 #define STATS_SUPPRESSED_BASE (RB_COUNT * STATS_PER_RB)
 #define STATS_STATE_ERR (STATS_SUPPRESSED_BASE + RB_COUNT)
+#define STATS_AGGREGATED_BASE (STATS_STATE_ERR + 1)
 
-_Static_assert(STATS_STATE_ERR + 1 == TCBEE_STATS_LEN, "STATS length");
+_Static_assert(STATS_AGGREGATED_BASE + RB_COUNT == TCBEE_STATS_LEN, "STATS length");
 
 /*
  * fentry and tracepoint programs only run with migration disabled, so a softirq can
@@ -144,6 +146,12 @@ static __always_inline void count_suppressed(__u32 rb)
 static __always_inline void count_state_err(void)
 {
 	add_stat(STATS_STATE_ERR, 1);
+}
+
+/* A packet of a header hook that stands for several segments, see STATS_AGGREGATED_BASE */
+static __always_inline void count_aggregated(__u32 rb)
+{
+	add_stat(STATS_AGGREGATED_BASE + rb, 1);
 }
 
 /*

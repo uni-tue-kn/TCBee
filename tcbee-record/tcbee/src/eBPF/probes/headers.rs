@@ -356,6 +356,15 @@ impl DriverTracer {
             })
     }
 
+    /// The MTU of `interface`, a received frame with a longer IP packet was merged
+    pub fn mtu(interface: &str) -> Result<u32, EBPFRunnerError> {
+        let path = format!("/sys/class/net/{interface}/mtu");
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|mtu| mtu.trim().parse().ok())
+            .ok_or_else(|| EBPFRunnerError::Unavailable(format!("Cannot read {path}")))
+    }
+
     /// Attaches the driver hooks to `interface`. `xdp` holds the XDP link once attached, so
     /// the caller detaches it if a later step fails.
     pub fn spawn(

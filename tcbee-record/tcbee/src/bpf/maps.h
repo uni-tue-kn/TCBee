@@ -9,7 +9,7 @@
 #include "records.h"
 
 /* Mirrors tcbee_common::stats::STATS_LEN, see counters.h */
-#define TCBEE_STATS_LEN 93
+#define TCBEE_STATS_LEN 116
 #define TCBEE_MAX_FLOWS 100
 #define TCBEE_FILTER_MAX_ENTRIES 1024
 

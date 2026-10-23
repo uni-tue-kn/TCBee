@@ -347,6 +347,25 @@ static __always_inline __u64 pkt_tstamp(void *ctx, enum pkt_hook hook)
 }
 
 /*
+ * Whether the packet stands for several segments: a GSO packet before segmentation at TC egress
+ * and net_dev_start_xmit (TSO), a GRO packet at TC ingress, a frame longer than the MTU at XDP
+ * (LRO or hardware GRO).
+ */
+static __always_inline bool pkt_aggregated(void *ctx, enum pkt_hook hook)
+{
+	const struct sk_buff *skb = ctx;
+	struct skb_shared_info *shinfo;
+
+	if (hook == PKT_TC)
+		return ((struct __sk_buff *)ctx)->gso_segs > 1;
+	if (hook == PKT_XDP)
+		return bpf_xdp_get_buff_len(ctx) > HEADERS_MTU + TC_ETH_HLEN;
+	/* skb_shinfo(): the shared info follows the linear data */
+	shinfo = (void *)(skb->head + skb->end);
+	return BPF_CORE_READ(shinfo, gso_segs) > 1;
+}
+
+/*
  * Every early return happens before the filter, so a packet that passes the filter is
  * always counted as handled or dropped. IPv6 extension headers
  * are not parsed, nexthdr must be TCP directly. Only sent packets carry skb->tstamp, the
@@ -397,6 +416,8 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
+		if (pkt_aggregated(ctx, hook))
+			count_aggregated(rb4_id);
 
 		if (!hook_seq_tuple(&t, AF_INET, rb4_id, &hook_seq))
 			return TC_ACT_UNSPEC;
@@ -441,6 +462,8 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
+		if (pkt_aggregated(ctx, hook))
+			count_aggregated(rb6_id);
 
 		if (!hook_seq_tuple(&t, AF_INET6, rb6_id, &hook_seq))
 			return TC_ACT_UNSPEC;

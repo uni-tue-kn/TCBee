@@ -133,6 +133,10 @@ in CLOCK_MONOTONIC like the record time; 0 if none was set and for received pack
   sent record can still stand for several segments; tcbee-record warns, `ethtool -K IFACE tso
   off` gives one record per segment. A packet the driver refuses for a full queue
   (`NETDEV_TX_BUSY`) passes the hook again when it is retried.
+- Every header hook counts the packets that stand for several segments: GSO packets at TC
+  egress and `net_dev_start_xmit` (`gso_segs` > 1), GRO packets at TC ingress, frames longer
+  than the MTU at XDP. `metrics.json` has them as `aggregated` per ring buffer and in total,
+  and tcbee-record prints a warning per hook at the end of a run that saw any.
 - With LRO or hardware GRO (`rx-gro-hw`) the NIC merges received packets before any hook, and
   mlx5 refuses XDP then: `driver` stops with the hint `ethtool -K IFACE lro off rx-gro-hw off`.
   With `tc`, tcbee-record warns. The metadata lists `gro_hw` with the other offloads.

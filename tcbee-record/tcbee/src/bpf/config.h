@@ -37,6 +37,8 @@ const volatile __u8 ONCHG_SHADOW = 0;
  */
 const volatile __u32 HEADERS_IFINDEX = 0;
 const volatile __u32 HEADERS_NETNS = 0;
+/* Its MTU: a received frame with a longer IP packet was merged (LRO, hardware GRO) */
+const volatile __u32 HEADERS_MTU = 0;
 
 /* Constants that only exist as macros in the uapi headers, not in BTF */
 #define AF_INET 2
