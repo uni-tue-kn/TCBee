@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn only_requested_and_existing_hooks_load() {
-        let hooks = HookSet::parse("state,rcvbuf,timer").unwrap();
+        let hooks = HookSet::of(&[Hook::State, Hook::Rcvbuf, Hook::Timer]);
         let mut exists = ALL;
         exists[4] = false;
         let (load, skipped) = hooks_to_load(Some(hooks), &exists, &[]);

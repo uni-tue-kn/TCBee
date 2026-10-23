@@ -1006,7 +1006,7 @@ mod tests {
             .iter()
             .any(|rb| rings.contains(rb)));
         assert!(!enabled_ringbufs(&config, &BTreeSet::new()).contains(&RB_SOCK_EVENT));
-        let config = config.sock_hooks(HookSet::parse("ingress,egress").unwrap());
+        let config = config.sock_hooks(HookSet::of(&[Hook::Ingress, Hook::Egress]));
         let rings = enabled_ringbufs(&config, &BTreeSet::new());
         assert!(rings.contains(&RB_SOCK_INGRESS) && rings.contains(&RB_SOCK_SEND));
         assert!(!rings.contains(&RB_SOCK_RECV));
@@ -1026,7 +1026,7 @@ mod tests {
             .headers(true)
             .sock_hooks(HookSet::FULL_DEFAULT);
         assert!(!sock_hooks_left(&with_headers, &none).unwrap());
-        let ingress = config.sock_hooks(HookSet::parse("ingress").unwrap());
+        let ingress = config.sock_hooks(HookSet::of(&[Hook::Ingress]));
         assert!(sock_hooks_left(&ingress, &none).unwrap());
     }
 

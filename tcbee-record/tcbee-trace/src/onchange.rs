@@ -5,6 +5,8 @@ use std::{fmt, fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
+use crate::name_list::{self, ListError, NamedSet};
+
 /// Declares `SockField` from one list: variant, column name, bit
 macro_rules! sock_fields {
     ($($variant:ident => $name:literal = $bit:literal),* $(,)?) => {
@@ -296,27 +298,6 @@ impl Default for HookSet {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HookSetError {
-    UnknownHook(String),
-    Empty,
-}
-
-impl fmt::Display for HookSetError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HookSetError::UnknownHook(name) => write!(
-                f,
-                "unknown hook {name:?}, expected one of: {}",
-                Hook::ALL.map(Hook::name).join(", ")
-            ),
-            HookSetError::Empty => write!(f, "no hook"),
-        }
-    }
-}
-
-impl std::error::Error for HookSetError {}
-
 impl HookSet {
     /// Ingress and timer: every change ACK processing and the retransmission timers make,
     /// without a run per transmitted segment
@@ -338,46 +319,20 @@ impl HookSet {
     pub const PER_PACKET: HookSet =
         HookSet(Hook::Egress.bit() | Hook::IngressEntry.bit() | Hook::Timer.bit());
 
-    /// A comma-separated list of hook names. A list of only `+name` and `-name` items
-    /// changes `base` instead.
-    pub fn parse_changes(spec: &str, base: HookSet) -> Result<HookSet, HookSetError> {
-        let parts: Vec<&str> = spec
-            .split(',')
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .collect();
-        if parts.is_empty() || !parts.iter().all(|p| p.starts_with(['+', '-'])) {
-            return HookSet::parse(spec);
+    pub const fn of(hooks: &[Hook]) -> HookSet {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < hooks.len() {
+            bits |= hooks[i].bit();
+            i += 1;
         }
-        let mut bits = base.0;
-        for part in parts {
-            let (sign, name) = part.split_at(1);
-            let hook =
-                Hook::from_name(name).ok_or_else(|| HookSetError::UnknownHook(name.to_string()))?;
-            if sign == "-" {
-                bits &= !hook.bit();
-            } else {
-                bits |= hook.bit();
-            }
-        }
-        if bits == 0 {
-            return Err(HookSetError::Empty);
-        }
-        Ok(HookSet(bits))
+        HookSet(bits)
     }
 
-    /// A comma-separated list of hook names
-    pub fn parse(spec: &str) -> Result<HookSet, HookSetError> {
-        let mut bits = 0;
-        for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-            let hook =
-                Hook::from_name(part).ok_or_else(|| HookSetError::UnknownHook(part.to_string()))?;
-            bits |= hook.bit();
-        }
-        if bits == 0 {
-            return Err(HookSetError::Empty);
-        }
-        Ok(HookSet(bits))
+    /// Parses a list of hook names (`name_list`); `default` is the set that a list of only
+    /// changes starts from
+    pub fn parse(spec: &str, default: HookSet) -> Result<HookSet, ListError> {
+        name_list::parse(spec, default)
     }
 
     pub fn contains(self, hook: Hook) -> bool {
@@ -400,6 +355,36 @@ impl HookSet {
     /// Whether a hook writes the send file (egress)
     pub fn send(self) -> bool {
         self.contains(Hook::Egress)
+    }
+}
+
+impl NamedSet for HookSet {
+    type Item = Hook;
+    const KIND: &'static str = "hook";
+    const ITEMS: &'static [Hook] = &Hook::ALL;
+
+    fn item_name(hook: Hook) -> &'static str {
+        hook.name()
+    }
+
+    fn empty() -> HookSet {
+        HookSet(0)
+    }
+
+    fn with(self, hook: Hook) -> HookSet {
+        HookSet(self.0 | hook.bit())
+    }
+
+    fn without(self, hook: Hook) -> HookSet {
+        HookSet::without(self, hook)
+    }
+
+    fn contains(self, hook: Hook) -> bool {
+        HookSet::contains(self, hook)
+    }
+
+    fn is_empty(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -509,19 +494,24 @@ mod tests {
 
     #[test]
     fn parse_hooks() {
-        assert_eq!(HookSet::default(), HookSet::parse("ingress,timer").unwrap());
-        let all = HookSet::parse("egress, ingress,timer,egress").unwrap();
+        let default = HookSet::DEFAULT;
+        assert_eq!(
+            HookSet::default(),
+            HookSet::of(&[Hook::Ingress, Hook::Timer])
+        );
+        let all = HookSet::parse("egress, ingress,timer,egress", default).unwrap();
         assert_eq!(all.hooks().collect::<Vec<_>>(), Hook::ON_CHANGE);
         assert!(all.send() && all.receive());
-        let ingress = HookSet::parse("ingress").unwrap();
+        let ingress = HookSet::of(&[Hook::Ingress]);
         assert!(ingress.receive() && !ingress.send() && !ingress.contains(Hook::Timer));
-        let egress = HookSet::parse("egress").unwrap();
+        let egress = HookSet::of(&[Hook::Egress]);
         assert!(egress.send() && !egress.receive());
         assert_eq!(
-            HookSet::parse("ingress,rx"),
-            Err(HookSetError::UnknownHook("rx".into()))
+            HookSet::parse("ingress_entry,ca-state", default),
+            Ok(HookSet::of(&[Hook::IngressEntry, Hook::CaState]))
         );
-        assert_eq!(HookSet::parse(""), Err(HookSetError::Empty));
+        assert!(HookSet::parse("ingress,rx", default).is_err());
+        assert!(HookSet::parse("", default).is_err());
     }
 
     #[test]
@@ -534,26 +524,23 @@ mod tests {
 
     #[test]
     fn parse_hook_changes() {
-        let full = HookSet::PER_PACKET;
+        let base = HookSet::of(&[Hook::Egress, Hook::IngressEntry, Hook::Timer]);
         assert_eq!(
-            HookSet::parse_changes("ingress", full),
-            HookSet::parse("ingress")
+            HookSet::parse("ingress", base),
+            Ok(HookSet::of(&[Hook::Ingress]))
         );
-        let changed = HookSet::parse_changes("+ingress,-egress", full).unwrap();
+        let changed = HookSet::parse("+ingress,-egress", base).unwrap();
         assert!(changed.contains(Hook::Ingress) && !changed.contains(Hook::Egress));
         assert!(changed.contains(Hook::IngressEntry) && changed.contains(Hook::Timer));
         assert_eq!(
-            full.without(Hook::Timer),
-            HookSet::parse("egress,ingress-entry").unwrap()
+            HookSet::parse("timer,+egress", base),
+            Ok(HookSet::of(&[Hook::Timer, Hook::Egress]))
         );
         assert_eq!(
-            HookSet::parse_changes("-timer,-egress,-ingress-entry", full),
-            Err(HookSetError::Empty)
+            HookSet::parse("-timer,-egress,-ingress-entry", base),
+            Err(ListError::Empty { kind: "hook" })
         );
-        assert_eq!(
-            HookSet::parse_changes("+rx", full),
-            Err(HookSetError::UnknownHook("rx".into()))
-        );
+        assert!(HookSet::parse("+rx", base).is_err());
     }
 
     /// Manifests of the first on-change version have no hook list

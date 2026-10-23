@@ -7,6 +7,7 @@ use tcbee_common::{
     records::{tcp_bad_csum_entry, tcp_probe_entry, tcp_retransmit_synack_entry},
     stats::{RB_BAD_CSUM, RB_RETRANSMIT_SYNACK, RB_TCP_PROBE},
 };
+use tcbee_trace::name_list::{self, NamedSet};
 
 use crate::{
     eBPF::{
@@ -139,45 +140,39 @@ impl TracepointSet {
         self.0 == 0
     }
 
-    /// Parses `--tp`, a comma-separated list of names, `all` and `default`. A list in which
-    /// every item starts with `+` or `-` changes the default set, otherwise it is the set.
+    /// Parses `--tp`, a list of tracepoint names (`name_list`) that changes the default set
     pub fn parse(arg: &str) -> anyhow::Result<TracepointSet> {
-        let items: Vec<&str> = arg
-            .split(',')
-            .map(str::trim)
-            .filter(|i| !i.is_empty())
-            .collect();
-        if items.is_empty() {
-            return Err(anyhow!("--tp needs at least one tracepoint name"));
-        }
-        let relative = items.iter().all(|i| i.starts_with(['+', '-']));
-        let mut set = if relative {
-            TracepointSet::DEFAULT
-        } else {
-            TracepointSet::EMPTY
-        };
-        for item in items {
-            let (remove, name) = match item.split_at(item.starts_with(['+', '-']) as usize) {
-                ("-", name) => (true, name),
-                (_, name) => (false, name),
-            };
-            let bits = match name {
-                "all" => TracepointSet::ALL.0,
-                "default" => TracepointSet::DEFAULT.0,
-                name => match Tracepoint::from_name(name) {
-                    Some(tracepoint) => tracepoint.bit(),
-                    None => {
-                        return Err(anyhow!(
-                            "Unknown tracepoint '{}', use all, default or {}",
-                            name,
-                            Tracepoint::ALL.map(Tracepoint::name).join(", ")
-                        ))
-                    }
-                },
-            };
-            set.0 = if remove { set.0 & !bits } else { set.0 | bits };
-        }
-        Ok(set)
+        name_list::parse(arg, TracepointSet::DEFAULT).map_err(|e| anyhow!("--tp: {}", e))
+    }
+}
+
+impl NamedSet for TracepointSet {
+    type Item = Tracepoint;
+    const KIND: &'static str = "tracepoint";
+    const ITEMS: &'static [Tracepoint] = &Tracepoint::ALL;
+
+    fn item_name(tracepoint: Tracepoint) -> &'static str {
+        tracepoint.name()
+    }
+
+    fn empty() -> TracepointSet {
+        TracepointSet::EMPTY
+    }
+
+    fn with(self, tracepoint: Tracepoint) -> TracepointSet {
+        TracepointSet(self.0 | tracepoint.bit())
+    }
+
+    fn without(self, tracepoint: Tracepoint) -> TracepointSet {
+        TracepointSet(self.0 & !tracepoint.bit())
+    }
+
+    fn contains(self, tracepoint: Tracepoint) -> bool {
+        TracepointSet::contains(self, tracepoint)
+    }
+
+    fn is_empty(self) -> bool {
+        TracepointSet::is_empty(self)
     }
 }
 
@@ -279,8 +274,13 @@ mod tests {
             TracepointSet::parse("all,-drops").unwrap(),
             TracepointSet::DEFAULT
         );
+        assert_eq!(
+            TracepointSet::parse("probe,+drops,ca-state").unwrap(),
+            TracepointSet::of(&[Tracepoint::Probe, Tracepoint::Drops, Tracepoint::CaState])
+        );
         assert!(TracepointSet::parse("probe,cwnd").is_err());
         assert!(TracepointSet::parse(" , ").is_err());
+        assert!(TracepointSet::parse("-all").is_err());
     }
 
     #[test]

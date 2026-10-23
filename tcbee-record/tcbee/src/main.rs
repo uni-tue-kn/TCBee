@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut tp).add_option(
             &["--tp"],
             Store,
-            "Tracepoints to record, comma-separated; implies -t. Names: probe, synack, bad_csum, retransmit, rst_sent, rst_received, state, ca_state, rto, destroy, and drops (kfree_skb: packets of TCP flows the kernel drops, with the reason; not in the default). 'all' and 'default' name the sets. A list of only +name and -name items changes the default set, e.g. +drops,-probe.",
+            "Tracepoints to record, comma-separated; implies -t. Names: probe, synack, bad_csum, retransmit, rst_sent, rst_received, state, ca_state, rto, destroy, and drops (kfree_skb: packets of TCP flows the kernel drops, with the reason; not in the default). 'all' and 'default' name the sets. +name and -name items add to or remove from the plain names, or from the default set in a list without plain names, e.g. +drops,-probe or all,-probe. _ and - are the same in names.",
         );
         argparser.refer(&mut trace_kernel).add_option(
             &["-k", "--kernel"],
@@ -235,7 +235,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut on_change_hooks).add_option(
             &["--on-change-hooks"],
             Store,
-            "With --on-change: comma-separated kernel hooks to compare at. ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process), timer = after each retransmission, loss probe, RACK reordering or zero window probe timer (fexit/tcp_write_timer_handler), both into the recv_*_oc.tcp files; egress = before each transmitted segment (fentry/__tcp_transmit_skb), into send_*_oc.tcp, one probe run per segment. Default: ingress,timer. In sock records, bits 8-15 of ato tell the hook (1 ingress, 2 timer, 3 egress).",
+            "With --on-change: comma-separated kernel hooks to compare at. ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process), timer = after each retransmission, loss probe, RACK reordering or zero window probe timer (fexit/tcp_write_timer_handler), both into the recv_*_oc.tcp files; egress = before each transmitted segment (fentry/__tcp_transmit_skb), into send_*_oc.tcp, one probe run per segment. Default: ingress,timer. The list works as in --tp, e.g. +egress. In sock records, bits 8-15 of ato tell the hook (1 ingress, 2 timer, 3 egress).",
         );
         argparser.refer(&mut on_change_shadow).add_option(
             &["--on-change-shadow"],
@@ -250,7 +250,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut sock_hooks).add_option(
             &["--sock-hooks"],
             Store,
-            "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. A list of only +name and -name items changes the default, e.g. +ingress on a sender. With --on-change it is the same as --on-change-hooks.",
+            "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. The list works as in --tp (all, default, +name, -name), e.g. +ingress on a sender. With --on-change it is the same as --on-change-hooks.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],

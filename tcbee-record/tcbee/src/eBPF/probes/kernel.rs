@@ -187,13 +187,13 @@ mod tests {
     fn sock_hooks_pick_the_default_programs() {
         let mut storage = MaybeUninit::uninit();
         let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
-        let hooks = HookSet::parse("ingress-entry").unwrap();
+        let hooks = HookSet::of(&[Hook::IngressEntry]);
         KernelTracer::configure(&mut open.progs, true, None, hooks, false);
         assert!(open.progs.sock_recvmsg.autoload());
         assert!(!open.progs.sock_sendmsg.autoload());
         assert!(!open.progs.sock_oc_recvmsg.autoload());
         assert!(!open.progs.sock_ingress.autoload());
-        let hooks = HookSet::parse("ingress").unwrap();
+        let hooks = HookSet::of(&[Hook::Ingress]);
         KernelTracer::configure(&mut open.progs, true, None, hooks, false);
         assert!(open.progs.sock_ingress.autoload() && open.progs.sock_ingress_state.autoload());
         assert!(!open.progs.sock_recvmsg.autoload() && !open.progs.sock_oc_recvmsg.autoload());

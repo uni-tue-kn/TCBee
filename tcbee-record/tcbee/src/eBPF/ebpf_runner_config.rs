@@ -249,11 +249,10 @@ pub fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSe
     let hooks = if spec.is_empty() {
         HookSet::FULL_DEFAULT
     } else {
-        HookSet::parse_changes(spec, HookSet::FULL_DEFAULT)
-            .map_err(|e| anyhow!("--sock-hooks: {}", e))?
+        HookSet::parse(spec, HookSet::FULL_DEFAULT).map_err(|e| anyhow!("--sock-hooks: {}", e))?
     };
     if no_timer_hook {
-        if hooks == HookSet::parse("timer").unwrap() {
+        if hooks == HookSet::of(&[Hook::Timer]) {
             return Err(anyhow!("--no-timer-hook leaves -k without hooks"));
         }
         return Ok(hooks.without(Hook::Timer));
@@ -290,8 +289,7 @@ pub fn parse_on_change(
     let hooks = if hooks.is_empty() {
         HookSet::DEFAULT
     } else {
-        HookSet::parse_changes(hooks, HookSet::DEFAULT)
-            .map_err(|e| anyhow!("--on-change-hooks: {}", e))?
+        HookSet::parse(hooks, HookSet::DEFAULT).map_err(|e| anyhow!("--on-change-hooks: {}", e))?
     };
     if let Some(hook) = hooks.hooks().find(|h| !Hook::ON_CHANGE.contains(h)) {
         return Err(anyhow!(
@@ -655,7 +653,7 @@ mod tests {
         assert!(sender.contains(Hook::Ingress) && sender.contains(Hook::State));
         assert_eq!(
             full_sock_hooks("egress,ingress-entry,timer", true).unwrap(),
-            HookSet::parse("egress,ingress-entry").unwrap()
+            HookSet::of(&[Hook::Egress, Hook::IngressEntry])
         );
         assert!(full_sock_hooks("timer", true).is_err());
         assert_eq!(
@@ -663,6 +661,11 @@ mod tests {
             HookSet::DEFAULT
         );
         assert!(full_sock_hooks("rx", false).is_err());
+        assert_eq!(
+            full_sock_hooks("timer,+ca_state", false).unwrap(),
+            HookSet::of(&[Hook::Timer, Hook::CaState])
+        );
+        assert!(full_sock_hooks("-all", false).is_err());
     }
 
     #[test]
@@ -671,7 +674,10 @@ mod tests {
         let oc = parse_on_change("cc", "+egress", false, true, false)
             .unwrap()
             .unwrap();
-        assert_eq!(oc.hooks, HookSet::parse("ingress,timer,egress").unwrap());
+        assert_eq!(
+            oc.hooks,
+            HookSet::of(&[Hook::Ingress, Hook::Timer, Hook::Egress])
+        );
     }
 
     /// -e and --drops record what they did before -t had the TCP events
@@ -754,7 +760,7 @@ mod tests {
         let oc = parse_on_change("cc", "ingress", false, true, false)
             .unwrap()
             .unwrap();
-        assert_eq!(oc.hooks, HookSet::parse("ingress").unwrap());
+        assert_eq!(oc.hooks, HookSet::of(&[Hook::Ingress]));
         assert!(parse_on_change("", "", true, true, false).is_err());
         assert!(parse_on_change("", "egress", false, true, false).is_err());
         assert!(parse_on_change("cc", "", false, false, false).is_err());
@@ -773,7 +779,7 @@ mod tests {
         let mut oc = OnChange {
             watch: WatchSet::parse("snd_cwnd,total_retrans").unwrap(),
             shadow: false,
-            hooks: HookSet::parse("ingress,timer,egress").unwrap(),
+            hooks: HookSet::of(&[Hook::Ingress, Hook::Timer, Hook::Egress]),
         };
         let m = on_change_manifest(oc, true, true);
         assert_eq!(
@@ -806,7 +812,7 @@ mod tests {
         oc.hooks = HookSet::DEFAULT;
         let m = on_change_manifest(oc, true, true);
         assert_eq!(files(&m), ["recv_sock_oc.tcp", "recv_cwnd_oc.tcp"]);
-        oc.hooks = HookSet::parse("egress").unwrap();
+        oc.hooks = HookSet::of(&[Hook::Egress]);
         let m = on_change_manifest(oc, true, false);
         assert_eq!(files(&m), ["send_sock_oc.tcp"]);
     }
