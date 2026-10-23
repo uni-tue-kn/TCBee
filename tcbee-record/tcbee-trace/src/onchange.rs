@@ -176,8 +176,8 @@ impl WatchSet {
     }
 }
 
-/// Kernel hooks the on-change probes run at (`--on-change-hooks`). Ingress and timer write
-/// the receive file, egress the send file.
+/// Kernel hooks the sock probe (`-k`) runs at (`--sock-hooks`). On-change mode uses ingress,
+/// timer and egress: ingress and timer write the receive file, egress the send file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hook {
     /// After a received segment was processed (fexit/tcp_rcv_established in ESTABLISHED,
@@ -189,16 +189,22 @@ pub enum Hook {
     /// Before every transmitted segment (fentry/__tcp_transmit_skb), with the state before
     /// the transmission. One run per segment: the expensive hook on a sender.
     Egress,
+    /// Before a received segment is processed in ESTABLISHED (fentry/tcp_rcv_established),
+    /// with the state before it. Only without on-change.
+    IngressEntry,
 }
 
 impl Hook {
-    pub const ALL: [Hook; 3] = [Hook::Ingress, Hook::Timer, Hook::Egress];
+    pub const ALL: [Hook; 4] = [Hook::Ingress, Hook::Timer, Hook::Egress, Hook::IngressEntry];
+    /// The hooks that on-change mode can compare at
+    pub const ON_CHANGE: [Hook; 3] = [Hook::Ingress, Hook::Timer, Hook::Egress];
 
     pub fn name(self) -> &'static str {
         match self {
             Hook::Ingress => "ingress",
             Hook::Timer => "timer",
             Hook::Egress => "egress",
+            Hook::IngressEntry => "ingress-entry",
         }
     }
 
@@ -208,16 +214,19 @@ impl Hook {
             Hook::Ingress => &["fexit/tcp_rcv_established", "fexit/tcp_rcv_state_process"],
             Hook::Timer => &["fexit/tcp_write_timer_handler"],
             Hook::Egress => &["fentry/__tcp_transmit_skb"],
+            Hook::IngressEntry => &["fentry/tcp_rcv_established"],
         }
     }
 
-    /// The hook as on-change sock records carry it in bits 8-15 of `ato`,
-    /// `enum tcbee_onchg_hook` in `bpf/onchange.h` (checked in tcbee-common)
+    /// The hook as sock records carry it in bits 8-15 of `ato`, `enum tcbee_onchg_hook` in
+    /// `bpf/onchange.h` (checked in tcbee-common). 0 for the egress and ingress-entry
+    /// programs without on-change, which leave `ato` at 0.
     pub const fn tag(self) -> u32 {
         match self {
             Hook::Ingress => 1,
             Hook::Timer => 2,
             Hook::Egress => 3,
+            Hook::IngressEntry => 0,
         }
     }
 
@@ -230,7 +239,7 @@ impl Hook {
     }
 }
 
-/// The hooks an on-change run uses
+/// The hooks the sock probe runs at
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HookSet(u8);
 
@@ -266,6 +275,39 @@ impl HookSet {
     /// without a run per transmitted segment
     pub const DEFAULT: HookSet = HookSet(Hook::Ingress.bit() | Hook::Timer.bit());
 
+    /// The hooks of `-k` without on-change: one record per transmitted and received segment,
+    /// and after each write timer run
+    pub const FULL_DEFAULT: HookSet =
+        HookSet(Hook::Egress.bit() | Hook::IngressEntry.bit() | Hook::Timer.bit());
+
+    /// A comma-separated list of hook names. A list of only `+name` and `-name` items
+    /// changes `base` instead.
+    pub fn parse_changes(spec: &str, base: HookSet) -> Result<HookSet, HookSetError> {
+        let parts: Vec<&str> = spec
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.is_empty() || !parts.iter().all(|p| p.starts_with(['+', '-'])) {
+            return HookSet::parse(spec);
+        }
+        let mut bits = base.0;
+        for part in parts {
+            let (sign, name) = part.split_at(1);
+            let hook =
+                Hook::from_name(name).ok_or_else(|| HookSetError::UnknownHook(name.to_string()))?;
+            if sign == "-" {
+                bits &= !hook.bit();
+            } else {
+                bits |= hook.bit();
+            }
+        }
+        if bits == 0 {
+            return Err(HookSetError::Empty);
+        }
+        Ok(HookSet(bits))
+    }
+
     /// A comma-separated list of hook names
     pub fn parse(spec: &str) -> Result<HookSet, HookSetError> {
         let mut bits = 0;
@@ -282,6 +324,10 @@ impl HookSet {
 
     pub fn contains(self, hook: Hook) -> bool {
         self.0 & hook.bit() != 0
+    }
+
+    pub fn without(self, hook: Hook) -> HookSet {
+        HookSet(self.0 & !hook.bit())
     }
 
     pub fn hooks(self) -> impl Iterator<Item = Hook> {
@@ -407,7 +453,7 @@ mod tests {
     fn parse_hooks() {
         assert_eq!(HookSet::default(), HookSet::parse("ingress,timer").unwrap());
         let all = HookSet::parse("egress, ingress,timer,egress").unwrap();
-        assert_eq!(all.hooks().collect::<Vec<_>>(), Hook::ALL);
+        assert_eq!(all.hooks().collect::<Vec<_>>(), Hook::ON_CHANGE);
         assert!(all.send() && all.receive());
         let ingress = HookSet::parse("ingress").unwrap();
         assert!(ingress.receive() && !ingress.send() && !ingress.contains(Hook::Timer));
@@ -418,6 +464,30 @@ mod tests {
             Err(HookSetError::UnknownHook("rx".into()))
         );
         assert_eq!(HookSet::parse(""), Err(HookSetError::Empty));
+    }
+
+    #[test]
+    fn parse_hook_changes() {
+        let full = HookSet::FULL_DEFAULT;
+        assert_eq!(
+            HookSet::parse_changes("ingress", full),
+            HookSet::parse("ingress")
+        );
+        let changed = HookSet::parse_changes("+ingress,-egress", full).unwrap();
+        assert!(changed.contains(Hook::Ingress) && !changed.contains(Hook::Egress));
+        assert!(changed.contains(Hook::IngressEntry) && changed.contains(Hook::Timer));
+        assert_eq!(
+            full.without(Hook::Timer),
+            HookSet::parse("egress,ingress-entry").unwrap()
+        );
+        assert_eq!(
+            HookSet::parse_changes("-timer,-egress,-ingress-entry", full),
+            Err(HookSetError::Empty)
+        );
+        assert_eq!(
+            HookSet::parse_changes("+rx", full),
+            Err(HookSetError::UnknownHook("rx".into()))
+        );
     }
 
     /// Manifests of the first on-change version have no hook list

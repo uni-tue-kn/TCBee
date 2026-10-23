@@ -361,8 +361,30 @@ pub fn check_no_timer_hook(
     Ok(())
 }
 
-/// `--on-change FIELDS`, `--on-change-hooks HOOKS` and `--on-change-shadow`, None in the
-/// default mode. An empty `hooks` is the default set (ingress and timer).
+/// The hooks of `-k` without on-change: `--sock-hooks` (default egress, ingress-entry and
+/// timer), less the timer with `--no-timer-hook`
+pub fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSet> {
+    let hooks = if spec.is_empty() {
+        HookSet::FULL_DEFAULT
+    } else {
+        HookSet::parse_changes(spec, HookSet::FULL_DEFAULT)
+            .map_err(|e| anyhow!("--sock-hooks: {}", e))?
+    };
+    if hooks.contains(Hook::Ingress) {
+        return Err(anyhow!("--sock-hooks: ingress needs --on-change"));
+    }
+    if no_timer_hook {
+        if hooks == HookSet::parse("timer").unwrap() {
+            return Err(anyhow!("--no-timer-hook leaves -k without hooks"));
+        }
+        return Ok(hooks.without(Hook::Timer));
+    }
+    Ok(hooks)
+}
+
+/// `--on-change FIELDS`, `--on-change-hooks HOOKS` (or `--sock-hooks`) and
+/// `--on-change-shadow`, None in the default mode. An empty `hooks` is the default set
+/// (ingress and timer).
 pub fn parse_on_change(
     fields: &str,
     hooks: &str,
@@ -389,8 +411,15 @@ pub fn parse_on_change(
     let hooks = if hooks.is_empty() {
         HookSet::DEFAULT
     } else {
-        HookSet::parse(hooks).map_err(|e| anyhow!("--on-change-hooks: {}", e))?
+        HookSet::parse_changes(hooks, HookSet::DEFAULT)
+            .map_err(|e| anyhow!("--on-change-hooks: {}", e))?
     };
+    if let Some(hook) = hooks.hooks().find(|h| !Hook::ON_CHANGE.contains(h)) {
+        return Err(anyhow!(
+            "--on-change compares at ingress, timer and egress only, not at {}",
+            hook.name()
+        ));
+    }
     let per_packet: Vec<&str> = watch
         .fields()
         .filter(|f| f.changes_per_packet())
@@ -488,8 +517,8 @@ pub struct EbpfRunnerConfig {
     pub poll_mode: PollMode,
     pub writer_cpus: Vec<usize>,
     pub on_change: Option<OnChange>,
-    /// `--no-timer-hook`: -k without its write timer program
-    pub no_timer_hook: bool,
+    /// The hooks of -k without on-change, see `full_sock_hooks`
+    pub sock_hooks: HookSet,
 }
 
 #[derive(Default)]
@@ -560,8 +589,8 @@ impl EbpfRunnerConfig {
         self
     }
 
-    pub fn no_timer_hook(mut self, set: bool) -> EbpfRunnerConfig {
-        self.no_timer_hook = set;
+    pub fn sock_hooks(mut self, hooks: HookSet) -> EbpfRunnerConfig {
+        self.sock_hooks = hooks;
         self
     }
 
@@ -643,6 +672,31 @@ impl EbpfRunnerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sock_hooks_without_on_change() {
+        assert_eq!(full_sock_hooks("", false).unwrap(), HookSet::FULL_DEFAULT);
+        assert_eq!(
+            full_sock_hooks("", true).unwrap(),
+            HookSet::parse("egress,ingress-entry").unwrap()
+        );
+        assert_eq!(
+            full_sock_hooks("-egress", false).unwrap(),
+            HookSet::parse("ingress-entry,timer").unwrap()
+        );
+        assert!(full_sock_hooks("timer", true).is_err());
+        assert!(full_sock_hooks("ingress", false).is_err());
+        assert!(full_sock_hooks("rx", false).is_err());
+    }
+
+    #[test]
+    fn on_change_takes_its_own_hooks_only() {
+        assert!(parse_on_change("cc", "ingress-entry", false, true, false).is_err());
+        let oc = parse_on_change("cc", "+egress", false, true, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(oc.hooks, HookSet::parse("ingress,timer,egress").unwrap());
+    }
 
     #[test]
     fn tracepoint_lists() {

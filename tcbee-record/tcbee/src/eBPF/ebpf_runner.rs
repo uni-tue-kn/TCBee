@@ -48,6 +48,7 @@ use crate::{
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
 };
+use tcbee_trace::onchange::{Hook, HookSet};
 
 use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig, MptcpModes};
 
@@ -180,10 +181,18 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
-    // In on-change mode, the hooks decide which of the send and receive rings are written
+    // In on-change mode, the hooks decide which of the send and receive rings are written;
+    // without, the sock probe's hooks and every cwnd hook
     let (send, receive) = config
         .on_change
         .map_or((true, true), |o| (o.hooks.send(), o.hooks.receive()));
+    let (sock_send, sock_receive) = match config.on_change {
+        Some(_) => (send, receive),
+        None => (
+            config.sock_hooks.contains(Hook::Egress),
+            config.sock_hooks.contains(Hook::IngressEntry),
+        ),
+    };
     let groups: [(bool, &[u32]); 13] = [
         (
             config.headers,
@@ -194,8 +203,8 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
                 RB_TCP6_INGRESS,
             ],
         ),
-        (config.kernel && send, &[RB_SOCK_SEND]),
-        (config.kernel && receive, &[RB_SOCK_RECV]),
+        (config.kernel && sock_send, &[RB_SOCK_SEND]),
+        (config.kernel && sock_receive, &[RB_SOCK_RECV]),
         (
             optional.contains(&OptionalGroup::SockTimer),
             &[RB_SOCK_TIMER],
@@ -376,6 +385,10 @@ impl EbpfRunner {
         .map(|(_, name)| name.to_string())
         .collect();
         groups.extend(optional.iter().map(|group| group.name().to_string()));
+        if c.kernel && c.on_change.is_none() && c.sock_hooks != HookSet::FULL_DEFAULT {
+            let hooks: Vec<_> = c.sock_hooks.hooks().map(|hook| hook.name()).collect();
+            groups.push(format!("sock hooks: {}", hooks.join(", ")));
+        }
         if let Some(on_change) = c.on_change.filter(|_| c.kernel || c.cwnd) {
             let hooks: Vec<_> = on_change.hooks.hooks().map(|hook| hook.name()).collect();
             groups.push(format!("on-change: {}", hooks.join(", ")));
@@ -488,12 +501,18 @@ impl EbpfRunner {
         TCTracer::configure(&mut open.progs, self.config.headers, tcx);
         // The write timer program of -k fails softly: without the function or if the kernel
         // rejects it, the recording runs without it
-        let timer_wanted =
-            !self.config.no_timer_hook && !disabled.contains(&OptionalGroup::SockTimer);
+        let timer_wanted = self.config.sock_hooks.contains(Hook::Timer)
+            && !disabled.contains(&OptionalGroup::SockTimer);
         let has_timer = !btf.available() || btf.has_func(None, "tcp_write_timer_handler");
         let timer =
             KernelTracer::timer_hook(self.config.kernel, on_change, timer_wanted, has_timer);
-        KernelTracer::configure(&mut open.progs, self.config.kernel, on_change, timer);
+        KernelTracer::configure(
+            &mut open.progs,
+            self.config.kernel,
+            on_change,
+            self.config.sock_hooks,
+            timer,
+        );
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
         CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
@@ -610,9 +629,12 @@ impl EbpfRunner {
                 group.name()
             ));
         }
-        if self.config.kernel && self.config.no_timer_hook {
+        if self.config.kernel
+            && self.config.on_change.is_none()
+            && !self.config.sock_hooks.contains(Hook::Timer)
+        {
             self.skipped
-                .push("write timer hook: off (--no-timer-hook)".to_string());
+                .push("write timer hook: off (--sock-hooks, --no-timer-hook)".to_string());
         }
         if self.config.algorithms
             && !optional.contains(&OptionalGroup::Bbr)
@@ -666,6 +688,7 @@ impl EbpfRunner {
                 writer,
                 links,
                 self.config.on_change.map(|o| o.hooks),
+                self.config.sock_hooks,
             )?;
 
             watcher_config.graphs.kernel = true;

@@ -11,10 +11,10 @@ use std::net::IpAddr;
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    check_no_timer_hook, ip_to_filter_addr, on_change_manifest, parse_on_change,
+    check_no_timer_hook, full_sock_hooks, ip_to_filter_addr, on_change_manifest, parse_on_change,
     parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig, FilterConfig, MptcpModes,
 };
-use tcbee_trace::TCBeeTrace;
+use tcbee_trace::{onchange::HookSet, TCBeeTrace};
 use writer::PollMode;
 
 // Error handling
@@ -89,6 +89,7 @@ fn main() -> anyhow::Result<()> {
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
     let mut no_timer_hook: bool = false;
+    let mut sock_hooks: String = String::new();
 
     {
         let mut argparser = ArgumentParser::new();
@@ -229,7 +230,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut no_timer_hook).add_option(
             &["--no-timer-hook"],
             StoreTrue,
-            "With -k: do not record the socket after each run of the write timer (timer_sock.tcp).",
+            "With -k: do not record the socket after each run of the write timer (timer_sock.tcp). Same as --sock-hooks -timer.",
+        );
+        argparser.refer(&mut sock_hooks).add_option(
+            &["--sock-hooks"],
+            Store,
+            "Comma-separated kernel hooks at which -k records the socket. egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp); ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp); timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); ingress = after each received segment, with --on-change only so far. A list of only +name and -name items changes the default, egress,ingress-entry,timer. With --on-change it is the same as --on-change-hooks.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -312,6 +318,19 @@ fn main() -> anyhow::Result<()> {
     {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
+    if !sock_hooks.is_empty() && !on_change_hooks.is_empty() {
+        return Err(anyhow!(
+            "--sock-hooks and --on-change-hooks name the same hooks, give one"
+        ));
+    }
+    if !sock_hooks.is_empty() && !trace_kernel && on_change.is_empty() {
+        return Err(anyhow!("--sock-hooks needs -k"));
+    }
+    let on_change_hooks = if on_change.is_empty() {
+        on_change_hooks
+    } else {
+        on_change_hooks + &sock_hooks
+    };
     let on_change = parse_on_change(
         &on_change,
         &on_change_hooks,
@@ -320,6 +339,11 @@ fn main() -> anyhow::Result<()> {
         trace_cwnd,
     )?;
     check_no_timer_hook(no_timer_hook, trace_kernel, on_change.is_some())?;
+    let sock_hooks = if on_change.is_some() {
+        HookSet::FULL_DEFAULT
+    } else {
+        full_sock_hooks(&sock_hooks, no_timer_hook)?
+    };
 
     // Create a timestamped recording directory inside the requested base dir
     let trace = TCBeeTrace::create(&dir)
@@ -354,7 +378,7 @@ fn main() -> anyhow::Result<()> {
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())
         .on_change(on_change)
-        .no_timer_hook(no_timer_hook)
+        .sock_hooks(sock_hooks)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints

@@ -60,7 +60,7 @@ At least one metric source is required.
 | `-h IFACE` | TCP headers via TC on the given interface |
 | `-t` | The TCP tracepoints: `tcp_probe` (most TCP metrics at every received segment), SYN-ACK retransmissions and bad checksums, and as discrete TCP events (`tcp_events.tcp`) retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each event hook is optional: one the kernel lacks or rejects is left out with a warning |
 | `--tp LIST` | The tracepoints of `-t` to record, implies `-t`. Names: `probe`, `synack`, `bad_csum`, `retransmit`, `rst_sent`, `rst_received`, `state`, `ca_state`, `rto`, `destroy`, and `drops`, which `-t` leaves out: the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason, and `drop_reasons.json` with the reason names of the running kernel. `all` and `default` name the sets. A list of only `+name` and `-name` items changes the default set, e.g. `--tp +drops,-probe` |
-| `-k` | fentry on `__tcp_transmit_skb` and `tcp_rcv_established` (all TCP metrics), and fexit on `tcp_write_timer_handler` (`timer_sock.tcp`, see below) |
+| `-k` | The socket (all TCP metrics) at the hooks of `--sock-hooks`: by default fentry on `__tcp_transmit_skb` and `tcp_rcv_established`, and fexit on `tcp_write_timer_handler` (`timer_sock.tcp`, see below) |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
 | `-e`, `--drops` | Kept for old command lines: `-e` records the TCP events of `-t` only, `--drops` those and the drops |
@@ -83,7 +83,8 @@ At least one metric source is required.
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
-| `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records) |
+| `--sock-hooks LIST` | `egress,ingress-entry,timer` | With `-k`: the kernel hooks to record the socket at, `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`), `timer` (`timer_sock.tcp`). A list of only `+name` and `-name` items changes the default. With `--on-change` the same as `--on-change-hooks` |
+| `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr

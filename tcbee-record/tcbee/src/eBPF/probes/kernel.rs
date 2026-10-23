@@ -33,21 +33,22 @@ impl KernelTracer {
         enabled && on_change.is_none() && wanted && has_target
     }
 
-    /// The on-change programs of the hooks in `on_change` replace the default ones. `timer`
-    /// loads the write timer program of the default mode, see `timer_hook`.
+    /// The on-change programs of the hooks in `on_change` replace the default ones, which
+    /// load for the hooks in `full`. `timer` loads the write timer program of the default
+    /// mode, see `timer_hook`.
     pub fn configure(
         progs: &mut OpenTcbeeProgs<'_>,
         enabled: bool,
         on_change: Option<HookSet>,
+        full: HookSet,
         timer: bool,
     ) {
         let hooked = |hook| enabled && on_change.is_some_and(|h| h.contains(hook));
-        progs
-            .sock_sendmsg
-            .set_autoload(enabled && on_change.is_none());
+        let full_hooked = |hook| enabled && on_change.is_none() && full.contains(hook);
+        progs.sock_sendmsg.set_autoload(full_hooked(Hook::Egress));
         progs
             .sock_recvmsg
-            .set_autoload(enabled && on_change.is_none());
+            .set_autoload(full_hooked(Hook::IngressEntry));
         progs.sock_timer.set_autoload(timer);
         progs.sock_oc_sendmsg.set_autoload(hooked(Hook::Egress));
         progs.sock_oc_recvmsg.set_autoload(hooked(Hook::Ingress));
@@ -61,6 +62,7 @@ impl KernelTracer {
         writer: &mut Writer,
         links: &mut Vec<Link>,
         on_change: Option<HookSet>,
+        full: HookSet,
     ) -> Result<(), Box<dyn Error>> {
         let (send, receive) = match on_change {
             // Egress into the send file; ingress and timer into the receive file
@@ -77,9 +79,16 @@ impl KernelTracer {
             )?,
             None => {
                 // Outgoing TCP, fentry/__tcp_transmit_skb; incoming, fentry/tcp_rcv_established
-                attach(&skel.progs.sock_sendmsg, links)?;
-                attach(&skel.progs.sock_recvmsg, links)?;
-                (Some(TraceFile::SendSock), Some(TraceFile::RecvSock))
+                let mut files = (None, None);
+                if full.contains(Hook::Egress) {
+                    attach(&skel.progs.sock_sendmsg, links)?;
+                    files.0 = Some(TraceFile::SendSock);
+                }
+                if full.contains(Hook::IngressEntry) {
+                    attach(&skel.progs.sock_recvmsg, links)?;
+                    files.1 = Some(TraceFile::RecvSock);
+                }
+                files
             }
         };
 
@@ -145,15 +154,28 @@ mod tests {
     fn on_change_mode_loads_only_its_own_timer_program() {
         let mut storage = MaybeUninit::uninit();
         let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
-        KernelTracer::configure(&mut open.progs, true, None, true);
+        let full = HookSet::FULL_DEFAULT;
+        KernelTracer::configure(&mut open.progs, true, None, full, true);
         assert!(open.progs.sock_timer.autoload());
         assert!(!open.progs.sock_oc_timer.autoload());
-        KernelTracer::configure(&mut open.progs, true, None, false);
+        KernelTracer::configure(&mut open.progs, true, None, full, false);
         assert!(!open.progs.sock_timer.autoload());
         assert!(open.progs.sock_recvmsg.autoload());
         let timer = KernelTracer::timer_hook(true, Some(HookSet::DEFAULT), true, true);
-        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), timer);
+        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), full, timer);
         assert!(!open.progs.sock_timer.autoload());
         assert!(open.progs.sock_oc_timer.autoload());
+        assert!(!open.progs.sock_recvmsg.autoload());
+    }
+
+    #[test]
+    fn sock_hooks_pick_the_default_programs() {
+        let mut storage = MaybeUninit::uninit();
+        let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
+        let hooks = HookSet::parse("ingress-entry").unwrap();
+        KernelTracer::configure(&mut open.progs, true, None, hooks, false);
+        assert!(open.progs.sock_recvmsg.autoload());
+        assert!(!open.progs.sock_sendmsg.autoload());
+        assert!(!open.progs.sock_oc_recvmsg.autoload());
     }
 }
