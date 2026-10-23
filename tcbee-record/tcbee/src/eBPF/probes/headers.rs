@@ -1,9 +1,12 @@
 use std::{
     error::Error,
     ffi::CString,
-    io,
+    fs, io,
     mem::size_of,
-    os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
+    os::{
+        fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
+        unix::fs::MetadataExt,
+    },
     ptr::NonNull,
 };
 
@@ -15,8 +18,8 @@ use log::{info, warn, Level};
 use tcbee_common::records::{tcp4_packet_trace, tcp6_packet_trace};
 
 use tcbee_common::stats::{
-    RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_DRIVER_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS,
+    RB_TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
+    RB_TCP6_DRIVER_EGRESS, RB_TCP6_DRIVER_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
 };
 
 use crate::{
@@ -24,6 +27,7 @@ use crate::{
         ebpf_runner_config::HeadersAt,
         errors::EBPFRunnerError,
         host::kernel_version,
+        probes::attach,
         rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
     },
@@ -33,7 +37,8 @@ use crate::{
 
 pub struct TCTracer {}
 
-/// The driver hooks of -h (`--headers-at driver`): native XDP for received packets
+/// The driver hooks of -h (`--headers-at driver`): native XDP for received packets,
+/// tp_btf/net_dev_start_xmit for sent ones
 pub struct DriverTracer {}
 
 /// The XDP link of the driver hook; closing it detaches the program
@@ -174,7 +179,7 @@ fn clsact(
     }
 }
 
-fn if_index(interface: &str) -> Result<i32, EBPFRunnerError> {
+pub fn if_index(interface: &str) -> Result<i32, EBPFRunnerError> {
     let not_found = || EBPFRunnerError::InterfaceNotFound {
         name: interface.to_string(),
     };
@@ -338,6 +343,17 @@ fn attach_xdp(
 impl DriverTracer {
     pub fn configure(progs: &mut OpenTcbeeProgs<'_>, enabled: bool) {
         progs.xdp_ingress_packet_tracer.set_autoload(enabled);
+        progs.xmit_egress_packet_tracer.set_autoload(enabled);
+    }
+
+    /// The network namespace of tcbee-record, which the interface is looked up in: the inode
+    /// number of /proc/self/ns/net, which is the namespace's ns.inum in the kernel
+    pub fn netns() -> Result<u32, EBPFRunnerError> {
+        fs::metadata("/proc/self/ns/net")
+            .map(|meta| meta.ino() as u32)
+            .map_err(|err| {
+                EBPFRunnerError::Unavailable(format!("Cannot read /proc/self/ns/net: {err}"))
+            })
     }
 
     /// Attaches the driver hooks to `interface`. `xdp` holds the XDP link once attached, so
@@ -347,9 +363,11 @@ impl DriverTracer {
         interface: &str,
         dir: &str,
         writer: &mut Writer,
+        links: &mut Vec<Link>,
         xdp: &mut Option<XdpLink>,
     ) -> Result<(), Box<dyn Error>> {
         let ifindex = if_index(interface)?;
+        attach(&skel.progs.xmit_egress_packet_tracer, links)?;
         info!("Attaching XDP to {interface}, which may reset the rings of its driver");
         *xdp = Some(attach_xdp(
             &skel.progs.xdp_ingress_packet_tracer,
@@ -365,6 +383,16 @@ impl DriverTracer {
         writer.register::<tcp6_packet_trace>(
             RB_TCP6_DRIVER_INGRESS,
             rings::of(&skel.maps.TCP6_DRIVER_INGRESS)?,
+            dir,
+        )?;
+        writer.register::<tcp4_packet_trace>(
+            RB_TCP4_DRIVER_EGRESS,
+            rings::of(&skel.maps.TCP4_DRIVER_EGRESS)?,
+            dir,
+        )?;
+        writer.register::<tcp6_packet_trace>(
+            RB_TCP6_DRIVER_EGRESS,
+            rings::of(&skel.maps.TCP6_DRIVER_EGRESS)?,
             dir,
         )?;
         Ok(())

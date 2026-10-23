@@ -212,6 +212,8 @@ mod generate {
             "reno",
             "tcp4_driver_receive",
             "tcp6_driver_receive",
+            "tcp4_driver_send",
+            "tcp6_driver_send",
             "recv_sock_oc",
             "recv_cwnd_oc",
         ] {

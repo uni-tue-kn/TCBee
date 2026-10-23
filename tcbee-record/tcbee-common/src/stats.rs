@@ -30,7 +30,9 @@ pub const RB_SOCK_EVENT: u32 = 17;
 pub const RB_RENO: u32 = 18;
 pub const RB_TCP4_DRIVER_INGRESS: u32 = 19;
 pub const RB_TCP6_DRIVER_INGRESS: u32 = 20;
-pub const RB_COUNT: u32 = 21;
+pub const RB_TCP4_DRIVER_EGRESS: u32 = 21;
+pub const RB_TCP6_DRIVER_EGRESS: u32 = 22;
+pub const RB_COUNT: u32 = 23;
 
 pub const STAT_HANDLED: u32 = 0;
 pub const STAT_DROPPED: u32 = 1;
@@ -144,6 +146,8 @@ pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
         "tcp6",
         4,
     ),
+    rb("TCP4_DRIVER_EGRESS", TraceFile::Tcp4DriverSend, "tcp4", 16),
+    rb("TCP6_DRIVER_EGRESS", TraceFile::Tcp6DriverSend, "tcp6", 4),
 ];
 
 #[cfg(test)]
@@ -154,13 +158,13 @@ mod tests {
     fn appended_slots_follow_the_per_ring_slots() {
         // The first RB_COUNT * STATS_PER_RB slots keep their layout in every mode
         assert_eq!(
-            slot(RB_TCP6_DRIVER_INGRESS, STAT_ERROR),
+            slot(RB_TCP6_DRIVER_EGRESS, STAT_ERROR),
             RB_COUNT * STATS_PER_RB - 1
         );
         assert_eq!(suppressed_slot(0), RB_COUNT * STATS_PER_RB);
-        assert_eq!(suppressed_slot(RB_TCP6_DRIVER_INGRESS) + 1, STATS_STATE_ERR);
-        assert_eq!(RB_TCP6_DRIVER_INGRESS, RB_COUNT - 1);
-        assert_eq!(STATS_LEN, 85);
+        assert_eq!(suppressed_slot(RB_TCP6_DRIVER_EGRESS) + 1, STATS_STATE_ERR);
+        assert_eq!(RB_TCP6_DRIVER_EGRESS, RB_COUNT - 1);
+        assert_eq!(STATS_LEN, 93);
         let all: Vec<u32> = (0..RB_COUNT).flat_map(invocation_slots).collect();
         let mut sorted = all.clone();
         sorted.sort_unstable();
@@ -178,5 +182,6 @@ mod tests {
         assert_eq!(slot(RB_SOCK_EVENT, STAT_HANDLED), 51);
         assert_eq!(slot(RB_RENO, STAT_HANDLED), 54);
         assert_eq!(slot(RB_TCP4_DRIVER_INGRESS, STAT_HANDLED), 57);
+        assert_eq!(slot(RB_TCP4_DRIVER_EGRESS, STAT_HANDLED), 63);
     }
 }

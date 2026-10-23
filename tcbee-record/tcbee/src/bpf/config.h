@@ -30,6 +30,14 @@ const volatile __u8 MPTCP_TAG = 0;
 const volatile __u32 SOCK_WATCH_MASK = 0;
 const volatile __u8 ONCHG_SHADOW = 0;
 
+/*
+ * The interface of the driver header hook at net_dev_start_xmit (-h with --headers-at
+ * driver): its ifindex and the inode number of its network namespace (/proc/self/ns/net),
+ * as an ifindex is only unique within a namespace.
+ */
+const volatile __u32 HEADERS_IFINDEX = 0;
+const volatile __u32 HEADERS_NETNS = 0;
+
 /* Constants that only exist as macros in the uapi headers, not in BTF */
 #define AF_INET 2
 #define AF_INET6 10

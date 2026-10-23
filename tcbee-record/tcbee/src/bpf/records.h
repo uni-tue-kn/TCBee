@@ -27,7 +27,7 @@ typedef __INT64_TYPE__ int64_t;
 
 /*
  * Header records of TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}, and of the driver hooks,
- * ring buffer TCP4_DRIVER_INGRESS. Addresses in host byte order. ecn is the
+ * ring buffers TCP4_DRIVER_{EGRESS,INGRESS}. Addresses in host byte order. ecn is the
  * ECN codepoint of the IP header (0 Not-ECT, 1 ECT(1), 2 ECT(0), 3 CE). tstamp is skb->tstamp
  * of a sent packet, the earliest departure time that TCP or the qdisc set (CLOCK_MONOTONIC
  * ns, the clock of time), 0 if none was set; received packets have 0.
@@ -47,7 +47,7 @@ struct tcp4_packet_trace {
 	uint64_t tstamp;
 };
 
-/* As tcp4_packet_trace, ring buffers TCP6_PACKETS_{EGRESS,INGRESS} and TCP6_DRIVER_INGRESS */
+/* As tcp4_packet_trace, ring buffers TCP6_PACKETS_{EGRESS,INGRESS} and TCP6_DRIVER_* */
 struct tcp6_packet_trace {
 	uint64_t time;
 	uint64_t hook_seq;

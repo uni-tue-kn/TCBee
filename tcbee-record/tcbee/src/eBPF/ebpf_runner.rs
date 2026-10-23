@@ -16,8 +16,9 @@ use log::{debug, error, info, log, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RENO,
     RB_RETRANSMIT_SYNACK, RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
-    RB_SOCK_TIMER, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_DRIVER_INGRESS,
-    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
+    RB_SOCK_TIMER, RB_TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
+    RB_TCP6_DRIVER_EGRESS, RB_TCP6_DRIVER_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS,
+    RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -34,7 +35,9 @@ use crate::{
             cubic::CubicTracer,
             cwnd::CwndTracer,
             handle,
-            headers::{check_offloads, uses_tcx, DriverTracer, TCTracer, TcAttachment, XdpLink},
+            headers::{
+                check_offloads, if_index, uses_tcx, DriverTracer, TCTracer, TcAttachment, XdpLink,
+            },
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
             reno::RenoTracer,
@@ -236,7 +239,12 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         ),
         (
             config.headers && config.headers_at.driver,
-            &[RB_TCP4_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS],
+            &[
+                RB_TCP4_DRIVER_INGRESS,
+                RB_TCP6_DRIVER_INGRESS,
+                RB_TCP4_DRIVER_EGRESS,
+                RB_TCP6_DRIVER_EGRESS,
+            ],
         ),
         (config.kernel && sock_send, &[RB_SOCK_SEND]),
         (config.kernel && sock_receive, &[RB_SOCK_RECV]),
@@ -526,6 +534,10 @@ impl EbpfRunner {
         rodata.RB_SUBMIT_FLAGS = self.config.poll_mode.submit_flags();
         let mptcp_tag = self.config.mptcp.tag && !disabled.contains(&OptionalGroup::MptcpTag);
         rodata.MPTCP_TAG = mptcp_tag as u8;
+        if self.config.headers && self.config.headers_at.driver {
+            rodata.HEADERS_IFINDEX = if_index(&self.config.iface)? as u32;
+            rodata.HEADERS_NETNS = DriverTracer::netns()?;
+        }
         if let Some(on_change) = self.config.on_change {
             rodata.SOCK_WATCH_MASK = on_change.watch.mask();
             rodata.ONCHG_SHADOW = on_change.shadow as u8;
@@ -768,7 +780,7 @@ impl EbpfRunner {
             TCTracer::spawn(skel, &self.config.iface, dir, writer, tcx, &mut self.tc)?;
         }
         if self.config.headers && self.config.headers_at.driver {
-            DriverTracer::spawn(skel, &self.config.iface, dir, writer, &mut self.xdp)?;
+            DriverTracer::spawn(skel, &self.config.iface, dir, writer, links, &mut self.xdp)?;
         }
         if self.config.headers {
             watcher_config.graphs.packets = true;

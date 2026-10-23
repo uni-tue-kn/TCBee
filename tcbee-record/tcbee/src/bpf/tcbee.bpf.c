@@ -501,6 +501,24 @@ int xdp_ingress_packet_tracer(struct xdp_md *xdp)
 	return XDP_PASS;
 }
 
+/*
+ * --headers-at driver: sent packets right before the driver gets them, after the qdisc and
+ * after software GSO (validate_xmit_skb()), so every segment unless the NIC does TSO. The
+ * tracepoint runs for the packets of every device on the host, so the device is compared
+ * first: by ifindex and network namespace, an ifindex is only unique within a namespace.
+ */
+SEC("?tp_btf/net_dev_start_xmit")
+int BPF_PROG(xmit_egress_packet_tracer, const struct sk_buff *skb, const struct net_device *dev)
+{
+	if (dev->ifindex != HEADERS_IFINDEX)
+		return 0;
+	if (bpf_core_field_exists(dev->nd_net.net) && dev->nd_net.net->ns.inum != HEADERS_NETNS)
+		return 0;
+	trace_packet((void *)skb, PKT_XMIT, true, &TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_EGRESS,
+		     &TCP6_DRIVER_EGRESS, RB_TCP6_DRIVER_EGRESS);
+	return 0;
+}
+
 /* ---- Socket state (-k) and cwnd only (-w) ---------------------------------------- */
 
 /*

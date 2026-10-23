@@ -527,6 +527,8 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::Reno, "reno", Dir::None),
         (TraceFile::Tcp4DriverReceive, "tcp4_driver", Dir::Recv),
         (TraceFile::Tcp6DriverReceive, "tcp6_driver", Dir::Recv),
+        (TraceFile::Tcp4DriverSend, "tcp4_driver", Dir::Send),
+        (TraceFile::Tcp6DriverSend, "tcp6_driver", Dir::Send),
         (TraceFile::SendSockOc, "sock_oc", Dir::Send),
         (TraceFile::RecvSockOc, "sock_oc", Dir::Recv),
         (TraceFile::SendCwndOc, "cwnd_oc", Dir::Send),

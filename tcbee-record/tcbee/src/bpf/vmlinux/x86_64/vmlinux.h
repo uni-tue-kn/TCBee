@@ -189,6 +189,24 @@ struct sk_buff {
 	__s64 tstamp;
 };
 
+struct ns_common {
+	unsigned int inum;
+};
+
+struct net {
+	struct ns_common ns;
+};
+
+/* Has its member only with CONFIG_NET_NS */
+typedef struct {
+	struct net *net;
+} possible_net_t;
+
+struct net_device {
+	int ifindex;
+	possible_net_t nd_net;
+};
+
 /* Only its existence is checked: 5.17 and newer */
 enum skb_drop_reason {
 	SKB_DROP_REASON_NOT_SPECIFIED = 2,

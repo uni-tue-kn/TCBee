@@ -114,7 +114,7 @@ in CLOCK_MONOTONIC like the record time; 0 if none was set and for received pack
 | Hook | Received packets | Sent packets | Files (tcbee-process table) |
 |------|------------------|--------------|-------|
 | `tc` (default) | TC ingress, after GRO | TC egress, before the qdisc and GSO | `tcp{4,6}_receive.tcp`, `tcp{4,6}_send.tcp` (`tcp4`, `tcp6`) |
-| `driver` | native XDP, before GRO | not recorded yet | `tcp{4,6}_driver_receive.tcp` (`tcp4_driver`, `tcp6_driver`) |
+| `driver` | native XDP, before GRO | `tp_btf/net_dev_start_xmit`, after the qdisc and software GSO | `tcp{4,6}_driver_receive.tcp`, `tcp{4,6}_driver_send.tcp` (`tcp4_driver`, `tcp6_driver`) |
 
 - TC sees the packets as the stack handles them: with GSO or TSO a sent record can stand for
   several segments, with GRO a received one. tcbee-record logs this at the start.
@@ -122,6 +122,11 @@ in CLOCK_MONOTONIC like the record time; 0 if none was set and for received pack
   never uses generic XDP (which runs where TC does) and never replaces an XDP program that is
   already attached. The program passes every frame on and is detached on exit. Attaching XDP
   makes some drivers reset their rings, a short interruption of the traffic.
+- `net_dev_start_xmit` runs for every device on the host; the program compares the device
+  (ifindex and network namespace) first. With TSO on, the NIC segments after this hook, so a
+  sent record can still stand for several segments; tcbee-record warns, `ethtool -K IFACE tso
+  off` gives one record per segment. A packet the driver refuses for a full queue
+  (`NETDEV_TX_BUSY`) passes the hook again when it is retried.
 - With LRO or hardware GRO (`rx-gro-hw`) the NIC merges received packets before any hook, and
   mlx5 refuses XDP then: `driver` stops with the hint `ethtool -K IFACE lro off rx-gro-hw off`.
   With `tc`, tcbee-record warns. The metadata lists `gro_hw` with the other offloads.

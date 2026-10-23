@@ -43,6 +43,8 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `reno.tcp` | `reno_trace_entry` | 96 | 0 | generated |
 | `tcp4_driver_receive.tcp` | `tcp4_packet_trace` (source `tcp4_driver`) | 52 | 0 | generated |
 | `tcp6_driver_receive.tcp` | `tcp6_packet_trace` (source `tcp6_driver`) | 76 | 0 | generated |
+| `tcp4_driver_send.tcp` | `tcp4_packet_trace` (source `tcp4_driver`) | 52 | 0 | generated |
+| `tcp6_driver_send.tcp` | `tcp6_packet_trace` (source `tcp6_driver`) | 76 | 0 | generated |
 | `send_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `recv_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `send_cwnd.tcp` | `cwnd_trace_entry` | 74 | 1000 | generated |

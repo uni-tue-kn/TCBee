@@ -105,7 +105,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut headers_at).add_option(
             &["--headers-at"],
             Store,
-            "Where -h records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off.",
+            "Where -h records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO, and net_dev_start_xmit for sent ones, after the qdisc and software GSO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off.",
         );
         argparser.refer(&mut dir).add_option(
             &["-d", "--dir"],
