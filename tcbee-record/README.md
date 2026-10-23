@@ -79,7 +79,8 @@ At least one metric source is required.
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
-| `--headers-at HOOK` | `tc` | With `-h`: where the headers are recorded, `tc` or `driver`, see [Header records](#header-records) |
+| `--headers-at HOOKS` | `tc` | With `-h`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
+| `--yes` | | Do not ask for confirmation (`--headers-at tc,driver`) |
 | `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-m` records, comma-separated: `tag`, `pm` |
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
@@ -116,6 +117,11 @@ in CLOCK_MONOTONIC like the record time; 0 if none was set and for received pack
 | `tc` (default) | TC ingress, after GRO | TC egress, before the qdisc and GSO | `tcp{4,6}_receive.tcp`, `tcp{4,6}_send.tcp` (`tcp4`, `tcp6`) |
 | `driver` | native XDP, before GRO | `tp_btf/net_dev_start_xmit`, after the qdisc and software GSO | `tcp{4,6}_driver_receive.tcp`, `tcp{4,6}_driver_send.tcp` (`tcp4_driver`, `tcp6_driver`) |
 
+- `tc,driver` records at both hooks into their own files, for instance to see per packet how
+  long it waited in the qdisc or for its pacing time (`tcp4_send` against `tcp4_driver` with
+  the same sequence number). Each hook costs time per packet, and XDP is attached, so
+  tcbee-record asks for confirmation first; `--yes` skips the question, and without a
+  terminal and without `--yes` it refuses to start.
 - TC sees the packets as the stack handles them: with GSO or TSO a sent record can stand for
   several segments, with GRO a received one. tcbee-record logs this at the start.
 - `driver` attaches an XDP program in native mode, which needs a driver with XDP support; it

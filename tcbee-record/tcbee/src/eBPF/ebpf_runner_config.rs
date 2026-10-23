@@ -512,7 +512,7 @@ impl Default for HeadersAt {
 }
 
 impl HeadersAt {
-    /// Parses `--headers-at`, `tc` or `driver`
+    /// Parses `--headers-at`: `tc`, `driver` or both, comma-separated
     pub fn parse(arg: &str) -> anyhow::Result<HeadersAt> {
         let mut at = HeadersAt {
             tc: false,
@@ -529,9 +529,6 @@ impl HeadersAt {
                     ))
                 }
             }
-        }
-        if at.tc && at.driver {
-            return Err(anyhow!("--headers-at takes one of tc and driver"));
         }
         Ok(at)
     }
@@ -729,6 +726,13 @@ mod tests {
             HeadersAt::parse(" driver").unwrap(),
             HeadersAt {
                 tc: false,
+                driver: true
+            }
+        );
+        assert_eq!(
+            HeadersAt::parse("tc,driver").unwrap(),
+            HeadersAt {
+                tc: true,
                 driver: true
             }
         );

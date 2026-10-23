@@ -6,7 +6,10 @@ mod metrics;
 mod stats;
 mod viz;
 mod writer;
-use std::net::IpAddr;
+use std::{
+    io::{self, BufRead, IsTerminal, Write},
+    net::IpAddr,
+};
 
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
@@ -59,6 +62,7 @@ fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let mut iface: String = String::new();
     let mut headers_at: String = String::new();
+    let mut yes: bool = false;
     let mut dir: String = "/tmp/".to_string();
     let mut quiet: bool = false;
     let mut port: u16 = 0;
@@ -105,7 +109,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut headers_at).add_option(
             &["--headers-at"],
             Store,
-            "Where -h records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO, and net_dev_start_xmit for sent ones, after the qdisc and software GSO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off.",
+            "Where -h records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO, and net_dev_start_xmit for sent ones, after the qdisc and software GSO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off. tc,driver records both, into separate files, to compare a packet at the two hooks (qdisc and pacing delay); it asks for confirmation.",
+        );
+        argparser.refer(&mut yes).add_option(
+            &["--yes"],
+            StoreTrue,
+            "Do not ask for confirmation (--headers-at tc,driver), for scripts.",
         );
         argparser.refer(&mut dir).add_option(
             &["-d", "--dir"],
@@ -282,6 +291,9 @@ fn main() -> anyhow::Result<()> {
     } else {
         HeadersAt::parse(&headers_at)?
     };
+    if headers_at.tc && headers_at.driver && !yes {
+        confirm_both_header_hooks(&iface)?;
+    }
     let tracepoints = tracepoint_set(trace_tracepoints, &tp, trace_events, trace_drops)?;
     let filter = FilterConfig {
         single_port: port,
@@ -464,6 +476,33 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
+/// Asks on the terminal before recording headers at TC and in the driver at once. Without a
+/// terminal it refuses, scripts pass --yes.
+fn confirm_both_header_hooks(iface: &str) -> anyhow::Result<()> {
+    let warning = format!(
+        "--headers-at tc,driver records every packet of {iface} at two hooks, each with its own \
+         cost per packet, and attaches XDP to {iface}, which makes some drivers reset their \
+         rings (a short interruption of the traffic)."
+    );
+    if !io::stdin().is_terminal() {
+        return Err(anyhow!("{warning} Pass --yes to record without asking"));
+    }
+    eprint!("{warning}\nContinue? [y/N] ");
+    io::stderr().flush()?;
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+    if confirmed(&answer) {
+        Ok(())
+    } else {
+        Err(anyhow!("Not confirmed, nothing recorded"))
+    }
+}
+
+/// Whether an answer to a [y/N] question says yes
+fn confirmed(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
 /// Keeps the calling thread off the CPUs the writer threads are pinned to, so that the
 /// control and UI threads don't take time from a busy writer. Does nothing if no
 /// writer CPUs are set or they cover every CPU.
@@ -487,6 +526,21 @@ fn avoid_cpus(writer_cpus: &[usize]) {
         }
         if any {
             libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_yes_confirms() {
+        for answer in ["y\n", "Y", " yes \n"] {
+            assert!(confirmed(answer), "{answer:?}");
+        }
+        for answer in ["", "\n", "n", "no", "yess", "j"] {
+            assert!(!confirmed(answer), "{answer:?}");
         }
     }
 }
