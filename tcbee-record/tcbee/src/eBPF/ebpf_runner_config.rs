@@ -2,7 +2,10 @@ use std::net::IpAddr;
 
 use anyhow::anyhow;
 
-use crate::writer::PollMode;
+use crate::{
+    eBPF::probes::tracepoints::{Tracepoint, TracepointSet},
+    writer::PollMode,
+};
 use tcbee_common::{filter::*, stats::RINGBUFS};
 use tcbee_trace::{
     onchange::{
@@ -195,127 +198,6 @@ impl MptcpModes {
     }
 }
 
-/// The tracepoints `-t` records, by their `--tp` names. `-t` alone records all but the
-/// opt-in ones.
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-pub struct TracepointSet(u16);
-
-impl TracepointSet {
-    /// Every name with whether a plain `-t` records it. Each `-e` event is a TCP event hook
-    /// (`TCP_EVENT_HOOKS`), the others are programs of their own.
-    pub const NAMES: [(&'static str, bool); 11] = [
-        ("probe", true),
-        ("synack", true),
-        ("bad_csum", true),
-        ("retransmit", true),
-        ("rst_sent", true),
-        ("rst_received", true),
-        ("state", true),
-        ("ca_state", true),
-        ("rto", true),
-        ("destroy", true),
-        ("drops", false),
-    ];
-    /// What `-e` used to record
-    pub const EVENTS: [&'static str; 7] = [
-        "retransmit",
-        "rst_sent",
-        "rst_received",
-        "state",
-        "ca_state",
-        "rto",
-        "destroy",
-    ];
-
-    fn bit(name: &str) -> Option<u16> {
-        Self::NAMES
-            .iter()
-            .position(|(n, _)| *n == name)
-            .map(|i| 1 << i)
-    }
-
-    /// What a plain `-t` records
-    pub fn default_set() -> TracepointSet {
-        TracepointSet(
-            Self::NAMES
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, default))| *default)
-                .fold(0, |bits, (i, _)| bits | 1 << i),
-        )
-    }
-
-    pub fn all() -> TracepointSet {
-        TracepointSet((1 << Self::NAMES.len()) - 1)
-    }
-
-    /// The set of these names, which must be in `NAMES`
-    pub fn of(names: &[&str]) -> TracepointSet {
-        TracepointSet(
-            names
-                .iter()
-                .map(|n| Self::bit(n).expect(n))
-                .fold(0, |a, b| a | b),
-        )
-    }
-
-    pub fn union(self, other: TracepointSet) -> TracepointSet {
-        TracepointSet(self.0 | other.0)
-    }
-
-    pub fn contains(self, name: &str) -> bool {
-        Self::bit(name).is_some_and(|bit| self.0 & bit != 0)
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// Whether any of these names is in the set
-    pub fn any(self, names: &[&str]) -> bool {
-        names.iter().any(|n| self.contains(n))
-    }
-
-    /// Parses `--tp`, a comma-separated list of names, `all` and `default`. A list in which
-    /// every item starts with `+` or `-` changes the default set, otherwise it is the set.
-    pub fn parse(arg: &str) -> anyhow::Result<TracepointSet> {
-        let items: Vec<&str> = arg
-            .split(',')
-            .map(str::trim)
-            .filter(|i| !i.is_empty())
-            .collect();
-        if items.is_empty() {
-            return Err(anyhow!("--tp needs at least one tracepoint name"));
-        }
-        let relative = items.iter().all(|i| i.starts_with(['+', '-']));
-        let mut set = if relative {
-            TracepointSet::default_set()
-        } else {
-            TracepointSet::default()
-        };
-        for item in items {
-            let (remove, name) = match item.split_at(item.starts_with(['+', '-']) as usize) {
-                ("-", name) => (true, name),
-                (_, name) => (false, name),
-            };
-            let bits = match name {
-                "all" => TracepointSet::all().0,
-                "default" => TracepointSet::default_set().0,
-                name => Self::bit(name).ok_or_else(|| {
-                    let names: Vec<_> = Self::NAMES.iter().map(|(n, _)| *n).collect();
-                    anyhow!(
-                        "Unknown tracepoint '{}', use all, default or {}",
-                        name,
-                        names.join(", ")
-                    )
-                })?,
-            };
-            set.0 = if remove { set.0 & !bits } else { set.0 | bits };
-        }
-        Ok(set)
-    }
-}
-
 /// The tracepoints of `-t`, `--tp` and the old flags `-e` and `--drops`, which add the TCP
 /// events and the drops to them
 pub fn tracepoint_set(
@@ -327,15 +209,15 @@ pub fn tracepoint_set(
     let mut set = if !tp.is_empty() {
         TracepointSet::parse(tp)?
     } else if tracepoints {
-        TracepointSet::default_set()
+        TracepointSet::DEFAULT
     } else {
-        TracepointSet::default()
+        TracepointSet::EMPTY
     };
     if events || drops {
-        set = set.union(TracepointSet::of(&TracepointSet::EVENTS));
+        set = set.union(TracepointSet::EVENTS);
     }
     if drops {
-        set = set.union(TracepointSet::of(&["drops"]));
+        set = set.union(TracepointSet::of(&[Tracepoint::Drops]));
     }
     Ok(set)
 }
@@ -534,7 +416,7 @@ impl HeadersAt {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct EbpfRunnerConfig {
     pub iface: String,
     pub do_tui: bool,
@@ -585,8 +467,30 @@ pub struct EbpfWatcherConfig {
 }
 
 impl EbpfRunnerConfig {
+    /// Records nothing until a probe is switched on
     pub fn new() -> EbpfRunnerConfig {
-        EbpfRunnerConfig::default()
+        EbpfRunnerConfig {
+            iface: String::new(),
+            do_tui: false,
+            update_period: 0,
+            observation_window: 0.0,
+            filter: FilterConfig::default(),
+            headers: false,
+            headers_at: HeadersAt::default(),
+            tracepoints: TracepointSet::EMPTY,
+            kernel: false,
+            cwnd: false,
+            metrics: false,
+            metadata: false,
+            algorithms: false,
+            mptcp: MptcpModes::default(),
+            dir: String::new(),
+            ringbuf_sizes: Vec::new(),
+            poll_mode: PollMode::default(),
+            writer_cpus: Vec::new(),
+            on_change: None,
+            sock_hooks: HookSet::DEFAULT,
+        }
     }
 
     pub fn interface(mut self, iface: String) -> EbpfRunnerConfig {
@@ -770,43 +674,22 @@ mod tests {
         assert_eq!(oc.hooks, HookSet::parse("ingress,timer,egress").unwrap());
     }
 
-    #[test]
-    fn tracepoint_lists() {
-        let default = TracepointSet::default_set();
-        assert!(default.contains("probe") && default.contains("destroy"));
-        assert!(!default.contains("drops"));
-        assert_eq!(TracepointSet::parse("default").unwrap(), default);
-        assert_eq!(
-            TracepointSet::parse("probe, rto").unwrap(),
-            TracepointSet::of(&["probe", "rto"])
-        );
-        let changed = TracepointSet::parse("+drops,-probe").unwrap();
-        assert!(changed.contains("drops") && !changed.contains("probe"));
-        assert!(changed.contains("state"));
-        assert_eq!(
-            TracepointSet::parse("all,-drops").unwrap(),
-            TracepointSet::parse("default").unwrap()
-        );
-        assert!(TracepointSet::parse("probe,cwnd").is_err());
-        assert!(TracepointSet::parse(" , ").is_err());
-    }
-
     /// -e and --drops record what they did before -t had the TCP events
     #[test]
     fn old_event_flags() {
-        let events = TracepointSet::of(&TracepointSet::EVENTS);
+        let events = TracepointSet::EVENTS;
         assert_eq!(tracepoint_set(false, "", true, false).unwrap(), events);
         assert_eq!(
             tracepoint_set(false, "", false, true).unwrap(),
-            events.union(TracepointSet::of(&["drops"]))
+            events.union(TracepointSet::of(&[Tracepoint::Drops]))
         );
         assert_eq!(
             tracepoint_set(true, "", false, false).unwrap(),
-            TracepointSet::default_set()
+            TracepointSet::DEFAULT
         );
         assert_eq!(
             tracepoint_set(false, "probe", false, false).unwrap(),
-            TracepointSet::of(&["probe"])
+            TracepointSet::of(&[Tracepoint::Probe])
         );
         assert!(tracepoint_set(false, "", false, false).unwrap().is_empty());
     }

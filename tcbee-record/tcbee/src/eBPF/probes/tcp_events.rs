@@ -6,7 +6,13 @@ use tcbee_common::{records::tcp_event_entry, stats::RB_TCP_EVENTS};
 
 use crate::{
     eBPF::{
-        ebpf_runner_config::TracepointSet, host::KernelBtf, probes::attach, rings, skel::TcbeeSkel,
+        host::KernelBtf,
+        probes::{
+            attach,
+            tracepoints::{Tracepoint, TracepointSet},
+        },
+        rings,
+        skel::TcbeeSkel,
     },
     writer::Writer,
 };
@@ -26,21 +32,21 @@ pub struct TcpEventHook {
     pub target: Target,
     /// Name for messages and the run metadata
     pub name: &'static str,
-    /// The `--tp` name that selects it (`TracepointSet::NAMES`)
-    pub tp: &'static str,
+    /// The tracepoint of `-t` that selects it
+    pub tracepoint: Tracepoint,
 }
 
 const fn hook(
     programs: &'static [&'static str],
     target: Target,
     name: &'static str,
-    tp: &'static str,
+    tracepoint: Tracepoint,
 ) -> TcpEventHook {
     TcpEventHook {
         programs,
         target,
         name,
-        tp,
+        tracepoint,
     }
 }
 
@@ -51,55 +57,55 @@ pub const TCP_EVENT_HOOKS: [TcpEventHook; 9] = [
         &["tcp_event_retransmit"],
         Target::Tracepoint("tcp_retransmit_skb"),
         "TCP retransmissions",
-        "retransmit",
+        Tracepoint::Retransmit,
     ),
     hook(
         &["tcp_event_rst_sent"],
         Target::Tracepoint("tcp_send_reset"),
         "TCP RSTs sent",
-        "rst_sent",
+        Tracepoint::RstSent,
     ),
     hook(
         &["tcp_event_rst_received"],
         Target::Tracepoint("tcp_receive_reset"),
         "TCP RSTs received",
-        "rst_received",
+        Tracepoint::RstReceived,
     ),
     hook(
         &["tcp_event_state"],
         Target::Tracepoint("inet_sock_set_state"),
         "TCP state changes",
-        "state",
+        Tracepoint::State,
     ),
     hook(
         &["tcp_event_ca_state"],
         Target::Tracepoint("tcp_cong_state_set"),
         "TCP congestion state changes",
-        "ca_state",
+        Tracepoint::CaState,
     ),
     hook(
         &["tcp_event_rto"],
         Target::Function("tcp_enter_loss"),
         "TCP retransmission timeouts",
-        "rto",
+        Tracepoint::Rto,
     ),
     hook(
         &["tcp_event_cwr"],
         Target::Function("tcp_enter_cwr"),
         "TCP window reductions (CWR)",
-        "ca_state",
+        Tracepoint::CaState,
     ),
     hook(
         &["tcp_event_destroy"],
         Target::Tracepoint("tcp_destroy_sock"),
         "TCP sockets destroyed",
-        "destroy",
+        Tracepoint::Destroy,
     ),
     hook(
         &["tcp_event_drop"],
         Target::Tracepoint("kfree_skb"),
         "TCP packet drops",
-        "drops",
+        Tracepoint::Drops,
     ),
 ];
 
@@ -124,7 +130,7 @@ const fn hook_index(program: &str) -> usize {
 }
 
 /// The congestion state changes include the CWR state; tcp_enter_cwr is their fallback and
-/// has their `--tp` name
+/// is selected with them (`Tracepoint::CaState`)
 const CA_STATE_HOOK: usize = hook_index("tcp_event_ca_state");
 const CWR_HOOK: usize = hook_index("tcp_event_cwr");
 
@@ -135,7 +141,7 @@ fn hooks_to_load(
     exists: &[bool],
     disabled: &[usize],
 ) -> (Vec<bool>, Vec<String>) {
-    let requested = |hook: &TcpEventHook| set.contains(hook.tp);
+    let requested = |hook: &TcpEventHook| set.contains(hook.tracepoint);
     let mut skipped = Vec::new();
     for (i, hook) in TCP_EVENT_HOOKS.iter().enumerate() {
         if !requested(hook) || exists[i] {
@@ -182,7 +188,10 @@ impl TcpEventTracer {
         disabled: &[usize],
         btf: &mut KernelBtf,
     ) -> (Vec<usize>, Vec<String>) {
-        let check = TCP_EVENT_HOOKS.iter().any(|hook| set.contains(hook.tp)) && btf.available();
+        let check = TCP_EVENT_HOOKS
+            .iter()
+            .any(|hook| set.contains(hook.tracepoint))
+            && btf.available();
         let exists: Vec<bool> = TCP_EVENT_HOOKS
             .iter()
             .map(|hook| {
@@ -249,7 +258,7 @@ mod tests {
     const ALL: [bool; TCP_EVENT_HOOKS.len()] = [true; TCP_EVENT_HOOKS.len()];
 
     fn events() -> TracepointSet {
-        TracepointSet::of(&TracepointSet::EVENTS)
+        TracepointSet::EVENTS
     }
 
     fn loaded(load: &[bool]) -> Vec<&'static str> {
@@ -283,25 +292,19 @@ mod tests {
         assert!(!names.contains(&"tcp_event_ca_state"));
     }
 
-    /// Every hook is selected by a name of `--tp`
     #[test]
-    fn every_hook_has_a_tracepoint_name() {
-        for hook in TCP_EVENT_HOOKS {
-            assert!(TracepointSet::all().contains(hook.tp), "{}", hook.tp);
-        }
-        let (load, _) = hooks_to_load(TracepointSet::of(&["rto", "destroy"]), &ALL, &[]);
+    fn hooks_load_for_their_tracepoints() {
+        let set = TracepointSet::of(&[Tracepoint::Rto, Tracepoint::Destroy]);
+        let (load, _) = hooks_to_load(set, &ALL, &[]);
         assert_eq!(loaded(&load), ["tcp_event_rto", "tcp_event_destroy"]);
     }
 
     #[test]
     fn drops_alone_load_only_the_drop_hook() {
-        let (load, _) = hooks_to_load(TracepointSet::of(&["drops"]), &ALL, &[]);
+        let (load, _) = hooks_to_load(TracepointSet::of(&[Tracepoint::Drops]), &ALL, &[]);
         assert_eq!(loaded(&load), ["tcp_event_drop"]);
-        let (load, skipped) = hooks_to_load(
-            TracepointSet::default(),
-            &[false; TCP_EVENT_HOOKS.len()],
-            &[],
-        );
+        let (load, skipped) =
+            hooks_to_load(TracepointSet::EMPTY, &[false; TCP_EVENT_HOOKS.len()], &[]);
         assert!(loaded(&load).is_empty());
         assert!(skipped.is_empty());
     }

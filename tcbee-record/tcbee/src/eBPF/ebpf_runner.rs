@@ -43,7 +43,7 @@ use crate::{
             reno::RenoTracer,
             sock_events::SockEventTracer,
             tcp_events::TcpEventTracer,
-            tracepoints::TracepointTracer,
+            tracepoints::{Tracepoint, TracepointTracer},
         },
         rings,
         skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
@@ -260,12 +260,18 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         ),
         (config.cwnd && send, &[RB_CWND_SEND]),
         (config.cwnd && receive, &[RB_CWND_RECV]),
-        (config.tracepoints.contains("probe"), &[RB_TCP_PROBE]),
         (
-            config.tracepoints.contains("synack"),
+            config.tracepoints.contains(Tracepoint::Probe),
+            &[RB_TCP_PROBE],
+        ),
+        (
+            config.tracepoints.contains(Tracepoint::Synack),
             &[RB_RETRANSMIT_SYNACK],
         ),
-        (config.tracepoints.contains("bad_csum"), &[RB_BAD_CSUM]),
+        (
+            config.tracepoints.contains(Tracepoint::BadCsum),
+            &[RB_BAD_CSUM],
+        ),
         (config.algorithms, &[RB_CUBIC]),
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
@@ -462,7 +468,10 @@ impl EbpfRunner {
             (c.headers, "headers"),
             (c.kernel, "kernel"),
             (c.cwnd, "cwnd"),
-            (c.tracepoints.any(&TracepointTracer::NAMES), "tracepoints"),
+            (
+                c.tracepoints.intersects(TracepointTracer::TRACEPOINTS),
+                "tracepoints",
+            ),
             (c.algorithms, "cubic"),
         ]
         .into_iter()
@@ -753,7 +762,7 @@ impl EbpfRunner {
                 },
             }
         };
-        if self.config.tracepoints.contains("drops") {
+        if self.config.tracepoints.contains(Tracepoint::Drops) {
             self.write_drop_reasons(&mut btf);
         }
         drop(btf);
@@ -846,8 +855,9 @@ impl EbpfRunner {
         }
 
         // Tracing kernel tracepoints
-        if self.config.tracepoints.any(&TracepointTracer::NAMES) {
-            TracepointTracer::spawn(skel, self.config.tracepoints, dir, writer, links)?;
+        let tracepoints = self.config.tracepoints;
+        if tracepoints.intersects(TracepointTracer::TRACEPOINTS) {
+            TracepointTracer::spawn(skel, tracepoints, dir, writer, links)?;
 
             watcher_config.graphs.tracepoints = true;
         }
