@@ -36,6 +36,7 @@ const volatile __u8 ONCHG_SHADOW = 0;
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
 #define IP_OFFSET 0x1FFF
+#define IP_ECN_MASK 0x03
 #define TC_ACT_UNSPEC (-1)
 #define TCP_TIME_WAIT 6
 #define TCP_CLOSE 7

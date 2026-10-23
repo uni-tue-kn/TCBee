@@ -12,8 +12,8 @@ pub const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 
 use core::mem::size_of;
 
-const _: () = assert!(size_of::<tcp4_packet_trace>() == 40);
-const _: () = assert!(size_of::<tcp6_packet_trace>() == 64);
+const _: () = assert!(size_of::<tcp4_packet_trace>() == 48);
+const _: () = assert!(size_of::<tcp6_packet_trace>() == 72);
 const _: () = assert!(size_of::<sock_trace_entry>() == 280);
 const _: () = assert!(size_of::<cwnd_trace_entry>() == 72);
 const _: () = assert!(size_of::<cubic_trace_entry>() == 120);

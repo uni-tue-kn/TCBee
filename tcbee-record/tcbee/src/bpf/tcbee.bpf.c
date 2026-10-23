@@ -287,10 +287,11 @@ static __always_inline void *skb_header(struct __sk_buff *skb, __u32 off, void *
 /*
  * Every early return happens before the filter, so a packet that passes the filter is
  * always counted as handled or dropped. IPv6 extension headers
- * are not parsed, nexthdr must be TCP directly.
+ * are not parsed, nexthdr must be TCP directly. Only sent packets carry skb->tstamp, the
+ * departure time; on a received packet it would be the receive timestamp, if any.
  */
-static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 rb4_id, void *rb6,
-					__u32 rb6_id)
+static __always_inline int trace_packet(struct __sk_buff *skb, bool egress, void *rb4,
+					__u32 rb4_id, void *rb6, __u32 rb6_id)
 {
 	struct tc_tcp_hdr tcp_buf, *tcp;
 	__be16 proto_buf, *proto;
@@ -347,6 +348,9 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 			rec->ack = bpf_ntohl(tcp->ack_seq);
 			rec->window = bpf_ntohs(tcp->window);
 			rec->flags = tcp->flags;
+			rec->ecn = ip->tos & IP_ECN_MASK;
+			if (egress)
+				rec->tstamp = skb->tstamp;
 			commit(rec, rb4_id);
 		}
 
@@ -388,6 +392,10 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 			rec->ack = bpf_ntohl(tcp->ack_seq);
 			rec->window = bpf_ntohs(tcp->window);
 			rec->flags = tcp->flags;
+			/* The traffic class follows the 4 version bits */
+			rec->ecn = (bpf_ntohl(ip6->version_tc_flow) >> 20) & IP_ECN_MASK;
+			if (egress)
+				rec->tstamp = skb->tstamp;
 			commit(rec, rb6_id);
 		}
 
@@ -404,14 +412,14 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 SEC("tc")
 int tc_ingress_packet_tracer(struct __sk_buff *skb)
 {
-	return trace_packet(skb, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS, &TCP6_PACKETS_INGRESS,
-			    RB_TCP6_INGRESS);
+	return trace_packet(skb, false, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS,
+			    &TCP6_PACKETS_INGRESS, RB_TCP6_INGRESS);
 }
 
 SEC("tc")
 int tc_egress_packet_tracer(struct __sk_buff *skb)
 {
-	return trace_packet(skb, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS, &TCP6_PACKETS_EGRESS,
+	return trace_packet(skb, true, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS, &TCP6_PACKETS_EGRESS,
 			    RB_TCP6_EGRESS);
 }
 

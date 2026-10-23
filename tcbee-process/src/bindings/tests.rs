@@ -239,7 +239,7 @@ fn cwnd() {
     check::<cwnd_trace_entry>(&x);
 }
 
-const PKT_COLS: &str = "SEQ_NUM:U32 ACK_NUM:U32 WINDOW:U16 FLAGS:U8";
+const PKT_COLS: &str = "SEQ_NUM:U32 ACK_NUM:U32 WINDOW:U16 FLAGS:U8 ECN:U8 TSTAMP:U64";
 
 #[test]
 fn tcp4_send() {
@@ -251,9 +251,9 @@ fn tcp4_send() {
         records: 2000,
         ts0: 7812280671956,
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
-        row0: &[3795926499, 0, 64240, 2],
+        row0: &[3795926499, 0, 64240, 2, 0, 0],
     };
-    check::<tcp4_packet_trace>(&x);
+    check::<legacy::Tcp4Packet43Entry>(&x);
 }
 
 #[test]
@@ -266,9 +266,9 @@ fn tcp4_receive() {
         records: 2000,
         ts0: 7812304808828,
         key0: tuple("37.51.193.149", "192.168.1.22", 8080, 50290),
-        row0: &[478884330, 3795926500, 42600, 18],
+        row0: &[478884330, 3795926500, 42600, 18, 0, 0],
     };
-    check::<tcp4_packet_trace>(&x);
+    check::<legacy::Tcp4Packet43Entry>(&x);
 }
 
 #[test]
@@ -281,9 +281,9 @@ fn tcp6_send() {
         records: 500,
         ts0: 1_000_000_000_000,
         key0: tuple("2001:db8::1", "2001:db8::2", 40000, 5201),
-        row0: &[5000, 0, 1000, 16],
+        row0: &[5000, 0, 1000, 16, 0, 0],
     };
-    check::<tcp6_packet_trace>(&x);
+    check::<legacy::Tcp6Packet67Entry>(&x);
 }
 
 #[test]
@@ -296,9 +296,9 @@ fn tcp6_receive() {
         records: 500,
         ts0: 1_000_000_000_000,
         key0: tuple("2001:db8::2", "2001:db8::1", 5201, 40000),
-        row0: &[5000, 0, 1000, 16],
+        row0: &[5000, 0, 1000, 16, 0, 0],
     };
-    check::<tcp6_packet_trace>(&x);
+    check::<legacy::Tcp6Packet67Entry>(&x);
 }
 
 /// Expected `flow_key` (as "src>dst") for crafted records, in the loop order of the test below:
@@ -551,8 +551,8 @@ fn file_table_maps_every_trace_file() {
         ("cubic", 123, 15),
         ("bbr", 168, 29),
         ("cwnd", 74, 1),
-        ("tcp6", 67, 4),
-        ("tcp4", 43, 4),
+        ("tcp6", 76, 6),
+        ("tcp4", 52, 6),
         ("mptcp_pm", 123, 17),
         ("tcp_event", 99, 13),
         ("sock_oc", 262, 48),
@@ -819,6 +819,8 @@ fn legacy_entry_sizes_match_their_encoding() {
         ("cwnd", 74),
         ("cubic", cubic_trace_entry::ENTRY_SIZE),
         ("bbr", bbr_trace_entry::ENTRY_SIZE),
+        ("tcp4", tcp4_packet_trace::ENTRY_SIZE),
+        ("tcp6", tcp6_packet_trace::ENTRY_SIZE),
     ] {
         let mut sizes = vec![current];
         for l in legacy::layouts(source) {
@@ -852,7 +854,7 @@ fn legacy_entry_sizes_match_their_encoding() {
             .collect::<Vec<_>>(),
         [70]
     );
-    for (source, size) in [("cubic", 122), ("bbr", 118)] {
+    for (source, size) in [("cubic", 122), ("bbr", 118), ("tcp4", 43), ("tcp6", 67)] {
         assert_eq!(
             legacy::layouts(source)
                 .iter()
@@ -1272,4 +1274,70 @@ fn reno_records_carry_the_algorithm_name() {
         ),
         (3, 3, 20)
     );
+}
+
+/// Header files from before the ECN codepoint and the departure time decode without them; the
+/// current records carry both.
+#[test]
+fn packet_layouts_are_detected_per_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tcp4_send.tcp");
+    write_records(
+        &path,
+        &[legacy::Tcp4Packet43Entry {
+            time: 3,
+            hook_seq: 1,
+            seq: 1000,
+            flags: 0x10,
+            ..Default::default()
+        }; 3],
+        0,
+    );
+    let b = binding_for(TraceFile::Tcp4Send, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.missing_columns),
+        (43, legacy::PACKET_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(col(&batch, b.table, "SEQ_NUM"), 1000);
+    assert_eq!(col(&batch, b.table, "ECN"), 0);
+
+    write_records(
+        &path,
+        &[tcp4_packet_trace {
+            time: 3,
+            hook_seq: 1,
+            seq: 1000,
+            ecn: 3,
+            tstamp: 5_000_000,
+            ..Default::default()
+        }; 3],
+        0,
+    );
+    let b = binding_for(TraceFile::Tcp4Send, &path).unwrap().unwrap();
+    assert_eq!((b.entry_size, b.missing_columns.len()), (52, 0));
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (col(&batch, b.table, "ECN"), col(&batch, b.table, "TSTAMP")),
+        (3, 5_000_000)
+    );
+
+    let path = dir.path().join("tcp6_receive.tcp");
+    write_records(
+        &path,
+        &[legacy::Tcp6Packet67Entry {
+            time: 3,
+            hook_seq: 1,
+            window: 7,
+            ..Default::default()
+        }; 2],
+        0,
+    );
+    let b = binding_for(TraceFile::Tcp6Receive, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.table.source, b.missing_columns),
+        (67, "tcp6", legacy::PACKET_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(col(&batch, b.table, "WINDOW"), 7);
 }

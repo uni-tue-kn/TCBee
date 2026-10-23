@@ -14,6 +14,8 @@
 //! | cwnd | 70 | the per-CPU and on-change lines (no `conn_id`) | – |
 //! | cubic | 122 | every version before the hook tag | `hook` |
 //! | bbr | 118 | every version before the hook tag | `BBR118_MISSING`: the hook, mode, gains and rate sample |
+//! | tcp4 | 43 | before the ECN codepoint and the departure time | `PACKET_MISSING` |
+//! | tcp6 | 67 | before the ECN codepoint and the departure time | `PACKET_MISSING` |
 //!
 //! Layouts without `conn_id` belong to no MPTCP connection (`connection_key` 0).
 
@@ -21,7 +23,8 @@ use std::{fs::File, io, os::unix::fs::FileExt, path::Path};
 
 use serde::{Deserialize, Serialize};
 use tcbee_common::records::{
-    bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, sock_trace_entry, RECORD_DELIMITER,
+    bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, sock_trace_entry, tcp4_packet_trace,
+    tcp6_packet_trace, RECORD_DELIMITER,
 };
 use ts_storage::{Dir, EventBatch, EventTable, IpTuple};
 
@@ -42,6 +45,8 @@ pub fn layouts(source: &str) -> &'static [Legacy] {
         "cwnd" | "cwnd_oc" => &CWND,
         "cubic" => &CUBIC,
         "bbr" => &BBR,
+        "tcp4" => &TCP4,
+        "tcp6" => &TCP6,
         _ => &[],
     }
 }
@@ -79,6 +84,14 @@ static CUBIC: [Legacy; 1] = [Legacy {
 static BBR: [Legacy; 1] = [Legacy {
     entry_size: 118,
     binding: bbr118,
+}];
+static TCP4: [Legacy; 1] = [Legacy {
+    entry_size: 43,
+    binding: tcp4_43,
+}];
+static TCP6: [Legacy; 1] = [Legacy {
+    entry_size: 67,
+    binding: tcp6_67,
 }];
 
 /// Columns of the current sock record that the 172 and 168 B layouts do not have: the
@@ -232,6 +245,23 @@ fn bbr118(dir: Dir) -> Binding {
     Binding {
         missing_columns: BBR118_MISSING,
         ..binding_of::<Bbr118Entry>(dir)
+    }
+}
+
+/// Columns of the current tcp4 and tcp6 records that the 43 and 67 B layouts do not have
+pub const PACKET_MISSING: &[&str] = &["ECN", "TSTAMP"];
+
+fn tcp4_43(dir: Dir) -> Binding {
+    Binding {
+        missing_columns: PACKET_MISSING,
+        ..binding_of::<Tcp4Packet43Entry>(dir)
+    }
+}
+
+fn tcp6_67(dir: Dir) -> Binding {
+    Binding {
+        missing_columns: PACKET_MISSING,
+        ..binding_of::<Tcp6Packet67Entry>(dir)
     }
 }
 
@@ -674,6 +704,72 @@ impl Bbr118Entry {
     }
 }
 
+/// The tcp4 record before the ECN codepoint and the departure time
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Tcp4Packet43Entry {
+    pub time: u64,
+    pub hook_seq: u64,
+    pub saddr: u32,
+    pub daddr: u32,
+    pub sport: u16,
+    pub dport: u16,
+    pub seq: u32,
+    pub ack: u32,
+    pub window: u16,
+    pub flags: u8,
+}
+
+impl Tcp4Packet43Entry {
+    fn current(&self) -> tcp4_packet_trace {
+        tcp4_packet_trace {
+            time: self.time,
+            hook_seq: self.hook_seq,
+            saddr: self.saddr,
+            daddr: self.daddr,
+            sport: self.sport,
+            dport: self.dport,
+            seq: self.seq,
+            ack: self.ack,
+            window: self.window,
+            flags: self.flags,
+            ..Default::default()
+        }
+    }
+}
+
+/// The tcp6 record before the ECN codepoint and the departure time
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Tcp6Packet67Entry {
+    pub time: u64,
+    pub hook_seq: u64,
+    pub saddr_v6: [u8; 16],
+    pub daddr_v6: [u8; 16],
+    pub sport: u16,
+    pub dport: u16,
+    pub seq: u32,
+    pub ack: u32,
+    pub window: u16,
+    pub flags: u8,
+}
+
+impl Tcp6Packet67Entry {
+    fn current(&self) -> tcp6_packet_trace {
+        tcp6_packet_trace {
+            time: self.time,
+            hook_seq: self.hook_seq,
+            saddr_v6: self.saddr_v6,
+            daddr_v6: self.daddr_v6,
+            sport: self.sport,
+            dport: self.dport,
+            seq: self.seq,
+            ack: self.ack,
+            window: self.window,
+            flags: self.flags,
+            ..Default::default()
+        }
+    }
+}
+
 /// An `Event` for a legacy layout that converts every record to the current one
 macro_rules! legacy_event {
     ($ty:ty, $current:ty, $size:expr) => {
@@ -714,3 +810,5 @@ legacy_event!(Sock226Entry, sock_trace_entry, 226);
 legacy_event!(Cwnd70Entry, cwnd_trace_entry, 70);
 legacy_event!(Cubic122Entry, cubic_trace_entry, 122);
 legacy_event!(Bbr118Entry, bbr_trace_entry, 118);
+legacy_event!(Tcp4Packet43Entry, tcp4_packet_trace, 43);
+legacy_event!(Tcp6Packet67Entry, tcp6_packet_trace, 67);

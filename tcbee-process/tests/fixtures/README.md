@@ -10,13 +10,14 @@
   buffers, so file order was hook order). The sock records also got `conn_id` = 0 (no MPTCP).
   They are in the old sock layout without `ca_state`, the delivery and the chrono fields, which
   tcbee-process detects and decodes through `Sock172Entry` (172 B, `src/bindings/legacy.rs`).
-  The other older layouts (sock 168, 201 and 202 B, cwnd 70 B) are tested with records written
-  by the tests themselves. `cubic` and the generated `bbr` are in the layouts before the hook
-  tag (`Cubic122Entry`, `Bbr118Entry`); the current ones are tested with records written by the
-  tests.
+  The tcp4 records are in the layout before the ECN codepoint and the departure time
+  (`Tcp4Packet43Entry`, 43 B). The other older layouts (sock 168, 201 and 202 B, cwnd 70 B)
+  are tested with records written by the tests themselves. `cubic` and the generated `bbr` are
+  in the layouts before the hook tag (`Cubic122Entry`, `Bbr118Entry`); the current ones are
+  tested with records written by the tests.
 - **Generated** by `src/fixtures.rs`: `bbr`, `mptcp_pm`, `send_cwnd`, `send_cwnd_oc`, `send_sock_oc` (a
-  copy of real records), `tcp6_*`, the empty files and
-  `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
+  copy of real records), `tcp6_*` (in the old layout like the tcp4 files, `Tcp6Packet67Entry`),
+  the empty files and `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
   each flow from 1. Regenerate with
   `cargo test --features fixture-gen -- --ignored regenerate_fixtures`.
 
@@ -44,10 +45,10 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 | `recv_sock.tcp` | `Sock172Entry` | 172 | 2000 | real |
 | `send_cwnd.tcp` | `cwnd_trace_entry` | 74 | 1000 | generated |
 | `recv_cwnd.tcp` | `cwnd_trace_entry` | 74 | 0 | generated |
-| `tcp4_receive.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
-| `tcp4_send.tcp` | `tcp4_packet_trace` | 43 | 2000 | real |
-| `tcp6_receive.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
-| `tcp6_send.tcp` | `tcp6_packet_trace` | 67 | 500 | generated |
+| `tcp4_receive.tcp` | `Tcp4Packet43Entry` | 43 | 2000 | real |
+| `tcp4_send.tcp` | `Tcp4Packet43Entry` | 43 | 2000 | real |
+| `tcp6_receive.tcp` | `Tcp6Packet67Entry` | 67 | 500 | generated |
+| `tcp6_send.tcp` | `Tcp6Packet67Entry` | 67 | 500 | generated |
 | `send_sock_oc.tcp` | `Sock172Entry` (source `sock_oc`) | 172 | 200 | real (first 200 of `send_sock.tcp`) |
 | `recv_sock_oc.tcp` | `sock_trace_entry` (source `sock_oc`) | 262 | 0 | generated |
 | `send_cwnd_oc.tcp` | `cwnd_trace_entry` (source `cwnd_oc`) | 74 | 200 | generated |

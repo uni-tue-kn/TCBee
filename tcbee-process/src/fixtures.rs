@@ -15,13 +15,13 @@ mod generate {
 
     use serde::Serialize;
     use tcbee_common::records::{
-        cwnd_trace_entry, mptcp_pm_entry, tcp6_packet_trace, RECORD_DELIMITER, TCBEE_MPTCP_CLOSED,
-        TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED, TCBEE_MPTCP_SUBFLOW_CONNECT,
-        TCBEE_MPTCP_SUB_ESTABLISHED, TCBEE_MPTCP_TOKEN_DESTROYED,
+        bbr_trace_entry, cwnd_trace_entry, mptcp_pm_entry, tcp6_packet_trace, RECORD_DELIMITER,
+        TCBEE_MPTCP_CLOSED, TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED,
+        TCBEE_MPTCP_SUBFLOW_CONNECT, TCBEE_MPTCP_SUB_ESTABLISHED, TCBEE_MPTCP_TOKEN_DESTROYED,
     };
 
     use crate::{
-        bindings::legacy::{Bbr118Entry, Sock172Entry},
+        bindings::legacy::{Bbr118Entry, Sock172Entry, Tcp6Packet67Entry},
         event::Event,
     };
 
@@ -165,13 +165,14 @@ mod generate {
         }
     }
 
-    fn tcp6(i: u64, recv: bool) -> tcp6_packet_trace {
+    /// In the layout before the ECN codepoint and the departure time, like the real tcp4 files
+    fn tcp6(i: u64, recv: bool) -> Tcp6Packet67Entry {
         let (saddr, daddr, sport, dport) = if recv {
             (V6_DST, V6_SRC, 5201, sport(i))
         } else {
             (V6_SRC, V6_DST, sport(i), 5201)
         };
-        tcp6_packet_trace {
+        Tcp6Packet67Entry {
             time: ts(i, true),
             hook_seq: hook_seq(i),
             saddr_v6: saddr,
@@ -236,12 +237,13 @@ mod checks {
     use std::{collections::HashSet, fs, path::PathBuf};
 
     use crate::{
-        bindings::legacy::{Bbr118Entry, Cubic122Entry, Sock172Entry},
+        bindings::legacy::{
+            Bbr118Entry, Cubic122Entry, Sock172Entry, Tcp4Packet43Entry, Tcp6Packet67Entry,
+        },
         event::Event,
     };
     use tcbee_common::records::{
-        cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry, tcp4_packet_trace, tcp6_packet_trace,
-        tcp_probe_entry,
+        cwnd_trace_entry, mptcp_pm_entry, sock_trace_entry, tcp_probe_entry,
     };
     use tcbee_trace::{TCBeeTrace, TraceFile};
 
@@ -288,9 +290,9 @@ mod checks {
         check::<sock_trace_entry>("recv_sock_oc.tcp", 0);
         check::<cwnd_trace_entry>("send_cwnd_oc.tcp", 200);
         check::<cwnd_trace_entry>("recv_cwnd_oc.tcp", 0);
-        check::<tcp4_packet_trace>("tcp4_receive.tcp", 2000);
-        check::<tcp4_packet_trace>("tcp4_send.tcp", 2000);
-        check::<tcp6_packet_trace>("tcp6_receive.tcp", 500);
+        check::<Tcp4Packet43Entry>("tcp4_receive.tcp", 2000);
+        check::<Tcp4Packet43Entry>("tcp4_send.tcp", 2000);
+        check::<Tcp6Packet67Entry>("tcp6_receive.tcp", 500);
         for empty in ["tcp_retransmit_synack.tcp", "tcp_bad_csum.tcp"] {
             assert_eq!(
                 fs::metadata(dir("tcbee_small").join(empty)).unwrap().len(),
@@ -311,7 +313,7 @@ mod checks {
         assert_eq!(cw[0].flow_key().src.to_string(), "10.0.0.1");
         assert_eq!(cw[0].flow_key().dst.to_string(), "10.0.0.2");
 
-        let t6 = check::<tcp6_packet_trace>("tcp6_send.tcp", 500);
+        let t6 = check::<Tcp6Packet67Entry>("tcp6_send.tcp", 500);
         assert_eq!(t6[0].flow_key().src.to_string(), "2001:db8::1");
         assert_eq!(t6[1].sport, 40001);
         let bbr = check::<Bbr118Entry>("bbr.tcp", 500);

@@ -25,7 +25,12 @@ typedef __INT64_TYPE__ int64_t;
 
 #include "onchange.h"
 
-/* TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}. Addresses in host byte order. */
+/*
+ * TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}. Addresses in host byte order. ecn is the
+ * ECN codepoint of the IP header (0 Not-ECT, 1 ECT(1), 2 ECT(0), 3 CE). tstamp is skb->tstamp
+ * of a sent packet, the earliest departure time that TCP or the qdisc set (CLOCK_MONOTONIC
+ * ns, the clock of time), 0 if none was set; received packets have 0.
+ */
 struct tcp4_packet_trace {
 	uint64_t time;
 	uint64_t hook_seq;
@@ -37,9 +42,11 @@ struct tcp4_packet_trace {
 	uint32_t ack;
 	uint16_t window;
 	uint8_t flags;
+	uint8_t ecn;
+	uint64_t tstamp;
 };
 
-/* TC, ring buffers TCP6_PACKETS_{EGRESS,INGRESS} */
+/* TC, ring buffers TCP6_PACKETS_{EGRESS,INGRESS}. ecn and tstamp as in tcp4_packet_trace. */
 struct tcp6_packet_trace {
 	uint64_t time;
 	uint64_t hook_seq;
@@ -51,6 +58,8 @@ struct tcp6_packet_trace {
 	uint32_t ack;
 	uint16_t window;
 	uint8_t flags;
+	uint8_t ecn;
+	uint64_t tstamp;
 };
 
 /*
@@ -474,8 +483,8 @@ struct filter_ip {
 };
 
 /* Sizes are mirrored by const asserts in tcbee-common */
-_Static_assert(sizeof(struct tcp4_packet_trace) == 40, "tcp4_packet_trace size");
-_Static_assert(sizeof(struct tcp6_packet_trace) == 64, "tcp6_packet_trace size");
+_Static_assert(sizeof(struct tcp4_packet_trace) == 48, "tcp4_packet_trace size");
+_Static_assert(sizeof(struct tcp6_packet_trace) == 72, "tcp6_packet_trace size");
 _Static_assert(sizeof(struct sock_trace_entry) == 280, "sock_trace_entry size");
 _Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
 _Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
