@@ -58,12 +58,12 @@ At least one metric source is required.
 | Flag | Description |
 |---|---|
 | `-h IFACE` | TCP headers via TC on the given interface |
-| `-t` | `tcp_probe` and related tracepoints (most TCP metrics) |
+| `-t` | The TCP tracepoints: `tcp_probe` (most TCP metrics at every received segment), SYN-ACK retransmissions and bad checksums, and as discrete TCP events (`tcp_events.tcp`) retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each event hook is optional: one the kernel lacks or rejects is left out with a warning |
+| `--tp LIST` | The tracepoints of `-t` to record, implies `-t`. Names: `probe`, `synack`, `bad_csum`, `retransmit`, `rst_sent`, `rst_received`, `state`, `ca_state`, `rto`, `destroy`, and `drops`, which `-t` leaves out: the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason, and `drop_reasons.json` with the reason names of the running kernel. `all` and `default` name the sets. A list of only `+name` and `-name` items changes the default set, e.g. `--tp +drops,-probe` |
 | `-k` | fentry on `__tcp_transmit_skb` and `tcp_rcv_established` (all TCP metrics), and fexit on `tcp_write_timer_handler` (`timer_sock.tcp`, see below) |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals (Cubic and BBR) |
-| `-e` | Discrete TCP events (`tcp_events.tcp`): retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each hook is optional: one the kernel lacks or rejects is left out with a warning |
-| `--drops` | Also record the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason; implies `-e`. Writes `drop_reasons.json` with the reason names of the running kernel |
+| `-e`, `--drops` | Kept for old command lines: `-e` records the TCP events of `-t` only, `--drops` those and the drops |
 | `-m` | MPTCP (`-M` works too): path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
 
 | Flag | Default | Description |
@@ -186,12 +186,12 @@ retransmission timeouts, loss probes, RACK reordering timeouts and zero window p
 - `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
   `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
   and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.
-- `-e` attaches BTF tracepoints (`tp_btf`) and fentry. Congestion state changes need the
-  `tcp_cong_state_set` tracepoint (5.19); older kernels record CWR through `tcp_enter_cwr`
+- The TCP events of `-t` attach BTF tracepoints (`tp_btf`) and fentry. Congestion state changes
+  need the `tcp_cong_state_set` tracepoint (5.19); older kernels record CWR through `tcp_enter_cwr`
   instead, which may miss the CWR after ECN marks where the compiler inlined the call. RSTs that
   the stack sends without a socket and state changes before a socket has both ports (an active
   open entering SYN_SENT) are only recorded for flows that already have records.
-- `--drops` runs on every packet the kernel frees as dropped, so it costs a little on a host
+- `--tp +drops` runs on every packet the kernel frees as dropped, so it costs a little on a host
   with many drops of other traffic. Drop reasons exist from 5.17 on; before, the reason is 0.
   Drops of packets without a full socket are only recorded for flows that already have a TCP
   event record, so the drops of a flow that started before the recording show up after its

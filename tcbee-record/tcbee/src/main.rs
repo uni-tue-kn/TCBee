@@ -12,7 +12,7 @@ use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
     check_no_timer_hook, ip_to_filter_addr, on_change_manifest, parse_on_change,
-    parse_ringbuf_sizes, EbpfRunnerConfig, FilterConfig, MptcpModes,
+    parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig, FilterConfig, MptcpModes,
 };
 use tcbee_trace::TCBeeTrace;
 use writer::PollMode;
@@ -76,6 +76,7 @@ fn main() -> anyhow::Result<()> {
     let mut trace_mptcp: bool = false;
     let mut trace_events: bool = false;
     let mut trace_drops: bool = false;
+    let mut tp: String = String::new();
     let mut mptcp_modes: String = String::new();
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
@@ -168,7 +169,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_tracepoints).add_option(
             &["-t", "--tracepoints"],
             StoreTrue,
-            "Record TCP metrics of tcp_probe kernel tracepoint. Covers main TCP metrics but not all!",
+            "Record the TCP tracepoints: tcp_probe (main TCP metrics at every received segment), SYN-ACK retransmissions, bad checksums, and as TCP events (tcp_events.tcp) retransmissions, RSTs sent and received, state and congestion state changes, retransmission timeouts and destroyed sockets. See --tp.",
+        );
+        argparser.refer(&mut tp).add_option(
+            &["--tp"],
+            Store,
+            "Tracepoints to record, comma-separated; implies -t. Names: probe, synack, bad_csum, retransmit, rst_sent, rst_received, state, ca_state, rto, destroy, and drops (kfree_skb: packets of TCP flows the kernel drops, with the reason; not in the default). 'all' and 'default' name the sets. A list of only +name and -name items changes the default set, e.g. +drops,-probe.",
         );
         argparser.refer(&mut trace_kernel).add_option(
             &["-k", "--kernel"],
@@ -233,12 +239,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_events).add_option(
             &["-e", "--events"],
             StoreTrue,
-            "Record discrete TCP events: retransmissions, RSTs sent and received, state and congestion state changes, retransmission timeouts.",
+            "Record only the TCP events of -t. Kept for old command lines.",
         );
         argparser.refer(&mut trace_drops).add_option(
             &["--drops"],
             StoreTrue,
-            "Also record the packets of TCP flows that the kernel drops (kfree_skb), with the drop reason. Implies -e.",
+            "Record the TCP events of -t and the packets of TCP flows that the kernel drops (kfree_skb). Kept for old command lines, use --tp +drops.",
         );
         argparser.refer(&mut trace_mptcp).add_option(
             &["-m", "-M", "--mptcp"],
@@ -256,7 +262,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let trace_headers = !iface.is_empty();
-    let trace_events = trace_events || trace_drops;
+    let tracepoints = tracepoint_set(trace_tracepoints, &tp, trace_events, trace_drops)?;
     let filter = FilterConfig {
         single_port: port,
         any_ports: parse_csv(&ports, "port")?,
@@ -298,11 +304,10 @@ fn main() -> anyhow::Result<()> {
         .map_err(|_| anyhow!("--duration must be a non-negative number of seconds"))?;
 
     if !trace_headers
-        && !trace_tracepoints
+        && tracepoints.is_empty()
         && !trace_kernel
         && !trace_cwnd
         && !trace_algorithms
-        && !trace_events
         && !mptcp.pm
     {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
@@ -337,15 +342,13 @@ fn main() -> anyhow::Result<()> {
         .update_period(update_period)
         .observation_window(observation_window)
         .headers(trace_headers)
-        .tracepoints(trace_tracepoints)
+        .tracepoints(tracepoints)
         .kernel(trace_kernel)
         .interface(iface)
         .cwnd(trace_cwnd)
         .metrics(metrics)
         .metadata(metadata)
         .algorithms(trace_algorithms)
-        .events(trace_events)
-        .drops(trace_drops)
         .mptcp(mptcp)
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)

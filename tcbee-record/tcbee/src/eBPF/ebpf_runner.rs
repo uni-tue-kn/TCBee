@@ -184,7 +184,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
     let (send, receive) = config
         .on_change
         .map_or((true, true), |o| (o.hooks.send(), o.hooks.receive()));
-    let groups: [(bool, &[u32]); 11] = [
+    let groups: [(bool, &[u32]); 13] = [
         (
             config.headers,
             &[
@@ -202,10 +202,12 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         ),
         (config.cwnd && send, &[RB_CWND_SEND]),
         (config.cwnd && receive, &[RB_CWND_RECV]),
+        (config.tracepoints.contains("probe"), &[RB_TCP_PROBE]),
         (
-            config.tracepoints,
-            &[RB_TCP_PROBE, RB_RETRANSMIT_SYNACK, RB_BAD_CSUM],
+            config.tracepoints.contains("synack"),
+            &[RB_RETRANSMIT_SYNACK],
         ),
+        (config.tracepoints.contains("bad_csum"), &[RB_BAD_CSUM]),
         (config.algorithms, &[RB_CUBIC]),
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
@@ -366,7 +368,7 @@ impl EbpfRunner {
             (c.headers, "headers"),
             (c.kernel, "kernel"),
             (c.cwnd, "cwnd"),
-            (c.tracepoints, "tracepoints"),
+            (c.tracepoints.any(&TracepointTracer::NAMES), "tracepoints"),
             (c.algorithms, "cubic"),
         ]
         .into_iter()
@@ -524,8 +526,7 @@ impl EbpfRunner {
             .collect();
         let (hooks, missing_events) = TcpEventTracer::configure(
             open.open_object_mut(),
-            self.config.events,
-            self.config.drops,
+            self.config.tracepoints,
             &disabled_hooks,
             btf,
         );
@@ -552,14 +553,7 @@ impl EbpfRunner {
             return Ok(());
         }
         let c = &self.config;
-        if !(c.headers
-            || c.tracepoints
-            || c.kernel
-            || c.cwnd
-            || c.algorithms
-            || c.events
-            || c.drops)
-        {
+        if !(c.headers || !c.tracepoints.is_empty() || c.kernel || c.cwnd || c.algorithms) {
             return Err("The kernel has no MPTCP (CONFIG_MPTCP), -m has nothing to record".into());
         }
         warn!("The kernel has no MPTCP (CONFIG_MPTCP), -m records nothing");
@@ -605,7 +599,7 @@ impl EbpfRunner {
                 },
             }
         };
-        if self.config.drops {
+        if self.config.tracepoints.contains("drops") {
             self.write_drop_reasons(&mut btf);
         }
         drop(btf);
@@ -690,8 +684,8 @@ impl EbpfRunner {
         }
 
         // Tracing kernel tracepoints
-        if self.config.tracepoints {
-            TracepointTracer::spawn(skel, dir, writer, links)?;
+        if self.config.tracepoints.any(&TracepointTracer::NAMES) {
+            TracepointTracer::spawn(skel, self.config.tracepoints, dir, writer, links)?;
 
             watcher_config.graphs.tracepoints = true;
         }
