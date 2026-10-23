@@ -1153,6 +1153,19 @@ mod tests {
         assert!(!starts_growth(capacity, 300, next));
     }
 
+    /// A writer's file grows and unmaps on the writer's helper CPUs
+    #[test]
+    fn writer_jobs_get_the_helper_cpus() {
+        let path = env::temp_dir().join(format!("tcbee-helper-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let job = MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+            .unwrap()
+            .with_helper_cpus(Arc::new(HelperCpus::new(vec![0])));
+        assert!(job.sink.as_ref().unwrap().helper_cpus.is_some());
+        drop(job);
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Helpers run on the CPUs without a writer, not on the CPU of the thread that starts them
     #[test]
     fn helpers_avoid_writer_cpus() {
