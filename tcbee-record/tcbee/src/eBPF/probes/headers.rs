@@ -1,4 +1,11 @@
-use std::{error::Error, ffi::CString, io, mem::size_of, os::fd::AsFd, ptr::NonNull};
+use std::{
+    error::Error,
+    ffi::CString,
+    io,
+    mem::size_of,
+    os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
+    ptr::NonNull,
+};
 
 use libbpf_rs::{
     libbpf_sys, AsRawLibbpf, Link, ProgramAttachType, ProgramMut, TcHook, TcHookBuilder, TC_EGRESS,
@@ -7,7 +14,10 @@ use libbpf_rs::{
 use log::{info, warn, Level};
 use tcbee_common::records::{tcp4_packet_trace, tcp6_packet_trace};
 
-use tcbee_common::stats::{RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS};
+use tcbee_common::stats::{
+    RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_DRIVER_INGRESS,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS,
+};
 
 use crate::{
     eBPF::{
@@ -22,6 +32,12 @@ use crate::{
 };
 
 pub struct TCTracer {}
+
+/// The driver hooks of -h (`--headers-at driver`): native XDP for received packets
+pub struct DriverTracer {}
+
+/// The XDP link of the driver hook; closing it detaches the program
+pub struct XdpLink(#[allow(dead_code)] OwnedFd);
 
 /// What the offloads of `iface` mean for the header hooks of `at`: messages to log, or an error
 /// if the driver hooks would not see the packets one by one. An offload the driver does not
@@ -277,6 +293,80 @@ impl TCTracer {
             dir,
         )?;
 
+        Ok(())
+    }
+}
+
+/// Attaches the XDP program in native (driver) mode through a link. The kernel refuses the
+/// link if the driver has no native XDP (generic XDP would run after the skb is built and see
+/// what TC sees) and if the interface already has an XDP program: a link never replaces one.
+fn attach_xdp(
+    program: &ProgramMut<'_>,
+    ifindex: i32,
+    interface: &str,
+) -> Result<XdpLink, EBPFRunnerError> {
+    let opts = libbpf_sys::bpf_link_create_opts {
+        sz: size_of::<libbpf_sys::bpf_link_create_opts>() as libbpf_sys::size_t,
+        flags: libbpf_sys::XDP_FLAGS_DRV_MODE,
+        ..Default::default()
+    };
+    let fd = unsafe {
+        libbpf_sys::bpf_link_create(
+            program.as_fd().as_raw_fd(),
+            ifindex,
+            libbpf_sys::BPF_XDP,
+            &opts,
+        )
+    };
+    if fd >= 0 {
+        // SAFETY: a new link fd that nothing else owns
+        return Ok(XdpLink(unsafe { OwnedFd::from_raw_fd(fd) }));
+    }
+    let err = io::Error::from_raw_os_error(-fd);
+    let reason = match err.raw_os_error() {
+        Some(libc::EOPNOTSUPP) => {
+            format!("the driver of {interface} has no native XDP, which --headers-at driver needs")
+        }
+        Some(libc::EBUSY) | Some(libc::EEXIST) => {
+            format!("{interface} already has an XDP program, tcbee-record does not replace it")
+        }
+        _ => format!("attaching XDP to {interface} failed: {err}"),
+    };
+    Err(EBPFRunnerError::Unavailable(reason))
+}
+
+impl DriverTracer {
+    pub fn configure(progs: &mut OpenTcbeeProgs<'_>, enabled: bool) {
+        progs.xdp_ingress_packet_tracer.set_autoload(enabled);
+    }
+
+    /// Attaches the driver hooks to `interface`. `xdp` holds the XDP link once attached, so
+    /// the caller detaches it if a later step fails.
+    pub fn spawn(
+        skel: &TcbeeSkel<'_>,
+        interface: &str,
+        dir: &str,
+        writer: &mut Writer,
+        xdp: &mut Option<XdpLink>,
+    ) -> Result<(), Box<dyn Error>> {
+        let ifindex = if_index(interface)?;
+        info!("Attaching XDP to {interface}, which may reset the rings of its driver");
+        *xdp = Some(attach_xdp(
+            &skel.progs.xdp_ingress_packet_tracer,
+            ifindex,
+            interface,
+        )?);
+
+        writer.register::<tcp4_packet_trace>(
+            RB_TCP4_DRIVER_INGRESS,
+            rings::of(&skel.maps.TCP4_DRIVER_INGRESS)?,
+            dir,
+        )?;
+        writer.register::<tcp6_packet_trace>(
+            RB_TCP6_DRIVER_INGRESS,
+            rings::of(&skel.maps.TCP6_DRIVER_INGRESS)?,
+            dir,
+        )?;
         Ok(())
     }
 }

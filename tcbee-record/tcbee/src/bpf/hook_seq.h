@@ -6,7 +6,7 @@
  * the CPUs, not the hook. The hook of one flow does run on several CPUs (TC egress from the
  * sending task, from ACK processing in softirq and from the TSQ and pacing timers), but the
  * runs never overlap: TCP transmits and the socket hooks hold the socket lock, TC ingress
- * runs under the NAPI ownership of the RX queue. The atomic fetch-add on the flow's counter
+ * and XDP run under the NAPI ownership of the RX queue. The atomic fetch-add on the flow's counter
  * happens inside that critical section, so the numbers follow the order in which the hook
  * ran. Timestamps cannot do that: bpf_ktime_get_ns() is not guaranteed to be monotonic
  * across CPUs and can repeat.

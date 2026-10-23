@@ -71,6 +71,17 @@ static SOCK_EVENT: EventTable = EventTable {
     columns: <sock_trace_entry as Event>::TABLE.columns,
 };
 
+/// Header records of the driver hooks (-h with --headers-at driver): their own sources keep
+/// them apart from the TC records of the same packets.
+static TCP4_DRIVER: EventTable = EventTable {
+    source: "tcp4_driver",
+    columns: <tcp4_packet_trace as Event>::TABLE.columns,
+};
+static TCP6_DRIVER: EventTable = EventTable {
+    source: "tcp6_driver",
+    columns: <tcp6_packet_trace as Event>::TABLE.columns,
+};
+
 fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
     Binding {
         dir,
@@ -119,6 +130,8 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::TimerSock => binding_into::<sock_trace_entry>(&SOCK_TIMER, Dir::None),
         TraceFile::IngressSock => binding_into::<sock_trace_entry>(&SOCK_INGRESS, Dir::None),
         TraceFile::EventSock => binding_into::<sock_trace_entry>(&SOCK_EVENT, Dir::None),
+        TraceFile::Tcp4DriverReceive => binding_into::<tcp4_packet_trace>(&TCP4_DRIVER, Dir::Recv),
+        TraceFile::Tcp6DriverReceive => binding_into::<tcp6_packet_trace>(&TCP6_DRIVER, Dir::Recv),
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
     })
 }

@@ -33,7 +33,9 @@
 #define RB_SOCK_INGRESS 16
 #define RB_SOCK_EVENT 17
 #define RB_RENO 18
-#define RB_COUNT 19
+#define RB_TCP4_DRIVER_INGRESS 19
+#define RB_TCP6_DRIVER_INGRESS 20
+#define RB_COUNT 21
 
 #define STAT_HANDLED 0
 #define STAT_DROPPED 1
@@ -71,8 +73,8 @@ static __always_inline void add_stat(__u32 slot, __u64 value)
  *    bpf_prog_active is held on the CPU;
  *  - fentry programs are skipped while the same program is active on the CPU, which also
  *    covers preemption (bpf_prog->active).
- * TC programs and the CUBIC/BBR hooks, which share a ring buffer between two programs,
- * always use the atomic add.
+ * TC and XDP programs and the CUBIC/BBR hooks, which share a ring buffer between two
+ * programs, always use the atomic add.
  */
 static __always_inline void add_stat_owned(__u32 slot, __u64 value)
 {

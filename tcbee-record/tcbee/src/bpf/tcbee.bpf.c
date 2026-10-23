@@ -487,6 +487,20 @@ int tc_egress_packet_tracer(struct __sk_buff *skb)
 			    &TCP6_PACKETS_EGRESS, RB_TCP6_EGRESS);
 }
 
+/*
+ * --headers-at driver: received frames in the driver, before GRO and before the stack
+ * allocates an skb. Attached in native mode only (generic XDP runs after the skb is built and
+ * sees what TC sees), xdp.frags so that the driver may hand over multi-buffer frames. The
+ * frame always goes on to the stack.
+ */
+SEC("?xdp.frags")
+int xdp_ingress_packet_tracer(struct xdp_md *xdp)
+{
+	trace_packet(xdp, PKT_XDP, false, &TCP4_DRIVER_INGRESS, RB_TCP4_DRIVER_INGRESS,
+		     &TCP6_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS);
+	return XDP_PASS;
+}
+
 /* ---- Socket state (-k) and cwnd only (-w) ---------------------------------------- */
 
 /*

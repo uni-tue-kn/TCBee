@@ -61,6 +61,8 @@ fn ring_buffer_ids_match_counters_h() {
         RB_SOCK_INGRESS,
         RB_SOCK_EVENT,
         RB_RENO,
+        RB_TCP4_DRIVER_INGRESS,
+        RB_TCP6_DRIVER_INGRESS,
     );
     assert_eq!(c, rust);
     let mut ids: Vec<u32> = rust.into_values().collect();

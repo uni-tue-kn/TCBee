@@ -31,8 +31,8 @@ use ratatui::{
 use tcbee_common::stats::{
     invocation_slots, slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND,
     RB_RETRANSMIT_SYNACK, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER,
-    RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, STAT_DROPPED,
-    STAT_HANDLED,
+    RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_DRIVER_INGRESS,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_PROBE, STAT_DROPPED, STAT_HANDLED,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -78,8 +78,15 @@ impl EBPFWatcher {
 
         let events_drops = RateWatcher::new(all(STAT_DROPPED), "Events/s");
         let events_handled = RateWatcher::new(all(STAT_HANDLED), "Events/s");
-        let ingress_counter =
-            RateWatcher::new(attempts(&[RB_TCP4_INGRESS, RB_TCP6_INGRESS]), "pps");
+        // With both header hooks, the TC rates
+        let ingress_counter = RateWatcher::new(
+            attempts(if config.driver_packets {
+                &[RB_TCP4_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS]
+            } else {
+                &[RB_TCP4_INGRESS, RB_TCP6_INGRESS]
+            }),
+            "pps",
+        );
         let egress_counter = RateWatcher::new(attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]), "pps");
         let tcp_sock_send = RateWatcher::new(attempts(&[RB_SOCK_SEND, RB_CWND_SEND]), "Calls/s");
         // The write timer and ingress runs counted with the receive side

@@ -40,6 +40,9 @@ pub enum TraceFile {
     EventSock,
     /// Reno's congestion avoidance and ssthresh, also when other algorithms use them (-a)
     Reno,
+    /// Headers of received packets at XDP (`--headers-at driver`)
+    Tcp4DriverReceive,
+    Tcp6DriverReceive,
     /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
     SendSockOc,
     RecvSockOc,
@@ -69,6 +72,8 @@ impl TraceFile {
             TraceFile::IngressSock => "ingress_sock.tcp",
             TraceFile::EventSock => "event_sock.tcp",
             TraceFile::Reno => "reno.tcp",
+            TraceFile::Tcp4DriverReceive => "tcp4_driver_receive.tcp",
+            TraceFile::Tcp6DriverReceive => "tcp6_driver_receive.tcp",
             TraceFile::SendSockOc => "send_sock_oc.tcp",
             TraceFile::RecvSockOc => "recv_sock_oc.tcp",
             TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
@@ -97,6 +102,8 @@ impl TraceFile {
             TraceFile::IngressSock,
             TraceFile::EventSock,
             TraceFile::Reno,
+            TraceFile::Tcp4DriverReceive,
+            TraceFile::Tcp6DriverReceive,
             TraceFile::SendSockOc,
             TraceFile::RecvSockOc,
             TraceFile::SendCwndOc,

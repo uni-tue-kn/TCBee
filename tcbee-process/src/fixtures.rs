@@ -210,6 +210,8 @@ mod generate {
             "ingress_sock",
             "event_sock",
             "reno",
+            "tcp4_driver_receive",
+            "tcp6_driver_receive",
             "recv_sock_oc",
             "recv_cwnd_oc",
         ] {

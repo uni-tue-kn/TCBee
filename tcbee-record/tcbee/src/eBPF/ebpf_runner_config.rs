@@ -511,6 +511,32 @@ impl Default for HeadersAt {
     }
 }
 
+impl HeadersAt {
+    /// Parses `--headers-at`, `tc` or `driver`
+    pub fn parse(arg: &str) -> anyhow::Result<HeadersAt> {
+        let mut at = HeadersAt {
+            tc: false,
+            driver: false,
+        };
+        for hook in arg.split(',').map(str::trim) {
+            match hook {
+                "tc" => at.tc = true,
+                "driver" => at.driver = true,
+                other => {
+                    return Err(anyhow!(
+                        "Unknown --headers-at hook '{}', use tc or driver",
+                        other
+                    ))
+                }
+            }
+        }
+        if at.tc && at.driver {
+            return Err(anyhow!("--headers-at takes one of tc and driver"));
+        }
+        Ok(at)
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct EbpfRunnerConfig {
     pub iface: String,
@@ -549,6 +575,8 @@ pub struct GraphConfig {
 pub struct EbpfWatcherConfig {
     pub graphs: GraphConfig,
     pub packets: bool,
+    /// The packet rates come from the driver hooks (only they record)
+    pub driver_packets: bool,
     pub stats: bool,
     pub calls: bool,
     pub flows: bool,
@@ -677,6 +705,7 @@ impl EbpfRunnerConfig {
         EbpfWatcherConfig {
             graphs: GraphConfig::default(),
             packets: self.headers,
+            driver_packets: self.headers && self.headers_at.driver && !self.headers_at.tc,
             stats: true,
             calls: self.kernel,
             flows: true,
@@ -692,6 +721,20 @@ impl EbpfRunnerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headers_at() {
+        assert_eq!(HeadersAt::parse("tc").unwrap(), HeadersAt::default());
+        assert_eq!(
+            HeadersAt::parse(" driver").unwrap(),
+            HeadersAt {
+                tc: false,
+                driver: true
+            }
+        );
+        assert!(HeadersAt::parse("xdp").is_err());
+        assert!(HeadersAt::parse("").is_err());
+    }
 
     #[test]
     fn sock_hooks_without_on_change() {

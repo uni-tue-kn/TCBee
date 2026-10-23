@@ -28,7 +28,9 @@ pub const RB_SOCK_TIMER: u32 = 15;
 pub const RB_SOCK_INGRESS: u32 = 16;
 pub const RB_SOCK_EVENT: u32 = 17;
 pub const RB_RENO: u32 = 18;
-pub const RB_COUNT: u32 = 19;
+pub const RB_TCP4_DRIVER_INGRESS: u32 = 19;
+pub const RB_TCP6_DRIVER_INGRESS: u32 = 20;
+pub const RB_COUNT: u32 = 21;
 
 pub const STAT_HANDLED: u32 = 0;
 pub const STAT_DROPPED: u32 = 1;
@@ -129,6 +131,19 @@ pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
     ),
     // Per ACK of every socket whose algorithm uses Reno's congestion avoidance, like cubic
     rb("RENO_EVENTS", TraceFile::Reno, "reno", 8),
+    // The driver hooks of -h (--headers-at driver), in the size groups of the TC rings
+    rb(
+        "TCP4_DRIVER_INGRESS",
+        TraceFile::Tcp4DriverReceive,
+        "tcp4",
+        16,
+    ),
+    rb(
+        "TCP6_DRIVER_INGRESS",
+        TraceFile::Tcp6DriverReceive,
+        "tcp6",
+        4,
+    ),
 ];
 
 #[cfg(test)]
@@ -138,11 +153,14 @@ mod tests {
     #[test]
     fn appended_slots_follow_the_per_ring_slots() {
         // The first RB_COUNT * STATS_PER_RB slots keep their layout in every mode
-        assert_eq!(slot(RB_RENO, STAT_ERROR), RB_COUNT * STATS_PER_RB - 1);
+        assert_eq!(
+            slot(RB_TCP6_DRIVER_INGRESS, STAT_ERROR),
+            RB_COUNT * STATS_PER_RB - 1
+        );
         assert_eq!(suppressed_slot(0), RB_COUNT * STATS_PER_RB);
-        assert_eq!(suppressed_slot(RB_RENO) + 1, STATS_STATE_ERR);
-        assert_eq!(RB_RENO, RB_COUNT - 1);
-        assert_eq!(STATS_LEN, 77);
+        assert_eq!(suppressed_slot(RB_TCP6_DRIVER_INGRESS) + 1, STATS_STATE_ERR);
+        assert_eq!(RB_TCP6_DRIVER_INGRESS, RB_COUNT - 1);
+        assert_eq!(STATS_LEN, 85);
         let all: Vec<u32> = (0..RB_COUNT).flat_map(invocation_slots).collect();
         let mut sorted = all.clone();
         sorted.sort_unstable();
@@ -159,5 +177,6 @@ mod tests {
         assert_eq!(slot(RB_SOCK_INGRESS, STAT_HANDLED), 48);
         assert_eq!(slot(RB_SOCK_EVENT, STAT_HANDLED), 51);
         assert_eq!(slot(RB_RENO, STAT_HANDLED), 54);
+        assert_eq!(slot(RB_TCP4_DRIVER_INGRESS, STAT_HANDLED), 57);
     }
 }

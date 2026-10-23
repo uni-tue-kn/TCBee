@@ -23,6 +23,8 @@ const SOURCE_ORDER: &[&str] = &[
     "sock_ingress",
     "tcp4",
     "tcp6",
+    "tcp4_driver",
+    "tcp6_driver",
     "cwnd",
     "cubic",
     "bbr",

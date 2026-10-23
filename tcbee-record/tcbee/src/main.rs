@@ -12,7 +12,7 @@ use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
     check_no_timer_hook, full_sock_hooks, ip_to_filter_addr, on_change_manifest, parse_on_change,
-    parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig, FilterConfig, MptcpModes,
+    parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig, FilterConfig, HeadersAt, MptcpModes,
 };
 use tcbee_trace::{onchange::HookSet, TCBeeTrace};
 use writer::PollMode;
@@ -58,6 +58,7 @@ fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
 fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let mut iface: String = String::new();
+    let mut headers_at: String = String::new();
     let mut dir: String = "/tmp/".to_string();
     let mut quiet: bool = false;
     let mut port: u16 = 0;
@@ -100,6 +101,11 @@ fn main() -> anyhow::Result<()> {
             &["-h", "--headers"],
             Store,
             "Record TCP headers of incoming and outgoing packets on the specified interface.",
+        );
+        argparser.refer(&mut headers_at).add_option(
+            &["--headers-at"],
+            Store,
+            "Where -h records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off.",
         );
         argparser.refer(&mut dir).add_option(
             &["-d", "--dir"],
@@ -268,6 +274,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let trace_headers = !iface.is_empty();
+    if !headers_at.is_empty() && !trace_headers {
+        return Err(anyhow!("--headers-at needs -h"));
+    }
+    let headers_at = if headers_at.is_empty() {
+        HeadersAt::default()
+    } else {
+        HeadersAt::parse(&headers_at)?
+    };
     let tracepoints = tracepoint_set(trace_tracepoints, &tp, trace_events, trace_drops)?;
     let filter = FilterConfig {
         single_port: port,
@@ -371,6 +385,7 @@ fn main() -> anyhow::Result<()> {
         .update_period(update_period)
         .observation_window(observation_window)
         .headers(trace_headers)
+        .headers_at(headers_at)
         .tracepoints(tracepoints)
         .kernel(trace_kernel)
         .interface(iface)

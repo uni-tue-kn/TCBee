@@ -38,6 +38,7 @@ const volatile __u8 ONCHG_SHADOW = 0;
 #define IP_OFFSET 0x1FFF
 #define IP_ECN_MASK 0x03
 #define TC_ACT_UNSPEC (-1)
+#define XDP_PASS 2
 #define TCP_TIME_WAIT 6
 #define TCP_CLOSE 7
 #define TCP_LISTEN 10

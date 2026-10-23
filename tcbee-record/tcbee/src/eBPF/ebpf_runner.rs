@@ -16,8 +16,8 @@ use log::{debug, error, info, log, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RENO,
     RB_RETRANSMIT_SYNACK, RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
-    RB_SOCK_TIMER, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS,
-    RB_TCP_PROBE, RINGBUFS,
+    RB_SOCK_TIMER, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_DRIVER_INGRESS,
+    RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -34,7 +34,7 @@ use crate::{
             cubic::CubicTracer,
             cwnd::CwndTracer,
             handle,
-            headers::{check_offloads, uses_tcx, TCTracer, TcAttachment},
+            headers::{check_offloads, uses_tcx, DriverTracer, TCTracer, TcAttachment, XdpLink},
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
             reno::RenoTracer,
@@ -64,6 +64,8 @@ pub struct EbpfRunner {
     /// Attached fentry and tracepoint programs, dropping a link detaches it
     links: Vec<Link>,
     tc: Option<TcAttachment>,
+    /// The XDP program of the driver header hook, detached when dropped
+    xdp: Option<XdpLink>,
     writer: Option<Writer>,
     stats: Option<Arc<Stats>>,
     /// The hook_seq counters, read for the metrics after the programs are detached
@@ -222,15 +224,19 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
             config.sock_hooks.contains(Hook::IngressEntry),
         ),
     };
-    let groups: [(bool, &[u32]); 16] = [
+    let groups: [(bool, &[u32]); 17] = [
         (
-            config.headers,
+            config.headers && config.headers_at.tc,
             &[
                 RB_TCP4_EGRESS,
                 RB_TCP4_INGRESS,
                 RB_TCP6_EGRESS,
                 RB_TCP6_INGRESS,
             ],
+        ),
+        (
+            config.headers && config.headers_at.driver,
+            &[RB_TCP4_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS],
         ),
         (config.kernel && sock_send, &[RB_SOCK_SEND]),
         (config.kernel && sock_receive, &[RB_SOCK_RECV]),
@@ -277,6 +283,7 @@ impl EbpfRunner {
             skel: None,
             links: Vec::new(),
             tc: None,
+            xdp: None,
             writer: None,
             stats: None,
             hook_seq: None,
@@ -315,6 +322,7 @@ impl EbpfRunner {
         if let Some(tc) = self.tc.take() {
             tc.detach();
         }
+        drop(self.xdp.take());
         drop(self.skel.take());
 
         // Programs that were already running when they were detached may still submit
@@ -422,6 +430,16 @@ impl EbpfRunner {
         .map(|(_, name)| name.to_string())
         .collect();
         groups.extend(optional.iter().map(|group| group.name().to_string()));
+        if c.headers {
+            let at = c.headers_at;
+            let hooks = [(at.tc, "tc"), (at.driver, "driver")]
+                .into_iter()
+                .filter_map(|(on, name)| on.then_some(name));
+            groups.push(format!(
+                "headers at: {}",
+                hooks.collect::<Vec<_>>().join(", ")
+            ));
+        }
         if c.kernel && c.on_change.is_none() {
             let hooks: Vec<_> = c.sock_hooks.hooks().map(|hook| hook.name()).collect();
             groups.push(format!("sock hooks: {}", hooks.join(", ")));
@@ -535,7 +553,9 @@ impl EbpfRunner {
 
         // A skeleton loads all programs, the ones of disabled groups must be switched off.
         // Their attach targets may not even exist on this kernel.
-        TCTracer::configure(&mut open.progs, self.config.headers, tcx);
+        let headers_at = self.config.headers_at;
+        TCTracer::configure(&mut open.progs, self.config.headers && headers_at.tc, tcx);
+        DriverTracer::configure(&mut open.progs, self.config.headers && headers_at.driver);
         // The write timer program of -k fails softly: without the function or if the kernel
         // rejects it, the recording runs without it
         let timer_wanted = self.config.sock_hooks.contains(Hook::Timer)
@@ -660,7 +680,7 @@ impl EbpfRunner {
 
         // If loading fails in an optional group, the object is opened again without that
         // group. Every retry disables at least one more group, so this ends.
-        let tcx = self.config.headers && uses_tcx();
+        let tcx = self.config.headers && self.config.headers_at.tc && uses_tcx();
         let cpus = rings::Cpus::get()?;
         let mut btf = KernelBtf::default();
         self.check_kernel_mptcp(&mut btf)?;
@@ -743,10 +763,14 @@ impl EbpfRunner {
         let dir = self.config.dir.as_str();
         let links = &mut self.links;
 
-        // Tracing for packet headers via TC
-        if self.config.headers {
+        // Tracing for packet headers via TC and in the driver
+        if self.config.headers && self.config.headers_at.tc {
             TCTracer::spawn(skel, &self.config.iface, dir, writer, tcx, &mut self.tc)?;
-
+        }
+        if self.config.headers && self.config.headers_at.driver {
+            DriverTracer::spawn(skel, &self.config.iface, dir, writer, &mut self.xdp)?;
+        }
+        if self.config.headers {
             watcher_config.graphs.packets = true;
         }
 

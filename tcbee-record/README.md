@@ -57,7 +57,7 @@ At least one metric source is required.
 
 | Flag | Description |
 |---|---|
-| `-h IFACE` | TCP headers via TC on the given interface: addresses, ports, sequence and ACK numbers, window, flags, the ECN codepoint of the IP header and, for sent packets, `skb->tstamp`, the earliest departure time that TCP or the qdisc set (CLOCK_MONOTONIC like the record time, 0 if none; received packets have 0) |
+| `-h IFACE` | TCP headers on the given interface, via TC by default, see [Header records](#header-records) |
 | `-t` | The TCP tracepoints: `tcp_probe` (most TCP metrics at every received segment), SYN-ACK retransmissions and bad checksums, and as discrete TCP events (`tcp_events.tcp`) retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each event hook is optional: one the kernel lacks or rejects is left out with a warning |
 | `--tp LIST` | The tracepoints of `-t` to record, implies `-t`. Names: `probe`, `synack`, `bad_csum`, `retransmit`, `rst_sent`, `rst_received`, `state`, `ca_state`, `rto`, `destroy`, and `drops`, which `-t` leaves out: the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason, and `drop_reasons.json` with the reason names of the running kernel. `all` and `default` name the sets. A list of only `+name` and `-name` items changes the default set, e.g. `--tp +drops,-probe` |
 | `-k` | The socket (all TCP metrics) at the hooks of `--sock-hooks`: by default after every run of the write timer (`timer_sock.tcp`, see below) and at TCP events (`event_sock.tcp`), none per packet. On a sender, `--sock-hooks +ingress` adds the state after every ACK |
@@ -79,6 +79,7 @@ At least one metric source is required.
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
+| `--headers-at HOOK` | `tc` | With `-h`: where the headers are recorded, `tc` or `driver`, see [Header records](#header-records) |
 | `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-m` records, comma-separated: `tag`, `pm` |
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
@@ -100,6 +101,30 @@ holds the number of records; without it the file was cut short. With the per-CPU
 of `metrics.json`, it places a gap in a flow's `hook_seq` on the CPU whose ring was full.
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
+
+## Header records
+
+`-h IFACE` records the headers of the TCP packets on one interface: addresses, ports, sequence
+and ACK numbers, window, flags, the ECN codepoint of the IP header (`ecn`) and, for sent
+packets, `skb->tstamp` (`tstamp`), the earliest departure time that TCP or the qdisc (fq) set,
+in CLOCK_MONOTONIC like the record time; 0 if none was set and for received packets.
+
+`--headers-at` picks the hooks:
+
+| Hook | Received packets | Sent packets | Files (tcbee-process table) |
+|------|------------------|--------------|-------|
+| `tc` (default) | TC ingress, after GRO | TC egress, before the qdisc and GSO | `tcp{4,6}_receive.tcp`, `tcp{4,6}_send.tcp` (`tcp4`, `tcp6`) |
+| `driver` | native XDP, before GRO | not recorded yet | `tcp{4,6}_driver_receive.tcp` (`tcp4_driver`, `tcp6_driver`) |
+
+- TC sees the packets as the stack handles them: with GSO or TSO a sent record can stand for
+  several segments, with GRO a received one. tcbee-record logs this at the start.
+- `driver` attaches an XDP program in native mode, which needs a driver with XDP support; it
+  never uses generic XDP (which runs where TC does) and never replaces an XDP program that is
+  already attached. The program passes every frame on and is detached on exit. Attaching XDP
+  makes some drivers reset their rings, a short interruption of the traffic.
+- With LRO or hardware GRO (`rx-gro-hw`) the NIC merges received packets before any hook, and
+  mlx5 refuses XDP then: `driver` stops with the hint `ethtool -K IFACE lro off rx-gro-hw off`.
+  With `tc`, tcbee-record warns. The metadata lists `gro_hw` with the other offloads.
 
 ## On-change mode
 
@@ -266,6 +291,7 @@ Reno keeps no private state. `-a` writes the socket's `snd_cwnd`, `snd_ssthresh`
   manager events are recorded. A path manager hook whose kernel function is missing or inlined
   is left out with a warning. Not recorded: a stale subflow becoming active again and the
   fallback on the server side (both run through inlined code on 6.8).
+- `--headers-at driver` uses XDP with multi-buffer support (`xdp.frags`, 5.18) in native mode.
 - `-h` attaches with tcx on 6.6 and newer. Older kernels use a clsact qdisc, which
   tcbee-record creates through netlink (no `tc` command needed) and removes again on exit
   if it created it.
