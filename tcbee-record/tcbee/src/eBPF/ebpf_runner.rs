@@ -179,6 +179,31 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
     })
 }
 
+/// -k without on-change has only optional hooks unless a per-packet one was asked for. False
+/// if the kernel lacks or rejected all of them and -k records nothing, an error if -k is the
+/// only thing to record.
+fn sock_hooks_left(
+    config: &EbpfRunnerConfig,
+    optional: &BTreeSet<OptionalGroup>,
+) -> Result<bool, Box<dyn Error>> {
+    if !config.kernel || config.on_change.is_some() {
+        return Ok(true);
+    }
+    let left = config.sock_hooks.hooks().any(Hook::per_packet)
+        || optional
+            .iter()
+            .any(|group| *group == OptionalGroup::SockTimer || group.is_sock_event());
+    let others = config.headers
+        || !config.tracepoints.is_empty()
+        || config.cwnd
+        || config.algorithms
+        || config.mptcp.pm;
+    if !left && !others {
+        return Err("-k has no hook left in this kernel, it would record nothing".into());
+    }
+    Ok(left)
+}
+
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
@@ -777,6 +802,10 @@ impl EbpfRunner {
                 optional.remove(&OptionalGroup::SockEvent(hook));
                 self.skipped.push(message);
             }
+            if !optional.iter().any(|group| group.is_sock_event()) {
+                // Its ring exists but holds nothing, like the timer's below
+                self.ringbuf_sizes[RB_SOCK_EVENT as usize] = None;
+            }
         }
 
         // Last, so the other writers keep their writer CPUs. Fails softly like BBR.
@@ -791,6 +820,12 @@ impl EbpfRunner {
                     .push(format!("write timer hook: attaching failed: {}", err));
                 warn!("Recording without the write timer hook: {}", err);
             }
+        }
+
+        if !sock_hooks_left(&self.config, &optional)? {
+            warn!("-k has no hook left in this kernel and records nothing");
+            self.skipped
+                .push("-k: no hook left in this kernel".to_string());
         }
 
         // TODO: should be true by default in get_watcher_config()
@@ -844,5 +879,41 @@ mod tests {
         let config = EbpfRunnerConfig::new().kernel(true).on_change(on_change);
         let rings = enabled_ringbufs(&config, &none);
         assert!(rings.contains(&RB_SOCK_RECV) && !rings.contains(&RB_SOCK_TIMER));
+    }
+
+    #[test]
+    fn sock_rings_follow_the_sock_hooks() {
+        let config = EbpfRunnerConfig::new()
+            .kernel(true)
+            .sock_hooks(HookSet::FULL_DEFAULT);
+        let events = BTreeSet::from([OptionalGroup::SockEvent(0)]);
+        let rings = enabled_ringbufs(&config, &events);
+        assert!(rings.contains(&RB_SOCK_EVENT));
+        assert!(![RB_SOCK_SEND, RB_SOCK_RECV, RB_SOCK_INGRESS]
+            .iter()
+            .any(|rb| rings.contains(rb)));
+        assert!(!enabled_ringbufs(&config, &BTreeSet::new()).contains(&RB_SOCK_EVENT));
+        let config = config.sock_hooks(HookSet::parse("ingress,egress").unwrap());
+        let rings = enabled_ringbufs(&config, &BTreeSet::new());
+        assert!(rings.contains(&RB_SOCK_INGRESS) && rings.contains(&RB_SOCK_SEND));
+        assert!(!rings.contains(&RB_SOCK_RECV));
+    }
+
+    #[test]
+    fn k_without_any_hook_left_is_an_error_only_alone() {
+        let config = EbpfRunnerConfig::new()
+            .kernel(true)
+            .sock_hooks(HookSet::FULL_DEFAULT);
+        let none = BTreeSet::new();
+        assert!(sock_hooks_left(&config, &none).is_err());
+        let timer = BTreeSet::from([OptionalGroup::SockTimer]);
+        assert!(sock_hooks_left(&config, &timer).unwrap());
+        let with_headers = EbpfRunnerConfig::new()
+            .kernel(true)
+            .headers(true)
+            .sock_hooks(HookSet::FULL_DEFAULT);
+        assert!(!sock_hooks_left(&with_headers, &none).unwrap());
+        let ingress = config.sock_hooks(HookSet::parse("ingress").unwrap());
+        assert!(sock_hooks_left(&ingress, &none).unwrap());
     }
 }

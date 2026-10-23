@@ -138,6 +138,7 @@ impl SockEventTracer {
 
     /// Attaches the loaded programs. A program that does not attach is left out with a
     /// warning, like one the kernel lacks; returns its hook index and a message for each.
+    /// Without any attached program the ring gets no writer and no file.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
@@ -145,6 +146,7 @@ impl SockEventTracer {
         links: &mut Vec<Link>,
     ) -> Result<Vec<(usize, String)>, Box<dyn Error>> {
         let mut failed = Vec::new();
+        let mut attached = 0;
         for program in skel.object().progs_mut() {
             let name = program.name().to_string_lossy();
             let Some(i) = SOCK_EVENT_HOOKS
@@ -156,11 +158,17 @@ impl SockEventTracer {
             if !program.autoload() {
                 continue;
             }
-            if let Err(err) = attach(&program, links) {
-                let event = &SOCK_EVENT_HOOKS[i];
-                warn!("{}, the {} is not recorded", err, event.name);
-                failed.push((i, format!("{}: attaching failed: {}", event.name, err)));
+            match attach(&program, links) {
+                Ok(()) => attached += 1,
+                Err(err) => {
+                    let event = &SOCK_EVENT_HOOKS[i];
+                    warn!("{}, the {} is not recorded", err, event.name);
+                    failed.push((i, format!("{}: attaching failed: {}", event.name, err)));
+                }
             }
+        }
+        if attached == 0 {
+            return Ok(failed);
         }
         writer.register_as::<sock_trace_entry>(
             RB_SOCK_EVENT,
