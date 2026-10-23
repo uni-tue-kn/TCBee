@@ -102,12 +102,16 @@ struct Interface {
     qdiscs: Option<Vec<Qdisc>>,
 }
 
-#[derive(Serialize, Default)]
-struct Offloads {
-    tso: Option<bool>,
-    gso: Option<bool>,
-    gro: Option<bool>,
-    lro: Option<bool>,
+/// Offloads of an interface, None if the driver does not report one
+#[derive(Serialize, Default, Clone, Copy, Debug)]
+pub struct Offloads {
+    pub tso: Option<bool>,
+    pub gso: Option<bool>,
+    pub gro: Option<bool>,
+    pub lro: Option<bool>,
+    /// Hardware GRO (`rx-gro-hw`): the NIC merges received segments like LRO, but keeps
+    /// the headers GRO would build
+    pub gro_hw: Option<bool>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -345,7 +349,12 @@ const ETHTOOL_GTSO: u32 = 0x1e;
 const ETHTOOL_GFLAGS: u32 = 0x25;
 const ETHTOOL_GGSO: u32 = 0x23;
 const ETHTOOL_GGRO: u32 = 0x2b;
+const ETHTOOL_GSTRINGS: u32 = 0x1b;
+const ETHTOOL_GSSET_INFO: u32 = 0x37;
+const ETHTOOL_GFEATURES: u32 = 0x3a;
 const ETH_FLAG_LRO: u32 = 1 << 15;
+const ETH_SS_FEATURES: u32 = 4;
+const ETH_GSTRING_LEN: usize = 32;
 
 #[repr(C)]
 struct EthtoolValue {
@@ -361,33 +370,95 @@ struct IfreqData {
     _pad: [u8; 24 - mem::size_of::<*mut libc::c_void>()],
 }
 
+/// Runs the ethtool command at the start of `data` on the interface `name`. The reads used
+/// here need no privileges.
+fn ethtool(fd: libc::c_int, name: &str, data: *mut libc::c_void) -> bool {
+    if name.len() >= libc::IFNAMSIZ {
+        return false;
+    }
+    let mut ifr = IfreqData {
+        name: [0; libc::IFNAMSIZ],
+        data,
+        _pad: [0; 24 - mem::size_of::<*mut libc::c_void>()],
+    };
+    for (dst, src) in ifr.name.iter_mut().zip(name.bytes()) {
+        *dst = src as libc::c_char;
+    }
+    unsafe { libc::ioctl(fd, libc::SIOCETHTOOL, &mut ifr) == 0 }
+}
+
+/// Whether the feature `feature` (an `ethtool -k` name such as `rx-gro-hw`) is active. The
+/// features have no fixed bits in the uapi, so the bit is looked up in the feature names.
+fn feature_active(fd: libc::c_int, name: &str, feature: &str) -> Option<bool> {
+    // struct ethtool_sset_info, asking for the one string set of the features
+    #[repr(C)]
+    struct SsetInfo {
+        cmd: u32,
+        reserved: u32,
+        sset_mask: u64,
+        data: [u32; 1],
+    }
+    let mut info = SsetInfo {
+        cmd: ETHTOOL_GSSET_INFO,
+        reserved: 0,
+        sset_mask: 1 << ETH_SS_FEATURES,
+        data: [0],
+    };
+    if !ethtool(fd, name, (&mut info as *mut SsetInfo).cast())
+        || info.sset_mask & (1 << ETH_SS_FEATURES) == 0
+    {
+        return None;
+    }
+    let count = info.data[0] as usize;
+
+    // struct ethtool_gstrings: cmd, string_set, len, then len names of ETH_GSTRING_LEN bytes
+    let mut strings = vec![0u32; 3 + count * ETH_GSTRING_LEN / 4];
+    strings[0] = ETHTOOL_GSTRINGS;
+    strings[1] = ETH_SS_FEATURES;
+    strings[2] = count as u32;
+    if !ethtool(fd, name, strings.as_mut_ptr().cast()) {
+        return None;
+    }
+    let names: Vec<u8> = strings[3..].iter().flat_map(|w| w.to_ne_bytes()).collect();
+    let bit = names
+        .chunks(ETH_GSTRING_LEN)
+        .take(strings[2] as usize)
+        .position(|n| n.split(|b| *b == 0).next() == Some(feature.as_bytes()))?;
+
+    // struct ethtool_gfeatures: cmd, size, then size blocks of available, requested, active
+    // and never_changed, 32 features each
+    let blocks = count.div_ceil(32);
+    let mut features = vec![0u32; 2 + 4 * blocks];
+    features[0] = ETHTOOL_GFEATURES;
+    features[1] = blocks as u32;
+    if !ethtool(fd, name, features.as_mut_ptr().cast()) {
+        return None;
+    }
+    let active = features[2 + 4 * (bit / 32) + 2];
+    Some(active & (1 << (bit % 32)) != 0)
+}
+
 impl Offloads {
-    fn read(name: &str) -> Offloads {
+    pub fn read(name: &str) -> Offloads {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
         if fd < 0 {
             return Offloads::default();
         }
         let get = |cmd: u32| -> Option<u32> {
             let mut value = EthtoolValue { cmd, data: 0 };
-            let mut ifr = IfreqData {
-                name: [0; libc::IFNAMSIZ],
-                data: &mut value as *mut EthtoolValue as *mut libc::c_void,
-                _pad: [0; 24 - mem::size_of::<*mut libc::c_void>()],
-            };
-            if name.len() >= libc::IFNAMSIZ {
-                return None;
-            }
-            for (dst, src) in ifr.name.iter_mut().zip(name.bytes()) {
-                *dst = src as libc::c_char;
-            }
-            let ret = unsafe { libc::ioctl(fd, libc::SIOCETHTOOL, &mut ifr) };
-            (ret == 0).then_some(value.data)
+            ethtool(
+                fd,
+                name,
+                &mut value as *mut EthtoolValue as *mut libc::c_void,
+            )
+            .then_some(value.data)
         };
         let offloads = Offloads {
             tso: get(ETHTOOL_GTSO).map(|v| v != 0),
             gso: get(ETHTOOL_GGSO).map(|v| v != 0),
             gro: get(ETHTOOL_GGRO).map(|v| v != 0),
             lro: get(ETHTOOL_GFLAGS).map(|v| v & ETH_FLAG_LRO != 0),
+            gro_hw: feature_active(fd, name, "rx-gro-hw"),
         };
         unsafe { libc::close(fd) };
         offloads
@@ -595,6 +666,19 @@ mod tests {
         assert!(sample.uncertainty_ns >= 0);
         assert!(sample.realtime_minus_monotonic_ns > 0);
         assert!(sample.boottime_minus_monotonic_ns >= 0);
+    }
+
+    #[test]
+    fn loopback_has_no_hardware_gro() {
+        // The loopback device reports its features, rx-gro-hw is fixed off
+        let lo = Offloads::read("lo");
+        assert_eq!(lo.gro_hw, Some(false));
+        assert_eq!(Offloads::read("no-such-if0").gro_hw, None);
+        // and TSO on by default, which finds a set bit
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+        assert_eq!(feature_active(fd, "lo", "tx-tcp-segmentation"), Some(true));
+        assert_eq!(feature_active(fd, "lo", "no-such-feature"), None);
+        unsafe { libc::close(fd) };
     }
 
     #[test]

@@ -4,22 +4,84 @@ use libbpf_rs::{
     libbpf_sys, AsRawLibbpf, Link, ProgramAttachType, ProgramMut, TcHook, TcHookBuilder, TC_EGRESS,
     TC_INGRESS,
 };
-use log::{info, warn};
+use log::{info, warn, Level};
 use tcbee_common::records::{tcp4_packet_trace, tcp6_packet_trace};
 
 use tcbee_common::stats::{RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS};
 
 use crate::{
     eBPF::{
+        ebpf_runner_config::HeadersAt,
         errors::EBPFRunnerError,
         host::kernel_version,
         rings,
         skel::{OpenTcbeeProgs, TcbeeSkel},
     },
+    metadata::Offloads,
     writer::Writer,
 };
 
 pub struct TCTracer {}
+
+/// What the offloads of `iface` mean for the header hooks of `at`: messages to log, or an error
+/// if the driver hooks would not see the packets one by one. An offload the driver does not
+/// report counts as off.
+pub fn check_offloads(
+    iface: &str,
+    at: HeadersAt,
+    offloads: &Offloads,
+) -> Result<Vec<(Level, String)>, String> {
+    let on = |offload: Option<bool>| offload == Some(true);
+    let hw_merge = on(offloads.lro) || on(offloads.gro_hw);
+    if at.driver && hw_merge {
+        return Err(format!(
+            "--headers-at driver: {iface} merges received packets in hardware (LRO or rx-gro-hw), \
+            so XDP would not see them one by one (and mlx5 refuses XDP then). Switch it off with: \
+            ethtool -K {iface} lro off rx-gro-hw off"
+        ));
+    }
+    let mut notes = Vec::new();
+    if hw_merge {
+        notes.push((
+            Level::Warn,
+            format!(
+                "{iface} merges received packets in hardware (LRO or rx-gro-hw): no hook sees them \
+                one by one, a received header record can stand for several segments"
+            ),
+        ));
+    }
+    if at.tc {
+        if on(offloads.tso) || on(offloads.gso) {
+            notes.push((
+                Level::Info,
+                format!(
+                    "TC egress on {iface} sees packets before segmentation (TSO/GSO on): a sent \
+                    header record can stand for several segments"
+                ),
+            ));
+        }
+        if on(offloads.gro) {
+            notes.push((
+                Level::Info,
+                format!(
+                    "TC ingress on {iface} sees packets after GRO: a received header record can \
+                    stand for several segments"
+                ),
+            ));
+        }
+    }
+    if at.driver && on(offloads.tso) {
+        notes.push((
+            Level::Warn,
+            format!(
+                "{iface} segments sent packets in hardware (TSO on): net_dev_start_xmit sees them \
+                before segmentation, a sent header record can stand for several segments. ethtool \
+                -K {iface} tso off gives one record per segment"
+            ),
+        ));
+    }
+    Ok(notes)
+}
 
 /// How the TC programs are attached to the interface
 pub enum TcAttachment {
@@ -216,5 +278,117 @@ impl TCTracer {
         )?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TC: HeadersAt = HeadersAt {
+        tc: true,
+        driver: false,
+    };
+    const DRIVER: HeadersAt = HeadersAt {
+        tc: false,
+        driver: true,
+    };
+
+    fn levels(notes: &[(Level, String)]) -> Vec<Level> {
+        notes.iter().map(|(level, _)| *level).collect()
+    }
+
+    #[test]
+    fn offloads_against_the_header_hooks() {
+        let off = Offloads {
+            tso: Some(false),
+            gso: Some(false),
+            gro: Some(false),
+            lro: Some(false),
+            gro_hw: Some(false),
+        };
+        assert!(check_offloads("eth0", TC, &off).unwrap().is_empty());
+        assert!(check_offloads("eth0", DRIVER, &off).unwrap().is_empty());
+        // unknown counts as off
+        assert!(check_offloads("eth0", DRIVER, &Offloads::default())
+            .unwrap()
+            .is_empty());
+
+        let software = Offloads {
+            gso: Some(true),
+            gro: Some(true),
+            ..off
+        };
+        assert_eq!(
+            levels(&check_offloads("eth0", TC, &software).unwrap()),
+            [Level::Info, Level::Info]
+        );
+        // the driver hooks see the packets after software GSO and before GRO
+        assert!(check_offloads("eth0", DRIVER, &software)
+            .unwrap()
+            .is_empty());
+
+        let tso = Offloads {
+            tso: Some(true),
+            ..off
+        };
+        assert_eq!(
+            levels(&check_offloads("eth0", DRIVER, &tso).unwrap()),
+            [Level::Warn]
+        );
+
+        for hw in [
+            Offloads {
+                lro: Some(true),
+                ..off
+            },
+            Offloads {
+                gro_hw: Some(true),
+                ..off
+            },
+        ] {
+            let err = check_offloads("eth1", DRIVER, &hw).unwrap_err();
+            assert!(
+                err.contains("ethtool -K eth1 lro off rx-gro-hw off"),
+                "{err}"
+            );
+            assert_eq!(
+                levels(&check_offloads("eth1", TC, &hw).unwrap()),
+                [Level::Warn]
+            );
+        }
+    }
+
+    /// Every message reads as one sentence, without the indentation of a broken line
+    #[test]
+    fn offload_messages_have_no_gaps() {
+        let all = Offloads {
+            tso: Some(true),
+            gso: Some(true),
+            gro: Some(true),
+            lro: Some(true),
+            gro_hw: Some(true),
+        };
+        let mut messages = vec![check_offloads("eth0", DRIVER, &all).unwrap_err()];
+        messages.extend(
+            check_offloads("eth0", TC, &all)
+                .unwrap()
+                .into_iter()
+                .map(|n| n.1),
+        );
+        let tso = Offloads {
+            tso: Some(true),
+            ..Offloads::default()
+        };
+        messages.extend(
+            check_offloads("eth0", DRIVER, &tso)
+                .unwrap()
+                .into_iter()
+                .map(|n| n.1),
+        );
+        assert_eq!(messages.len(), 5);
+        for message in messages {
+            assert!(!message.contains("  "), "{message}");
+        }
     }
 }

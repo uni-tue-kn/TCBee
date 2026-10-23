@@ -494,6 +494,23 @@ pub fn on_change_manifest(on_change: OnChange, kernel: bool, cwnd: bool) -> Mani
     }
 }
 
+/// Where -h records the headers (`--headers-at`): at TC, at the driver (XDP and
+/// net_dev_start_xmit), or both
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeadersAt {
+    pub tc: bool,
+    pub driver: bool,
+}
+
+impl Default for HeadersAt {
+    fn default() -> HeadersAt {
+        HeadersAt {
+            tc: true,
+            driver: false,
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct EbpfRunnerConfig {
     pub iface: String,
@@ -502,6 +519,7 @@ pub struct EbpfRunnerConfig {
     pub observation_window: f64,
     pub filter: FilterConfig,
     pub headers: bool,
+    pub headers_at: HeadersAt,
     pub tracepoints: TracepointSet,
     pub kernel: bool,
     pub cwnd: bool,
@@ -573,6 +591,11 @@ impl EbpfRunnerConfig {
 
     pub fn headers(mut self, set: bool) -> EbpfRunnerConfig {
         self.headers = set;
+        self
+    }
+
+    pub fn headers_at(mut self, at: HeadersAt) -> EbpfRunnerConfig {
+        self.headers_at = at;
         self
     }
 

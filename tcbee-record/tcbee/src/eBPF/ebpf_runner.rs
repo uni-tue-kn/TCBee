@@ -12,7 +12,7 @@ use libbpf_rs::{
     skel::{OpenSkel, Skel, SkelBuilder},
     Link, MapCore, MapFlags, MapHandle, MapMut, PrintLevel,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, log, warn};
 use tcbee_common::stats::{
     RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RENO,
     RB_RETRANSMIT_SYNACK, RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
@@ -34,7 +34,7 @@ use crate::{
             cubic::CubicTracer,
             cwnd::CwndTracer,
             handle,
-            headers::{uses_tcx, TCTracer, TcAttachment},
+            headers::{check_offloads, uses_tcx, TCTracer, TcAttachment},
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
             reno::RenoTracer,
@@ -45,7 +45,7 @@ use crate::{
         rings,
         skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
     },
-    metadata::{NamedRingCounters, Recorder, RunMetadata},
+    metadata::{NamedRingCounters, Offloads, Recorder, RunMetadata},
     metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
@@ -664,6 +664,13 @@ impl EbpfRunner {
         let cpus = rings::Cpus::get()?;
         let mut btf = KernelBtf::default();
         self.check_kernel_mptcp(&mut btf)?;
+        if self.config.headers {
+            let iface = &self.config.iface;
+            let offloads = Offloads::read(iface);
+            for (level, message) in check_offloads(iface, self.config.headers_at, &offloads)? {
+                log!(level, "{}", message);
+            }
+        }
         let mut disabled = BTreeSet::new();
         let (skel, mut optional, missing) = loop {
             let (open, optional, missing) =
