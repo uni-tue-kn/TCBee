@@ -17,7 +17,7 @@ const _: () = assert!(size_of::<tcp6_packet_trace>() == 64);
 const _: () = assert!(size_of::<sock_trace_entry>() == 280);
 const _: () = assert!(size_of::<cwnd_trace_entry>() == 72);
 const _: () = assert!(size_of::<cubic_trace_entry>() == 120);
-const _: () = assert!(size_of::<bbr_trace_entry>() == 120);
+const _: () = assert!(size_of::<bbr_trace_entry>() == 176);
 const _: () = assert!(size_of::<tcp_probe_entry>() == 128);
 const _: () = assert!(size_of::<tcp_retransmit_synack_entry>() == 64);
 const _: () = assert!(size_of::<tcp_bad_csum_entry>() == 24);

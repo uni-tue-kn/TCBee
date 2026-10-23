@@ -1116,7 +1116,8 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
  * struct bbr offsets are relocated against the module's BTF; the verifier only checks
  * the loads against icsk_ca_priv in the vmlinux tcp_sock.
  */
-static __always_inline int trace_bbr(struct sock *sk, enum tcbee_cc_hook hook)
+static __always_inline int trace_bbr(struct sock *sk, enum tcbee_cc_hook hook,
+				     const struct rate_sample___tcbee *rs)
 {
 	struct bbr_trace_entry *rec;
 	struct bbr___tcbee *bbr;
@@ -1159,6 +1160,29 @@ static __always_inline int trace_bbr(struct sock *sk, enum tcbee_cc_hook hook)
 			rec->lt_last_lost = bbr->lt_last_lost;
 		rec->prior_cwnd = bbr->prior_cwnd;
 		rec->full_bw = bbr->full_bw;
+		rec->mode = BPF_CORE_READ_BITFIELD_PROBED(bbr, mode);
+		rec->cycle_idx = BPF_CORE_READ_BITFIELD_PROBED(bbr, cycle_idx);
+		rec->pacing_gain = BPF_CORE_READ_BITFIELD_PROBED(bbr, pacing_gain);
+		rec->cwnd_gain = BPF_CORE_READ_BITFIELD_PROBED(bbr, cwnd_gain);
+		rec->full_bw_reached = BPF_CORE_READ_BITFIELD_PROBED(bbr, full_bw_reached);
+		rec->full_bw_cnt = BPF_CORE_READ_BITFIELD_PROBED(bbr, full_bw_cnt);
+		rec->round_start = BPF_CORE_READ_BITFIELD_PROBED(bbr, round_start);
+		rec->idle_restart = BPF_CORE_READ_BITFIELD_PROBED(bbr, idle_restart);
+		if (bpf_core_field_exists(bbr->packet_conservation))
+			rec->packet_conservation =
+				BPF_CORE_READ_BITFIELD_PROBED(bbr, packet_conservation);
+		if (bpf_core_field_exists(bbr->lt_use_bw))
+			rec->lt_use_bw = BPF_CORE_READ_BITFIELD_PROBED(bbr, lt_use_bw);
+		/* The filter keeps its maximum in the first sample, see minmax_get() */
+		if (bpf_core_field_exists(bbr->bw))
+			rec->max_bw = bbr->bw.s[0].v;
+		if (rs) {
+			rec->rs_delivered = BPF_CORE_READ(rs, delivered);
+			rec->rs_interval_us = BPF_CORE_READ(rs, interval_us);
+			rec->rs_rtt_us = BPF_CORE_READ(rs, rtt_us);
+			rec->rs_losses = BPF_CORE_READ(rs, losses);
+			rec->rs_is_app_limited = BPF_CORE_READ(rs, is_app_limited);
+		}
 		commit(rec, RB_BBR);
 	}
 
@@ -1166,11 +1190,20 @@ static __always_inline int trace_bbr(struct sock *sk, enum tcbee_cc_hook hook)
 	return 0;
 }
 
-/* Called on every ACK */
+/*
+ * Called on every ACK, with the rate sample of the ACK as the last argument: bbr_main(sk, rs)
+ * before 6.10, bbr_main(sk, ack, flag, rs) since. The argument helpers (5.17) find it on both;
+ * older kernels record no rate sample.
+ */
 SEC("fentry/bbr_main")
 int BPF_PROG(bbr_cong_control, struct sock *sk)
 {
-	return trace_bbr(sk, TCBEE_CC_HOOK_ACK);
+	__u64 rs = 0;
+
+	if (bpf_core_enum_value_exists(enum bpf_func_id___tcbee,
+				       BPF_FUNC_get_func_arg_cnt___tcbee))
+		bpf_get_func_arg(ctx, bpf_get_func_arg_cnt(ctx) - 1, &rs);
+	return trace_bbr(sk, TCBEE_CC_HOOK_ACK, (const struct rate_sample___tcbee *)rs);
 }
 
 /*
@@ -1181,7 +1214,7 @@ int BPF_PROG(bbr_cong_control, struct sock *sk)
 SEC("fentry/bbr_cwnd_event")
 int BPF_PROG(bbr_cwnd_event, struct sock *sk)
 {
-	return trace_bbr(sk, TCBEE_CC_HOOK_CWND_EVENT);
+	return trace_bbr(sk, TCBEE_CC_HOOK_CWND_EVENT, NULL);
 }
 
 /* ---- TCP events (-e) --------------------------------------------------------------- */

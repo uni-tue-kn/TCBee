@@ -191,12 +191,18 @@ fn bbr() {
         entry_size: 118,
         columns: "hook:U8 min_rtt_us:U32 min_rtt_stamp:U32 probe_rtt_done_stamp:U32 rtt_cnt:U32 \
             next_rtt_delivered:U32 cycle_mstamp:U64 lt_bw:U32 lt_last_delivered:U32 \
-            lt_last_stamp:U32 lt_last_lost:U32 prior_cwnd:U32 full_bw:U32",
+            lt_last_stamp:U32 lt_last_lost:U32 prior_cwnd:U32 full_bw:U32 mode:U8 cycle_idx:U8 \
+            pacing_gain:U16 cwnd_gain:U16 full_bw_reached:U8 full_bw_cnt:U8 round_start:U8 \
+            packet_conservation:U8 idle_restart:U8 lt_use_bw:U8 max_bw:U32 rs_delivered:I64 \
+            rs_interval_us:I64 rs_rtt_us:I64 rs_losses:I64 rs_is_app_limited:U8",
         file: "bbr.tcp",
         records: 500,
         ts0: 1_000_000_000_000,
         key0: tuple("10.0.0.1", "10.0.0.2", 40000, 5201),
-        row0: &[0, 300, 1000, 2000, 0, 0, MAX, 5000, 0, 4000, 0, 20, 90000],
+        row0: &[
+            0, 300, 1000, 2000, 0, 0, MAX, 5000, 0, 4000, 0, 20, 90000, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ],
     };
     check::<legacy::Bbr118Entry>(&x);
 }
@@ -542,7 +548,7 @@ fn file_table_maps_every_trace_file() {
         ("sock", 262, 48),
         ("tcp_probe", 124, 10),
         ("cubic", 123, 15),
-        ("bbr", 119, 13),
+        ("bbr", 168, 29),
         ("cwnd", 74, 1),
         ("tcp6", 67, 4),
         ("tcp4", 43, 4),
@@ -908,7 +914,7 @@ fn cc_records_before_the_hook_tag_are_decoded() {
     let b = binding_for(TraceFile::Bbr, &path).unwrap().unwrap();
     assert_eq!(
         (b.entry_size, b.table.source, b.missing_columns),
-        (118, "bbr", legacy::CC_HOOK_MISSING)
+        (118, "bbr", legacy::BBR118_MISSING)
     );
     let (batch, _) = decode_first(&b, &path);
     assert_eq!(
@@ -919,6 +925,35 @@ fn cc_records_before_the_hook_tag_are_decoded() {
         ),
         (0, 250, 1000)
     );
+    let rec = bbr_trace_entry {
+        time: 3,
+        hook_seq: 1,
+        hook: 1,
+        mode: 2,
+        pacing_gain: 320,
+        max_bw: 77,
+        rs_delivered: 10,
+        rs_rtt_us: -1,
+        rs_is_app_limited: 1,
+        ..Default::default()
+    };
+    write_records(&path, &[rec; 3], 0);
+    let b = binding_for(TraceFile::Bbr, &path).unwrap().unwrap();
+    assert!(b.missing_columns.is_empty());
+    let (batch, _) = decode_first(&b, &path);
+    let row: Vec<i128> = [
+        "hook",
+        "mode",
+        "pacing_gain",
+        "max_bw",
+        "rs_delivered",
+        "rs_rtt_us",
+        "rs_is_app_limited",
+    ]
+    .iter()
+    .map(|name| col(&batch, b.table, name))
+    .collect();
+    assert_eq!(row, [1, 2, 320, 77, 10, -1, 1]);
 }
 
 fn write_records<T: serde::Serialize>(path: &std::path::Path, recs: &[T], tail: usize) {

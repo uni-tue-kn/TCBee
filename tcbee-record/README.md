@@ -210,6 +210,14 @@ The socket event hooks of `--sock-hooks` write the socket at TCP events, not per
 
 - The hooks of one algorithm share its ring buffer and one `hook_seq` series per flow, so their
   records are in order with each other.
+- BBR records carry the state machine (`mode`: 0 STARTUP, 1 DRAIN, 2 PROBE_BW, 3 PROBE_RTT;
+  `cycle_idx`, `pacing_gain` and `cwnd_gain` in units of 1/256, `full_bw_reached`,
+  `full_bw_cnt`, `round_start`, `packet_conservation`, `idle_restart`), the maximum of the
+  bandwidth filter (`max_bw`, packets per µs << 24) and the long-term (policer) estimate. ACK
+  records also carry the rate sample that BBR's model is updated with (`rs_delivered` packets
+  over `rs_interval_us`, `rs_rtt_us`, `rs_losses`, `rs_is_app_limited`; -1 marks a missing
+  sample, 0 on kernels before 5.17). Fields that only BBRv1 has (`max_bw`, the `lt_*` fields,
+  `packet_conservation`) are 0 with other BBR versions.
 
 ## Kernel requirements
 

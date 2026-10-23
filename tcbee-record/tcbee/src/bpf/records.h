@@ -200,6 +200,34 @@ struct bbr_trace_entry {
 	uint32_t lt_last_lost;
 	uint32_t prior_cwnd;
 	uint32_t full_bw;
+	/* BBRv1: 0 STARTUP, 1 DRAIN, 2 PROBE_BW, 3 PROBE_RTT; cycle_idx is the PROBE_BW phase */
+	uint8_t mode;
+	uint8_t cycle_idx;
+	/* Gains in BBR_UNIT (256 = 1.0) */
+	uint16_t pacing_gain;
+	uint16_t cwnd_gain;
+	/* STARTUP found the bandwidth plateau; rounds without 25 % growth so far */
+	uint8_t full_bw_reached;
+	uint8_t full_bw_cnt;
+	/* The ACK starts a new round trip */
+	uint8_t round_start;
+	/* Flags; packet_conservation and lt_use_bw (policer found, pace at lt_bw) only BBRv1 */
+	uint8_t packet_conservation;
+	uint8_t idle_restart;
+	uint8_t lt_use_bw;
+	/* BBRv1: the windowed max bandwidth filter, packets per us << 24 (BW_SCALE) */
+	uint32_t max_bw;
+	/*
+	 * The rate sample of the ACK (the ACK hook only, 0 at the cwnd event), the input of BBR's
+	 * model: packets delivered over interval_us (interval_us -1 without a valid sample), the
+	 * RTT sample (-1 if none), packets newly marked lost, and whether the sender was
+	 * application limited during it
+	 */
+	int64_t rs_delivered;
+	int64_t rs_interval_us;
+	int64_t rs_rtt_us;
+	int64_t rs_losses;
+	uint8_t rs_is_app_limited;
 };
 
 /* tracepoint tcp/tcp_probe, TCP_PROBE_QUEUE. saddr/daddr hold a sockaddr_in(6). */
@@ -420,7 +448,7 @@ _Static_assert(sizeof(struct tcp6_packet_trace) == 64, "tcp6_packet_trace size")
 _Static_assert(sizeof(struct sock_trace_entry) == 280, "sock_trace_entry size");
 _Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
 _Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
-_Static_assert(sizeof(struct bbr_trace_entry) == 120, "bbr_trace_entry size");
+_Static_assert(sizeof(struct bbr_trace_entry) == 176, "bbr_trace_entry size");
 _Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
 _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");

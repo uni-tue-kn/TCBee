@@ -13,7 +13,7 @@
 //! | sock | 226 | dev with the rest of TCP_INFO, before the send buffer and rate fields | those |
 //! | cwnd | 70 | the per-CPU and on-change lines (no `conn_id`) | – |
 //! | cubic | 122 | every version before the hook tag | `hook` |
-//! | bbr | 118 | every version before the hook tag | `hook` |
+//! | bbr | 118 | every version before the hook tag | `BBR118_MISSING`: the hook, mode, gains and rate sample |
 //!
 //! Layouts without `conn_id` belong to no MPTCP connection (`connection_key` 0).
 
@@ -196,9 +196,30 @@ fn cwnd70(dir: Dir) -> Binding {
     binding_of::<Cwnd70Entry>(dir)
 }
 
-/// Columns of the current cubic and bbr records that the layouts before the hook tag do not
-/// have
+/// Columns of the current cubic record that the layout before the hook tag does not have
 pub const CC_HOOK_MISSING: &[&str] = &["hook"];
+
+/// Columns of the current bbr record that the 118 B layout does not have: the hook, the state
+/// machine and the rate sample
+pub const BBR118_MISSING: &[&str] = &[
+    "hook",
+    "mode",
+    "cycle_idx",
+    "pacing_gain",
+    "cwnd_gain",
+    "full_bw_reached",
+    "full_bw_cnt",
+    "round_start",
+    "packet_conservation",
+    "idle_restart",
+    "lt_use_bw",
+    "max_bw",
+    "rs_delivered",
+    "rs_interval_us",
+    "rs_rtt_us",
+    "rs_losses",
+    "rs_is_app_limited",
+];
 
 fn cubic122(dir: Dir) -> Binding {
     Binding {
@@ -209,7 +230,7 @@ fn cubic122(dir: Dir) -> Binding {
 
 fn bbr118(dir: Dir) -> Binding {
     Binding {
-        missing_columns: CC_HOOK_MISSING,
+        missing_columns: BBR118_MISSING,
         ..binding_of::<Bbr118Entry>(dir)
     }
 }
