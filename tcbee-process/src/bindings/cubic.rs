@@ -8,7 +8,8 @@ use crate::{
 use tcbee_common::records::cubic_trace_entry;
 
 event_schema! {
-    cubic_trace_entry => "cubic", 122 {
+    cubic_trace_entry => "cubic", 123 {
+        hook: U8,
         cnt: U32,
         last_max_cwnd: U32,
         last_cwnd: U32,

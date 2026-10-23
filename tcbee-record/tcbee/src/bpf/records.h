@@ -146,9 +146,27 @@ struct cwnd_trace_entry {
 	uint32_t conn_id;
 };
 
-/* fentry cubictcp_cong_avoid / cubictcp_cwnd_event, CUBIC_EVENTS */
+/*
+ * Hook of a congestion control record (cubic_trace_entry, bbr_trace_entry), its hook field.
+ * The hooks of one algorithm write one ring buffer and share its hook_seq, so the records of
+ * a flow are in order across them.
+ */
+enum tcbee_cc_hook {
+	/* Per ACK: fentry cubictcp_cong_avoid (in congestion avoidance), fentry bbr_main */
+	TCBEE_CC_HOOK_ACK = 1,
+	/*
+	 * fentry of the cwnd_event operation. From 7.2 on it only runs at the first transmission
+	 * after idle (cubictcp_cwnd_event_tx_start, bbr_cwnd_event_tx_start); before, at every
+	 * CA_EVENT_*, of which CUBIC and BBR only act on TX_START
+	 */
+	TCBEE_CC_HOOK_CWND_EVENT = 2,
+};
+
+/* CUBIC_EVENTS: struct bictcp as the hook found it */
 struct cubic_trace_entry {
 	TCBEE_SOCK_HEADER
+	/* enum tcbee_cc_hook */
+	uint8_t hook;
 	uint32_t cnt;
 	uint32_t last_max_cwnd;
 	uint32_t last_cwnd;
@@ -165,9 +183,11 @@ struct cubic_trace_entry {
 	uint32_t curr_rtt;
 };
 
-/* fentry bbr_main / bbr_cwnd_event, BBR_EVENTS */
+/* BBR_EVENTS: struct bbr as the hook found it */
 struct bbr_trace_entry {
 	TCBEE_SOCK_HEADER
+	/* enum tcbee_cc_hook */
+	uint8_t hook;
 	uint32_t min_rtt_us;
 	uint32_t min_rtt_stamp;
 	uint32_t probe_rtt_done_stamp;

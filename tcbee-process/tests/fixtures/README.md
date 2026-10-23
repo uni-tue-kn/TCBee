@@ -11,7 +11,9 @@
   They are in the old sock layout without `ca_state`, the delivery and the chrono fields, which
   tcbee-process detects and decodes through `Sock172Entry` (172 B, `src/bindings/legacy.rs`).
   The other older layouts (sock 168, 201 and 202 B, cwnd 70 B) are tested with records written
-  by the tests themselves.
+  by the tests themselves. `cubic` and the generated `bbr` are in the layouts before the hook
+  tag (`Cubic122Entry`, `Bbr118Entry`); the current ones are tested with records written by the
+  tests.
 - **Generated** by `src/fixtures.rs`: `bbr`, `mptcp_pm`, `send_cwnd`, `send_cwnd_oc`, `send_sock_oc` (a
   copy of real records), `tcp6_*`, the empty files and
   `tcbee_truncated`. Deterministic values, real bincode records, correct divider, `hook_seq` counting
@@ -27,9 +29,9 @@ timestamp (duplicates within a flow). `bbr.cycle_mstamp` is near `u64::MAX`.
 
 | File | Binding | Record size (bytes) | Records | Origin |
 | --- | --- | --- | --- | --- |
-| `bbr.tcp` | `bbr_trace_entry` | 118 | 500 | generated |
+| `bbr.tcp` | `Bbr118Entry` | 118 | 500 | generated |
 | `mptcp_pm.tcp` | `mptcp_pm_entry` | 123 | 12 | generated |
-| `cubic.tcp` | `cubic_trace_entry` | 122 | 2000 | real |
+| `cubic.tcp` | `Cubic122Entry` | 122 | 2000 | real |
 | `tcp_probe.tcp` | `tcp_probe_entry` | 124 | 2000 | real |
 | `tcp_retransmit_synack.tcp` | none | | 0 | generated |
 | `tcp_bad_csum.tcp` | none | | 0 | generated |

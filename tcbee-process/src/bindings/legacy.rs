@@ -12,13 +12,17 @@
 //! | sock | 202 | dev with run metadata (before the rest of TCP_INFO) | the rest of TCP_INFO |
 //! | sock | 226 | dev with the rest of TCP_INFO, before the send buffer and rate fields | those |
 //! | cwnd | 70 | the per-CPU and on-change lines (no `conn_id`) | – |
+//! | cubic | 122 | every version before the hook tag | `hook` |
+//! | bbr | 118 | every version before the hook tag | `hook` |
 //!
 //! Layouts without `conn_id` belong to no MPTCP connection (`connection_key` 0).
 
 use std::{fs::File, io, os::unix::fs::FileExt, path::Path};
 
 use serde::{Deserialize, Serialize};
-use tcbee_common::records::{cwnd_trace_entry, sock_trace_entry, RECORD_DELIMITER};
+use tcbee_common::records::{
+    bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, sock_trace_entry, RECORD_DELIMITER,
+};
 use ts_storage::{Dir, EventBatch, EventTable, IpTuple};
 
 use super::{binding_of, Binding};
@@ -36,6 +40,8 @@ pub fn layouts(source: &str) -> &'static [Legacy] {
     match source {
         "sock" | "sock_oc" | "sock_timer" | "sock_ingress" | "sock_event" => &SOCK,
         "cwnd" | "cwnd_oc" => &CWND,
+        "cubic" => &CUBIC,
+        "bbr" => &BBR,
         _ => &[],
     }
 }
@@ -65,6 +71,14 @@ static SOCK: [Legacy; 5] = [
 static CWND: [Legacy; 1] = [Legacy {
     entry_size: 70,
     binding: cwnd70,
+}];
+static CUBIC: [Legacy; 1] = [Legacy {
+    entry_size: 122,
+    binding: cubic122,
+}];
+static BBR: [Legacy; 1] = [Legacy {
+    entry_size: 118,
+    binding: bbr118,
 }];
 
 /// Columns of the current sock record that the 172 and 168 B layouts do not have: the
@@ -180,6 +194,24 @@ fn sock226(dir: Dir) -> Binding {
 
 fn cwnd70(dir: Dir) -> Binding {
     binding_of::<Cwnd70Entry>(dir)
+}
+
+/// Columns of the current cubic and bbr records that the layouts before the hook tag do not
+/// have
+pub const CC_HOOK_MISSING: &[&str] = &["hook"];
+
+fn cubic122(dir: Dir) -> Binding {
+    Binding {
+        missing_columns: CC_HOOK_MISSING,
+        ..binding_of::<Cubic122Entry>(dir)
+    }
+}
+
+fn bbr118(dir: Dir) -> Binding {
+    Binding {
+        missing_columns: CC_HOOK_MISSING,
+        ..binding_of::<Bbr118Entry>(dir)
+    }
 }
 
 /// Which layout a file is in
@@ -510,6 +542,117 @@ impl Cwnd70Entry {
     }
 }
 
+/// The cubic record before the hook tag
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Cubic122Entry {
+    pub time: u64,
+    pub hook_seq: u64,
+    pub addr_v4: u64,
+    pub src_v6: [u8; 16],
+    pub dst_v6: [u8; 16],
+    pub sport: u16,
+    pub dport: u16,
+    pub family: u16,
+    pub cnt: u32,
+    pub last_max_cwnd: u32,
+    pub last_cwnd: u32,
+    pub last_time: u32,
+    pub bic_origin_point: u32,
+    #[allow(non_snake_case)]
+    pub bic_K: u32,
+    pub delay_min: u32,
+    pub epoch_start: u32,
+    pub ack_cnt: u32,
+    pub tcp_cwnd: u32,
+    pub round_start: u32,
+    pub end_seq: u32,
+    pub last_ack: u32,
+    pub curr_rtt: u32,
+}
+
+impl Cubic122Entry {
+    fn current(&self) -> cubic_trace_entry {
+        cubic_trace_entry {
+            time: self.time,
+            hook_seq: self.hook_seq,
+            addr_v4: self.addr_v4,
+            src_v6: self.src_v6,
+            dst_v6: self.dst_v6,
+            sport: self.sport,
+            dport: self.dport,
+            family: self.family,
+            cnt: self.cnt,
+            last_max_cwnd: self.last_max_cwnd,
+            last_cwnd: self.last_cwnd,
+            last_time: self.last_time,
+            bic_origin_point: self.bic_origin_point,
+            bic_K: self.bic_K,
+            delay_min: self.delay_min,
+            epoch_start: self.epoch_start,
+            ack_cnt: self.ack_cnt,
+            tcp_cwnd: self.tcp_cwnd,
+            round_start: self.round_start,
+            end_seq: self.end_seq,
+            last_ack: self.last_ack,
+            curr_rtt: self.curr_rtt,
+            ..Default::default()
+        }
+    }
+}
+
+/// The bbr record before the hook tag
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Bbr118Entry {
+    pub time: u64,
+    pub hook_seq: u64,
+    pub addr_v4: u64,
+    pub src_v6: [u8; 16],
+    pub dst_v6: [u8; 16],
+    pub sport: u16,
+    pub dport: u16,
+    pub family: u16,
+    pub min_rtt_us: u32,
+    pub min_rtt_stamp: u32,
+    pub probe_rtt_done_stamp: u32,
+    pub rtt_cnt: u32,
+    pub next_rtt_delivered: u32,
+    pub cycle_mstamp: u64,
+    pub lt_bw: u32,
+    pub lt_last_delivered: u32,
+    pub lt_last_stamp: u32,
+    pub lt_last_lost: u32,
+    pub prior_cwnd: u32,
+    pub full_bw: u32,
+}
+
+impl Bbr118Entry {
+    fn current(&self) -> bbr_trace_entry {
+        bbr_trace_entry {
+            time: self.time,
+            hook_seq: self.hook_seq,
+            addr_v4: self.addr_v4,
+            src_v6: self.src_v6,
+            dst_v6: self.dst_v6,
+            sport: self.sport,
+            dport: self.dport,
+            family: self.family,
+            min_rtt_us: self.min_rtt_us,
+            min_rtt_stamp: self.min_rtt_stamp,
+            probe_rtt_done_stamp: self.probe_rtt_done_stamp,
+            rtt_cnt: self.rtt_cnt,
+            next_rtt_delivered: self.next_rtt_delivered,
+            cycle_mstamp: self.cycle_mstamp,
+            lt_bw: self.lt_bw,
+            lt_last_delivered: self.lt_last_delivered,
+            lt_last_stamp: self.lt_last_stamp,
+            lt_last_lost: self.lt_last_lost,
+            prior_cwnd: self.prior_cwnd,
+            full_bw: self.full_bw,
+            ..Default::default()
+        }
+    }
+}
+
 /// An `Event` for a legacy layout that converts every record to the current one
 macro_rules! legacy_event {
     ($ty:ty, $current:ty, $size:expr) => {
@@ -548,3 +691,5 @@ legacy_event!(Sock201Entry, sock_trace_entry, 201);
 legacy_event!(Sock202Entry, sock_trace_entry, 202);
 legacy_event!(Sock226Entry, sock_trace_entry, 226);
 legacy_event!(Cwnd70Entry, cwnd_trace_entry, 70);
+legacy_event!(Cubic122Entry, cubic_trace_entry, 122);
+legacy_event!(Bbr118Entry, bbr_trace_entry, 118);

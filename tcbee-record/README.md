@@ -198,6 +198,19 @@ The socket event hooks of `--sock-hooks` write the socket at TCP events, not per
 - Each hook is optional: one the kernel lacks or rejects is left out with a warning and listed
   as skipped in the metadata.
 
+## Congestion control records
+
+`-a` writes the private state of CUBIC (`struct bictcp`, `cubic.tcp`) and BBR (`struct bbr`,
+`bbr.tcp`) of every socket that uses them, as the hook found it:
+
+| Hook | Kernel hook | Runs | `hook` |
+|------|-------------|------|--------|
+| ACK | `fentry/cubictcp_cong_avoid`, `fentry/bbr_main` | at each ACK that may grow the cwnd (CUBIC), at each ACK (BBR) | 1 |
+| cwnd event | `fentry/cubictcp_cwnd_event_tx_start`, `fentry/bbr_cwnd_event_tx_start` (before 7.2 `*_cwnd_event`) | at the first transmission after idle (before 7.2 at every congestion avoidance event) | 2 |
+
+- The hooks of one algorithm share its ring buffer and one `hook_seq` series per flow, so their
+  records are in order with each other.
+
 ## Kernel requirements
 
 - BTF of the running kernel (`/sys/kernel/btf/vmlinux`, `CONFIG_DEBUG_INFO_BTF=y`)

@@ -1049,7 +1049,7 @@ int BPF_PROG(sock_oc_timer, struct sock *sk)
 
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */
 
-static __always_inline int trace_cubic(struct sock *sk)
+static __always_inline int trace_cubic(struct sock *sk, enum tcbee_cc_hook hook)
 {
 	struct cubic_trace_entry *rec;
 	struct bictcp___tcbee *ca;
@@ -1069,6 +1069,7 @@ static __always_inline int trace_cubic(struct sock *sk)
 	} else if ((rec = reserve(&CUBIC_EVENTS, RB_CUBIC, rec))) {
 		ca = tcp_ca(tp);
 		fill_header(rec, sk, sport, dport, hook_seq);
+		rec->hook = hook;
 		rec->cnt = ca->cnt;
 		rec->last_max_cwnd = ca->last_max_cwnd;
 		rec->last_cwnd = ca->last_cwnd;
@@ -1090,18 +1091,22 @@ static __always_inline int trace_cubic(struct sock *sk)
 	return 0;
 }
 
-/* Called on every ACK in congestion avoidance */
+/* Called on every ACK that may grow the cwnd (tcp_cong_avoid), in slow start too */
 SEC("fentry/cubictcp_cong_avoid")
 int BPF_PROG(cubic_cong_control, struct sock *sk)
 {
-	return trace_cubic(sk);
+	return trace_cubic(sk, TCBEE_CC_HOOK_ACK);
 }
 
-/* Called on congestion events. TODO: probably the wrong hook */
+/*
+ * The cwnd_event operation. CUBIC only acts on the first transmission after idle, where it
+ * moves epoch_start by the idle time so that the cubic curve does not jump; 7.2 calls it only
+ * for that (cubictcp_cwnd_event_tx_start, see CubicTracer), older kernels at every CA event.
+ */
 SEC("fentry/cubictcp_cwnd_event")
 int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 {
-	return trace_cubic(sk);
+	return trace_cubic(sk, TCBEE_CC_HOOK_CWND_EVENT);
 }
 
 /* ---- BBR (-a) ---------------------------------------------------------------------- */
@@ -1111,7 +1116,7 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
  * struct bbr offsets are relocated against the module's BTF; the verifier only checks
  * the loads against icsk_ca_priv in the vmlinux tcp_sock.
  */
-static __always_inline int trace_bbr(struct sock *sk)
+static __always_inline int trace_bbr(struct sock *sk, enum tcbee_cc_hook hook)
 {
 	struct bbr_trace_entry *rec;
 	struct bbr___tcbee *bbr;
@@ -1136,6 +1141,7 @@ static __always_inline int trace_bbr(struct sock *sk)
 	} else if ((rec = reserve(&BBR_EVENTS, RB_BBR, rec))) {
 		bbr = tcp_ca(tp);
 		fill_header(rec, sk, sport, dport, hook_seq);
+		rec->hook = hook;
 		rec->min_rtt_us = bbr->min_rtt_us;
 		rec->min_rtt_stamp = bbr->min_rtt_stamp;
 		rec->probe_rtt_done_stamp = bbr->probe_rtt_done_stamp;
@@ -1164,14 +1170,18 @@ static __always_inline int trace_bbr(struct sock *sk)
 SEC("fentry/bbr_main")
 int BPF_PROG(bbr_cong_control, struct sock *sk)
 {
-	return trace_bbr(sk);
+	return trace_bbr(sk, TCBEE_CC_HOOK_ACK);
 }
 
-/* Called on congestion events */
+/*
+ * The cwnd_event operation. BBR only acts on the first transmission after idle (idle_restart,
+ * pacing at the estimated bandwidth); 7.2 calls it only for that (bbr_cwnd_event_tx_start),
+ * older kernels at every CA event.
+ */
 SEC("fentry/bbr_cwnd_event")
 int BPF_PROG(bbr_cwnd_event, struct sock *sk)
 {
-	return trace_bbr(sk);
+	return trace_bbr(sk, TCBEE_CC_HOOK_CWND_EVENT);
 }
 
 /* ---- TCP events (-e) --------------------------------------------------------------- */

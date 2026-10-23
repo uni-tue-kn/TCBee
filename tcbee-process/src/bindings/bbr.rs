@@ -8,7 +8,8 @@ use crate::{
 use tcbee_common::records::bbr_trace_entry;
 
 event_schema! {
-    bbr_trace_entry => "bbr", 118 {
+    bbr_trace_entry => "bbr", 119 {
+        hook: U8,
         min_rtt_us: U32,
         min_rtt_stamp: U32,
         probe_rtt_done_stamp: U32,

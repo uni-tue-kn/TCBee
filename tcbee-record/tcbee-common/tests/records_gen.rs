@@ -19,6 +19,7 @@ const RECORDS: &[&str] = &[
     "cwnd_trace_entry",
     "cubic_trace_entry",
     "bbr_trace_entry",
+    "tcbee_cc_hook",
     "tcp_probe_entry",
     "tcp_retransmit_synack_entry",
     "tcp_bad_csum_entry",
