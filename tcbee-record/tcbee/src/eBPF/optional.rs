@@ -38,22 +38,23 @@ pub enum OptionalGroup {
 }
 
 impl OptionalGroup {
-    /// A program in several groups belongs to the first one here: sock_timer and the socket
-    /// event programs are also in MPTCP tagging, but their own group is the one to drop when
-    /// they fail
+    /// A failed program is blamed on the first enabled group here that has it. MPTCP tagging
+    /// comes before the timer and socket event groups: its code is in every sock program, so
+    /// a tagging relocation that fails would otherwise drop them one by one until -k records
+    /// nothing. A program that still fails without tagging is then blamed on its own group.
     pub const ALL: [OptionalGroup; 4 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()] = {
         let mut all = [OptionalGroup::Bbr; 4 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()];
-        all[1] = OptionalGroup::SockTimer;
-        let mut n = 2;
+        all[1] = OptionalGroup::MptcpTag;
+        all[2] = OptionalGroup::SockTimer;
+        let mut n = 3;
         let mut i = 0;
         while i < SOCK_EVENT_HOOKS.len() {
             all[n] = OptionalGroup::SockEvent(i);
             n += 1;
             i += 1;
         }
-        all[n] = OptionalGroup::MptcpTag;
-        all[n + 1] = OptionalGroup::MptcpPm;
-        n += 2;
+        all[n] = OptionalGroup::MptcpPm;
+        n += 1;
         let mut i = 0;
         while i < TCP_EVENT_HOOKS.len() {
             all[n] = OptionalGroup::TcpEvent(i);
@@ -115,10 +116,11 @@ impl OptionalGroup {
         }
     }
 
-    fn of_program(program: &str) -> Option<OptionalGroup> {
+    /// The group to blame for a failed program: the first enabled one that has it
+    fn of_program(program: &str, enabled: &BTreeSet<OptionalGroup>) -> Option<OptionalGroup> {
         Self::ALL
             .into_iter()
-            .find(|group| group.programs().contains(&program))
+            .find(|group| enabled.contains(group) && group.programs().contains(&program))
     }
 }
 
@@ -149,11 +151,11 @@ pub fn to_disable(
     } else {
         let groups: Option<BTreeSet<_>> = failed
             .iter()
-            .map(|program| OptionalGroup::of_program(program))
+            .map(|program| OptionalGroup::of_program(program, enabled))
             .collect();
         groups?
     };
-    (!groups.is_empty() && groups.is_subset(enabled)).then_some(groups)
+    (!groups.is_empty()).then_some(groups)
 }
 
 /// Names of `groups` for log messages
@@ -243,10 +245,32 @@ mod tests {
     #[test]
     fn failing_timer_program_disables_only_the_timer_hook() {
         let w = warnings(&["libbpf: prog 'sock_timer': failed to load: -524"]);
-        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        let mut enabled = BTreeSet::from(OptionalGroup::ALL);
+        enabled.remove(&OptionalGroup::MptcpTag);
         assert_eq!(
             to_disable(&enabled, &w),
             Some(BTreeSet::from([OptionalGroup::SockTimer]))
+        );
+    }
+
+    /// With MPTCP tagging, a failing sock program drops tagging first, and its own group only
+    /// if it still fails: a broken tagging relocation must not take the -k hooks with it
+    #[test]
+    fn failing_sock_programs_drop_mptcp_tagging_before_their_own_groups() {
+        let mut enabled = BTreeSet::from(OptionalGroup::ALL);
+        for program in ["sock_event_state", "sock_timer"] {
+            let w = warnings(&[&format!("libbpf: prog '{program}': failed to load: -22")]);
+            assert_eq!(
+                to_disable(&enabled, &w),
+                Some(BTreeSet::from([OptionalGroup::MptcpTag])),
+                "{program}"
+            );
+        }
+        enabled.remove(&OptionalGroup::MptcpTag);
+        let w = warnings(&["libbpf: prog 'sock_event_state': failed to load: -22"]);
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::SockEvent(0)]))
         );
     }
 
@@ -274,11 +298,11 @@ mod tests {
         );
     }
 
-    /// The socket event programs are in MPTCP tagging too; their own group goes first
     #[test]
     fn failing_sock_event_program_disables_only_its_hook() {
         let w = warnings(&["libbpf: prog 'sock_event_rcvbuf': failed to load: -13"]);
-        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        let mut enabled = BTreeSet::from(OptionalGroup::ALL);
+        enabled.remove(&OptionalGroup::MptcpTag);
         assert_eq!(
             to_disable(&enabled, &w),
             Some(BTreeSet::from([OptionalGroup::SockEvent(4)]))
