@@ -380,6 +380,26 @@ INSERT INTO time_series_data (time_series_id, timestamp, value, type)
     VALUES (1, 1.0, union_value(inum := 10), 0);
 ";
 
+/// Drops a table of a database file with the engine's raw driver, as if it was written before
+/// the table existed
+pub fn drop_table(engine: Engine, path: &Path, table: &str) {
+    let sql = format!("DROP TABLE \"{table}\"");
+    match engine {
+        #[cfg(feature = "sqlite")]
+        Engine::Sqlite => rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(&sql)
+            .unwrap(),
+        #[cfg(feature = "duckdb")]
+        Engine::DuckDb => duckdb::Connection::open(path)
+            .unwrap()
+            .execute_batch(&sql)
+            .unwrap(),
+        #[allow(unreachable_patterns)]
+        _ => unreachable!("engine {engine:?} is not enabled"),
+    }
+}
+
 /// Creates a database file in the old schema, with the engine's
 /// raw driver.
 pub fn make_v1(engine: Engine, path: &Path) {

@@ -4,7 +4,7 @@
 use crate::batch::EventBatch;
 use crate::catalog::{Catalog, SeriesInfo};
 use crate::error::StoreError;
-use crate::model::{ConnectionFlow, ConnectionInfo, DataPoint, Flow};
+use crate::model::{ConnectionFlow, ConnectionInfo, DataPoint, Flow, FlowOwner};
 use crate::schema::{Dialect, EventTable, ValueKind};
 
 /// The database engines TCBee can store flows in.
@@ -62,6 +62,9 @@ pub trait Store {
     fn connections(&self) -> Result<Vec<ConnectionInfo>, StoreError>;
     /// The flows of all connections, ordered by connection and first time
     fn connection_flows(&self) -> Result<Vec<ConnectionFlow>, StoreError>;
+    /// The owners of all flows, ordered by flow, time and pid; empty for a database written
+    /// before owners were recorded, which has no `flow_owners` table
+    fn flow_owners(&self) -> Result<Vec<FlowOwner>, StoreError>;
     fn series(&self, flow_id: i64) -> Result<Vec<SeriesInfo>, StoreError>;
     fn series_by_id(&self, id: i64) -> Result<Option<SeriesInfo>, StoreError>;
     /// All entries of the `meta` table, ordered by key

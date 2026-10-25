@@ -58,6 +58,44 @@ pub struct ConnectionFlow {
     pub last_ts: i64,
 }
 
+/// The process that owned a flow from `ts` on: it opened the connection (the recorder's owner
+/// records), or held its socket when the recording started. A flow may have several owners: a
+/// tuple can be reused, and several processes can share a socket. Table `flow_owners`, which
+/// databases written before owners were recorded do not have.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FlowOwner {
+    pub flow_id: i64,
+    /// When the process opened the connection, or when the snapshot of the existing connections
+    /// was taken; ns since boot
+    pub ts: i64,
+    /// How the owner is known, one of the `SOURCE_*` constants
+    pub source: String,
+    pub pid: i64,
+    pub uid: Option<i64>,
+    /// Name of the process
+    pub comm: String,
+    /// Command line, the arguments joined by spaces; None if it is not known
+    pub cmdline: Option<String>,
+    /// Start of the process, ns since boot; with the pid it names the process
+    pub start_time: Option<i64>,
+    pub cgroup_id: Option<i64>,
+    /// cgroup v2 path
+    pub cgroup: Option<String>,
+    /// Inode number of the network namespace of the socket
+    pub netns: Option<i64>,
+    /// A kernel thread opened the connection
+    pub kthread: bool,
+}
+
+impl FlowOwner {
+    /// The process connected the socket
+    pub const SOURCE_CONNECT: &'static str = "connect";
+    /// The process accepted the connection
+    pub const SOURCE_ACCEPT: &'static str = "accept";
+    /// The process held the socket when the recording started
+    pub const SOURCE_SNAPSHOT: &'static str = "snapshot";
+}
+
 /// One value of a series.
 #[derive(Debug, Clone)]
 pub enum DataValue {

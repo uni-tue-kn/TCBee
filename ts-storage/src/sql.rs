@@ -76,6 +76,10 @@ pub const INSERT_CONNECTION_FLOW: &str = r#"INSERT INTO "connection_flows" ("con
 pub const SELECT_CONNECTION_FLOWS: &str = r#"SELECT "connection_id", "flow_id", "subflow_id", "first_ts", "last_ts"
     FROM "connection_flows" ORDER BY "connection_id", "first_ts", "flow_id""#;
 
+pub const INSERT_FLOW_OWNER: &str = r#"INSERT INTO "flow_owners" ("flow_id", "ts", "source", "pid", "uid", "comm", "cmdline", "start_time", "cgroup_id", "cgroup", "netns", "kthread") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
+pub const SELECT_FLOW_OWNERS: &str = r#"SELECT "flow_id", "ts", "source", "pid", "uid", "comm", "cmdline", "start_time", "cgroup_id", "cgroup", "netns", "kthread"
+    FROM "flow_owners" ORDER BY "flow_id", "ts", "pid""#;
+
 pub fn insert_series() -> String {
     format!(
         r#"INSERT INTO "series" ({SERIES_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
@@ -100,6 +104,11 @@ pub const DERIVED_NAME_TAKEN: &str = r#"SELECT EXISTS (SELECT 1 FROM "series" WH
 /// SQLite only: does the file have a `meta` table?
 pub const SQLITE_HAS_META: &str =
     r#"SELECT EXISTS (SELECT 1 FROM "sqlite_master" WHERE "type" = 'table' AND "name" = 'meta')"#;
+/// SQLite only: does the file have a `flow_owners` table?
+pub const SQLITE_HAS_FLOW_OWNERS: &str = r#"SELECT EXISTS (SELECT 1 FROM "sqlite_master" WHERE "type" = 'table' AND "name" = 'flow_owners')"#;
+/// DuckDB only: does the file have a `flow_owners` table?
+pub const DUCKDB_HAS_FLOW_OWNERS: &str =
+    "SELECT count(*) > 0 FROM information_schema.tables WHERE table_name = 'flow_owners'";
 
 /// Parameters, in order: `flow_id, dir, ts, seq`, then one per table column.
 pub fn insert_events(table: &EventTable) -> String {

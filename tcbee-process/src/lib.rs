@@ -12,6 +12,7 @@ mod event;
 mod fixtures;
 mod ip;
 mod metadata;
+mod owners;
 mod pipeline;
 mod registry;
 

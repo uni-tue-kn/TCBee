@@ -25,7 +25,7 @@ pub mod time;
 pub use batch::{ColumnData, EventBatch};
 pub use catalog::{Catalog, SeriesInfo, StatsAccumulator};
 pub use error::StoreError;
-pub use model::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow, IpTuple};
+pub use model::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow, FlowOwner, IpTuple};
 pub use schema::{
     ColType, Column, Dialect, Dir, EventTable, SeriesKind, Table, ValueKind, SCHEMA_VERSION,
 };
