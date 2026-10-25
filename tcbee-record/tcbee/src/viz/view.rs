@@ -227,20 +227,25 @@ pub fn render(
     Areas { slots }
 }
 
-/// The dropped share of the events per tick as a red sparkline
+/// Dropped share of the events that fills the drop sparkline, in hundredths of a percent
+const DROP_SCALE: u64 = 100;
+
+/// The dropped share of the events per tick as a red sparkline from 0 to 1 %
 fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
     let red = Style::default().fg(Color::Red);
-    let label = format!(" drop {:.2}% ", model.drop_percent());
+    let label = format!(" drop {:.2}%  0-1%: ", model.drop_percent());
     let [label_area, spark_area] =
         Layout::horizontal([Constraint::Length(label.len() as u16), Constraint::Min(0)])
             .areas(area);
     frame.render_widget(Paragraph::new(label).style(red), label_area);
     let history = &model.drop_history;
-    let shown = &history[history.len().saturating_sub(spark_area.width as usize)..];
-    // A drop-free run stays a flat line instead of a full bar
-    let max = shown.iter().copied().max().unwrap_or(0).max(1);
+    // A fixed scale, so the bars compare between ticks; more than 1 % fills a bar
+    let shown: Vec<u64> = history[history.len().saturating_sub(spark_area.width as usize)..]
+        .iter()
+        .map(|value| (*value).min(DROP_SCALE))
+        .collect();
     frame.render_widget(
-        Sparkline::default().data(shown).max(max).style(red),
+        Sparkline::default().data(&shown).max(DROP_SCALE).style(red),
         spark_area,
     );
 }
@@ -416,7 +421,7 @@ pub(crate) mod tests {
             "1 Events (rec/s) \u{25a0} rec \u{25a0} drop"
         ));
         assert!(contains(&lines, "2 Headers (pps) \u{25a0} in \u{25a0} out"));
-        assert!(contains(&lines, " drop 1.00% "));
+        assert!(contains(&lines, " drop 1.00%  0-1%: "));
     }
 
     #[test]
@@ -562,6 +567,47 @@ pub(crate) mod tests {
         assert_eq!(headers.points(Span::Last(30.0), 200.0).len(), 31);
         let points = headers.points(Span::Last(120.0), 200.0);
         assert_eq!(points.iter().map(|(_, y)| *y).fold(0.0, f64::max), 6600.0);
+    }
+
+    #[test]
+    fn drop_sparkline_has_a_fixed_scale() {
+        let mut model = Model::new(&TC_RINGS);
+        // 0.5 % of the events dropped, then 3 %
+        for (t, dropped) in [(0, 0), (1, 5), (2, 35)] {
+            let values = [
+                (slot(RB_TCP4_INGRESS, STAT_HANDLED), 1000 * t - dropped),
+                (slot(RB_TCP4_INGRESS, STAT_DROPPED), dropped),
+            ];
+            model.update(snapshot(&values), 0, Duration::from_secs(t));
+            model.record_history();
+        }
+        assert_eq!(model.drop_history, [0, 50, 300]);
+        let view = View::new(context(&TC_RINGS));
+        let (lines, _) = screen(160, 45, &model, &view, &UiState::default(), &[]);
+        // Half a bar, then a full one for more than 1 %
+        assert!(contains(&lines, " drop 3.00%  0-1%:  \u{2584}\u{2588}"));
+    }
+
+    #[test]
+    fn legends_fit_narrow_charts() {
+        let model = Model::new(&(0..RB_COUNT).collect::<Vec<_>>());
+        let view = View::new(context(&[]));
+        for width in [160, 140, 125] {
+            let (lines, areas) = screen(width, 45, &model, &view, &UiState::default(), &[]);
+            let (_, sock) = areas.slots[2];
+            let title: String = lines[sock.y as usize]
+                .chars()
+                .skip(sock.x as usize)
+                .take(sock.width as usize)
+                .collect();
+            assert!(
+                title.starts_with("\u{250c}3 Socket hooks (runs/s)"),
+                "{title}"
+            );
+            // Every series keeps its colour square, the border shows after the legend
+            assert_eq!(title.matches('\u{25a0}').count(), 4, "{title}");
+            assert!(title.ends_with("\u{2500}\u{2510}"), "{title}");
+        }
     }
 
     #[test]

@@ -13,15 +13,37 @@ use crate::viz::{
     model::ChartModel,
 };
 
-/// Title of a chart: its zoom key, name and unit, then the series names in their colours
-pub fn title(chart: &ChartModel, key: usize) -> Line<'static> {
-    let mut spans = vec![Span::raw(format!(
-        "{key} {} ({}) ",
-        chart.title, chart.unit
-    ))];
-    for series in &chart.series {
+/// Title of a chart `width` cells wide: its zoom key, name and unit, then the series names in
+/// their colours. Names get shorter or go when they do not fit, the colour squares stay.
+pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
+    let head = format!("{key} {} ({}) ", chart.title, chart.unit);
+    // Corners and a bit of border stay visible
+    let room = (width as usize).saturating_sub(4);
+    let legend = |chars: usize| -> Vec<String> {
+        chart
+            .series
+            .iter()
+            .map(|series| match chars {
+                0 => "\u{25a0}".to_string(),
+                _ => format!(
+                    "\u{25a0} {}",
+                    series.label.chars().take(chars).collect::<String>()
+                ),
+            })
+            .collect()
+    };
+    let length = |names: &[String]| {
+        head.chars().count() + names.iter().map(|n| n.chars().count() + 1).sum::<usize>()
+    };
+    let names = [usize::MAX, 4, 0]
+        .into_iter()
+        .map(legend)
+        .find(|names| length(names) <= room)
+        .unwrap_or_else(|| legend(0));
+    let mut spans = vec![Span::raw(head)];
+    for (series, name) in chart.series.iter().zip(names) {
         spans.push(Span::styled(
-            format!("\u{25a0} {} ", series.label),
+            format!("{name} "),
             Style::default().fg(series.color),
         ));
     }
@@ -80,7 +102,7 @@ pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(title(chart, key)),
+                .title(title(chart, key, area.width)),
         )
         .x_axis(Axis::default().bounds([xmin, xmax]).labels(x_labels))
         .y_axis(Axis::default().bounds([0.0, ymax]).labels(y_labels))
