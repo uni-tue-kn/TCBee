@@ -1426,7 +1426,7 @@ int BPF_PROG(reno_ssthresh, struct sock *sk, __u32 ret)
 	return trace_reno(sk, TCBEE_CC_HOOK_SSTHRESH, 0, ret);
 }
 
-/* ---- TCP events (-e) --------------------------------------------------------------- */
+/* ---- TCP events (-t) --------------------------------------------------------------- */
 
 /*
  * One record per discrete event of a flow, all into TCP_EVENTS. The programs of a flow share

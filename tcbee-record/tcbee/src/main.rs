@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut iface).add_option(
             &["-h", "--headers"],
             Store,
-            "Record TCP headers of incoming and outgoing packets on the specified interface.",
+            "Record the TCP headers of received and sent packets on the specified interface, at TC by default, see --headers-at.",
         );
         argparser.refer(&mut headers_at).add_option(
             &["--headers-at"],
@@ -255,7 +255,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
             StoreTrue,
-            "Record behaviour of congestion algorithms: Cubic and BBR.",
+            "Record the internals of the congestion control algorithms: CUBIC and BBR state, and Reno's congestion avoidance (also where DCTCP and others reuse it).",
         );
         argparser.refer(&mut trace_events).add_option(
             &["-e", "--events"],
@@ -344,6 +344,7 @@ fn main() -> anyhow::Result<()> {
     {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
+    let chose_sock_hooks = !sock_hooks.is_empty();
     let (on_change, sock_hooks) = HookFlags {
         kernel: trace_kernel,
         cwnd: trace_cwnd,
@@ -354,7 +355,8 @@ fn main() -> anyhow::Result<()> {
         no_timer_hook,
     }
     .resolve()?;
-    if sock_hooks.is_some_and(|hooks| hooks.hooks().all(|h| !h.per_packet())) {
+    // A hint for plain -k only, not for a list someone chose
+    if !chose_sock_hooks && sock_hooks.is_some_and(|hooks| hooks.hooks().all(|h| !h.per_packet())) {
         eprintln!(
             "Note: -k records the socket at timers and TCP events only; on a sender, --sock-hooks +ingress adds the state after every ACK"
         );

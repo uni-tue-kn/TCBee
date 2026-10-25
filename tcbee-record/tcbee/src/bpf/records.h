@@ -424,7 +424,7 @@ enum tcbee_tcp_event {
 };
 
 /*
- * Discrete TCP events (-e, --drops), TCP_EVENTS. The header holds the tuple local -> remote.
+ * Discrete TCP events (-t, --tp drops), TCP_EVENTS. The header holds the tuple local -> remote.
  * The socket fields are read at the event; they are 0 for DROP and where there is no full
  * socket. Fields that do not apply to a kind are 0.
  */
