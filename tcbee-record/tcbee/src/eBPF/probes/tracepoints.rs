@@ -67,10 +67,6 @@ impl Tracepoint {
         }
     }
 
-    pub fn from_name(name: &str) -> Option<Tracepoint> {
-        Tracepoint::ALL.into_iter().find(|tp| tp.name() == name)
-    }
-
     /// Whether a plain `-t` records it
     pub const fn in_default(self) -> bool {
         !matches!(self, Tracepoint::Drops)
@@ -100,7 +96,6 @@ impl TracepointSet {
         }
         TracepointSet(bits)
     };
-    pub const ALL: TracepointSet = TracepointSet::of(&Tracepoint::ALL);
     /// The TCP events, which `-e` records: the ones it recorded before -t had them, and the
     /// destroyed sockets, which came with -t
     pub const EVENTS: TracepointSet = TracepointSet::of(&[
@@ -281,12 +276,5 @@ mod tests {
         assert!(TracepointSet::parse("probe,cwnd").is_err());
         assert!(TracepointSet::parse(" , ").is_err());
         assert!(TracepointSet::parse("-all").is_err());
-    }
-
-    #[test]
-    fn names_round_trip() {
-        for tracepoint in Tracepoint::ALL {
-            assert_eq!(Tracepoint::from_name(tracepoint.name()), Some(tracepoint));
-        }
     }
 }
