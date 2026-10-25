@@ -193,10 +193,10 @@ fn sock_hooks_left(
     config: &EbpfRunnerConfig,
     optional: &BTreeSet<OptionalGroup>,
 ) -> Result<bool, Box<dyn Error>> {
-    if !config.kernel || config.on_change.is_some() {
+    let Some(hooks) = config.sock_hooks else {
         return Ok(true);
-    }
-    let left = config.sock_hooks.hooks().any(Hook::per_packet)
+    };
+    let left = hooks.hooks().any(Hook::per_packet)
         || optional
             .iter()
             .any(|group| *group == OptionalGroup::SockTimer || group.is_sock_event());
@@ -223,8 +223,8 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
     let (sock_send, sock_receive) = match config.on_change {
         Some(_) => (send, receive),
         None => (
-            config.sock_hooks.contains(Hook::Egress),
-            config.sock_hooks.contains(Hook::IngressEntry),
+            config.sock_hooked(Hook::Egress),
+            config.sock_hooked(Hook::IngressEntry),
         ),
     };
     let groups: [(bool, &[u32]); 17] = [
@@ -248,12 +248,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         ),
         (config.kernel && sock_send, &[RB_SOCK_SEND]),
         (config.kernel && sock_receive, &[RB_SOCK_RECV]),
-        (
-            config.kernel
-                && config.on_change.is_none()
-                && config.sock_hooks.contains(Hook::Ingress),
-            &[RB_SOCK_INGRESS],
-        ),
+        (config.sock_hooked(Hook::Ingress), &[RB_SOCK_INGRESS]),
         (
             optional.contains(&OptionalGroup::SockTimer),
             &[RB_SOCK_TIMER],
@@ -489,8 +484,8 @@ impl EbpfRunner {
                 hooks.collect::<Vec<_>>().join(", ")
             ));
         }
-        if c.kernel && c.on_change.is_none() {
-            let hooks: Vec<_> = c.sock_hooks.hooks().map(|hook| hook.name()).collect();
+        if let Some(hooks) = c.sock_hooks {
+            let hooks: Vec<_> = hooks.hooks().map(|hook| hook.name()).collect();
             groups.push(format!("sock hooks: {}", hooks.join(", ")));
         }
         if let Some(on_change) = c.on_change.filter(|_| c.kernel || c.cwnd) {
@@ -612,8 +607,8 @@ impl EbpfRunner {
         DriverTracer::configure(&mut open.progs, self.config.headers && headers_at.driver);
         // The write timer program of -k fails softly: without the function or if the kernel
         // rejects it, the recording runs without it
-        let timer_wanted = self.config.sock_hooks.contains(Hook::Timer)
-            && !disabled.contains(&OptionalGroup::SockTimer);
+        let timer_wanted =
+            self.config.sock_hooked(Hook::Timer) && !disabled.contains(&OptionalGroup::SockTimer);
         let has_timer = !btf.available() || btf.has_func(None, "tcp_write_timer_handler");
         let timer =
             KernelTracer::timer_hook(self.config.kernel, on_change, timer_wanted, has_timer);
@@ -670,9 +665,6 @@ impl EbpfRunner {
         );
         optional.extend(hooks.into_iter().map(OptionalGroup::TcpEvent));
         missing.extend(missing_events);
-        // The socket event hooks of -k, without on-change
-        let sock_event_hooks =
-            (self.config.kernel && on_change.is_none()).then_some(self.config.sock_hooks);
         let disabled_sock_events: Vec<usize> = disabled
             .iter()
             .filter_map(|group| match group {
@@ -682,7 +674,7 @@ impl EbpfRunner {
             .collect();
         let (hooks, missing_sock_events) = SockEventTracer::configure(
             open.open_object_mut(),
-            sock_event_hooks,
+            self.config.sock_hooks,
             &disabled_sock_events,
             btf,
         );
@@ -773,9 +765,10 @@ impl EbpfRunner {
                 group.name()
             ));
         }
-        if self.config.kernel
-            && self.config.on_change.is_none()
-            && !self.config.sock_hooks.contains(Hook::Timer)
+        if self
+            .config
+            .sock_hooks
+            .is_some_and(|hooks| !hooks.contains(Hook::Timer))
         {
             self.skipped
                 .push("write timer hook: off (--sock-hooks, --no-timer-hook)".to_string());
@@ -1002,7 +995,7 @@ mod tests {
     fn sock_rings_follow_the_sock_hooks() {
         let config = EbpfRunnerConfig::new()
             .kernel(true)
-            .sock_hooks(HookSet::FULL_DEFAULT);
+            .sock_hooks(Some(HookSet::FULL_DEFAULT));
         let events = BTreeSet::from([OptionalGroup::SockEvent(0)]);
         let rings = enabled_ringbufs(&config, &events);
         assert!(rings.contains(&RB_SOCK_EVENT));
@@ -1010,7 +1003,7 @@ mod tests {
             .iter()
             .any(|rb| rings.contains(rb)));
         assert!(!enabled_ringbufs(&config, &BTreeSet::new()).contains(&RB_SOCK_EVENT));
-        let config = config.sock_hooks(HookSet::of(&[Hook::Ingress, Hook::Egress]));
+        let config = config.sock_hooks(Some(HookSet::of(&[Hook::Ingress, Hook::Egress])));
         let rings = enabled_ringbufs(&config, &BTreeSet::new());
         assert!(rings.contains(&RB_SOCK_INGRESS) && rings.contains(&RB_SOCK_SEND));
         assert!(!rings.contains(&RB_SOCK_RECV));
@@ -1020,7 +1013,7 @@ mod tests {
     fn k_without_any_hook_left_is_an_error_only_alone() {
         let config = EbpfRunnerConfig::new()
             .kernel(true)
-            .sock_hooks(HookSet::FULL_DEFAULT);
+            .sock_hooks(Some(HookSet::FULL_DEFAULT));
         let none = BTreeSet::new();
         assert!(sock_hooks_left(&config, &none).is_err());
         let timer = BTreeSet::from([OptionalGroup::SockTimer]);
@@ -1028,9 +1021,9 @@ mod tests {
         let with_headers = EbpfRunnerConfig::new()
             .kernel(true)
             .headers(true)
-            .sock_hooks(HookSet::FULL_DEFAULT);
+            .sock_hooks(Some(HookSet::FULL_DEFAULT));
         assert!(!sock_hooks_left(&with_headers, &none).unwrap());
-        let ingress = config.sock_hooks(HookSet::of(&[Hook::Ingress]));
+        let ingress = config.sock_hooks(Some(HookSet::of(&[Hook::Ingress])));
         assert!(sock_hooks_left(&ingress, &none).unwrap());
     }
 

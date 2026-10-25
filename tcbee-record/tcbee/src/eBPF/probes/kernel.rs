@@ -40,11 +40,12 @@ impl KernelTracer {
         progs: &mut OpenTcbeeProgs<'_>,
         enabled: bool,
         on_change: Option<HookSet>,
-        full: HookSet,
+        full: Option<HookSet>,
         timer: bool,
     ) {
         let hooked = |hook| enabled && on_change.is_some_and(|h| h.contains(hook));
-        let full_hooked = |hook| enabled && on_change.is_none() && full.contains(hook);
+        let full_hooked =
+            |hook| enabled && on_change.is_none() && full.is_some_and(|h| h.contains(hook));
         progs.sock_sendmsg.set_autoload(full_hooked(Hook::Egress));
         progs
             .sock_recvmsg
@@ -66,7 +67,7 @@ impl KernelTracer {
         writer: &mut Writer,
         links: &mut Vec<Link>,
         on_change: Option<HookSet>,
-        full: HookSet,
+        full: Option<HookSet>,
     ) -> Result<(), Box<dyn Error>> {
         let (send, receive) = match on_change {
             // Egress into the send file; ingress and timer into the receive file
@@ -83,17 +84,18 @@ impl KernelTracer {
             )?,
             None => {
                 // Outgoing TCP, fentry/__tcp_transmit_skb; incoming, fentry/tcp_rcv_established
+                let full_hooked = |hook| full.is_some_and(|h| h.contains(hook));
                 let mut files = (None, None);
-                if full.contains(Hook::Egress) {
+                if full_hooked(Hook::Egress) {
                     attach(&skel.progs.sock_sendmsg, links)?;
                     files.0 = Some(TraceFile::SendSock);
                 }
-                if full.contains(Hook::IngressEntry) {
+                if full_hooked(Hook::IngressEntry) {
                     attach(&skel.progs.sock_recvmsg, links)?;
                     files.1 = Some(TraceFile::RecvSock);
                 }
                 // After each received segment, into its own file
-                if full.contains(Hook::Ingress) {
+                if full_hooked(Hook::Ingress) {
                     attach(&skel.progs.sock_ingress, links)?;
                     attach(&skel.progs.sock_ingress_state, links)?;
                     writer.register_as::<sock_trace_entry>(
@@ -170,14 +172,20 @@ mod tests {
         let mut storage = MaybeUninit::uninit();
         let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
         let full = HookSet::of(&[Hook::Egress, Hook::IngressEntry, Hook::Timer]);
-        KernelTracer::configure(&mut open.progs, true, None, full, true);
+        KernelTracer::configure(&mut open.progs, true, None, Some(full), true);
         assert!(open.progs.sock_timer.autoload());
         assert!(!open.progs.sock_oc_timer.autoload());
-        KernelTracer::configure(&mut open.progs, true, None, full, false);
+        KernelTracer::configure(&mut open.progs, true, None, Some(full), false);
         assert!(!open.progs.sock_timer.autoload());
         assert!(open.progs.sock_recvmsg.autoload());
         let timer = KernelTracer::timer_hook(true, Some(HookSet::DEFAULT), true, true);
-        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), full, timer);
+        KernelTracer::configure(
+            &mut open.progs,
+            true,
+            Some(HookSet::DEFAULT),
+            Some(full),
+            timer,
+        );
         assert!(!open.progs.sock_timer.autoload());
         assert!(open.progs.sock_oc_timer.autoload());
         assert!(!open.progs.sock_recvmsg.autoload());
@@ -187,17 +195,17 @@ mod tests {
     fn sock_hooks_pick_the_default_programs() {
         let mut storage = MaybeUninit::uninit();
         let mut open = TcbeeSkelBuilder::default().open(&mut storage).unwrap();
-        let hooks = HookSet::of(&[Hook::IngressEntry]);
+        let hooks = Some(HookSet::of(&[Hook::IngressEntry]));
         KernelTracer::configure(&mut open.progs, true, None, hooks, false);
         assert!(open.progs.sock_recvmsg.autoload());
         assert!(!open.progs.sock_sendmsg.autoload());
         assert!(!open.progs.sock_oc_recvmsg.autoload());
         assert!(!open.progs.sock_ingress.autoload());
-        let hooks = HookSet::of(&[Hook::Ingress]);
+        let hooks = Some(HookSet::of(&[Hook::Ingress]));
         KernelTracer::configure(&mut open.progs, true, None, hooks, false);
         assert!(open.progs.sock_ingress.autoload() && open.progs.sock_ingress_state.autoload());
         assert!(!open.progs.sock_recvmsg.autoload() && !open.progs.sock_oc_recvmsg.autoload());
-        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), hooks, false);
+        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), None, false);
         assert!(!open.progs.sock_ingress.autoload());
     }
 }

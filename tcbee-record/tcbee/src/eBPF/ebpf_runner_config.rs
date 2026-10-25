@@ -223,11 +223,7 @@ pub fn tracepoint_set(
 
 /// `--no-timer-hook` switches off the write timer program of -k; on-change mode picks its
 /// hooks with `--on-change-hooks` instead
-pub fn check_no_timer_hook(
-    no_timer_hook: bool,
-    kernel: bool,
-    on_change: bool,
-) -> anyhow::Result<()> {
+fn check_no_timer_hook(no_timer_hook: bool, kernel: bool, on_change: bool) -> anyhow::Result<()> {
     if !no_timer_hook {
         return Ok(());
     }
@@ -244,7 +240,7 @@ pub fn check_no_timer_hook(
 
 /// The hooks of `-k` without on-change: `--sock-hooks` (default the write timer and the
 /// socket events), less the timer with `--no-timer-hook`
-pub fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSet> {
+fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSet> {
     let hooks = if spec.is_empty() {
         HookSet::FULL_DEFAULT
     } else {
@@ -312,6 +308,58 @@ pub fn parse_on_change(
         shadow,
         hooks,
     }))
+}
+
+/// The flags that pick the hooks of the sock (-k) and cwnd (-w) probes, as given; empty
+/// strings for flags that are not given
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HookFlags<'a> {
+    pub kernel: bool,
+    pub cwnd: bool,
+    pub sock_hooks: &'a str,
+    pub on_change: &'a str,
+    pub on_change_hooks: &'a str,
+    pub on_change_shadow: bool,
+    pub no_timer_hook: bool,
+}
+
+impl HookFlags<'_> {
+    /// On-change mode, or else the hooks of -k in full mode (None without -k). With
+    /// --on-change, `--sock-hooks` names the compared hooks like `--on-change-hooks`, but only
+    /// with -k: the cwnd probe of -w ignores `--sock-hooks` in full mode, so with -w alone it
+    /// is refused rather than picking the cwnd hooks in on-change mode only.
+    pub fn resolve(&self) -> anyhow::Result<(Option<OnChange>, Option<HookSet>)> {
+        let sock_hooks = !self.sock_hooks.is_empty();
+        if sock_hooks && !self.on_change_hooks.is_empty() {
+            return Err(anyhow!(
+                "--sock-hooks and --on-change-hooks name the same hooks, give one"
+            ));
+        }
+        if sock_hooks && !self.kernel {
+            return Err(anyhow!(
+                "--sock-hooks needs -k; with --on-change and -w alone use --on-change-hooks"
+            ));
+        }
+        let on_change_hooks = if sock_hooks && !self.on_change.is_empty() {
+            self.sock_hooks
+        } else {
+            self.on_change_hooks
+        };
+        let on_change = parse_on_change(
+            self.on_change,
+            on_change_hooks,
+            self.on_change_shadow,
+            self.kernel,
+            self.cwnd,
+        )?;
+        check_no_timer_hook(self.no_timer_hook, self.kernel, on_change.is_some())?;
+        let full = if self.kernel && on_change.is_none() {
+            Some(full_sock_hooks(self.sock_hooks, self.no_timer_hook)?)
+        } else {
+            None
+        };
+        Ok((on_change, full))
+    }
 }
 
 /// What the on-change files in the recording directory hold, for tcbee-process: per probe,
@@ -434,8 +482,8 @@ pub struct EbpfRunnerConfig {
     pub poll_mode: PollMode,
     pub writer_cpus: Vec<usize>,
     pub on_change: Option<OnChange>,
-    /// The hooks of -k without on-change, see `full_sock_hooks`
-    pub sock_hooks: HookSet,
+    /// The hooks of -k in full mode, None without -k or in on-change mode (`HookFlags`)
+    pub sock_hooks: Option<HookSet>,
 }
 
 #[derive(Default)]
@@ -486,7 +534,7 @@ impl EbpfRunnerConfig {
             poll_mode: PollMode::default(),
             writer_cpus: Vec::new(),
             on_change: None,
-            sock_hooks: HookSet::DEFAULT,
+            sock_hooks: None,
         }
     }
 
@@ -535,9 +583,14 @@ impl EbpfRunnerConfig {
         self
     }
 
-    pub fn sock_hooks(mut self, hooks: HookSet) -> EbpfRunnerConfig {
+    pub fn sock_hooks(mut self, hooks: Option<HookSet>) -> EbpfRunnerConfig {
         self.sock_hooks = hooks;
         self
+    }
+
+    /// Whether -k records at `hook` in full mode
+    pub fn sock_hooked(&self, hook: Hook) -> bool {
+        self.sock_hooks.is_some_and(|hooks| hooks.contains(hook))
     }
 
     pub fn cwnd(mut self, set: bool) -> EbpfRunnerConfig {
@@ -717,6 +770,124 @@ mod tests {
         assert!(check_no_timer_hook(true, true, false).is_ok());
         assert!(check_no_timer_hook(true, false, false).is_err());
         assert!(check_no_timer_hook(true, true, true).is_err());
+    }
+
+    fn k() -> HookFlags<'static> {
+        HookFlags {
+            kernel: true,
+            ..HookFlags::default()
+        }
+    }
+
+    #[test]
+    fn hook_flags_of_the_full_mode() {
+        let (on_change, full) = k().resolve().unwrap();
+        assert!(on_change.is_none());
+        assert_eq!(full, Some(HookSet::FULL_DEFAULT));
+        let flags = HookFlags {
+            sock_hooks: "+ingress",
+            ..k()
+        };
+        assert!(flags.resolve().unwrap().1.unwrap().contains(Hook::Ingress));
+        let flags = HookFlags {
+            no_timer_hook: true,
+            ..k()
+        };
+        let full = flags.resolve().unwrap().1;
+        assert_eq!(full, Some(HookSet::FULL_DEFAULT.without(Hook::Timer)));
+        let flags = HookFlags {
+            sock_hooks: "egress,timer",
+            no_timer_hook: true,
+            ..k()
+        };
+        let full = flags.resolve().unwrap().1;
+        assert_eq!(full, Some(HookSet::of(&[Hook::Egress])));
+    }
+
+    #[test]
+    fn hook_flags_without_k() {
+        let w = HookFlags {
+            cwnd: true,
+            ..HookFlags::default()
+        };
+        let (on_change, full) = w.resolve().unwrap();
+        assert!(on_change.is_none() && full.is_none());
+        for flags in [
+            HookFlags {
+                sock_hooks: "egress",
+                ..w
+            },
+            HookFlags {
+                no_timer_hook: true,
+                ..w
+            },
+            // -w with on-change takes its hooks from --on-change-hooks only
+            HookFlags {
+                sock_hooks: "egress",
+                on_change: "cc",
+                ..w
+            },
+        ] {
+            assert!(flags.resolve().is_err(), "{flags:?}");
+        }
+        let flags = HookFlags {
+            on_change: "cc",
+            on_change_hooks: "+egress",
+            ..w
+        };
+        let (on_change, full) = flags.resolve().unwrap();
+        assert!(on_change.unwrap().hooks.contains(Hook::Egress) && full.is_none());
+    }
+
+    #[test]
+    fn hook_flags_with_on_change() {
+        let flags = HookFlags {
+            on_change: "cc",
+            ..k()
+        };
+        let (on_change, full) = flags.resolve().unwrap();
+        assert_eq!(on_change.unwrap().hooks, HookSet::DEFAULT);
+        assert!(full.is_none());
+        // --sock-hooks names the compared hooks like --on-change-hooks
+        for hooks in [("+egress", ""), ("", "+egress")] {
+            let flags = HookFlags {
+                sock_hooks: hooks.0,
+                on_change_hooks: hooks.1,
+                ..flags
+            };
+            let (on_change, full) = flags.resolve().unwrap();
+            assert_eq!(
+                on_change.unwrap().hooks,
+                HookSet::of(&[Hook::Ingress, Hook::Timer, Hook::Egress])
+            );
+            assert!(full.is_none());
+        }
+        for bad in [
+            HookFlags {
+                sock_hooks: "egress",
+                on_change_hooks: "egress",
+                ..flags
+            },
+            HookFlags {
+                no_timer_hook: true,
+                ..flags
+            },
+            HookFlags {
+                sock_hooks: "state",
+                ..flags
+            },
+            HookFlags {
+                on_change_hooks: "egress",
+                ..k()
+            },
+            HookFlags {
+                sock_hooks: "egress",
+                on_change_hooks: "egress",
+                ..k()
+            },
+        ] {
+            assert!(bad.resolve().is_err(), "{bad:?}");
+        }
     }
 
     #[test]
