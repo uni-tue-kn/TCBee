@@ -16,6 +16,7 @@ use libbpf_rs::{
 };
 use log::{info, warn, Level};
 use tcbee_common::records::{tcp4_packet_trace, tcp6_packet_trace};
+use tcbee_trace::name_list::{self, ListError, NamedSet};
 
 use tcbee_common::stats::{
     RB_TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
@@ -24,7 +25,6 @@ use tcbee_common::stats::{
 
 use crate::{
     eBPF::{
-        ebpf_runner_config::HeadersAt,
         errors::EBPFRunnerError,
         host::kernel_version,
         probes::attach,
@@ -36,6 +36,89 @@ use crate::{
 };
 
 pub struct TCTracer {}
+
+/// A place where -h records the headers
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderHook {
+    /// The TC programs on the interface
+    Tc,
+    /// XDP and net_dev_start_xmit, between the stack and the driver
+    Driver,
+}
+
+/// Where -h records the headers (`--headers-at`): at TC, at the driver, or both
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeadersAt {
+    pub tc: bool,
+    pub driver: bool,
+}
+
+impl Default for HeadersAt {
+    fn default() -> HeadersAt {
+        HeadersAt {
+            tc: true,
+            driver: false,
+        }
+    }
+}
+
+impl HeadersAt {
+    /// Parses `--headers-at`, a list as for `--tp`: `tc`, `driver` or both
+    pub fn parse(arg: &str) -> Result<HeadersAt, ListError> {
+        name_list::parse(arg, HeadersAt::default())
+    }
+}
+
+impl NamedSet for HeadersAt {
+    type Item = HeaderHook;
+    const KIND: &'static str = "header hook";
+    const ITEMS: &'static [HeaderHook] = &[HeaderHook::Tc, HeaderHook::Driver];
+
+    fn item_name(hook: HeaderHook) -> &'static str {
+        match hook {
+            HeaderHook::Tc => "tc",
+            HeaderHook::Driver => "driver",
+        }
+    }
+
+    fn empty() -> HeadersAt {
+        HeadersAt {
+            tc: false,
+            driver: false,
+        }
+    }
+
+    fn with(self, hook: HeaderHook) -> HeadersAt {
+        match hook {
+            HeaderHook::Tc => HeadersAt { tc: true, ..self },
+            HeaderHook::Driver => HeadersAt {
+                driver: true,
+                ..self
+            },
+        }
+    }
+
+    fn without(self, hook: HeaderHook) -> HeadersAt {
+        match hook {
+            HeaderHook::Tc => HeadersAt { tc: false, ..self },
+            HeaderHook::Driver => HeadersAt {
+                driver: false,
+                ..self
+            },
+        }
+    }
+
+    fn contains(self, hook: HeaderHook) -> bool {
+        match hook {
+            HeaderHook::Tc => self.tc,
+            HeaderHook::Driver => self.driver,
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        !self.tc && !self.driver
+    }
+}
 
 /// The driver hooks of -h (`--headers-at driver`): native XDP for received packets,
 /// tp_btf/net_dev_start_xmit for sent ones
@@ -413,6 +496,31 @@ impl DriverTracer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headers_at() {
+        assert_eq!(HeadersAt::parse("tc").unwrap(), HeadersAt::default());
+        assert_eq!(
+            HeadersAt::parse(" driver").unwrap(),
+            HeadersAt {
+                tc: false,
+                driver: true
+            }
+        );
+        assert_eq!(
+            HeadersAt::parse("tc,driver").unwrap(),
+            HeadersAt {
+                tc: true,
+                driver: true
+            }
+        );
+        assert!(HeadersAt::parse("xdp").is_err());
+        assert!(HeadersAt::parse("").is_err());
+        assert_eq!(
+            HeadersAt::parse("all").unwrap(),
+            HeadersAt::parse("driver,tc,tc").unwrap()
+        );
+    }
 
     const TC: HeadersAt = HeadersAt {
         tc: true,

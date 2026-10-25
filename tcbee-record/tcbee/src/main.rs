@@ -15,9 +15,9 @@ use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
     ip_to_filter_addr, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
-    FilterConfig, HeadersAt, HookFlags, MptcpModes,
+    FilterConfig, HookFlags, MptcpModes,
 };
-use eBPF::probes::headers::check_offloads;
+use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
 use tcbee_trace::TCBeeTrace;
 use writer::PollMode;
@@ -291,7 +291,7 @@ fn main() -> anyhow::Result<()> {
     let headers_at = if headers_at.is_empty() {
         HeadersAt::default()
     } else {
-        HeadersAt::parse(&headers_at)?
+        HeadersAt::parse(&headers_at).map_err(|e| anyhow!("--headers-at: {}", e))?
     };
     if headers_at.tc && headers_at.driver && !yes {
         // An offload that rules out the driver hooks stops the start anyway, so before asking

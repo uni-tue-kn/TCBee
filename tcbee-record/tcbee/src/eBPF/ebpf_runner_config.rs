@@ -3,7 +3,10 @@ use std::net::IpAddr;
 use anyhow::anyhow;
 
 use crate::{
-    eBPF::probes::tracepoints::{Tracepoint, TracepointSet},
+    eBPF::probes::{
+        headers::HeadersAt,
+        tracepoints::{Tracepoint, TracepointSet},
+    },
     writer::PollMode,
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
@@ -415,46 +418,6 @@ pub fn on_change_manifest(on_change: OnChange, kernel: bool, cwnd: bool) -> Mani
     }
 }
 
-/// Where -h records the headers (`--headers-at`): at TC, at the driver (XDP and
-/// net_dev_start_xmit), or both
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HeadersAt {
-    pub tc: bool,
-    pub driver: bool,
-}
-
-impl Default for HeadersAt {
-    fn default() -> HeadersAt {
-        HeadersAt {
-            tc: true,
-            driver: false,
-        }
-    }
-}
-
-impl HeadersAt {
-    /// Parses `--headers-at`: `tc`, `driver` or both, comma-separated
-    pub fn parse(arg: &str) -> anyhow::Result<HeadersAt> {
-        let mut at = HeadersAt {
-            tc: false,
-            driver: false,
-        };
-        for hook in arg.split(',').map(str::trim) {
-            match hook {
-                "tc" => at.tc = true,
-                "driver" => at.driver = true,
-                other => {
-                    return Err(anyhow!(
-                        "Unknown --headers-at hook '{}', use tc or driver",
-                        other
-                    ))
-                }
-            }
-        }
-        Ok(at)
-    }
-}
-
 #[derive(Debug)]
 pub struct EbpfRunnerConfig {
     pub iface: String,
@@ -676,27 +639,6 @@ mod tests {
         assert_eq!(oc.hooks, HookSet::of(&Hook::ON_CHANGE));
         let err = parse_on_change("cc", "state", false, true, false).unwrap_err();
         assert!(!err.to_string().contains("ingress-entry"), "{err}");
-    }
-
-    #[test]
-    fn headers_at() {
-        assert_eq!(HeadersAt::parse("tc").unwrap(), HeadersAt::default());
-        assert_eq!(
-            HeadersAt::parse(" driver").unwrap(),
-            HeadersAt {
-                tc: false,
-                driver: true
-            }
-        );
-        assert_eq!(
-            HeadersAt::parse("tc,driver").unwrap(),
-            HeadersAt {
-                tc: true,
-                driver: true
-            }
-        );
-        assert!(HeadersAt::parse("xdp").is_err());
-        assert!(HeadersAt::parse("").is_err());
     }
 
     #[test]
