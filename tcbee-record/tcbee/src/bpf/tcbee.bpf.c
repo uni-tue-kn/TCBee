@@ -1190,7 +1190,8 @@ int BPF_PROG(sock_oc_timer, struct sock *sk)
 
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */
 
-static __always_inline int trace_cubic(struct sock *sk, enum tcbee_cc_hook hook)
+static __always_inline int trace_cubic(struct sock *sk, enum tcbee_cc_hook hook,
+				       __u8 new_state)
 {
 	struct cubic_trace_entry *rec;
 	struct bictcp___tcbee *ca;
@@ -1211,6 +1212,7 @@ static __always_inline int trace_cubic(struct sock *sk, enum tcbee_cc_hook hook)
 		ca = tcp_ca(tp);
 		fill_header(rec, sk, sport, dport, hook_seq);
 		rec->hook = hook;
+		rec->new_state = new_state;
 		rec->cnt = ca->cnt;
 		rec->last_max_cwnd = ca->last_max_cwnd;
 		rec->last_cwnd = ca->last_cwnd;
@@ -1236,7 +1238,7 @@ static __always_inline int trace_cubic(struct sock *sk, enum tcbee_cc_hook hook)
 SEC("fentry/cubictcp_cong_avoid")
 int BPF_PROG(cubic_cong_control, struct sock *sk)
 {
-	return trace_cubic(sk, TCBEE_CC_HOOK_ACK);
+	return trace_cubic(sk, TCBEE_CC_HOOK_ACK, 0);
 }
 
 /*
@@ -1247,7 +1249,7 @@ int BPF_PROG(cubic_cong_control, struct sock *sk)
 SEC("fentry/cubictcp_cwnd_event")
 int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 {
-	return trace_cubic(sk, TCBEE_CC_HOOK_CWND_EVENT);
+	return trace_cubic(sk, TCBEE_CC_HOOK_CWND_EVENT, 0);
 }
 
 /*
@@ -1258,7 +1260,7 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 SEC("?fexit/cubictcp_recalc_ssthresh")
 int BPF_PROG(cubic_ssthresh, struct sock *sk)
 {
-	return trace_cubic(sk, TCBEE_CC_HOOK_SSTHRESH);
+	return trace_cubic(sk, TCBEE_CC_HOOK_SSTHRESH, 0);
 }
 
 /*
@@ -1267,9 +1269,9 @@ int BPF_PROG(cubic_ssthresh, struct sock *sk)
  * it is in the record of the ssthresh hook that tcp_enter_loss() runs just before.
  */
 SEC("?fexit/cubictcp_state")
-int BPF_PROG(cubic_state, struct sock *sk)
+int BPF_PROG(cubic_state, struct sock *sk, __u8 new_state)
 {
-	return trace_cubic(sk, TCBEE_CC_HOOK_STATE);
+	return trace_cubic(sk, TCBEE_CC_HOOK_STATE, new_state);
 }
 
 /* ---- BBR (-a) ---------------------------------------------------------------------- */

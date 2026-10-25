@@ -169,15 +169,15 @@ fn cubic() {
         source: "cubic",
         entry_size: 122,
         columns:
-            "hook:U8 cnt:U32 last_max_cwnd:U32 last_cwnd:U32 last_time:U32 bic_origin_point:U32 \
-            bic_K:U32 delay_min:U32 epoch_start:U32 ack_cnt:U32 tcp_cwnd:U32 round_start:U32 \
+            "hook:U8 new_state:U8 cnt:U32 last_max_cwnd:U32 last_cwnd:U32 last_time:U32 \
+            bic_origin_point:U32 bic_K:U32 delay_min:U32 epoch_start:U32 ack_cnt:U32 tcp_cwnd:U32 round_start:U32 \
             end_seq:U32 last_ack:U32 curr_rtt:U32",
         file: "cubic.tcp",
         records: 2000,
         ts0: 7812305775840,
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3517337537, 3795926500, 3517337537, 4294967295,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3517337537, 3795926500, 3517337537, 4294967295,
         ],
     };
     // The fixtures were recorded before the hook tag
@@ -552,7 +552,7 @@ fn file_table_maps_every_trace_file() {
     for (s, size, n) in [
         ("sock", 262, 48),
         ("tcp_probe", 124, 10),
-        ("cubic", 123, 15),
+        ("cubic", 124, 16),
         ("bbr", 168, 29),
         ("cwnd", 74, 1),
         ("tcp6", 76, 6),
@@ -860,7 +860,14 @@ fn legacy_entry_sizes_match_their_encoding() {
             .collect::<Vec<_>>(),
         [70]
     );
-    for (source, size) in [("cubic", 122), ("bbr", 118), ("tcp4", 43), ("tcp6", 67)] {
+    assert_eq!(
+        legacy::layouts("cubic")
+            .iter()
+            .map(|l| l.entry_size)
+            .collect::<Vec<_>>(),
+        [122, 123]
+    );
+    for (source, size) in [("bbr", 118), ("tcp4", 43), ("tcp6", 67)] {
         assert_eq!(
             legacy::layouts(source)
                 .iter()
@@ -888,7 +895,7 @@ fn cc_records_before_the_hook_tag_are_decoded() {
     let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
     assert_eq!(
         (b.entry_size, b.table.source, b.missing_columns),
-        (122, "cubic", legacy::CC_HOOK_MISSING)
+        (122, "cubic", legacy::CUBIC122_MISSING)
     );
     let (batch, _) = decode_first(&b, &path);
     assert_eq!(
@@ -899,10 +906,34 @@ fn cc_records_before_the_hook_tag_are_decoded() {
         ),
         (0, 70, 9)
     );
+    let old = legacy::Cubic123Entry {
+        time: 3,
+        hook_seq: 1,
+        hook: tcbee_common::records::TCBEE_CC_HOOK_STATE as u8,
+        last_max_cwnd: 70,
+        ..Default::default()
+    };
+    write_records(&path, &[old; 3], 0);
+    let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.table.source, b.missing_columns),
+        (123, "cubic", legacy::CUBIC123_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "new_state"),
+            col(&batch, b.table, "last_max_cwnd")
+        ),
+        (4, 0, 70)
+    );
     let rec = cubic_trace_entry {
         time: 3,
         hook_seq: 1,
-        hook: tcbee_common::records::TCBEE_CC_HOOK_CWND_EVENT as u8,
+        hook: tcbee_common::records::TCBEE_CC_HOOK_STATE as u8,
+        // TCP_CA_Loss
+        new_state: 4,
         last_max_cwnd: 70,
         ..Default::default()
     };
@@ -910,7 +941,13 @@ fn cc_records_before_the_hook_tag_are_decoded() {
     let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
     assert!(b.missing_columns.is_empty());
     let (batch, _) = decode_first(&b, &path);
-    assert_eq!(col(&batch, b.table, "hook"), 2);
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "new_state")
+        ),
+        (4, 4)
+    );
 
     let path = dir.path().join("bbr.tcp");
     let old = legacy::Bbr118Entry {

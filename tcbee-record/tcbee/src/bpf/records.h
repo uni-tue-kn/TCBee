@@ -184,6 +184,11 @@ struct cubic_trace_entry {
 	TCBEE_SOCK_HEADER
 	/* enum tcbee_cc_hook */
 	uint8_t hook;
+	/*
+	 * The state hook: the congestion state (TCP_CA_*) being entered, as the socket's
+	 * icsk_ca_state is only set after cubictcp_state(). 0 at the other hooks.
+	 */
+	uint8_t new_state;
 	uint32_t cnt;
 	uint32_t last_max_cwnd;
 	uint32_t last_cwnd;

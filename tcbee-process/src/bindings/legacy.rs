@@ -12,7 +12,8 @@
 //! | sock | 202 | dev with run metadata (before the rest of TCP_INFO) | the rest of TCP_INFO |
 //! | sock | 226 | dev with the rest of TCP_INFO, before the send buffer and rate fields | those |
 //! | cwnd | 70 | the per-CPU and on-change lines (no `conn_id`) | – |
-//! | cubic | 122 | every version before the hook tag | `hook` |
+//! | cubic | 122 | every version before the hook tag | `CUBIC122_MISSING`: the hook and the new state |
+//! | cubic | 123 | dev with the hook tag, before the new state of the state hook | `new_state` |
 //! | bbr | 118 | every version before the hook tag | `BBR118_MISSING`: the hook, mode, gains and rate sample |
 //! | tcp4 | 43 | before the ECN codepoint and the departure time | `PACKET_MISSING` |
 //! | tcp6 | 67 | before the ECN codepoint and the departure time | `PACKET_MISSING` |
@@ -77,10 +78,16 @@ static CWND: [Legacy; 1] = [Legacy {
     entry_size: 70,
     binding: cwnd70,
 }];
-static CUBIC: [Legacy; 1] = [Legacy {
-    entry_size: 122,
-    binding: cubic122,
-}];
+static CUBIC: [Legacy; 2] = [
+    Legacy {
+        entry_size: 122,
+        binding: cubic122,
+    },
+    Legacy {
+        entry_size: 123,
+        binding: cubic123,
+    },
+];
 static BBR: [Legacy; 1] = [Legacy {
     entry_size: 118,
     binding: bbr118,
@@ -210,7 +217,10 @@ fn cwnd70(dir: Dir) -> Binding {
 }
 
 /// Columns of the current cubic record that the layout before the hook tag does not have
-pub const CC_HOOK_MISSING: &[&str] = &["hook"];
+pub const CUBIC122_MISSING: &[&str] = &["hook", "new_state"];
+
+/// Columns of the current cubic record that the 123 B layout does not have
+pub const CUBIC123_MISSING: &[&str] = &["new_state"];
 
 /// Columns of the current bbr record that the 118 B layout does not have: the hook, the state
 /// machine and the rate sample
@@ -236,8 +246,15 @@ pub const BBR118_MISSING: &[&str] = &[
 
 fn cubic122(dir: Dir) -> Binding {
     Binding {
-        missing_columns: CC_HOOK_MISSING,
+        missing_columns: CUBIC122_MISSING,
         ..binding_of::<Cubic122Entry>(dir)
+    }
+}
+
+fn cubic123(dir: Dir) -> Binding {
+    Binding {
+        missing_columns: CUBIC123_MISSING,
+        ..binding_of::<Cubic123Entry>(dir)
     }
 }
 
@@ -651,6 +668,66 @@ impl Cubic122Entry {
     }
 }
 
+/// The cubic record with the hook tag, before the new state of the state hook
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Cubic123Entry {
+    pub time: u64,
+    pub hook_seq: u64,
+    pub addr_v4: u64,
+    pub src_v6: [u8; 16],
+    pub dst_v6: [u8; 16],
+    pub sport: u16,
+    pub dport: u16,
+    pub family: u16,
+    pub hook: u8,
+    pub cnt: u32,
+    pub last_max_cwnd: u32,
+    pub last_cwnd: u32,
+    pub last_time: u32,
+    pub bic_origin_point: u32,
+    #[allow(non_snake_case)]
+    pub bic_K: u32,
+    pub delay_min: u32,
+    pub epoch_start: u32,
+    pub ack_cnt: u32,
+    pub tcp_cwnd: u32,
+    pub round_start: u32,
+    pub end_seq: u32,
+    pub last_ack: u32,
+    pub curr_rtt: u32,
+}
+
+impl Cubic123Entry {
+    fn current(&self) -> cubic_trace_entry {
+        cubic_trace_entry {
+            time: self.time,
+            hook_seq: self.hook_seq,
+            addr_v4: self.addr_v4,
+            src_v6: self.src_v6,
+            dst_v6: self.dst_v6,
+            sport: self.sport,
+            dport: self.dport,
+            family: self.family,
+            hook: self.hook,
+            cnt: self.cnt,
+            last_max_cwnd: self.last_max_cwnd,
+            last_cwnd: self.last_cwnd,
+            last_time: self.last_time,
+            bic_origin_point: self.bic_origin_point,
+            bic_K: self.bic_K,
+            delay_min: self.delay_min,
+            epoch_start: self.epoch_start,
+            ack_cnt: self.ack_cnt,
+            tcp_cwnd: self.tcp_cwnd,
+            round_start: self.round_start,
+            end_seq: self.end_seq,
+            last_ack: self.last_ack,
+            curr_rtt: self.curr_rtt,
+            ..Default::default()
+        }
+    }
+}
+
 /// The bbr record before the hook tag
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Bbr118Entry {
@@ -809,6 +886,7 @@ legacy_event!(Sock202Entry, sock_trace_entry, 202);
 legacy_event!(Sock226Entry, sock_trace_entry, 226);
 legacy_event!(Cwnd70Entry, cwnd_trace_entry, 70);
 legacy_event!(Cubic122Entry, cubic_trace_entry, 122);
+legacy_event!(Cubic123Entry, cubic_trace_entry, 123);
 legacy_event!(Bbr118Entry, bbr_trace_entry, 118);
 legacy_event!(Tcp4Packet43Entry, tcp4_packet_trace, 43);
 legacy_event!(Tcp6Packet67Entry, tcp6_packet_trace, 67);
