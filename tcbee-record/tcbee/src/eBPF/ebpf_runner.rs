@@ -211,6 +211,37 @@ fn sock_hooks_left(
     Ok(left)
 }
 
+/// -a records CUBIC, BBR and Reno, each only if the kernel has it. False if it has none of
+/// them, or rejected them, and -a records nothing; an error if -a is the only thing to record.
+fn algorithms_left(
+    config: &EbpfRunnerConfig,
+    optional: &BTreeSet<OptionalGroup>,
+) -> Result<bool, Box<dyn Error>> {
+    if !config.algorithms {
+        return Ok(true);
+    }
+    let left = [
+        OptionalGroup::Cubic,
+        OptionalGroup::Bbr,
+        OptionalGroup::Reno,
+    ]
+    .iter()
+    .any(|group| optional.contains(group));
+    let others = config.headers
+        || !config.tracepoints.is_empty()
+        || config.kernel
+        || config.cwnd
+        || config.mptcp.pm;
+    if !left && !others {
+        return Err(
+            "-a has none of CUBIC (is tcp_cubic loaded?), BBR and Reno in this kernel, it would \
+             record nothing"
+                .into(),
+        );
+    }
+    Ok(left)
+}
+
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
@@ -267,7 +298,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
             config.tracepoints.contains(Tracepoint::BadCsum),
             &[RB_BAD_CSUM],
         ),
-        (config.algorithms, &[RB_CUBIC]),
+        (optional.contains(&OptionalGroup::Cubic), &[RB_CUBIC]),
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
         (tcp_events, &[RB_TCP_EVENTS]),
@@ -467,13 +498,19 @@ impl EbpfRunner {
                 c.tracepoints.intersects(TracepointTracer::TRACEPOINTS),
                 "tracepoints",
             ),
-            (c.algorithms, "cubic"),
+            (optional.contains(&OptionalGroup::Cubic), "cubic"),
         ]
         .into_iter()
         .filter(|(enabled, _)| *enabled)
         .map(|(_, name)| name.to_string())
         .collect();
-        groups.extend(optional.iter().map(|group| group.name().to_string()));
+        // CUBIC keeps the name it had before it became optional
+        groups.extend(
+            optional
+                .iter()
+                .filter(|group| **group != OptionalGroup::Cubic)
+                .map(|group| group.name().to_string()),
+        );
         if c.headers {
             let at = c.headers_at;
             let hooks = [(at.tc, "tc"), (at.driver, "driver")]
@@ -621,10 +658,13 @@ impl EbpfRunner {
         );
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
-        let (cubic_hooks, missing_cubic) =
+        let (cubic, cubic_hooks, missing_cubic) =
             CubicTracer::configure(&mut open, self.config.algorithms, disabled, btf)?;
         let mut optional =
             BTreeSet::from_iter(cubic_hooks.into_iter().map(OptionalGroup::CubicHook));
+        if cubic {
+            optional.insert(OptionalGroup::Cubic);
+        }
         if mptcp_tag {
             optional.insert(OptionalGroup::MptcpTag);
         }
@@ -846,28 +886,45 @@ impl EbpfRunner {
             watcher_config.graphs.tracepoints = true;
         }
 
-        if self.config.algorithms {
-            for (hook, message) in CubicTracer::spawn(skel, dir, writer, links)? {
-                optional.remove(&OptionalGroup::CubicHook(hook));
-                self.skipped.push(message);
-            }
-            watcher_config.graphs.cubic = true;
-            if optional.contains(&OptionalGroup::Bbr) {
-                // BBR fails softly, so a program that was attached before the error has
-                // to be detached here. Other groups fail the start, stop() detaches them.
-                let attached = links.len();
-                match BBRTracer::spawn(skel, dir, writer, links) {
-                    Ok(()) => watcher_config.graphs.bbr = true,
-                    Err(err) => {
-                        links.truncate(attached);
-                        // Its ring exists but holds nothing, like the timer's below
-                        self.ringbuf_sizes[RB_BBR as usize] = None;
-                        self.skipped.push(format!("BBR: attaching failed: {}", err));
-                        error!(
-                            "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
-                            err
-                        );
+        if optional.contains(&OptionalGroup::Cubic) {
+            // CUBIC fails softly like BBR below
+            let attached = links.len();
+            match CubicTracer::spawn(skel, dir, writer, links) {
+                Ok(failed) => {
+                    for (hook, message) in failed {
+                        optional.remove(&OptionalGroup::CubicHook(hook));
+                        self.skipped.push(message);
                     }
+                    watcher_config.graphs.cubic = true;
+                }
+                Err(err) => {
+                    links.truncate(attached);
+                    optional.retain(|group| {
+                        !matches!(group, OptionalGroup::Cubic | OptionalGroup::CubicHook(_))
+                    });
+                    self.ringbuf_sizes[RB_CUBIC as usize] = None;
+                    self.skipped
+                        .push(format!("CUBIC: attaching failed: {}", err));
+                    warn!("Recording without CUBIC: {}", err);
+                }
+            }
+        }
+        if optional.contains(&OptionalGroup::Bbr) {
+            // BBR fails softly, so a program that was attached before the error has
+            // to be detached here. Other groups fail the start, stop() detaches them.
+            let attached = links.len();
+            match BBRTracer::spawn(skel, dir, writer, links) {
+                Ok(()) => watcher_config.graphs.bbr = true,
+                Err(err) => {
+                    links.truncate(attached);
+                    optional.remove(&OptionalGroup::Bbr);
+                    // Its ring exists but holds nothing, like the timer's below
+                    self.ringbuf_sizes[RB_BBR as usize] = None;
+                    self.skipped.push(format!("BBR: attaching failed: {}", err));
+                    error!(
+                        "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
+                        err
+                    );
                 }
             }
         }
@@ -925,6 +982,11 @@ impl EbpfRunner {
             warn!("-k has no hook left in this kernel and records nothing");
             self.skipped
                 .push("-k: no hook left in this kernel".to_string());
+        }
+        if !algorithms_left(&self.config, &optional)? {
+            warn!("-a has none of CUBIC, BBR and Reno in this kernel and records nothing");
+            self.skipped
+                .push("-a: no algorithm left in this kernel".to_string());
         }
 
         // TODO: should be true by default in get_watcher_config()
@@ -1019,12 +1081,30 @@ mod tests {
     }
 
     #[test]
-    fn reno_ring_follows_the_reno_group() {
+    fn algorithm_rings_follow_their_groups() {
         let config = EbpfRunnerConfig::new().algorithms(true);
         let none = BTreeSet::new();
+        assert!(enabled_ringbufs(&config, &none).is_empty());
         let reno = BTreeSet::from([OptionalGroup::Reno]);
-        assert!(enabled_ringbufs(&config, &none).contains(&RB_CUBIC));
-        assert!(!enabled_ringbufs(&config, &none).contains(&RB_RENO));
-        assert!(enabled_ringbufs(&config, &reno).contains(&RB_RENO));
+        assert_eq!(enabled_ringbufs(&config, &reno), [RB_RENO]);
+        let cubic = BTreeSet::from([OptionalGroup::Cubic]);
+        assert_eq!(enabled_ringbufs(&config, &cubic), [RB_CUBIC]);
+    }
+
+    #[test]
+    fn a_without_any_algorithm_left_is_an_error_only_alone() {
+        let config = EbpfRunnerConfig::new().algorithms(true);
+        let none = BTreeSet::new();
+        assert!(algorithms_left(&config, &none).is_err());
+        for group in [
+            OptionalGroup::Cubic,
+            OptionalGroup::Bbr,
+            OptionalGroup::Reno,
+        ] {
+            assert!(algorithms_left(&config, &BTreeSet::from([group])).unwrap());
+        }
+        let with_headers = EbpfRunnerConfig::new().algorithms(true).headers(true);
+        assert!(!algorithms_left(&with_headers, &none).unwrap());
+        assert!(algorithms_left(&EbpfRunnerConfig::new(), &none).unwrap());
     }
 }

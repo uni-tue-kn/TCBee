@@ -13,9 +13,9 @@ use crate::eBPF::probes::{
     tcp_events::TCP_EVENT_HOOKS,
 };
 
-/// Number of optional groups: BBR, Reno, MPTCP tagging, the timer, the path manager and one
-/// per hook of the tables
-const GROUPS: usize = 5 + CUBIC_HOOKS.len() + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len();
+/// Number of optional groups: BBR, CUBIC, Reno, MPTCP tagging, the timer, the path manager
+/// and one per hook of the tables
+const GROUPS: usize = 6 + CUBIC_HOOKS.len() + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len();
 
 /// The program names of `PM_HOOKS`
 const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
@@ -31,7 +31,10 @@ const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OptionalGroup {
     Bbr,
-    /// One CUBIC hook of -a, the index into `CUBIC_HOOKS`
+    /// The CUBIC programs of -a at each ACK and at the cwnd event, the ones of the default
+    /// recording; they need tcp_cubic loaded or built in
+    Cubic,
+    /// One more CUBIC hook of -a, the index into `CUBIC_HOOKS`
     CubicHook(usize),
     /// The Reno hooks of -a, `RENO_HOOKS`
     Reno,
@@ -53,7 +56,8 @@ impl OptionalGroup {
     /// nothing. A program that still fails without tagging is then blamed on its own group.
     pub const ALL: [OptionalGroup; GROUPS] = {
         let mut all = [OptionalGroup::Bbr; GROUPS];
-        let mut n = 1;
+        all[1] = OptionalGroup::Cubic;
+        let mut n = 2;
         let mut i = 0;
         while i < CUBIC_HOOKS.len() {
             all[n] = OptionalGroup::CubicHook(i);
@@ -84,6 +88,7 @@ impl OptionalGroup {
     pub fn name(self) -> &'static str {
         match self {
             OptionalGroup::Bbr => "BBR",
+            OptionalGroup::Cubic => "CUBIC",
             OptionalGroup::CubicHook(i) => CUBIC_HOOKS[i].name,
             OptionalGroup::Reno => RENO_HOOKS[0].name,
             OptionalGroup::SockTimer => "write timer hook",
@@ -106,6 +111,7 @@ impl OptionalGroup {
     pub fn programs(self) -> &'static [&'static str] {
         match self {
             OptionalGroup::Bbr => &["bbr_cong_control", "bbr_cwnd_event"],
+            OptionalGroup::Cubic => &["cubic_cong_control", "cubic_cwnd_event"],
             OptionalGroup::CubicHook(i) => CUBIC_HOOKS[i].programs,
             OptionalGroup::Reno => RENO_HOOKS[0].programs,
             OptionalGroup::SockTimer => &["sock_timer"],
@@ -338,9 +344,12 @@ mod tests {
             to_disable(&enabled, &w),
             Some(BTreeSet::from([OptionalGroup::CubicHook(1)]))
         );
-        // The default CUBIC programs are not optional
+        // The default CUBIC programs are optional together, like BBR's
         let w = warnings(&["libbpf: prog 'cubic_cong_control': failed to load: -22"]);
-        assert_eq!(to_disable(&enabled, &w), None);
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::Cubic]))
+        );
     }
 
     #[test]

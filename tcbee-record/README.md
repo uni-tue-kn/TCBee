@@ -297,9 +297,11 @@ Reno keeps no private state. `-a` writes the socket's `snd_cwnd`, `snd_ssthresh`
   `tcp_bad_csum` tracepoint of `-t` appeared in 5.11.
 - `--on-change` uses BPF socket storage in fentry/fexit programs (5.11). The timer hook needs
   `tcp_write_timer_handler` as a traceable (not inlined) function with BTF; checked on 6.8.
-- `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
-  `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
-  and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.
+- `-a` with CUBIC or BBR built as a module needs module BTF (5.11). CUBIC and BBR are only
+  traced if `tcp_cubic` or `tcp_bbr` is loaded (or built in) when tcbee-record starts;
+  otherwise `-a` records the other algorithms, logs the missing one and lists it as skipped in
+  the metadata. Load them beforehand with `sudo modprobe tcp_bbr`. `-a` fails only
+  if the kernel has none of CUBIC, BBR and Reno and nothing else is recorded.
 - The TCP events of `-t` attach BTF tracepoints (`tp_btf`) and fentry. Congestion state changes
   need the `tcp_cong_state_set` tracepoint (5.19); older kernels record CWR through `tcp_enter_cwr`
   instead, which may miss the CWR after ECN marks where the compiler inlined the call. RSTs that

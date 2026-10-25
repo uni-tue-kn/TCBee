@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, error::Error};
 
 use libbpf_rs::{skel::OpenSkel, Link};
+use log::warn;
 use tcbee_common::records::cubic_trace_entry;
 
 use tcbee_common::stats::RB_CUBIC;
@@ -27,8 +28,8 @@ const CONG_AVOID: &str = "cubictcp_cong_avoid";
 /// Renamed in kernel 7.2
 const CWND_EVENT: [&str; 2] = ["cubictcp_cwnd_event", "cubictcp_cwnd_event_tx_start"];
 
-/// The CUBIC hooks of -a besides the ACK and cwnd event ones. Each one is optional on its own
-/// (`OptionalGroup::CubicHook`).
+/// The CUBIC hooks of -a besides the ACK and cwnd event ones (`OptionalGroup::Cubic`), which
+/// they load with. Each one is optional on its own (`OptionalGroup::CubicHook`).
 pub const CUBIC_HOOKS: [OptionalHook<()>; 2] = [
     OptionalHook {
         programs: &["cubic_ssthresh"],
@@ -51,25 +52,34 @@ fn not_recorded(name: &str) -> String {
 pub struct CubicTracer {}
 
 impl CubicTracer {
-    /// Fails if CUBIC is enabled but not available in the kernel. Loads the hooks of
-    /// `CUBIC_HOOKS` that exist in the kernel and are not in `disabled`; returns their indices
-    /// and a message for each one the kernel lacks.
+    /// The ACK and cwnd event programs need tcp_cubic loaded (or built in). Without it, or if
+    /// they are `disabled`, CUBIC is left out like BBR, with a message. Otherwise the hooks of
+    /// `CUBIC_HOOKS` that exist in the kernel and are not `disabled` load too. Returns whether
+    /// CUBIC loads, the indices of the loaded hooks and a message for each one the kernel
+    /// lacks.
     pub fn configure(
         open: &mut OpenTcbeeSkel<'_>,
         enabled: bool,
         disabled: &BTreeSet<OptionalGroup>,
         btf: &mut KernelBtf,
-    ) -> Result<(Vec<usize>, Vec<String>), EBPFRunnerError> {
+    ) -> Result<(bool, Vec<usize>, Vec<String>), EBPFRunnerError> {
+        let mut enabled = enabled && !disabled.contains(&OptionalGroup::Cubic);
+        let mut skipped = Vec::new();
+        if enabled && btf.available() && !btf.has_func(Some(MODULE), CONG_AVOID) {
+            warn!(
+                "The kernel function {} does not exist, CUBIC is not recorded (is {} loaded?)",
+                CONG_AVOID, MODULE
+            );
+            skipped.push(format!(
+                "CUBIC: no kernel function {} in this kernel",
+                CONG_AVOID
+            ));
+            enabled = false;
+        }
         let progs = &mut open.progs;
         progs.cubic_cong_control.set_autoload(enabled);
         progs.cubic_cwnd_event.set_autoload(enabled);
         if enabled && btf.available() {
-            if !btf.has_func(Some(MODULE), CONG_AVOID) {
-                return Err(EBPFRunnerError::Unavailable(format!(
-                    "Kernel function {} not found, is {} loaded?",
-                    CONG_AVOID, MODULE
-                )));
-            }
             retarget(&mut progs.cubic_cwnd_event, btf, Some(MODULE), &CWND_EVENT)?;
         }
         let exists = optional_hooks::existing(&CUBIC_HOOKS, |()| enabled, btf);
@@ -80,16 +90,18 @@ impl CubicTracer {
             disabled,
             OptionalGroup::CubicHook,
         );
-        let skipped = missing
-            .into_iter()
-            .map(|i| optional_hooks::report_missing(&CUBIC_HOOKS[i], not_recorded))
-            .collect();
+        skipped.extend(
+            missing
+                .into_iter()
+                .map(|i| optional_hooks::report_missing(&CUBIC_HOOKS[i], not_recorded)),
+        );
         let loaded = optional_hooks::set_autoload(&CUBIC_HOOKS, open.open_object_mut(), &load);
-        Ok((loaded, skipped))
+        Ok((enabled, loaded, skipped))
     }
 
-    /// Attaches the programs and registers the writer. A hook of `CUBIC_HOOKS` that does not
-    /// attach is left out with a warning; returns its index and a message for each.
+    /// Attaches the programs and registers the writer; on an error the caller detaches what
+    /// was attached. A hook of `CUBIC_HOOKS` that does not attach is left out with a warning;
+    /// returns its index and a message for each.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
