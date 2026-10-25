@@ -114,11 +114,11 @@ impl EBPFWatcher {
 
             // Update tracker of all flows internal list and then show it
             self.flow_tracker.read_flows();
-            let flows = self.flow_tracker.flows();
+            let flows = &self.flow_tracker.flows;
 
             let mut areas = Areas::default();
             let _ = self.terminal.as_mut().unwrap().draw(|frame| {
-                areas = render(frame, &self.model, &self.view, &ui, &flows);
+                areas = render(frame, &self.model, &self.view, &ui, flows);
             });
 
             // Wait for key events until the next update
@@ -135,7 +135,7 @@ impl EBPFWatcher {
                 }
                 match event::read() {
                     Ok(event::Event::Key(key)) => {
-                        if ui.on_key(key.code, self.model.charts.len(), flows.len()) {
+                        if ui.on_key(key.code, &areas, flows.len()) {
                             self.token.cancel();
                         }
                     }
