@@ -1,10 +1,10 @@
 use std::cell::{OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ts_storage::{
-    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, SeriesInfo, SeriesKind,
-    Store, StoreError,
+    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, SeriesInfo,
+    SeriesKind, Store, StoreError,
 };
 
 use crate::{backend::binding::series_label, data::series_data::SeriesData};
@@ -126,6 +126,8 @@ pub struct DbBackend {
     connection_flows: OnceCell<Vec<ConnectionFlow>>,
     /// Flow id to "connection/subflow" labels, see `connection_label`
     connection_labels: OnceCell<HashMap<i64, String>>,
+    /// The owners of each flow with their label, see `owner_label`; read on first use
+    owners: OnceCell<HashMap<i64, (String, Vec<FlowOwner>)>>,
     /// The meta table, read on first use
     meta: OnceCell<Vec<(String, String)>>,
     /// (source, dir code, watched fields) of the on-change files, from the catalog meta
@@ -212,6 +214,55 @@ impl DbBackend {
             labels
         });
         labels.get(&flow_id).map_or("", String::as_str)
+    }
+
+    /// The owners of each flow with the label `owner_label` gives, read on first use. A
+    /// database written before owners were recorded has none.
+    fn owners(&self) -> &HashMap<i64, (String, Vec<FlowOwner>)> {
+        self.owners.get_or_init(|| {
+            let Some(db) = &self.store else {
+                return HashMap::new();
+            };
+            let owners = db.flow_owners().unwrap_or_else(|e| {
+                self.report(format!("listing flow owners failed: {e}"));
+                Vec::new()
+            });
+            let mut by_flow: HashMap<i64, (String, Vec<FlowOwner>)> = HashMap::new();
+            let mut named = HashSet::new();
+            // Ordered by flow and time, so the labels list the processes in time order
+            for owner in owners {
+                let (label, list) = by_flow.entry(owner.flow_id).or_default();
+                // A comm may hold ", " itself, so the label is not split to find a process
+                if named.insert((owner.flow_id, owner.comm.clone(), owner.pid)) {
+                    if !label.is_empty() {
+                        label.push_str(", ");
+                    }
+                    label.push_str(&owner_name(&owner));
+                }
+                list.push(owner);
+            }
+            by_flow
+        })
+    }
+
+    /// Whether the database knows the process of any flow
+    pub fn has_owners(&self) -> bool {
+        !self.owners().is_empty()
+    }
+
+    /// The processes that owned a flow, in time order; empty if none is known
+    pub fn flow_owners(&self, flow_id: i64) -> &[FlowOwner] {
+        self.owners()
+            .get(&flow_id)
+            .map_or(&[], |(_, owners)| owners.as_slice())
+    }
+
+    /// The processes of a flow as "comm[pid]", comma separated if several owned it (a reused
+    /// tuple, a socket that processes share). Empty for none.
+    pub fn owner_label(&self, flow_id: i64) -> &str {
+        self.owners()
+            .get(&flow_id)
+            .map_or("", |(label, _)| label.as_str())
     }
 
     /// All meta entries ordered by key, read on first use.
@@ -503,6 +554,15 @@ pub fn datavalue_as_f64(v: &DataValue) -> Option<f64> {
     }
 }
 
+/// A process as "comm[pid]"; a kernel thread's name in brackets, as ps shows it
+fn owner_name(owner: &FlowOwner) -> String {
+    if owner.kthread {
+        format!("[{}][{}]", owner.comm, owner.pid)
+    } else {
+        format!("{}[{}]", owner.comm, owner.pid)
+    }
+}
+
 pub fn format_flow(flow: &Flow) -> String {
     format!(
         "ID:{} {}:{} -> {}:{}",
@@ -617,8 +677,29 @@ mod tests {
                 l4proto: 6,
             },
         );
+        let owner = |ts, pid, comm: &str| FlowOwner {
+            flow_id: 1,
+            ts,
+            source: FlowOwner::SOURCE_CONNECT.into(),
+            pid,
+            comm: comm.into(),
+            ..FlowOwner::default()
+        };
         s.finish(Catalog {
             flows: vec![flow],
+            owners: vec![
+                FlowOwner {
+                    uid: Some(1000),
+                    cmdline: Some("curl -O http://10.0.0.2/x".into()),
+                    ..owner(5, 42, "curl")
+                },
+                // The same process again (another snapshot holder), and a kernel thread
+                owner(6, 42, "curl"),
+                FlowOwner {
+                    kthread: true,
+                    ..owner(900, 77, "kworker/0:1")
+                },
+            ],
             series: acc.into_series(1),
             meta: vec![
                 ("writer".into(), "tcbee-viz test".into()),
@@ -683,6 +764,21 @@ mod tests {
             },
         );
         assert_eq!(format_flow(&flow), "ID:3 10.31.2.1:58139 -> 10.31.1.2:5501");
+    }
+
+    #[test]
+    fn flows_are_labelled_with_their_processes() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            assert!(db.has_owners());
+            assert_eq!(db.owner_label(1), "curl[42], [kworker/0:1][77]");
+            assert_eq!(db.flow_owners(1).len(), 3);
+            assert_eq!(db.owner_label(2), "");
+            assert!(db.flow_owners(2).is_empty());
+        }
+        let closed = DbBackend::default();
+        assert!(!closed.has_owners());
+        assert_eq!(closed.owner_label(1), "");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use egui::{RichText, Ui};
-use ts_storage::Flow;
+use ts_storage::{Flow, FlowOwner};
 
 use crate::{
     backend::db::DbBackend,
@@ -16,9 +16,10 @@ const COL_PORT: f32 = 54.0;
 const COL_SERIES: f32 = 54.0;
 const COL_POINTS: f32 = 72.0;
 const COL_CONN: f32 = 54.0;
+const COL_PROC: f32 = 140.0;
 const FILTER_GAP: f32 = 20.0;
 const FILTER_HELP: &str = "Filter syntax:\n\
-Plain text searches all flow columns.\n\
+Plain text searches all flow columns and the process names.\n\
 Use column:value to limit a term:\n\
   id:52\n\
   src:10.0.0.1\n\
@@ -27,6 +28,10 @@ Use column:value to limit a term:\n\
   dport:5201\n\
   port:443\n\
   conn:3 (flows of MPTCP connection 3)\n\
+  proc:curl (process name)\n\
+  pid:4242\n\
+  uid:1000\n\
+  cmd:https (command line)\n\
 Combine terms with spaces, e.g. src:10.0.0.1 dport:443";
 
 /// A filterable table widget for selecting a TCP flow.
@@ -87,12 +92,13 @@ impl FlowTable {
             );
 
             let filter_lower = self.filter.to_lowercase();
-            // The connection column only appears for recordings with connections
+            // The connection and process columns only appear for recordings that have them
             let show_conn = !db.list_connections().is_empty();
+            let show_proc = db.has_owners();
             let visible: Vec<(&Flow, &str)> = flows
                 .iter()
                 .map(|f| (f, db.connection_label(f.id)))
-                .filter(|(f, conn)| flow_matches(f, conn, &filter_lower))
+                .filter(|(f, conn)| flow_matches(f, conn, db.flow_owners(f.id), &filter_lower))
                 .collect();
 
             ui.separator();
@@ -110,7 +116,8 @@ impl FlowTable {
 
             // ── Header ────────────────────────────────────────────────────────
             let conn_w = if show_conn { COL_CONN } else { 0.0 };
-            let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w;
+            let proc_w = if show_proc { COL_PROC } else { 0.0 };
+            let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w + proc_w;
             let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
 
             table::header_row(ui, content_w, |ui| {
@@ -121,6 +128,10 @@ impl FlowTable {
                 header_cell(ui, "Dport", COL_PORT);
                 if show_conn {
                     header_cell(ui, "Conn", COL_CONN).on_hover_text("MPTCP connection/subflow");
+                }
+                if show_proc {
+                    header_cell(ui, "Process", COL_PROC)
+                        .on_hover_text("The process that opened the connection, name[pid]");
                 }
                 header_cell(ui, "Series", COL_SERIES);
                 header_cell(ui, "Points", COL_POINTS);
@@ -162,6 +173,14 @@ impl FlowTable {
                             if show_conn {
                                 data_cell(ui, conn, COL_CONN, is_selected);
                             }
+                            if show_proc {
+                                let owners = db.flow_owners(fid);
+                                let cell =
+                                    data_cell(ui, db.owner_label(fid), COL_PROC, is_selected);
+                                if !owners.is_empty() {
+                                    cell.on_hover_ui(|ui| owner_details(ui, owners));
+                                }
+                            }
                             data_cell(ui, &stats.series_count.to_string(), COL_SERIES, is_selected);
                             data_cell(
                                 ui,
@@ -189,6 +208,15 @@ impl FlowTable {
     }
 }
 
+/// The owners of a flow, one line each, for the hover of the process cell
+fn owner_details(ui: &mut Ui, owners: &[FlowOwner]) {
+    for o in owners {
+        let uid = o.uid.map(|uid| format!(", uid {uid}")).unwrap_or_default();
+        let cmd = o.cmdline.as_deref().unwrap_or(&o.comm);
+        ui.label(format!("{}[{}] ({}{uid}): {cmd}", o.comm, o.pid, o.source));
+    }
+}
+
 fn flow_stats(db: &DbBackend, flow: &Flow) -> FlowStats {
     // Catalog rows carry the point counts.
     let series = db.list_series_for_flow(flow.id);
@@ -199,8 +227,9 @@ fn flow_stats(db: &DbBackend, flow: &Flow) -> FlowStats {
     }
 }
 
-/// `conn` is the flow's connection label, see `DbBackend::connection_label`
-fn flow_matches(flow: &Flow, conn: &str, filter: &str) -> bool {
+/// `conn` is the flow's connection label, see `DbBackend::connection_label`, `owners` its
+/// processes, `DbBackend::flow_owners`
+fn flow_matches(flow: &Flow, conn: &str, owners: &[FlowOwner], filter: &str) -> bool {
     if filter.is_empty() {
         return true;
     }
@@ -208,13 +237,16 @@ fn flow_matches(flow: &Flow, conn: &str, filter: &str) -> bool {
     if filter.split_whitespace().count() > 1 {
         return filter
             .split_whitespace()
-            .all(|term| flow_matches(flow, conn, term));
+            .all(|term| flow_matches(flow, conn, owners, term));
     }
 
     if let Some((column, value)) = filter.split_once(':') {
         if column == "conn" {
             return value.is_empty()
                 || conn.split(", ").any(|c| c.split('/').next() == Some(value));
+        }
+        if let Some(matches) = owner_matches(owners, column, value) {
+            return matches;
         }
         return flow_column_matches(flow, column, value);
     }
@@ -229,6 +261,28 @@ fn flow_matches(flow: &Flow, conn: &str, filter: &str) -> bool {
         || sport.contains(filter)
         || dport.contains(filter)
         || id.contains(filter)
+        || owners
+            .iter()
+            .any(|o| o.comm.to_lowercase().contains(filter))
+}
+
+/// The terms on the processes of a flow, None for other columns. pid and uid are exact, the
+/// names parts of them; the command line is the process name where it is not known.
+fn owner_matches(owners: &[FlowOwner], column: &str, value: &str) -> Option<bool> {
+    let any = |matches: &dyn Fn(&FlowOwner) -> bool| value.is_empty() || owners.iter().any(matches);
+    Some(match column {
+        "proc" | "process" | "comm" => any(&|o| o.comm.to_lowercase().contains(value)),
+        "pid" => any(&|o| o.pid.to_string() == value),
+        "uid" => any(&|o| o.uid.is_some_and(|uid| uid.to_string() == value)),
+        "cmd" | "cmdline" => any(&|o| {
+            o.cmdline
+                .as_deref()
+                .unwrap_or(&o.comm)
+                .to_lowercase()
+                .contains(value)
+        }),
+        _ => return None,
+    })
 }
 
 fn flow_column_matches(flow: &Flow, column: &str, value: &str) -> bool {
@@ -287,11 +341,62 @@ mod tests {
     #[test]
     fn conn_filter_matches_the_connection_id() {
         let f = flow();
-        assert!(flow_matches(&f, "3/2", "conn:3"));
-        assert!(flow_matches(&f, "1, 3", "conn:3"));
-        assert!(!flow_matches(&f, "13/1", "conn:3"));
-        assert!(!flow_matches(&f, "", "conn:3"));
-        assert!(flow_matches(&f, "3/2", "conn:3 dport:5201"));
-        assert!(flow_matches(&f, "", "dport:5201"));
+        assert!(flow_matches(&f, "3/2", &[], "conn:3"));
+        assert!(flow_matches(&f, "1, 3", &[], "conn:3"));
+        assert!(!flow_matches(&f, "13/1", &[], "conn:3"));
+        assert!(!flow_matches(&f, "", &[], "conn:3"));
+        assert!(flow_matches(&f, "3/2", &[], "conn:3 dport:5201"));
+        assert!(flow_matches(&f, "", &[], "dport:5201"));
+    }
+
+    fn owners() -> Vec<FlowOwner> {
+        vec![
+            FlowOwner {
+                pid: 4242,
+                uid: Some(1000),
+                comm: "curl".into(),
+                cmdline: Some("curl -O https://example.org/x".into()),
+                ..FlowOwner::default()
+            },
+            FlowOwner {
+                pid: 7,
+                uid: Some(0),
+                comm: "Isolated Web Co".into(),
+                ..FlowOwner::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn process_terms_match_the_owners() {
+        let (f, o) = (flow(), owners());
+        for term in [
+            "proc:curl",
+            "proc:web",
+            "pid:4242",
+            "pid:7",
+            "uid:1000",
+            "uid:0",
+            "cmd:example.org",
+            "cmd:isolated",
+            "curl",
+            "proc:curl dport:5201",
+            "pid:",
+        ] {
+            assert!(flow_matches(&f, "", &o, term), "{term}");
+        }
+        for term in [
+            "proc:wget",
+            "pid:424",
+            "uid:10",
+            "cmd:wget",
+            "wget",
+            "proc:curl dport:22",
+        ] {
+            assert!(!flow_matches(&f, "", &o, term), "{term}");
+        }
+        // A flow without known owners matches no process term
+        assert!(!flow_matches(&f, "", &[], "proc:curl"));
+        assert!(flow_matches(&f, "", &[], "10.0.0.1"));
     }
 }
