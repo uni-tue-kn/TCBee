@@ -6,7 +6,7 @@ use ratatui::style::Color;
 use tcbee_common::stats::{
     invocation_slots, packet_rings, slot, RB_BAD_CSUM, RB_BBR, RB_COUNT, RB_CUBIC, RB_CWND_RECV,
     RB_CWND_SEND, RB_RETRANSMIT_SYNACK, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND, RB_SOCK_TIMER,
-    RB_TCP_PROBE, STAT_DROPPED, STAT_HANDLED,
+    RB_TCP4_DRIVER_INGRESS, RB_TCP4_INGRESS, RB_TCP_PROBE, STAT_DROPPED, STAT_HANDLED,
 };
 
 use crate::{
@@ -36,7 +36,7 @@ struct Slots {
 }
 
 impl Slots {
-    fn new(driver_packets: bool) -> Slots {
+    fn new(active_rings: &[u32]) -> Slots {
         let all = |stat: u32| (0..RB_COUNT).map(|rb| slot(rb, stat)).collect::<Vec<u32>>();
         let attempts = |rbs: &[u32]| {
             rbs.iter()
@@ -44,6 +44,8 @@ impl Slots {
                 .collect::<Vec<u32>>()
         };
         // With both header hooks, the TC rates
+        let driver_packets = !active_rings.contains(&RB_TCP4_INGRESS)
+            && active_rings.contains(&RB_TCP4_DRIVER_INGRESS);
         let (ingress, egress) = packet_rings(driver_packets);
         Slots {
             handled: all(STAT_HANDLED),
@@ -76,7 +78,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(driver_packets: bool, observation_window: Option<f64>) -> Model {
+    pub fn new(active_rings: &[u32], observation_window: Option<f64>) -> Model {
         let window = observation_window;
         let graphs = vec![
             Graph::new(
@@ -129,7 +131,7 @@ impl Model {
             ticks: 0,
             bytes_written: 0,
             previous_bytes: 0,
-            slots: Slots::new(driver_packets),
+            slots: Slots::new(active_rings),
             graphs,
         }
     }

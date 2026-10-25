@@ -6,16 +6,19 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{
         Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState,
+        Wrap,
     },
     Frame,
 };
+use tcbee_common::stats::{RB_BBR, RB_CUBIC};
 
 use crate::{
-    eBPF::ebpf_runner_config::GraphConfig,
+    eBPF::ebpf_runner_config::EbpfWatcherConfig,
     viz::{
         components::status::Status,
         flow_tracker::{flow_table, Flow},
         format,
+        groups::{display_group, Group},
         model::{
             Model, GRAPH_BBR, GRAPH_CALLS, GRAPH_CUBIC, GRAPH_EVENTS, GRAPH_PACKETS,
             GRAPH_TRACEPOINTS,
@@ -27,27 +30,26 @@ use crate::{
 pub struct View {
     /// Tab titles and the graph each shows
     pub tabs: Vec<(&'static str, usize)>,
-    pub observation_window: Option<f64>,
+    pub context: EbpfWatcherConfig,
 }
 
 impl View {
-    pub fn new(graphs: &GraphConfig, observation_window: Option<f64>) -> View {
+    pub fn new(context: EbpfWatcherConfig) -> View {
+        let rings = &context.active_rings;
+        let group = |group: Group| rings.iter().any(|rb| display_group(*rb) == group);
         let tabs = [
-            (graphs.events, "Events", GRAPH_EVENTS),
-            (graphs.packets, "Packets", GRAPH_PACKETS),
-            (graphs.kernel, "Kernel", GRAPH_CALLS),
-            (graphs.cubic, "Cubic", GRAPH_CUBIC),
-            (graphs.bbr, "BBR", GRAPH_BBR),
-            (graphs.tracepoints, "Tracepoints", GRAPH_TRACEPOINTS),
+            (true, "Events", GRAPH_EVENTS),
+            (group(Group::Headers), "Packets", GRAPH_PACKETS),
+            (group(Group::Sock), "Kernel", GRAPH_CALLS),
+            (rings.contains(&RB_CUBIC), "Cubic", GRAPH_CUBIC),
+            (rings.contains(&RB_BBR), "BBR", GRAPH_BBR),
+            (group(Group::Tracepoints), "Tracepoints", GRAPH_TRACEPOINTS),
         ]
         .into_iter()
         .filter(|(shown, _, _)| *shown)
         .map(|(_, title, graph)| (title, graph))
         .collect();
-        View {
-            tabs,
-            observation_window,
-        }
+        View { tabs, context }
     }
 }
 
@@ -165,11 +167,12 @@ pub fn render(
     let chart = model.graphs[graph].get_chart(unit, Color::Reset, Color::Reset);
     frame.render_widget(chart, chart_area);
 
-    render_status(frame, model, top_areas[0]);
+    render_status(frame, model, view, top_areas[0]);
     render_flows(frame, ui, flows, right_side[1]);
 
     // Tooltips
-    let window_label = view
+    let context = &view.context;
+    let window_label = context
         .observation_window
         .map(|window| format!(" | Window: {}", format::axis_time(window)))
         .unwrap_or_default();
@@ -181,7 +184,17 @@ pub fn render(
     let keybindings_block = Block::bordered()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Reset))
-        .title("Keybindings");
+        .title(format!(
+            "Recording to {}{}, {} CPUs{}",
+            context.dir,
+            context
+                .iface
+                .as_ref()
+                .map(|iface| format!(" at {iface}"))
+                .unwrap_or_default(),
+            context.cpus,
+            if context.on_change { ", on change" } else { "" }
+        ));
     frame.render_widget(keybindings.block(keybindings_block), areas[1]);
 
     Areas {
@@ -189,7 +202,7 @@ pub fn render(
     }
 }
 
-fn render_status(frame: &mut Frame, model: &Model, area: Rect) {
+fn render_status(frame: &mut Frame, model: &Model, view: &View, area: Rect) {
     let status = Status::new();
     let mut constraints = vec![Constraint::Max(3); status.num_blocks()];
     constraints.push(Constraint::Min(0));
@@ -213,8 +226,15 @@ fn render_status(frame: &mut Frame, model: &Model, area: Rect) {
         file_rate,
         Color::Reset,
     );
+    let skipped_area = sidebar[blocks.len()];
     for (i, block) in blocks.into_iter().enumerate() {
         frame.render_widget(block, sidebar[i]);
+    }
+    if !view.context.skipped.is_empty() {
+        let skipped = Paragraph::new(view.context.skipped.join("\n"))
+            .wrap(Wrap { trim: true })
+            .block(Block::default().title("Skipped"));
+        frame.render_widget(skipped, skipped_area);
     }
 }
 
@@ -255,7 +275,8 @@ pub(crate) mod tests {
 
     use ratatui::{backend::TestBackend, Terminal};
     use tcbee_common::stats::{
-        slot, RB_TCP4_EGRESS, RB_TCP4_INGRESS, STATS_LEN, STAT_DROPPED, STAT_HANDLED,
+        slot, RB_COUNT, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS,
+        RB_TCP6_INGRESS, STATS_LEN, STAT_DROPPED, STAT_HANDLED,
     };
 
     use super::*;
@@ -292,8 +313,8 @@ pub(crate) mod tests {
     }
 
     /// Two ticks one second apart: 1000 records and 10 drops, 600 packets in, 400 out
-    pub fn busy_model(driver_packets: bool, window: Option<f64>) -> Model {
-        let mut model = Model::new(driver_packets, window);
+    pub fn busy_model(rings: &[u32], window: Option<f64>) -> Model {
+        let mut model = Model::new(rings, window);
         model.update(snapshot(&[]), 0, Duration::from_millis(500));
         model.record_history();
         let values = [
@@ -306,11 +327,23 @@ pub(crate) mod tests {
         model
     }
 
-    fn all_graphs() -> GraphConfig {
-        GraphConfig {
-            events: true,
-            packets: true,
-            ..GraphConfig::default()
+    pub const TC_RINGS: [u32; 4] = [
+        RB_TCP4_EGRESS,
+        RB_TCP4_INGRESS,
+        RB_TCP6_EGRESS,
+        RB_TCP6_INGRESS,
+    ];
+
+    /// A run with the given rings
+    pub fn context(rings: &[u32]) -> EbpfWatcherConfig {
+        EbpfWatcherConfig {
+            dir: "/data/run1".to_string(),
+            iface: Some("eth0".to_string()),
+            cpus: 8,
+            active_rings: rings.to_vec(),
+            skipped: vec!["BBR: tcp_bbr is not loaded".to_string()],
+            on_change: false,
+            observation_window: None,
         }
     }
 
@@ -320,19 +353,22 @@ pub(crate) mod tests {
 
     #[test]
     fn rates_follow_the_counters() {
-        let model = busy_model(false, None);
+        let model = busy_model(&TC_RINGS, None);
         assert_eq!(model.handled_rate(), 990.0);
         assert_eq!(model.dropped_rate(), 10.0);
         assert_eq!(model.ingress_rate(), 600.0);
         assert_eq!(model.egress_rate(), 400.0);
         assert_eq!(model.disk_rate(), 2_000_000.0);
         // The driver rings saw nothing
-        assert_eq!(busy_model(true, None).ingress_rate(), 0.0);
+        assert_eq!(
+            busy_model(&[RB_TCP4_DRIVER_INGRESS], None).ingress_rate(),
+            0.0
+        );
     }
 
     #[test]
     fn first_tick_has_no_rates() {
-        let mut model = Model::new(false, None);
+        let mut model = Model::new(&TC_RINGS, None);
         model.update(
             snapshot(&[(slot(RB_TCP4_INGRESS, STAT_HANDLED), 5)]),
             10,
@@ -344,8 +380,8 @@ pub(crate) mod tests {
 
     #[test]
     fn screen_shows_status_tabs_and_flows() {
-        let model = busy_model(false, None);
-        let view = View::new(&all_graphs(), None);
+        let model = busy_model(&TC_RINGS, None);
+        let view = View::new(context(&TC_RINGS));
         let flows = [Flow {
             src: "10.0.0.1".parse().unwrap(),
             dst: "10.0.0.2".parse().unwrap(),
@@ -362,12 +398,25 @@ pub(crate) mod tests {
         assert!(contains(&lines, "Packets"));
         assert!(contains(&lines, "Tracking 1 Flows"));
         assert!(contains(&lines, "10.0.0.2"));
+        assert!(contains(&lines, "Recording to /data/run1 at eth0, 8 CPUs"));
+        assert!(contains(&lines, "tcp_bbr is not loaded"));
         assert_eq!(areas.tabs.len(), 2);
     }
 
     #[test]
+    fn tabs_follow_the_active_rings() {
+        let all = View::new(context(&(0..RB_COUNT).collect::<Vec<_>>()));
+        let titles: Vec<&str> = all.tabs.iter().map(|(title, _)| *title).collect();
+        assert_eq!(
+            titles,
+            ["Events", "Packets", "Kernel", "Cubic", "BBR", "Tracepoints"]
+        );
+        assert_eq!(View::new(context(&[])).tabs.len(), 1);
+    }
+
+    #[test]
     fn keys_switch_tabs_and_quit() {
-        let view = View::new(&all_graphs(), None);
+        let view = View::new(context(&TC_RINGS));
         let mut ui = UiState::default();
         assert!(!ui.on_key(KeyCode::Tab, &view, 0));
         assert_eq!(ui.tab, 1);

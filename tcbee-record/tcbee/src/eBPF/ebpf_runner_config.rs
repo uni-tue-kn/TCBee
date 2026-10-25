@@ -443,29 +443,20 @@ pub struct EbpfRunnerConfig {
     pub sock_hooks: Option<HookSet>,
 }
 
-#[derive(Default)]
-pub struct GraphConfig {
-    pub events: bool,
-    pub packets: bool,
-    pub kernel: bool,
-    pub cubic: bool,
-    pub bbr: bool,
-    pub tracepoints: bool,
-}
-
+/// What the watcher shows about the run besides the counters
 pub struct EbpfWatcherConfig {
-    pub graphs: GraphConfig,
-    pub packets: bool,
-    /// The packet rates come from the driver hooks (only they record)
-    pub driver_packets: bool,
-    pub stats: bool,
-    pub calls: bool,
-    pub flows: bool,
-    pub cwnd: bool,
-    pub algorithms: bool,
-    pub metrics: bool,
-    pub observation_window: Option<f64>,
     pub dir: String,
+    /// Interface of the header hooks, None without -h
+    pub iface: Option<String>,
+    /// CPUs with a ring buffer per probe output
+    pub cpus: u32,
+    /// Ring buffers that record, as `RB_*` ids
+    pub active_rings: Vec<u32>,
+    /// Requested hooks that are not recorded, with the reason
+    pub skipped: Vec<String>,
+    /// The sock and cwnd probes record on change only
+    pub on_change: bool,
+    pub observation_window: Option<f64>,
 }
 
 impl EbpfRunnerConfig {
@@ -609,19 +600,24 @@ impl EbpfRunnerConfig {
             .map_or(ringbuf.size_per_cpu, |(_, size)| *size)
     }
 
-    pub fn watcher_config(&self) -> EbpfWatcherConfig {
+    /// The watcher's view of a started run: the rings that got a ring buffer and the
+    /// hooks that were skipped
+    pub fn watcher_config(
+        &self,
+        ringbuf_sizes: &[Option<u32>],
+        skipped: &[String],
+        cpus: u32,
+    ) -> EbpfWatcherConfig {
         EbpfWatcherConfig {
-            graphs: GraphConfig::default(),
-            packets: self.headers,
-            driver_packets: self.headers && self.headers_at.driver && !self.headers_at.tc,
-            stats: true,
-            calls: self.kernel,
-            flows: true,
-            cwnd: self.cwnd,
-            algorithms: self.algorithms,
-            metrics: self.metrics,
-            observation_window: (self.observation_window > 0.0).then_some(self.observation_window),
             dir: self.dir.clone(),
+            iface: self.headers.then(|| self.iface.clone()),
+            cpus,
+            active_rings: (0..ringbuf_sizes.len() as u32)
+                .filter(|rb| ringbuf_sizes[*rb as usize].is_some())
+                .collect(),
+            skipped: skipped.to_vec(),
+            on_change: self.on_change.is_some(),
+            observation_window: (self.observation_window > 0.0).then_some(self.observation_window),
         }
     }
 }

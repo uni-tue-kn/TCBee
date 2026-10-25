@@ -837,7 +837,6 @@ impl EbpfRunner {
             Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone()),
         );
         self.started = Some(Instant::now());
-        let mut watcher_config = self.config.watcher_config();
         let dir = self.config.dir.as_str();
         let links = &mut self.links;
 
@@ -847,9 +846,6 @@ impl EbpfRunner {
         }
         if self.config.headers && self.config.headers_at.driver {
             DriverTracer::spawn(skel, &self.config.iface, dir, writer, links, &mut self.xdp)?;
-        }
-        if self.config.headers {
-            watcher_config.graphs.packets = true;
         }
 
         // Tracing kernel metrics via FEntry probe
@@ -862,8 +858,6 @@ impl EbpfRunner {
                 self.config.on_change.map(|o| o.hooks),
                 self.config.sock_hooks,
             )?;
-
-            watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
@@ -874,16 +868,12 @@ impl EbpfRunner {
                 links,
                 self.config.on_change.map(|o| o.hooks),
             )?;
-
-            watcher_config.graphs.kernel = true;
         }
 
         // Tracing kernel tracepoints
         let tracepoints = self.config.tracepoints;
         if tracepoints.intersects(TracepointTracer::TRACEPOINTS) {
             TracepointTracer::spawn(skel, tracepoints, dir, writer, links)?;
-
-            watcher_config.graphs.tracepoints = true;
         }
 
         if optional.contains(&OptionalGroup::Cubic) {
@@ -895,7 +885,6 @@ impl EbpfRunner {
                         optional.remove(&OptionalGroup::CubicHook(hook));
                         self.skipped.push(message);
                     }
-                    watcher_config.graphs.cubic = true;
                 }
                 Err(err) => {
                     links.truncate(attached);
@@ -913,19 +902,16 @@ impl EbpfRunner {
             // BBR fails softly, so a program that was attached before the error has
             // to be detached here. Other groups fail the start, stop() detaches them.
             let attached = links.len();
-            match BBRTracer::spawn(skel, dir, writer, links) {
-                Ok(()) => watcher_config.graphs.bbr = true,
-                Err(err) => {
-                    links.truncate(attached);
-                    optional.remove(&OptionalGroup::Bbr);
-                    // Its ring exists but holds nothing, like the timer's below
-                    self.ringbuf_sizes[RB_BBR as usize] = None;
-                    self.skipped.push(format!("BBR: attaching failed: {}", err));
-                    error!(
-                        "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
-                        err
-                    );
-                }
+            if let Err(err) = BBRTracer::spawn(skel, dir, writer, links) {
+                links.truncate(attached);
+                optional.remove(&OptionalGroup::Bbr);
+                // Its ring exists but holds nothing, like the timer's below
+                self.ringbuf_sizes[RB_BBR as usize] = None;
+                self.skipped.push(format!("BBR: attaching failed: {}", err));
+                error!(
+                    "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
+                    err
+                );
             }
         }
 
@@ -989,10 +975,10 @@ impl EbpfRunner {
                 .push("-a: no algorithm left in this kernel".to_string());
         }
 
-        // TODO: should be true by default in get_watcher_config()
-        watcher_config.graphs.events = true;
-
         // Start watcher thread
+        let watcher_config =
+            self.config
+                .watcher_config(&self.ringbuf_sizes, &self.skipped, self.ring_cpus);
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(handle(&skel.maps.STATS)?));
         self.hook_seq = Some(handle(&skel.maps.HOOK_SEQ)?);

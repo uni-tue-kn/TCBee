@@ -67,8 +67,8 @@ impl EBPFWatcher {
             update_period,
             token,
             terminal,
-            model: Model::new(config.driver_packets, config.observation_window),
-            view: View::new(&config.graphs, config.observation_window),
+            model: Model::new(&config.active_rings, config.observation_window),
+            view: View::new(config),
         })
     }
 
