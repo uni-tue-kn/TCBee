@@ -26,13 +26,15 @@ pub enum Hook {
     /// Before a received segment is processed in ESTABLISHED (fentry/tcp_rcv_established),
     /// with the state before it. Only without on-change.
     IngressEntry,
-    /// The socket event hooks, only without on-change: a TCP state change, a congestion
-    /// state change, a retransmitted segment, the cwnd restart after idle, receive buffer
-    /// growth
+    /// At a TCP state change (a socket event hook, only without on-change, like the next four)
     State,
+    /// At a congestion state change
     CaState,
+    /// At a retransmitted segment
     Retransmit,
+    /// After the cwnd was cut for an idle period
     Restart,
+    /// When receive autotuning grows the buffer
     Rcvbuf,
 }
 
