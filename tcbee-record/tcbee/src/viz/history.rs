@@ -20,7 +20,7 @@ pub struct History {
 impl History {
     pub fn new(capacity: usize, window: Option<f64>) -> History {
         History {
-            points: Vec::with_capacity(capacity),
+            points: Vec::new(),
             capacity: capacity.max(2),
             window,
             stride: 1,

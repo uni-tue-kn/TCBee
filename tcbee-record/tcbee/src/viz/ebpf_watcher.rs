@@ -135,7 +135,7 @@ impl EBPFWatcher {
                 }
                 match event::read() {
                     Ok(event::Event::Key(key)) => {
-                        if ui.on_key(key.code, &self.view, flows.len()) {
+                        if ui.on_key(key.code, self.model.charts.len(), flows.len()) {
                             self.token.cancel();
                         }
                     }

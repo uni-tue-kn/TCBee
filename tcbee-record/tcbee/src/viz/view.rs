@@ -5,59 +5,34 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Position, Rect},
     style::{Color, Style},
     widgets::{
-        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState,
-        Wrap,
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline,
+        TableState, Wrap,
     },
     Frame,
 };
-use tcbee_common::stats::{RB_BBR, RB_CUBIC};
 
 use crate::{
     eBPF::ebpf_runner_config::EbpfWatcherConfig,
     viz::{
-        components::status::Status,
+        components::{graph, status::Status},
         flow_tracker::{flow_table, Flow},
         format,
-        groups::{display_group, Group},
-        model::{
-            Model, GRAPH_BBR, GRAPH_CALLS, GRAPH_CUBIC, GRAPH_EVENTS, GRAPH_PACKETS,
-            GRAPH_TRACEPOINTS,
-        },
+        model::Model,
     },
 };
 
-/// Chart slots of the grid
-pub const SLOTS: usize = 4;
 /// Below this size the UI shows only a hint
 pub const MIN_WIDTH: u16 = 60;
 pub const MIN_HEIGHT: u16 = 16;
 
 /// What the UI shows that does not change while recording
 pub struct View {
-    /// The graph in each chart slot, at most `SLOTS`
-    pub slots: Vec<usize>,
     pub context: EbpfWatcherConfig,
 }
 
 impl View {
     pub fn new(context: EbpfWatcherConfig) -> View {
-        let rings = &context.active_rings;
-        let group = |group: Group| rings.iter().any(|rb| display_group(*rb) == group);
-        // In the order they get a slot
-        let slots = [
-            (true, GRAPH_EVENTS),
-            (group(Group::Headers), GRAPH_PACKETS),
-            (group(Group::Sock), GRAPH_CALLS),
-            (rings.contains(&RB_CUBIC), GRAPH_CUBIC),
-            (rings.contains(&RB_BBR), GRAPH_BBR),
-            (group(Group::Tracepoints), GRAPH_TRACEPOINTS),
-        ]
-        .into_iter()
-        .filter(|(shown, _)| *shown)
-        .map(|(_, graph)| graph)
-        .take(SLOTS)
-        .collect();
-        View { slots, context }
+        View { context }
     }
 }
 
@@ -79,13 +54,13 @@ pub struct Areas {
 
 impl UiState {
     /// Handles a key, returns whether to quit
-    pub fn on_key(&mut self, code: KeyCode, view: &View, flows: usize) -> bool {
+    pub fn on_key(&mut self, code: KeyCode, charts: usize, flows: usize) -> bool {
         match code {
             KeyCode::Char('q') => return true,
             KeyCode::Esc => self.zoom = None,
             KeyCode::Char(key @ '1'..='4') => {
                 let slot = key as usize - '1' as usize;
-                if slot < view.slots.len() {
+                if slot < charts {
                     self.zoom = Some(slot);
                 }
             }
@@ -158,7 +133,7 @@ pub fn render(
     // A zoomed chart takes the place of the flows as well
     let shown: Vec<usize> = match ui.zoom {
         Some(slot) => vec![slot],
-        None => (0..view.slots.len()).collect(),
+        None => (0..model.charts.len()).collect(),
     };
     let chart_area = if ui.zoom.is_some() {
         right
@@ -169,15 +144,18 @@ pub fn render(
     };
     let areas = grid(chart_area, shown.len());
     let slots: Vec<(usize, Rect)> = shown.into_iter().zip(areas).collect();
+    let window = view.context.observation_window;
     for (slot, rect) in &slots {
-        let graph = &model.graphs[view.slots[*slot]];
-        let unit = match view.slots[*slot] {
-            GRAPH_PACKETS => "pps",
-            GRAPH_CALLS => "calls/s",
-            _ => "events/s",
-        };
-        let title = format!("{} {} ({unit})", slot + 1, graph.name());
-        frame.render_widget(graph.get_chart(title, Color::Reset, Color::Reset), *rect);
+        let mut rect = *rect;
+        // The events chart shows the dropped share below
+        if *slot == 0 && rect.height >= 10 {
+            let [above, drops] =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(rect);
+            render_drops(frame, model, drops);
+            rect = above;
+        }
+        let chart = graph::chart(&model.charts[*slot], slot + 1, window);
+        frame.render_widget(chart, rect);
     }
 
     render_status(frame, model, view, left);
@@ -212,6 +190,24 @@ pub fn render(
     frame.render_widget(keybindings.block(keybindings_block), footer);
 
     Areas { slots }
+}
+
+/// The dropped share of the events per tick as a red sparkline
+fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
+    let red = Style::default().fg(Color::Red);
+    let label = format!(" drop {:.2}% ", model.drop_percent());
+    let [label_area, spark_area] =
+        Layout::horizontal([Constraint::Length(label.len() as u16), Constraint::Min(0)])
+            .areas(area);
+    frame.render_widget(Paragraph::new(label).style(red), label_area);
+    let history = &model.drop_history;
+    let shown = &history[history.len().saturating_sub(spark_area.width as usize)..];
+    // A drop-free run stays a flat line instead of a full bar
+    let max = shown.iter().copied().max().unwrap_or(0).max(1);
+    frame.render_widget(
+        Sparkline::default().data(shown).max(max).style(red),
+        spark_area,
+    );
 }
 
 fn render_status(frame: &mut Frame, model: &Model, view: &View, area: Rect) {
@@ -413,18 +409,39 @@ pub(crate) mod tests {
         assert!(contains(&lines, "Recording to /data/run1 at eth0, 8 CPUs"));
         assert!(contains(&lines, "tcp_bbr is not loaded"));
         assert_eq!(areas.slots.len(), 2);
-        assert!(contains(&lines, "1 Events (events/s)"));
-        assert!(contains(&lines, "2 Packet Rates (pps)"));
+        assert!(contains(
+            &lines,
+            "1 Events (rec/s) \u{25a0} rec \u{25a0} drop"
+        ));
+        assert!(contains(&lines, "2 Headers (pps) \u{25a0} in \u{25a0} out"));
+        assert!(contains(&lines, " drop 1.00% "));
     }
 
     #[test]
-    fn slots_follow_the_active_rings() {
-        let all = View::new(context(&(0..RB_COUNT).collect::<Vec<_>>()));
+    fn charts_follow_the_active_rings() {
+        let all = Model::new(&(0..RB_COUNT).collect::<Vec<_>>(), None);
+        let titles: Vec<&str> = all.charts.iter().map(|chart| chart.title).collect();
         assert_eq!(
-            all.slots,
-            [GRAPH_EVENTS, GRAPH_PACKETS, GRAPH_CALLS, GRAPH_CUBIC]
+            titles,
+            ["Events", "Headers", "Socket hooks", "CC internals"]
         );
-        assert_eq!(View::new(context(&[])).slots, [GRAPH_EVENTS]);
+        let labels: Vec<&str> = all.charts[1].series.iter().map(|s| s.label).collect();
+        assert_eq!(labels, ["in", "out", "drv in", "drv out"]);
+        let tc = Model::new(&TC_RINGS, None);
+        assert_eq!(tc.charts.len(), 2);
+        assert_eq!(tc.charts[1].series.len(), 2);
+        assert_eq!(Model::new(&[], None).charts.len(), 1);
+    }
+
+    #[test]
+    fn group_charts_show_runs_per_series() {
+        let model = busy_model(&TC_RINGS, None);
+        let headers = &model.charts[1];
+        let last = |s: usize| *headers.series[s].history.points().last().unwrap();
+        assert_eq!(last(0), (1.5, 600.0));
+        assert_eq!(last(1), (1.5, 400.0));
+        assert_eq!(model.drop_history, [0, 100]);
+        assert_eq!(model.drop_percent(), 1.0);
     }
 
     #[test]
@@ -458,18 +475,18 @@ pub(crate) mod tests {
         let model = busy_model(&TC_RINGS, None);
         let view = View::new(context(&TC_RINGS));
         let mut ui = UiState::default();
-        ui.on_key(KeyCode::Char('2'), &view, 0);
+        ui.on_key(KeyCode::Char('2'), model.charts.len(), 0);
         assert_eq!(ui.zoom, Some(1));
         let (lines, areas) = screen(160, 45, &model, &view, &ui, &[]);
         assert_eq!(areas.slots.len(), 1);
         assert_eq!(areas.slots[0].0, 1);
         assert!(!contains(&lines, "Tracking"));
         // No third slot to zoom, Esc returns, q quits
-        ui.on_key(KeyCode::Char('3'), &view, 0);
+        ui.on_key(KeyCode::Char('3'), model.charts.len(), 0);
         assert_eq!(ui.zoom, Some(1));
-        assert!(!ui.on_key(KeyCode::Esc, &view, 0));
+        assert!(!ui.on_key(KeyCode::Esc, model.charts.len(), 0));
         assert_eq!(ui.zoom, None);
-        assert!(ui.on_key(KeyCode::Char('q'), &view, 0));
+        assert!(ui.on_key(KeyCode::Char('q'), model.charts.len(), 0));
     }
 
     #[test]
