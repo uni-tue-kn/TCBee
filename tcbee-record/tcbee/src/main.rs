@@ -3,6 +3,7 @@ mod config;
 mod eBPF;
 mod metadata;
 mod metrics;
+mod owners;
 mod stats;
 mod viz;
 mod writer;
@@ -258,7 +259,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut no_owners).add_option(
             &["--no-owners"],
             StoreTrue,
-            "Do not record the process that opens each connection. By default every recording writes flow_owners.tcp: one record per connect and accept, with the process id, uid, name and cgroup.",
+            "Do not record the process that opens each connection. By default every recording writes flow_owners.tcp, one record per connect and accept with the process id, uid, name and cgroup, and flow_owners.json with the connections that existed at the start and their processes (as netstat -p finds them). The pids are those of the host's pid namespace.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],

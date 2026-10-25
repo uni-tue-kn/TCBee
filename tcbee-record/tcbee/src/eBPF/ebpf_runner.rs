@@ -3,8 +3,9 @@ use std::{
     error::Error,
     fmt, fs,
     mem::MaybeUninit,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -51,6 +52,7 @@ use crate::{
     },
     metadata::{NamedRingCounters, Offloads, Recorder, RunMetadata},
     metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
+    owners,
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
@@ -83,6 +85,9 @@ pub struct EbpfRunner {
     skipped: Vec<String>,
     /// Written at start and completed at stop with `--metadata`
     metadata: Option<RunMetadata>,
+    /// The snapshot of the connections that existed at the start, which writes
+    /// `flow_owners.json`
+    owner_snapshot: Option<thread::JoinHandle<()>>,
 }
 
 /// Last libbpf warnings, shown when loading fails. They name the program, map or the
@@ -335,6 +340,7 @@ impl EbpfRunner {
             started: None,
             skipped: Vec::new(),
             metadata: None,
+            owner_snapshot: None,
         }
     }
 
@@ -398,6 +404,10 @@ impl EbpfRunner {
             if self.config.metrics {
                 self.write_metrics(duration_s, &reports, programs);
             }
+        }
+
+        if let Some(snapshot) = self.owner_snapshot.take() {
+            let _ = spawn_blocking(move || snapshot.join()).await;
         }
 
         if self.config.headers {
@@ -1002,6 +1012,22 @@ impl EbpfRunner {
                 // Its ring exists but holds nothing, like the socket events' above
                 self.ringbuf_sizes[RB_OWNERS as usize] = None;
             }
+        }
+        // The connections that exist already, now that the owner programs see the new ones.
+        // It reads all of /proc, so it runs on a thread of its own and writes its file when done.
+        if self.config.owners {
+            let dir = PathBuf::from(&self.config.dir);
+            self.owner_snapshot = Some(thread::spawn(move || {
+                let snapshot = owners::snapshot(Path::new("/proc"));
+                info!(
+                    "Found {} existing connections of {} processes",
+                    snapshot.connections.len(),
+                    snapshot.processes.len()
+                );
+                if let Err(err) = snapshot.write(&dir) {
+                    error!("Could not write the existing connections: {}", err);
+                }
+            }));
         }
 
         if !sock_hooks_left(&self.config, &optional)? {
