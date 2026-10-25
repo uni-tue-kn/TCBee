@@ -84,6 +84,19 @@ impl FlowOwners {
         }
     }
 
+    /// Adds the processes that are not listed yet (by pid and start)
+    pub fn add_processes(&mut self, processes: impl IntoIterator<Item = ProcessInfo>) {
+        for process in processes {
+            let listed = self
+                .processes
+                .iter()
+                .any(|p| p.pid == process.pid && p.start_ticks == process.start_ticks);
+            if !listed {
+                self.processes.push(process);
+            }
+        }
+    }
+
     /// The process `pid` that started at `start_ns` (ns since boot, as in the owner records)
     pub fn process(&self, pid: u32, start_ns: u64) -> Option<&ProcessInfo> {
         self.processes
@@ -141,6 +154,13 @@ mod tests {
         assert_eq!(read, owners);
         assert_eq!(read.process(42, 1_230_000_000).unwrap().comm, "iperf3");
         assert!(read.process(42, 1_240_000_000).is_none());
+        let mut more = read.clone();
+        let later = ProcessInfo {
+            start_ticks: 200,
+            ..read.processes[0].clone()
+        };
+        more.add_processes([read.processes[0].clone(), later]);
+        assert_eq!(more.processes.len(), 2);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

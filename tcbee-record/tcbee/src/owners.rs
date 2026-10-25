@@ -1,24 +1,29 @@
-//! The processes of the connections that exist when the recording starts, found the way
-//! netstat and `ss -p` find them: the TCP sockets of each network namespace from
-//! `/proc/<pid>/net/tcp{,6}` of one process in it, and the processes holding each socket from
-//! the socket inodes of `/proc/<pid>/fd`. The owner programs cover the connections opened from
-//! then on. The pids are the ones of the procfs read, so tcbee-record has to run in the pid
-//! namespace of the host for them to match the owner records.
+//! What `flow_owners.json` holds about the processes of the connections. The connections that
+//! exist when the recording starts, found the way netstat and `ss -p` find them: the TCP
+//! sockets of each network namespace from `/proc/<pid>/net/tcp{,6}` of one process in it, and
+//! the processes holding each socket from the socket inodes of `/proc/<pid>/fd`. The owner
+//! programs cover the connections opened from then on, and `Resolver` looks up their
+//! processes' command lines. The pids are the ones of the procfs read, so tcbee-record has to
+//! run in the pid namespace of the host for them to match the owner records.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
+    collections::{BTreeMap, BTreeSet, HashSet},
+    fs, mem,
+    path::{Path, PathBuf},
+    ptr,
+    sync::mpsc,
+    thread,
 };
 
-use log::warn;
+use log::{debug, warn};
 use procfs::{
     net::TcpState,
     process::{all_processes_with_root, FDTarget, Process},
 };
-use tcbee_trace::owners::{FlowOwners, ProcessInfo, SnapshotConnection};
+use tcbee_common::records::{flow_owner_entry, TCBEE_OWNER_KTHREAD};
+use tcbee_trace::owners::{same_start, FlowOwners, ProcessInfo, SnapshotConnection};
 
-use crate::metadata::clock_ns;
+use crate::{metadata::clock_ns, writer::Observer};
 
 /// Clock ticks per second, the unit of the start times in `/proc/<pid>/stat`
 pub fn clock_ticks() -> u64 {
@@ -150,6 +155,64 @@ pub fn snapshot(proc_root: &Path) -> FlowOwners {
         .filter_map(|pid| process_info(proc_root, pid))
         .collect();
     owners
+}
+
+/// Looks up the processes of the owner records while the recording runs, on a thread of its
+/// own: a short-lived process is gone by its end. Each process, pid and start time, is looked
+/// up once, and kept only if procfs still shows the same process, as pids are reused. Best
+/// effort: a process that exits first, or execs another program, is missed or shows that one.
+pub struct Resolver {
+    processes: mpsc::Sender<(u32, u64)>,
+    thread: thread::JoinHandle<Vec<ProcessInfo>>,
+}
+
+impl Resolver {
+    pub fn start(proc_root: PathBuf) -> Resolver {
+        let (processes, received) = mpsc::channel();
+        let thread = thread::spawn(move || resolve(&proc_root, received));
+        Resolver { processes, thread }
+    }
+
+    /// The observer of the owner ring's writer: hands the process of each record over. Kernel
+    /// threads have no command line.
+    pub fn observer(&self) -> Observer {
+        let processes = self.processes.clone();
+        Box::new(move |entry: &[u8]| {
+            if entry.len() < mem::size_of::<flow_owner_entry>() {
+                return;
+            }
+            // A record of the ring buffer, plain old data
+            let rec = unsafe { ptr::read_unaligned(entry.as_ptr() as *const flow_owner_entry) };
+            if u32::from(rec.flags) & TCBEE_OWNER_KTHREAD == 0 {
+                let _ = processes.send((rec.pid, rec.start_time));
+            }
+        })
+    }
+
+    /// The processes found. Waits for the lookups of every record handed over, so the
+    /// observers must be gone (the writer shut down).
+    pub fn finish(self) -> Vec<ProcessInfo> {
+        drop(self.processes);
+        self.thread.join().unwrap_or_default()
+    }
+}
+
+/// Looks up each process (pid, start time in ns since boot) that arrives, once
+fn resolve(proc_root: &Path, processes: mpsc::Receiver<(u32, u64)>) -> Vec<ProcessInfo> {
+    let clock_ticks = clock_ticks();
+    let mut seen = HashSet::new();
+    let mut found = Vec::new();
+    for (pid, start_ns) in processes {
+        if !seen.insert((pid, start_ns)) {
+            continue;
+        }
+        match process_info(proc_root, pid) {
+            Some(info) if same_start(start_ns, info.start_ticks, clock_ticks) => found.push(info),
+            Some(_) => debug!("Process {pid} is another process by now, no command line"),
+            None => debug!("Process {pid} exited before its command line was read"),
+        }
+    }
+    found
 }
 
 #[cfg(test)]
@@ -331,6 +394,45 @@ pub(crate) mod tests {
             assert!(c.inode != 0 && c.state != "LISTEN");
         }
         assert!(owners.clock_ticks > 0);
+    }
+
+    fn owner_record(pid: u32, start_time: u64, flags: u8) -> Vec<u8> {
+        let rec = flow_owner_entry {
+            pid,
+            start_time,
+            flags,
+            ..Default::default()
+        };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                &rec as *const flow_owner_entry as *const u8,
+                mem::size_of::<flow_owner_entry>(),
+            )
+        };
+        bytes.to_vec()
+    }
+
+    #[test]
+    fn resolver_keeps_the_processes_that_are_still_the_same() {
+        let proc = FakeProc::new("resolver");
+        proc.process(300, "curl", &["curl", "-O", "x"], 500, &[], 7);
+        proc.process(301, "sshd", &["sshd: alice"], 600, &[], 7);
+        let resolver = Resolver::start(proc.root.clone());
+        let mut observe = resolver.observer();
+        let tick_ns = 1_000_000_000 / clock_ticks();
+        observe(&owner_record(300, 500 * tick_ns + 1, 0));
+        observe(&owner_record(300, 500 * tick_ns + 1, 0));
+        // pid 301 now belongs to a process that started later
+        observe(&owner_record(301, 10 * tick_ns, 0));
+        // exited
+        observe(&owner_record(302, 10 * tick_ns, 0));
+        observe(&owner_record(300, 500 * tick_ns, TCBEE_OWNER_KTHREAD as u8));
+        observe(&[0; 3]);
+        drop(observe);
+        let found = resolver.finish();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].pid, 300);
+        assert_eq!(found[0].cmdline, ["curl", "-O", "x"]);
     }
 
     #[test]

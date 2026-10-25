@@ -57,7 +57,7 @@ use crate::{
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
 };
-use tcbee_trace::sock_hooks::Hook;
+use tcbee_trace::{owners::FlowOwners, sock_hooks::Hook};
 
 use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig, MptcpModes};
 
@@ -87,7 +87,9 @@ pub struct EbpfRunner {
     metadata: Option<RunMetadata>,
     /// The snapshot of the connections that existed at the start, which writes
     /// `flow_owners.json`
-    owner_snapshot: Option<thread::JoinHandle<()>>,
+    owner_snapshot: Option<thread::JoinHandle<FlowOwners>>,
+    /// Looks up the processes of the owner records, added to `flow_owners.json` at stop
+    owner_resolver: Option<owners::Resolver>,
 }
 
 /// Last libbpf warnings, shown when loading fails. They name the program, map or the
@@ -341,6 +343,7 @@ impl EbpfRunner {
             skipped: Vec::new(),
             metadata: None,
             owner_snapshot: None,
+            owner_resolver: None,
         }
     }
 
@@ -406,9 +409,8 @@ impl EbpfRunner {
             }
         }
 
-        if let Some(snapshot) = self.owner_snapshot.take() {
-            let _ = spawn_blocking(move || snapshot.join()).await;
-        }
+        // After the writers, whose last owner records reach the resolver
+        self.finish_owners().await;
 
         if self.config.headers {
             self.warn_aggregated();
@@ -418,6 +420,29 @@ impl EbpfRunner {
             metadata.finish(self.ring_counters());
             self.write_metadata(&metadata);
         }
+    }
+
+    /// Adds the processes of the owner records to the snapshot of the connections that existed
+    /// at the start, and writes `flow_owners.json` again
+    async fn finish_owners(&mut self) {
+        let Some(snapshot) = self.owner_snapshot.take() else {
+            return;
+        };
+        let resolver = self.owner_resolver.take();
+        let dir = PathBuf::from(&self.config.dir);
+        let finished = spawn_blocking(move || {
+            let Ok(mut owners) = snapshot.join() else {
+                error!("The snapshot of the existing connections failed");
+                return;
+            };
+            if let Some(resolver) = resolver {
+                owners.add_processes(resolver.finish());
+            }
+            if let Err(err) = owners.write(&dir) {
+                error!("Could not write the processes of the connections: {}", err);
+            }
+        });
+        let _ = finished.await;
     }
 
     /// Tells at the end of the run how many packets the header hooks saw as one that stand for
@@ -1004,7 +1029,11 @@ impl EbpfRunner {
 
         // After the timer: one record per connection is rarer still
         if optional.iter().any(|group| group.is_owner()) {
-            for (hook, message) in OwnerTracer::spawn(skel, dir, writer, links)? {
+            let resolver = self
+                .owner_resolver
+                .insert(owners::Resolver::start(PathBuf::from("/proc")));
+            let observer = resolver.observer();
+            for (hook, message) in OwnerTracer::spawn(skel, dir, writer, links, observer)? {
                 optional.remove(&OptionalGroup::Owner(hook));
                 self.skipped.push(message);
             }
@@ -1024,9 +1053,11 @@ impl EbpfRunner {
                     snapshot.connections.len(),
                     snapshot.processes.len()
                 );
+                // Written now too, in case the recorder does not stop cleanly
                 if let Err(err) = snapshot.write(&dir) {
                     error!("Could not write the existing connections: {}", err);
                 }
+                snapshot
             }));
         }
 

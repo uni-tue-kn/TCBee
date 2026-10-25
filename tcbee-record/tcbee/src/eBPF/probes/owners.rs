@@ -11,7 +11,7 @@ use crate::{
         rings,
         skel::TcbeeSkel,
     },
-    writer::Writer,
+    writer::{Observer, Writer},
 };
 
 /// A program that records the process opening a connection (`flow_owners.tcp`). There is
@@ -84,20 +84,22 @@ impl OwnerTracer {
 
     /// Attaches the loaded programs. A program that does not attach is left out with a
     /// warning; returns its hook index and a message for each. Without any attached program
-    /// the ring gets no writer and no file.
+    /// the ring gets no writer and no file. `observer` sees every record written.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
         writer: &mut Writer,
         links: &mut Vec<Link>,
+        observer: Observer,
     ) -> Result<Vec<(usize, String)>, Box<dyn Error>> {
         let (attached, failed) =
             optional_hooks::attach_loaded(&OWNER_HOOKS, skel, links, not_recorded);
         if attached {
-            writer.register::<flow_owner_entry>(
+            writer.register_observed::<flow_owner_entry>(
                 RB_OWNERS,
                 rings::of(&skel.maps.FLOW_OWNERS)?,
                 dir,
+                observer,
             )?;
         }
         Ok(failed)
