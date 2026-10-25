@@ -2124,3 +2124,37 @@ int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk, __u64 fail_seq)
 	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL,
 			      &(struct mptcp_pm_extra){ .data_seq = fail_seq });
 }
+
+/* ---- Flow owners -------------------------------------------------------------------- */
+
+/*
+ * The process that opens a connection, one record per connect and per accept, written in the
+ * context of the calling process; nothing runs per packet. The process fields are the ones of
+ * the thread group leader, so a connection that a worker thread opens (a thread pool, io_uring)
+ * names the process. The task is no hook argument, its fields are read with BPF_CORE_READ.
+ */
+static __always_inline void trace_owner(struct sock *sk, __u16 sport, __u16 dport, __u8 kind)
+{
+	struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+	struct sock_common___owner *skc = (struct sock_common___owner *)sk;
+	struct flow_owner_entry *rec;
+
+	if (!filter_sock(sk, sport, dport))
+		return;
+	rec = reserve(&FLOW_OWNERS, RB_OWNERS, rec);
+	if (!rec)
+		return;
+	fill_header(rec, sk, sport, dport, 1);
+	rec->kind = kind;
+	if (BPF_CORE_READ(task, flags) & PF_KTHREAD)
+		rec->flags |= TCBEE_OWNER_KTHREAD;
+	rec->pid = bpf_get_current_pid_tgid() >> 32;
+	rec->uid = (__u32)bpf_get_current_uid_gid();
+	/* possible_net_t has its member only with CONFIG_NET_NS */
+	if (bpf_core_field_exists(skc->skc_net.net))
+		rec->netns = BPF_CORE_READ(skc, skc_net.net, ns.inum);
+	rec->cgroup_id = bpf_get_current_cgroup_id();
+	rec->start_time = BPF_CORE_READ(task, group_leader, start_boottime);
+	BPF_CORE_READ_STR_INTO(&rec->comm, task, group_leader, comm);
+	commit(rec, RB_OWNERS);
+}

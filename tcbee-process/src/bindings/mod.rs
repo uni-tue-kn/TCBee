@@ -134,7 +134,9 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::Tcp6DriverReceive => binding_into::<tcp6_packet_trace>(&TCP6_DRIVER, Dir::Recv),
         TraceFile::Tcp4DriverSend => binding_into::<tcp4_packet_trace>(&TCP4_DRIVER, Dir::Send),
         TraceFile::Tcp6DriverSend => binding_into::<tcp6_packet_trace>(&TCP6_DRIVER, Dir::Send),
-        TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum => return None,
+        TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum | TraceFile::FlowOwners => {
+            return None
+        }
     })
 }
 

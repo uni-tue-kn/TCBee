@@ -48,6 +48,8 @@ pub enum TraceFile {
     Tcp6DriverReceive,
     Tcp4DriverSend,
     Tcp6DriverSend,
+    /// The process that opened each connection, at connect and accept
+    FlowOwners,
     /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
     SendSockOc,
     RecvSockOc,
@@ -81,6 +83,7 @@ impl TraceFile {
             TraceFile::Tcp6DriverReceive => "tcp6_driver_receive.tcp",
             TraceFile::Tcp4DriverSend => "tcp4_driver_send.tcp",
             TraceFile::Tcp6DriverSend => "tcp6_driver_send.tcp",
+            TraceFile::FlowOwners => "flow_owners.tcp",
             TraceFile::SendSockOc => "send_sock_oc.tcp",
             TraceFile::RecvSockOc => "recv_sock_oc.tcp",
             TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
@@ -113,6 +116,7 @@ impl TraceFile {
             TraceFile::Tcp6DriverReceive,
             TraceFile::Tcp4DriverSend,
             TraceFile::Tcp6DriverSend,
+            TraceFile::FlowOwners,
             TraceFile::SendSockOc,
             TraceFile::RecvSockOc,
             TraceFile::SendCwndOc,

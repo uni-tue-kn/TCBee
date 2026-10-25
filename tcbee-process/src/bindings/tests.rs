@@ -541,6 +541,7 @@ fn file_table_maps_every_trace_file() {
     }
     assert!(binding(TraceFile::TcpRetransmitSynack).is_none());
     assert!(binding(TraceFile::TcpBadCsum).is_none());
+    assert!(binding(TraceFile::FlowOwners).is_none());
     // Every trace file is either mapped or explicitly skipped.
     for f in TraceFile::all() {
         let _ = binding(*f);

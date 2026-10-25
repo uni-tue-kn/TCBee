@@ -213,6 +213,22 @@ struct net_device {
 	possible_net_t nd_net;
 };
 
+/*
+ * Fields of struct sock_common that only the flow owner programs read. A flavour (libbpf
+ * matches the name up to ___), so that struct sock_common and the code of the other programs
+ * stay as they are.
+ */
+struct sock_common___owner {
+	possible_net_t skc_net;
+};
+
+struct task_struct {
+	unsigned int flags;
+	struct task_struct *group_leader;
+	u64 start_boottime;
+	char comm[16];
+};
+
 /* Only its existence is checked: 5.17 and newer */
 enum skb_drop_reason {
 	SKB_DROP_REASON_NOT_SPECIFIED = 2,

@@ -227,7 +227,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
-            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, sock_timer, sock_event, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, reno, mptcp_pm, tcp_events.",
+            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, sock_timer, sock_event, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, reno, mptcp_pm, tcp_events, owners.",
         );
         argparser.refer(&mut on_change).add_option(
             &["--on-change"],
