@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{collections::BTreeSet, error::Error};
 
 use libbpf_rs::{Link, OpenObject};
 use log::warn;
@@ -7,6 +7,7 @@ use tcbee_common::{records::tcp_event_entry, stats::RB_TCP_EVENTS};
 use crate::{
     eBPF::{
         host::KernelBtf,
+        optional::OptionalGroup,
         probes::{
             optional_hooks::{self, OptionalHook, Target},
             tracepoints::{Tracepoint, TracepointSet},
@@ -127,11 +128,16 @@ const CWR_HOOK: usize = hook_index("tcp_event_cwr");
 fn hooks_to_load(
     set: TracepointSet,
     exists: &[bool],
-    disabled: &[usize],
+    disabled: &BTreeSet<OptionalGroup>,
 ) -> (Vec<bool>, Vec<String>) {
     let requested = |tracepoint| set.contains(tracepoint);
-    let (mut load, missing) =
-        optional_hooks::to_load(&TCP_EVENT_HOOKS, requested, exists, disabled);
+    let (mut load, missing) = optional_hooks::to_load(
+        &TCP_EVENT_HOOKS,
+        requested,
+        exists,
+        disabled,
+        OptionalGroup::TcpEvent,
+    );
     let skipped = missing
         .into_iter()
         .map(|i| {
@@ -162,7 +168,7 @@ impl TcpEventTracer {
     pub fn configure(
         object: &mut OpenObject,
         set: TracepointSet,
-        disabled: &[usize],
+        disabled: &BTreeSet<OptionalGroup>,
         btf: &mut KernelBtf,
     ) -> (Vec<usize>, Vec<String>) {
         let exists = optional_hooks::existing(&TCP_EVENT_HOOKS, |tp| set.contains(tp), btf);
@@ -212,7 +218,7 @@ mod tests {
 
     #[test]
     fn congestion_state_changes_replace_cwr() {
-        let (load, skipped) = hooks_to_load(events(), &ALL, &[]);
+        let (load, skipped) = hooks_to_load(events(), &ALL, &BTreeSet::new());
         let names = loaded(&load);
         assert!(names.contains(&"tcp_event_ca_state"));
         assert!(!names.contains(&"tcp_event_cwr"));
@@ -224,11 +230,15 @@ mod tests {
     fn cwr_is_the_fallback_when_congestion_states_are_missing_or_rejected() {
         let mut exists = ALL;
         exists[CA_STATE_HOOK] = false;
-        let (load, skipped) = hooks_to_load(events(), &exists, &[]);
+        let (load, skipped) = hooks_to_load(events(), &exists, &BTreeSet::new());
         assert!(loaded(&load).contains(&"tcp_event_cwr"));
         assert_eq!(skipped.len(), 1);
 
-        let (load, _) = hooks_to_load(events(), &ALL, &[CA_STATE_HOOK]);
+        let (load, _) = hooks_to_load(
+            events(),
+            &ALL,
+            &BTreeSet::from([OptionalGroup::TcpEvent(CA_STATE_HOOK)]),
+        );
         let names = loaded(&load);
         assert!(names.contains(&"tcp_event_cwr"));
         assert!(!names.contains(&"tcp_event_ca_state"));
@@ -237,16 +247,23 @@ mod tests {
     #[test]
     fn hooks_load_for_their_tracepoints() {
         let set = TracepointSet::of(&[Tracepoint::Rto, Tracepoint::Destroy]);
-        let (load, _) = hooks_to_load(set, &ALL, &[]);
+        let (load, _) = hooks_to_load(set, &ALL, &BTreeSet::new());
         assert_eq!(loaded(&load), ["tcp_event_rto", "tcp_event_destroy"]);
     }
 
     #[test]
     fn drops_alone_load_only_the_drop_hook() {
-        let (load, _) = hooks_to_load(TracepointSet::of(&[Tracepoint::Drops]), &ALL, &[]);
+        let (load, _) = hooks_to_load(
+            TracepointSet::of(&[Tracepoint::Drops]),
+            &ALL,
+            &BTreeSet::new(),
+        );
         assert_eq!(loaded(&load), ["tcp_event_drop"]);
-        let (load, skipped) =
-            hooks_to_load(TracepointSet::EMPTY, &[false; TCP_EVENT_HOOKS.len()], &[]);
+        let (load, skipped) = hooks_to_load(
+            TracepointSet::EMPTY,
+            &[false; TCP_EVENT_HOOKS.len()],
+            &BTreeSet::new(),
+        );
         assert!(loaded(&load).is_empty());
         assert!(skipped.is_empty());
     }

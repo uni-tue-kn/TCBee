@@ -9,8 +9,13 @@
 use std::collections::BTreeSet;
 
 use crate::eBPF::probes::{
-    mptcp::PM_HOOKS, sock_events::SOCK_EVENT_HOOKS, tcp_events::TCP_EVENT_HOOKS,
+    cubic::CUBIC_HOOKS, mptcp::PM_HOOKS, reno::RENO_HOOKS, sock_events::SOCK_EVENT_HOOKS,
+    tcp_events::TCP_EVENT_HOOKS,
 };
+
+/// Number of optional groups: BBR, Reno, MPTCP tagging, the timer, the path manager and one
+/// per hook of the tables
+const GROUPS: usize = 5 + CUBIC_HOOKS.len() + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len();
 
 /// The program names of `PM_HOOKS`
 const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
@@ -26,10 +31,9 @@ const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OptionalGroup {
     Bbr,
-    /// The CUBIC hooks of -a after the ssthresh recalculation and the congestion state change
-    CubicSsthresh,
-    CubicState,
-    /// The Reno hooks of -a (fexit tcp_reno_cong_avoid, tcp_reno_ssthresh)
+    /// One CUBIC hook of -a, the index into `CUBIC_HOOKS`
+    CubicHook(usize),
+    /// The Reno hooks of -a, `RENO_HOOKS`
     Reno,
     /// The write timer program of -k (fexit/tcp_write_timer_handler)
     SockTimer,
@@ -47,14 +51,19 @@ impl OptionalGroup {
     /// comes before the timer and socket event groups: its code is in every sock program, so
     /// a tagging relocation that fails would otherwise drop them one by one until -k records
     /// nothing. A program that still fails without tagging is then blamed on its own group.
-    pub const ALL: [OptionalGroup; 7 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()] = {
-        let mut all = [OptionalGroup::Bbr; 7 + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len()];
-        all[1] = OptionalGroup::CubicSsthresh;
-        all[2] = OptionalGroup::CubicState;
-        all[3] = OptionalGroup::Reno;
-        all[4] = OptionalGroup::MptcpTag;
-        all[5] = OptionalGroup::SockTimer;
-        let mut n = 6;
+    pub const ALL: [OptionalGroup; GROUPS] = {
+        let mut all = [OptionalGroup::Bbr; GROUPS];
+        let mut n = 1;
+        let mut i = 0;
+        while i < CUBIC_HOOKS.len() {
+            all[n] = OptionalGroup::CubicHook(i);
+            n += 1;
+            i += 1;
+        }
+        all[n] = OptionalGroup::Reno;
+        all[n + 1] = OptionalGroup::MptcpTag;
+        all[n + 2] = OptionalGroup::SockTimer;
+        n += 3;
         let mut i = 0;
         while i < SOCK_EVENT_HOOKS.len() {
             all[n] = OptionalGroup::SockEvent(i);
@@ -75,9 +84,8 @@ impl OptionalGroup {
     pub fn name(self) -> &'static str {
         match self {
             OptionalGroup::Bbr => "BBR",
-            OptionalGroup::CubicSsthresh => "CUBIC ssthresh hook",
-            OptionalGroup::CubicState => "CUBIC state hook",
-            OptionalGroup::Reno => "Reno",
+            OptionalGroup::CubicHook(i) => CUBIC_HOOKS[i].name,
+            OptionalGroup::Reno => RENO_HOOKS[0].name,
             OptionalGroup::SockTimer => "write timer hook",
             OptionalGroup::MptcpTag => "MPTCP tagging",
             OptionalGroup::MptcpPm => "MPTCP path manager events",
@@ -98,9 +106,8 @@ impl OptionalGroup {
     pub fn programs(self) -> &'static [&'static str] {
         match self {
             OptionalGroup::Bbr => &["bbr_cong_control", "bbr_cwnd_event"],
-            OptionalGroup::CubicSsthresh => &["cubic_ssthresh"],
-            OptionalGroup::CubicState => &["cubic_state"],
-            OptionalGroup::Reno => &["reno_cong_avoid", "reno_ssthresh"],
+            OptionalGroup::CubicHook(i) => CUBIC_HOOKS[i].programs,
+            OptionalGroup::Reno => RENO_HOOKS[0].programs,
             OptionalGroup::SockTimer => &["sock_timer"],
             OptionalGroup::MptcpTag => &[
                 "sock_sendmsg",
@@ -329,7 +336,7 @@ mod tests {
         let enabled = BTreeSet::from(OptionalGroup::ALL);
         assert_eq!(
             to_disable(&enabled, &w),
-            Some(BTreeSet::from([OptionalGroup::CubicState]))
+            Some(BTreeSet::from([OptionalGroup::CubicHook(1)]))
         );
         // The default CUBIC programs are not optional
         let w = warnings(&["libbpf: prog 'cubic_cong_control': failed to load: -22"]);

@@ -1,72 +1,79 @@
-use std::error::Error;
+use std::{collections::BTreeSet, error::Error};
 
-use libbpf_rs::Link;
-use log::warn;
+use libbpf_rs::{Link, OpenObject};
 use tcbee_common::{records::reno_trace_entry, stats::RB_RENO};
 
 use crate::{
     eBPF::{
         host::KernelBtf,
-        probes::attach,
+        optional::OptionalGroup,
+        probes::optional_hooks::{self, OptionalHook, Target},
         rings,
-        skel::{OpenTcbeeProgs, TcbeeSkel},
+        skel::TcbeeSkel,
     },
     writer::Writer,
 };
 
-/// Exported by the kernel and called through the congestion control operations of Reno and
-/// other algorithms, so they are not inlined away
-const CONG_AVOID: &str = "tcp_reno_cong_avoid";
-const SSTHRESH: &str = "tcp_reno_ssthresh";
+/// The Reno hooks of -a, one hook with two programs that are optional together
+/// (`OptionalGroup::Reno`). tcp_reno_cong_avoid and tcp_reno_ssthresh are exported by the
+/// kernel (tcp_cong.c) and called through the congestion control operations of Reno and
+/// other algorithms, so they are not inlined away.
+pub const RENO_HOOKS: [OptionalHook<()>; 1] = [OptionalHook {
+    programs: &["reno_cong_avoid", "reno_ssthresh"],
+    target: Target::Function("tcp_reno_cong_avoid"),
+    name: "Reno",
+    selector: (),
+}];
+
+fn not_recorded(name: &str) -> String {
+    format!("{name} is not recorded")
+}
 
 pub struct RenoTracer {}
 
 impl RenoTracer {
-    /// The Reno hooks of -a are optional as a group (`OptionalGroup::Reno`). Returns whether
-    /// they load, or the message why not.
+    /// Loads the Reno programs if the kernel has them and they are not `disabled`. Returns
+    /// whether they load, and a message if the kernel lacks them.
     pub fn configure(
-        progs: &mut OpenTcbeeProgs<'_>,
+        object: &mut OpenObject,
         enabled: bool,
+        disabled: &BTreeSet<OptionalGroup>,
         btf: &mut KernelBtf,
-    ) -> Result<bool, String> {
-        Self::set_autoload(progs, false);
-        if !enabled {
-            return Ok(false);
-        }
-        if btf.available() {
-            if let Some(func) = [CONG_AVOID, SSTHRESH]
-                .into_iter()
-                .find(|func| !btf.has_func(None, func))
-            {
-                warn!(
-                    "The kernel function {} does not exist, Reno is not recorded",
-                    func
-                );
-                return Err(format!("Reno: no kernel function {}", func));
-            }
-        }
-        Self::set_autoload(progs, true);
-        Ok(true)
+    ) -> (bool, Vec<String>) {
+        let exists = optional_hooks::existing(&RENO_HOOKS, |()| enabled, btf);
+        let (load, missing) = optional_hooks::to_load(
+            &RENO_HOOKS,
+            |()| enabled,
+            &exists,
+            disabled,
+            |_| OptionalGroup::Reno,
+        );
+        let skipped = missing
+            .into_iter()
+            .map(|i| optional_hooks::report_missing(&RENO_HOOKS[i], not_recorded))
+            .collect();
+        let loaded = optional_hooks::set_autoload(&RENO_HOOKS, object, &load);
+        (!loaded.is_empty(), skipped)
     }
 
-    fn set_autoload(progs: &mut OpenTcbeeProgs<'_>, enabled: bool) {
-        progs.reno_cong_avoid.set_autoload(enabled);
-        progs.reno_ssthresh.set_autoload(enabled);
-    }
-
-    /// Attaches both programs; on an error the caller detaches what was attached
+    /// Attaches both programs. If they do not attach, Reno is left out with a warning and a
+    /// message is returned; the ring then gets no writer and no file.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
         writer: &mut Writer,
         links: &mut Vec<Link>,
-    ) -> Result<(), Box<dyn Error>> {
-        attach(&skel.progs.reno_cong_avoid, links)?;
-        attach(&skel.progs.reno_ssthresh, links)?;
-
-        // Both programs write to the same map
-        writer.register::<reno_trace_entry>(RB_RENO, rings::of(&skel.maps.RENO_EVENTS)?, dir)?;
-
-        Ok(())
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        let (attached, failed) =
+            optional_hooks::attach_loaded(&RENO_HOOKS, skel, links, not_recorded);
+        if attached {
+            // Both programs write to the same map
+            writer.register::<reno_trace_entry>(
+                RB_RENO,
+                rings::of(&skel.maps.RENO_EVENTS)?,
+                dir,
+            )?;
+        }
+        Ok(failed.into_iter().next().map(|(_, message)| message))
     }
 }

@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{collections::BTreeSet, error::Error};
 
 use libbpf_rs::{Link, OpenObject};
 use tcbee_common::{records::sock_trace_entry, stats::RB_SOCK_EVENT};
@@ -10,6 +10,7 @@ use tcbee_trace::{
 use crate::{
     eBPF::{
         host::KernelBtf,
+        optional::OptionalGroup,
         probes::optional_hooks::{self, OptionalHook, Target},
         rings,
         skel::TcbeeSkel,
@@ -65,10 +66,16 @@ fn not_recorded(name: &str) -> String {
 fn hooks_to_load(
     hooks: Option<HookSet>,
     exists: &[bool],
-    disabled: &[usize],
+    disabled: &BTreeSet<OptionalGroup>,
 ) -> (Vec<bool>, Vec<String>) {
     let requested = |hook| hooks.is_some_and(|h| h.contains(hook));
-    let (load, missing) = optional_hooks::to_load(&SOCK_EVENT_HOOKS, requested, exists, disabled);
+    let (load, missing) = optional_hooks::to_load(
+        &SOCK_EVENT_HOOKS,
+        requested,
+        exists,
+        disabled,
+        OptionalGroup::SockEvent,
+    );
     let skipped = missing
         .into_iter()
         .map(|i| optional_hooks::report_missing(&SOCK_EVENT_HOOKS[i], not_recorded))
@@ -85,7 +92,7 @@ impl SockEventTracer {
     pub fn configure(
         object: &mut OpenObject,
         hooks: Option<HookSet>,
-        disabled: &[usize],
+        disabled: &BTreeSet<OptionalGroup>,
         btf: &mut KernelBtf,
     ) -> (Vec<usize>, Vec<String>) {
         let requested = |hook| hooks.is_some_and(|h| h.contains(hook));
@@ -138,13 +145,15 @@ mod tests {
         let hooks = HookSet::of(&[Hook::State, Hook::Rcvbuf, Hook::Timer]);
         let mut exists = ALL;
         exists[4] = false;
-        let (load, skipped) = hooks_to_load(Some(hooks), &exists, &[]);
+        let none = BTreeSet::new();
+        let (load, skipped) = hooks_to_load(Some(hooks), &exists, &none);
         assert_eq!(load, [true, false, false, false, false]);
         assert_eq!(skipped.len(), 1);
-        let (load, skipped) = hooks_to_load(Some(hooks), &ALL, &[0]);
+        let state = BTreeSet::from([OptionalGroup::SockEvent(0)]);
+        let (load, skipped) = hooks_to_load(Some(hooks), &ALL, &state);
         assert_eq!(load, [false, false, false, false, true]);
         assert!(skipped.is_empty());
-        let (load, skipped) = hooks_to_load(None, &[false; SOCK_EVENT_HOOKS.len()], &[]);
+        let (load, skipped) = hooks_to_load(None, &[false; SOCK_EVENT_HOOKS.len()], &none);
         assert_eq!(load, [false; SOCK_EVENT_HOOKS.len()]);
         assert!(skipped.is_empty());
     }

@@ -622,8 +622,9 @@ impl EbpfRunner {
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
         let (cubic_hooks, missing_cubic) =
-            CubicTracer::configure(&mut open.progs, self.config.algorithms, disabled, btf)?;
-        let mut optional = BTreeSet::from_iter(cubic_hooks);
+            CubicTracer::configure(&mut open, self.config.algorithms, disabled, btf)?;
+        let mut optional =
+            BTreeSet::from_iter(cubic_hooks.into_iter().map(OptionalGroup::CubicHook));
         if mptcp_tag {
             optional.insert(OptionalGroup::MptcpTag);
         }
@@ -631,9 +632,13 @@ impl EbpfRunner {
         if BBRTracer::configure(&mut open.progs, bbr, btf) {
             optional.insert(OptionalGroup::Bbr);
         }
-        let reno = self.config.algorithms && !disabled.contains(&OptionalGroup::Reno);
-        let reno = RenoTracer::configure(&mut open.progs, reno, btf);
-        if reno == Ok(true) {
+        let (reno, missing_reno) = RenoTracer::configure(
+            open.open_object_mut(),
+            self.config.algorithms,
+            disabled,
+            btf,
+        );
+        if reno {
             optional.insert(OptionalGroup::Reno);
         }
         if timer {
@@ -649,33 +654,19 @@ impl EbpfRunner {
             optional.insert(OptionalGroup::MptcpPm);
         }
         missing.extend(missing_cubic);
-        missing.extend(reno.err());
-        let disabled_hooks: Vec<usize> = disabled
-            .iter()
-            .filter_map(|group| match group {
-                OptionalGroup::TcpEvent(i) => Some(*i),
-                _ => None,
-            })
-            .collect();
+        missing.extend(missing_reno);
         let (hooks, missing_events) = TcpEventTracer::configure(
             open.open_object_mut(),
             self.config.tracepoints,
-            &disabled_hooks,
+            disabled,
             btf,
         );
         optional.extend(hooks.into_iter().map(OptionalGroup::TcpEvent));
         missing.extend(missing_events);
-        let disabled_sock_events: Vec<usize> = disabled
-            .iter()
-            .filter_map(|group| match group {
-                OptionalGroup::SockEvent(i) => Some(*i),
-                _ => None,
-            })
-            .collect();
         let (hooks, missing_sock_events) = SockEventTracer::configure(
             open.open_object_mut(),
             self.config.sock_hooks,
-            &disabled_sock_events,
+            disabled,
             btf,
         );
         optional.extend(hooks.into_iter().map(OptionalGroup::SockEvent));
@@ -856,8 +847,8 @@ impl EbpfRunner {
         }
 
         if self.config.algorithms {
-            for (group, message) in CubicTracer::spawn(skel, dir, writer, links)? {
-                optional.remove(&group);
+            for (hook, message) in CubicTracer::spawn(skel, dir, writer, links)? {
+                optional.remove(&OptionalGroup::CubicHook(hook));
                 self.skipped.push(message);
             }
             watcher_config.graphs.cubic = true;
@@ -882,15 +873,11 @@ impl EbpfRunner {
         }
 
         if optional.contains(&OptionalGroup::Reno) {
-            // Fails softly like BBR
-            let attached = links.len();
-            if let Err(err) = RenoTracer::spawn(skel, dir, writer, links) {
-                links.truncate(attached);
+            if let Some(message) = RenoTracer::spawn(skel, dir, writer, links)? {
                 optional.remove(&OptionalGroup::Reno);
+                // Its ring exists but holds nothing, like the TCP events' below
                 self.ringbuf_sizes[RB_RENO as usize] = None;
-                self.skipped
-                    .push(format!("Reno: attaching failed: {}", err));
-                warn!("Recording without Reno: {}", err);
+                self.skipped.push(message);
             }
         }
 

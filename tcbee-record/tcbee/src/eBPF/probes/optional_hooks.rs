@@ -1,17 +1,22 @@
 //! Tables of programs that are optional one by one (`OptionalGroup::TcpEvent`,
-//! `OptionalGroup::SockEvent`): each one loads if it is requested and the kernel has its
-//! target, and is left out with a message if not, or if it does not attach.
+//! `OptionalGroup::SockEvent`, `OptionalGroup::CubicHook`, `OptionalGroup::Reno`): each one
+//! loads if it is requested and the kernel has its target, and is left out with a message if
+//! not, or if it does not attach.
+
+use std::collections::BTreeSet;
 
 use libbpf_rs::{skel::Skel, Link, OpenObject};
 use log::warn;
 
-use crate::eBPF::{host::KernelBtf, probes::attach, skel::TcbeeSkel};
+use crate::eBPF::{host::KernelBtf, optional::OptionalGroup, probes::attach, skel::TcbeeSkel};
 
 /// Where an optional program attaches
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Tracepoint(&'static str),
     Function(&'static str),
+    /// A function of a module, or of the kernel if the module is built in
+    ModuleFunction(&'static str, &'static str),
 }
 
 impl Target {
@@ -19,6 +24,7 @@ impl Target {
         match self {
             Target::Tracepoint(tp) => btf.has_tracepoint(tp),
             Target::Function(func) => btf.has_func(None, func),
+            Target::ModuleFunction(module, func) => btf.has_func(Some(module), func),
         }
     }
 }
@@ -27,7 +33,9 @@ impl std::fmt::Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Target::Tracepoint(tp) => write!(f, "tracepoint {tp}"),
-            Target::Function(func) => write!(f, "kernel function {func}"),
+            Target::Function(func) | Target::ModuleFunction(_, func) => {
+                write!(f, "kernel function {func}")
+            }
         }
     }
 }
@@ -35,7 +43,7 @@ impl std::fmt::Display for Target {
 /// An optional program, the hook it records and `S`, what the user selects it with
 #[derive(Clone, Copy, Debug)]
 pub struct OptionalHook<S> {
-    /// One program per hook, a slice so that it can serve as an optional group's programs
+    /// The hook's programs, usually one; they load and attach together
     pub programs: &'static [&'static str],
     pub target: Target,
     /// Name for messages and the run metadata
@@ -60,16 +68,18 @@ pub fn existing<S: Copy>(
         .collect()
 }
 
-/// Which hooks to load: the requested ones that exist and are not `disabled` (indices).
-/// Returns the indices of the requested ones that do not exist too.
+/// Which hooks to load: the requested ones that exist and whose optional group (`group` of
+/// the hook index) is not `disabled`. Returns the indices of the requested ones that do not
+/// exist too.
 pub fn to_load<S: Copy>(
     hooks: &[OptionalHook<S>],
     requested: impl Fn(S) -> bool,
     exists: &[bool],
-    disabled: &[usize],
+    disabled: &BTreeSet<OptionalGroup>,
+    group: fn(usize) -> OptionalGroup,
 ) -> (Vec<bool>, Vec<usize>) {
     let load = (0..hooks.len())
-        .map(|i| requested(hooks[i].selector) && exists[i] && !disabled.contains(&i))
+        .map(|i| requested(hooks[i].selector) && exists[i] && !disabled.contains(&group(i)))
         .collect();
     let missing = (0..hooks.len())
         .filter(|i| requested(hooks[*i].selector) && !exists[*i])
@@ -104,9 +114,10 @@ pub fn set_autoload<S>(
     (0..load.len()).filter(|i| load[*i]).collect()
 }
 
-/// Attaches the loaded programs of the table. A program that does not attach is left out
-/// with a warning, like one the kernel lacks. Returns whether any attached, and the hook
-/// index and a message for each that failed.
+/// Attaches the loaded programs of the table. A hook whose programs do not all attach is left
+/// out with a warning, like one the kernel lacks, and its programs that did attach are
+/// detached again. Returns whether any hook attached, and the hook index and a message for
+/// each that failed.
 pub fn attach_loaded<S>(
     hooks: &[OptionalHook<S>],
     skel: &TcbeeSkel<'_>,
@@ -115,18 +126,22 @@ pub fn attach_loaded<S>(
 ) -> (bool, Vec<(usize, String)>) {
     let mut attached = false;
     let mut failed = Vec::new();
-    for program in skel.object().progs_mut() {
-        let name = program.name().to_string_lossy();
-        let Some(i) = index_of(hooks, &name) else {
-            continue;
-        };
-        if !program.autoload() {
-            continue;
-        }
-        match attach(&program, links) {
-            Ok(()) => attached = true,
+    for (i, hook) in hooks.iter().enumerate() {
+        let programs: Vec<_> = skel
+            .object()
+            .progs_mut()
+            .filter(|program| {
+                program.autoload() && hook.programs.contains(&&*program.name().to_string_lossy())
+            })
+            .collect();
+        let before = links.len();
+        match programs
+            .iter()
+            .try_for_each(|program| attach(program, links))
+        {
+            Ok(()) => attached |= !programs.is_empty(),
             Err(err) => {
-                let hook = &hooks[i];
+                links.truncate(before);
                 warn!("{}, {}", err, not_recorded(hook.name));
                 failed.push((i, format!("{}: attaching failed: {}", hook.name, err)));
             }
@@ -154,7 +169,7 @@ mod tests {
         },
         OptionalHook {
             programs: &["b"],
-            target: Target::Function("b"),
+            target: Target::ModuleFunction("m", "b"),
             name: "b",
             selector: 1,
         },
@@ -169,10 +184,13 @@ mod tests {
     #[test]
     fn requested_existing_and_enabled_hooks_load() {
         let selected = |s: u8| s == 1;
-        let (load, missing) = to_load(&HOOKS, selected, &[true, true, false], &[]);
+        let group = OptionalGroup::TcpEvent;
+        let none = BTreeSet::new();
+        let (load, missing) = to_load(&HOOKS, selected, &[true, true, false], &none, group);
         assert_eq!(load, [false, true, false]);
         assert_eq!(missing, [2]);
-        let (load, missing) = to_load(&HOOKS, selected, &[false, true, true], &[1]);
+        let disabled = BTreeSet::from([OptionalGroup::TcpEvent(1)]);
+        let (load, missing) = to_load(&HOOKS, selected, &[false, true, true], &disabled, group);
         assert_eq!(load, [false, false, true]);
         assert!(missing.is_empty());
     }
