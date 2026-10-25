@@ -20,6 +20,7 @@ use crate::{
         },
         flow_tracker::{flow_table, Flow},
         format,
+        history::Span,
         model::Model,
     },
 };
@@ -154,7 +155,10 @@ pub fn render(
     };
     let areas = grid(chart_area, shown.len());
     let slots: Vec<(usize, Rect)> = shown.into_iter().zip(areas).collect();
-    let window = view.context.observation_window;
+    let span = match view.context.observation_window {
+        Some(window) => Span::Last(window),
+        None => Span::Whole,
+    };
     for (slot, rect) in &slots {
         let mut rect = *rect;
         // The events chart shows the dropped share below
@@ -164,8 +168,7 @@ pub fn render(
             render_drops(frame, model, drops);
             rect = above;
         }
-        let chart = graph::chart(&model.charts[*slot], slot + 1, window);
-        frame.render_widget(chart, rect);
+        graph::render(frame, &model.charts[*slot], slot + 1, span, rect);
     }
 
     status::render(frame, model, view, ui.expanded, left);
@@ -284,8 +287,8 @@ pub(crate) mod tests {
     }
 
     /// Two ticks one second apart: 1000 records and 10 drops, 600 packets in, 400 out
-    pub fn busy_model(rings: &[u32], window: Option<f64>) -> Model {
-        let mut model = Model::new(rings, window);
+    pub fn busy_model(rings: &[u32]) -> Model {
+        let mut model = Model::new(rings);
         model.update(snapshot(&[]), 0, Duration::from_millis(500));
         model.record_history();
         let values = [
@@ -324,22 +327,19 @@ pub(crate) mod tests {
 
     #[test]
     fn rates_follow_the_counters() {
-        let model = busy_model(&TC_RINGS, None);
+        let model = busy_model(&TC_RINGS);
         assert_eq!(model.handled_rate(), 990.0);
         assert_eq!(model.dropped_rate(), 10.0);
         assert_eq!(model.ingress_rate(), 600.0);
         assert_eq!(model.egress_rate(), 400.0);
         assert_eq!(model.disk_rate(), 2_000_000.0);
         // The driver rings saw nothing
-        assert_eq!(
-            busy_model(&[RB_TCP4_DRIVER_INGRESS], None).ingress_rate(),
-            0.0
-        );
+        assert_eq!(busy_model(&[RB_TCP4_DRIVER_INGRESS]).ingress_rate(), 0.0);
     }
 
     #[test]
     fn first_tick_has_no_rates() {
-        let mut model = Model::new(&TC_RINGS, None);
+        let mut model = Model::new(&TC_RINGS);
         model.update(
             snapshot(&[(slot(RB_TCP4_INGRESS, STAT_HANDLED), 5)]),
             10,
@@ -351,7 +351,7 @@ pub(crate) mod tests {
 
     #[test]
     fn screen_shows_context_health_charts_and_flows() {
-        let model = busy_model(&TC_RINGS, None);
+        let model = busy_model(&TC_RINGS);
         let view = View::new(context(&TC_RINGS));
         let flows = [Flow {
             src: "10.0.0.1".parse().unwrap(),
@@ -386,7 +386,7 @@ pub(crate) mod tests {
 
     #[test]
     fn charts_follow_the_active_rings() {
-        let all = Model::new(&(0..RB_COUNT).collect::<Vec<_>>(), None);
+        let all = Model::new(&(0..RB_COUNT).collect::<Vec<_>>());
         let titles: Vec<&str> = all.charts.iter().map(|chart| chart.title).collect();
         assert_eq!(
             titles,
@@ -394,17 +394,17 @@ pub(crate) mod tests {
         );
         let labels: Vec<&str> = all.charts[1].series.iter().map(|s| s.label).collect();
         assert_eq!(labels, ["in", "out", "drv in", "drv out"]);
-        let tc = Model::new(&TC_RINGS, None);
+        let tc = Model::new(&TC_RINGS);
         assert_eq!(tc.charts.len(), 2);
         assert_eq!(tc.charts[1].series.len(), 2);
-        assert_eq!(Model::new(&[], None).charts.len(), 1);
+        assert_eq!(Model::new(&[]).charts.len(), 1);
     }
 
     #[test]
     fn group_charts_show_runs_per_series() {
-        let model = busy_model(&TC_RINGS, None);
+        let model = busy_model(&TC_RINGS);
         let headers = &model.charts[1];
-        let last = |s: usize| *headers.series[s].history.points().last().unwrap();
+        let last = |s: usize| *headers.series[s].whole.points().last().unwrap();
         assert_eq!(last(0), (1.5, 600.0));
         assert_eq!(last(1), (1.5, 400.0));
         assert_eq!(model.drop_history, [0, 100]);
@@ -420,7 +420,7 @@ pub(crate) mod tests {
             RB_CUBIC,
             RB_TCP_EVENTS,
         ];
-        let mut model = Model::new(&rings, None);
+        let mut model = Model::new(&rings);
         for (tick, count) in [(1, 0), (2, 100), (3, 300)] {
             let values = [
                 (slot(RB_TCP4_INGRESS, STAT_HANDLED), count),
@@ -451,7 +451,7 @@ pub(crate) mod tests {
 
     #[test]
     fn on_change_shows_the_suppressed_share() {
-        let mut model = Model::new(&[RB_SOCK_SEND], None);
+        let mut model = Model::new(&[RB_SOCK_SEND]);
         model.update(snapshot(&[]), 0, Duration::from_secs(1));
         let values = [
             (slot(RB_SOCK_SEND, STAT_HANDLED), 10),
@@ -489,7 +489,7 @@ pub(crate) mod tests {
 
     #[test]
     fn small_terminals_get_a_hint() {
-        let model = busy_model(&TC_RINGS, None);
+        let model = busy_model(&TC_RINGS);
         let view = View::new(context(&TC_RINGS));
         // No panic on a tiny terminal
         screen(1, 1, &model, &view, &UiState::default(), &[]);
@@ -503,7 +503,7 @@ pub(crate) mod tests {
 
     #[test]
     fn zoom_shows_one_chart() {
-        let model = busy_model(&TC_RINGS, None);
+        let model = busy_model(&TC_RINGS);
         let view = View::new(context(&TC_RINGS));
         let mut ui = UiState::default();
         ui.on_key(KeyCode::Char('2'), model.charts.len(), 0);
@@ -522,7 +522,7 @@ pub(crate) mod tests {
 
     #[test]
     fn clicks_zoom_the_chart_under_the_mouse() {
-        let model = busy_model(&TC_RINGS, None);
+        let model = busy_model(&TC_RINGS);
         let view = View::new(context(&TC_RINGS));
         let mut ui = UiState::default();
         let (_, areas) = screen(160, 45, &model, &view, &ui, &[]);

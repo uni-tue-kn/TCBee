@@ -67,7 +67,7 @@ impl EBPFWatcher {
             update_period,
             token,
             terminal,
-            model: Model::new(&config.active_rings, config.observation_window),
+            model: Model::new(&config.active_rings),
             view: View::new(config),
         })
     }

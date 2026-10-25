@@ -1,11 +1,17 @@
 use ratatui::{
+    layout::Rect,
     style::{Modifier, Style},
     symbols::Marker::Braille,
     text::{Line, Span},
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType},
+    Frame,
 };
 
-use crate::viz::{format, model::ChartModel};
+use crate::viz::{
+    format,
+    history::{self, thin},
+    model::ChartModel,
+};
 
 /// Title of a chart: its zoom key, name and unit, then the series names in their colours
 pub fn title(chart: &ChartModel, key: usize) -> Line<'static> {
@@ -22,12 +28,24 @@ pub fn title(chart: &ChartModel, key: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The Braille line chart of a chart's histories, the legend is in the title
-pub fn chart(chart: &ChartModel, key: usize, window: Option<f64>) -> Chart<'_> {
+/// The Braille line chart of a chart's histories in `span`, the legend is in the title
+pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::Span, area: Rect) {
     let end = chart.end();
-    let xmin = window.map_or(0.0, |window| (end - window).max(0.0));
+    let xmin = match span {
+        history::Span::Whole => 0.0,
+        history::Span::Last(window) => (end - window).max(0.0),
+    };
     let xmax = if end > xmin { end } else { xmin + 1.0 };
-    let ymax = chart.max();
+    // Two points per Braille dot are enough, more only cost drawing time
+    let data: Vec<_> = chart
+        .series
+        .iter()
+        .map(|series| thin(series.points(span, end), 4 * area.width as usize))
+        .collect();
+    let ymax = data
+        .iter()
+        .flat_map(|points| points.iter().map(|(_, y)| *y))
+        .fold(0.0, f64::max);
     let ymax = if ymax > 0.0 { ymax } else { 1.0 };
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let x_labels = [xmin, (xmin + xmax) / 2.0, xmax]
@@ -42,16 +60,17 @@ pub fn chart(chart: &ChartModel, key: usize, window: Option<f64>) -> Chart<'_> {
     let datasets: Vec<Dataset> = chart
         .series
         .iter()
-        .map(|series| {
+        .zip(&data)
+        .map(|(series, points)| {
             Dataset::default()
                 .marker(Braille)
                 .style(Style::default().fg(series.color))
                 .graph_type(GraphType::Line)
-                .data(series.history.points())
+                .data(points)
         })
         .collect();
 
-    Chart::new(datasets)
+    let widget = Chart::new(datasets)
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -59,5 +78,6 @@ pub fn chart(chart: &ChartModel, key: usize, window: Option<f64>) -> Chart<'_> {
         )
         .x_axis(Axis::default().bounds([xmin, xmax]).labels(x_labels))
         .y_axis(Axis::default().bounds([0.0, ymax]).labels(y_labels))
-        .legend_position(None)
+        .legend_position(None);
+    frame.render_widget(widget, area);
 }

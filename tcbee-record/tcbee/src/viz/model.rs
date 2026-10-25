@@ -13,7 +13,7 @@ use crate::{
     viz::{
         format,
         groups::{chart_groups, display_group, Group},
-        history::{History, HISTORY_POINTS},
+        history::{History, Recent, Span, HISTORY_POINTS},
     },
 };
 
@@ -35,7 +35,30 @@ pub struct ChartSeries {
     pub label: &'static str,
     pub color: Color,
     slots: Vec<u32>,
-    pub history: History,
+    /// The whole run, decimated
+    pub whole: History,
+    /// The last half hour at full resolution
+    pub recent: Recent,
+}
+
+impl ChartSeries {
+    fn new(label: &'static str, color: Color, slots: Vec<u32>) -> ChartSeries {
+        ChartSeries {
+            label,
+            color,
+            slots,
+            whole: History::new(HISTORY_POINTS),
+            recent: Recent::default(),
+        }
+    }
+
+    /// The points of `span` up to `end` seconds
+    pub fn points(&self, span: Span, end: f64) -> &[(f64, f64)] {
+        match span {
+            Span::Whole => self.whole.points(),
+            Span::Last(window) => self.recent.since(end - window),
+        }
+    }
 }
 
 pub struct ChartModel {
@@ -45,13 +68,8 @@ pub struct ChartModel {
 }
 
 impl ChartModel {
-    fn events(window: Option<f64>) -> ChartModel {
-        let series = |label, color, stat| ChartSeries {
-            label,
-            color,
-            slots: all_slots(stat),
-            history: History::new(HISTORY_POINTS, window),
-        };
+    fn events() -> ChartModel {
+        let series = |label, color, stat| ChartSeries::new(label, color, all_slots(stat));
         ChartModel {
             title: "Events",
             unit: "rec/s",
@@ -63,7 +81,7 @@ impl ChartModel {
     }
 
     /// The chart of a group, with the series that have an active ring
-    fn group(group: Group, active_rings: &[u32], window: Option<f64>) -> ChartModel {
+    fn group(group: Group, active_rings: &[u32]) -> ChartModel {
         let series = group
             .series()
             .iter()
@@ -75,12 +93,8 @@ impl ChartModel {
                     .copied()
                     .filter(|rb| active_rings.contains(rb))
                     .collect();
-                (!rings.is_empty()).then(|| ChartSeries {
-                    label: series.label,
-                    color,
-                    slots: run_slots(&rings),
-                    history: History::new(HISTORY_POINTS, window),
-                })
+                (!rings.is_empty())
+                    .then(|| ChartSeries::new(series.label, color, run_slots(&rings)))
             })
             .collect();
         ChartModel {
@@ -90,19 +104,12 @@ impl ChartModel {
         }
     }
 
-    /// Largest value in the histories, 0 when empty
-    pub fn max(&self) -> f64 {
-        self.series
-            .iter()
-            .map(|series| series.history.max())
-            .fold(0.0, f64::max)
-    }
-
     /// Time of the newest point
     pub fn end(&self) -> f64 {
         self.series
             .iter()
-            .filter_map(|series| series.history.end())
+            .filter_map(|series| series.whole.points().last())
+            .map(|(x, _)| *x)
             .fold(0.0, f64::max)
     }
 }
@@ -159,12 +166,11 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(active_rings: &[u32], observation_window: Option<f64>) -> Model {
-        let window = observation_window;
-        let mut charts = vec![ChartModel::events(window)];
+    pub fn new(active_rings: &[u32]) -> Model {
+        let mut charts = vec![ChartModel::events()];
         let charted = chart_groups(active_rings, CHARTS - 1);
         for group in &charted {
-            charts.push(ChartModel::group(*group, active_rings, window));
+            charts.push(ChartModel::group(*group, active_rings));
         }
         let groups = Group::ALL
             .into_iter()
@@ -293,7 +299,9 @@ impl Model {
         for c in 0..self.charts.len() {
             for s in 0..self.charts[c].series.len() {
                 let y = self.rate(&self.charts[c].series[s].slots);
-                self.charts[c].series[s].history.push(x, y);
+                let series = &mut self.charts[c].series[s];
+                series.whole.push(x, y);
+                series.recent.push(x, y);
             }
         }
         for g in 0..self.groups.len() {
