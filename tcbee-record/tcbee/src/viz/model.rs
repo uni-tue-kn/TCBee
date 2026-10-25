@@ -12,7 +12,7 @@ use crate::{
     stats::Snapshot,
     viz::{
         format,
-        groups::{chart_groups, Group},
+        groups::{chart_groups, display_group, Group},
         history::{History, HISTORY_POINTS},
     },
 };
@@ -107,6 +107,33 @@ impl ChartModel {
     }
 }
 
+/// Rate points a group row keeps for its sparkline
+pub const ROW_HISTORY: usize = 64;
+
+/// A row of the probe group table
+pub struct GroupRow {
+    pub group: Group,
+    /// Its rings that record
+    pub rings: Vec<u32>,
+    /// The group has a chart
+    pub charted: bool,
+    /// Runs per second of the last ticks
+    pub history: Vec<f64>,
+}
+
+/// Counters and rates of some rings
+pub struct RingStats {
+    /// Probe runs per second
+    pub runs: f64,
+    /// Records per second
+    pub records: f64,
+    pub drops: u64,
+    /// Share of the runs an on-change probe suppressed, in percent
+    pub suppressed: f64,
+    /// Share of the runs at packets that stand for several segments, in percent
+    pub aggregated: f64,
+}
+
 pub struct Model {
     /// Time since the watcher started, at the current snapshot
     pub elapsed: Duration,
@@ -119,6 +146,7 @@ pub struct Model {
     previous_bytes: u64,
     handled: Vec<u32>,
     dropped: Vec<u32>,
+    runs: Vec<u32>,
     /// Runs of the header hooks of the -q line
     ingress: Vec<u32>,
     egress: Vec<u32>,
@@ -126,15 +154,32 @@ pub struct Model {
     pub charts: Vec<ChartModel>,
     /// Dropped share of the events per tick, in hundredths of a percent
     pub drop_history: Vec<u64>,
+    /// Active groups in chart priority
+    pub groups: Vec<GroupRow>,
 }
 
 impl Model {
     pub fn new(active_rings: &[u32], observation_window: Option<f64>) -> Model {
         let window = observation_window;
         let mut charts = vec![ChartModel::events(window)];
-        for group in chart_groups(active_rings, CHARTS - 1) {
-            charts.push(ChartModel::group(group, active_rings, window));
+        let charted = chart_groups(active_rings, CHARTS - 1);
+        for group in &charted {
+            charts.push(ChartModel::group(*group, active_rings, window));
         }
+        let groups = Group::ALL
+            .into_iter()
+            .map(|group| GroupRow {
+                group,
+                rings: active_rings
+                    .iter()
+                    .copied()
+                    .filter(|rb| display_group(*rb) == group)
+                    .collect(),
+                charted: charted.contains(&group),
+                history: Vec::new(),
+            })
+            .filter(|row| !row.rings.is_empty())
+            .collect();
         // With both header hooks, the TC rates
         let driver_packets = !active_rings.contains(&RB_TCP4_INGRESS)
             && active_rings.contains(&RB_TCP4_DRIVER_INGRESS);
@@ -148,10 +193,12 @@ impl Model {
             previous_bytes: 0,
             handled: all_slots(STAT_HANDLED),
             dropped: all_slots(STAT_DROPPED),
+            runs: run_slots(&(0..RB_COUNT).collect::<Vec<_>>()),
             ingress: run_slots(&ingress),
             egress: run_slots(&egress),
             charts,
             drop_history: Vec::new(),
+            groups,
         }
     }
 
@@ -198,6 +245,33 @@ impl Model {
         self.rate(&self.egress)
     }
 
+    /// Counters of `rings`: rates since the previous tick, the rest since the start
+    pub fn ring_stats(&self, rings: &[u32]) -> RingStats {
+        let snap = &self.snapshot;
+        let runs: u64 = rings.iter().map(|rb| snap.invocations(*rb)).sum();
+        let suppressed: u64 = rings.iter().map(|rb| snap.suppressed(*rb)).sum();
+        let aggregated: u64 = rings.iter().map(|rb| snap.aggregated(*rb)).sum();
+        let handled: Vec<u32> = rings.iter().map(|rb| slot(*rb, STAT_HANDLED)).collect();
+        RingStats {
+            runs: self.rate(&run_slots(rings)),
+            records: self.rate(&handled),
+            drops: rings.iter().map(|rb| snap.rb(*rb, STAT_DROPPED)).sum(),
+            suppressed: percent(suppressed as f64, runs as f64),
+            aggregated: percent(aggregated as f64, runs as f64),
+        }
+    }
+
+    /// Probe runs per second over all rings
+    pub fn runs_rate(&self) -> f64 {
+        self.rate(&self.runs)
+    }
+
+    /// Dropped share of all events since the start in percent
+    pub fn drop_percent_total(&self) -> f64 {
+        let dropped = self.snapshot.dropped() as f64;
+        percent(dropped, self.snapshot.handled() as f64 + dropped)
+    }
+
     /// Dropped share of the events since the previous tick in percent
     pub fn drop_percent(&self) -> f64 {
         percent(
@@ -221,6 +295,14 @@ impl Model {
                 let y = self.rate(&self.charts[c].series[s].slots);
                 self.charts[c].series[s].history.push(x, y);
             }
+        }
+        for g in 0..self.groups.len() {
+            let runs = self.rate(&run_slots(&self.groups[g].rings));
+            let history = &mut self.groups[g].history;
+            if history.len() == ROW_HISTORY {
+                history.remove(0);
+            }
+            history.push(runs);
         }
         if self.drop_history.len() == HISTORY_POINTS {
             self.drop_history.remove(0);

@@ -37,6 +37,18 @@ impl Group {
         Group::Mptcp,
     ];
 
+    /// Name in the probe group table
+    pub fn name(self) -> &'static str {
+        match self {
+            Group::Headers => "headers",
+            Group::Sock => "sock",
+            Group::Cc => "cc",
+            Group::Tracepoints => "tracept",
+            Group::TcpEvents => "tcp_ev",
+            Group::Mptcp => "mptcp",
+        }
+    }
+
     /// Chart title
     pub fn title(self) -> &'static str {
         match self {
@@ -186,6 +198,36 @@ pub fn display_group(rb: u32) -> Group {
     }
 }
 
+/// Short name of ring buffer `rb` in the expanded group table
+pub fn ring_label(rb: u32) -> &'static str {
+    match rb {
+        RB_TCP4_INGRESS => "tc v4 in",
+        RB_TCP4_EGRESS => "tc v4 out",
+        RB_TCP6_INGRESS => "tc v6 in",
+        RB_TCP6_EGRESS => "tc v6 out",
+        RB_TCP4_DRIVER_INGRESS => "drv v4 in",
+        RB_TCP4_DRIVER_EGRESS => "drv v4 out",
+        RB_TCP6_DRIVER_INGRESS => "drv v6 in",
+        RB_TCP6_DRIVER_EGRESS => "drv v6 out",
+        RB_SOCK_SEND => "send",
+        RB_SOCK_RECV => "recv",
+        RB_SOCK_TIMER => "timer",
+        RB_SOCK_INGRESS => "ingress",
+        RB_SOCK_EVENT => "events",
+        RB_CWND_SEND => "cwnd send",
+        RB_CWND_RECV => "cwnd recv",
+        RB_CUBIC => "cubic",
+        RB_BBR => "bbr",
+        RB_RENO => "reno",
+        RB_TCP_PROBE => "tcp_probe",
+        RB_RETRANSMIT_SYNACK => "synack",
+        RB_BAD_CSUM => "bad_csum",
+        RB_TCP_EVENTS => "tcp_events",
+        RB_MPTCP_PM => "mptcp_pm",
+        _ => panic!("ring buffer {rb} has no label"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -195,10 +237,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_ring_has_a_group() {
+    fn every_ring_has_a_group_and_a_label() {
         let groups: HashSet<Group> = (0..RB_COUNT).map(display_group).collect();
         // And every group has a ring
         assert_eq!(groups.len(), 6);
+        let labels: HashSet<&str> = (0..RB_COUNT).map(ring_label).collect();
+        assert_eq!(labels.len(), RB_COUNT as usize, "two rings share a label");
     }
 
     #[test]

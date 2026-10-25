@@ -2,8 +2,8 @@
 
 use ratatui::{
     crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind},
-    layout::{Constraint, Direction, Layout, Margin, Position, Rect},
-    style::{Color, Style},
+    layout::{Constraint, Layout, Margin, Position, Rect},
+    style::{Color, Modifier, Style},
     widgets::{
         Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline,
         TableState, Wrap,
@@ -14,7 +14,10 @@ use ratatui::{
 use crate::{
     eBPF::ebpf_runner_config::EbpfWatcherConfig,
     viz::{
-        components::{graph, status::Status},
+        components::{
+            graph,
+            status::{self, LEFT_WIDTH},
+        },
         flow_tracker::{flow_table, Flow},
         format,
         model::Model,
@@ -43,6 +46,8 @@ pub struct UiState {
     pub zoom: Option<usize>,
     /// First flow shown
     pub scroll: usize,
+    /// The group table lists the rings of each group
+    pub expanded: bool,
 }
 
 /// Where the last frame put the parts that take mouse clicks
@@ -58,6 +63,7 @@ impl UiState {
         match code {
             KeyCode::Char('q') => return true,
             KeyCode::Esc => self.zoom = None,
+            KeyCode::Char('e') => self.expanded = !self.expanded,
             KeyCode::Char(key @ '1'..='4') => {
                 let slot = key as usize - '1' as usize;
                 if slot < charts {
@@ -126,9 +132,13 @@ pub fn render(
         return Areas::default();
     }
 
-    let [main, footer] = Layout::vertical([Constraint::Min(8), Constraint::Max(3)]).areas(area);
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)]).areas(main);
+    let [main, footer] = Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).areas(area);
+    let [left, right] = Layout::horizontal([
+        Constraint::Length(LEFT_WIDTH.min(area.width / 3)),
+        Constraint::Min(0),
+    ])
+    .spacing(1)
+    .areas(main);
 
     // A zoomed chart takes the place of the flows as well
     let shown: Vec<usize> = match ui.zoom {
@@ -158,36 +168,23 @@ pub fn render(
         frame.render_widget(chart, rect);
     }
 
-    render_status(frame, model, view, left);
+    status::render(frame, model, view, ui.expanded, left);
 
-    let context = &view.context;
-    let window_label = context
-        .observation_window
-        .map(|window| format!(" | Window: {}", format::axis_time(window)))
-        .unwrap_or_default();
-    let zoom_label = match ui.zoom {
-        Some(_) => "Back: Esc",
-        None => "Zoom: 1-4",
+    let window = match view.context.observation_window {
+        Some(window) => format!("last {}", format::axis_time(window)),
+        None => "whole run".to_string(),
     };
-    let keybindings = Paragraph::new(format!(
-        "Quit: q | {zoom_label} | Scroll: \u{2191}\u{2193} | K, M, G: 10^3, 10^6, 10^9{window_label}"
-    ))
-    .style(Style::default().fg(Color::Reset));
-    let keybindings_block = Block::bordered()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Reset))
-        .title(format!(
-            "Recording to {}{}, {} CPUs{}",
-            context.dir,
-            context
-                .iface
-                .as_ref()
-                .map(|iface| format!(" at {iface}"))
-                .unwrap_or_default(),
-            context.cpus,
-            if context.on_change { ", on change" } else { "" }
-        ));
-    frame.render_widget(keybindings.block(keybindings_block), footer);
+    let zoom = match ui.zoom {
+        Some(_) => "Esc back",
+        None => "1-4 zoom",
+    };
+    let keys = format!(
+        " q quit  {zoom}  e rings  \u{2191}\u{2193} scroll flows   charts: {window}, K M G = 10^3 10^6 10^9"
+    );
+    frame.render_widget(
+        Paragraph::new(keys).style(Style::default().add_modifier(Modifier::DIM)),
+        footer,
+    );
 
     Areas { slots }
 }
@@ -208,42 +205,6 @@ fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
         Sparkline::default().data(shown).max(max).style(red),
         spark_area,
     );
-}
-
-fn render_status(frame: &mut Frame, model: &Model, view: &View, area: Rect) {
-    let status = Status::new();
-    let mut constraints = vec![Constraint::Max(3); status.num_blocks()];
-    constraints.push(Constraint::Min(0));
-    let sidebar = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
-
-    let snap = &model.snapshot;
-    let elapsed = model.elapsed;
-    let time_string = format::clock(elapsed);
-    let event_rate = format::rate(model.handled_rate() + model.dropped_rate(), "events/s");
-    let file_rate = format!("{}/s", format::bytes(model.disk_rate()));
-    let blocks = status.get_blocks(
-        time_string,
-        format::si(snap.handled() as f64),
-        format::si(snap.dropped() as f64),
-        snap.dropped() > 0,
-        event_rate,
-        model.bytes_written,
-        file_rate,
-        Color::Reset,
-    );
-    let skipped_area = sidebar[blocks.len()];
-    for (i, block) in blocks.into_iter().enumerate() {
-        frame.render_widget(block, sidebar[i]);
-    }
-    if !view.context.skipped.is_empty() {
-        let skipped = Paragraph::new(view.context.skipped.join("\n"))
-            .wrap(Wrap { trim: true })
-            .block(Block::default().title("Skipped"));
-        frame.render_widget(skipped, skipped_area);
-    }
 }
 
 fn render_flows(frame: &mut Frame, ui: &UiState, flows: &[Flow], area: Rect) {
@@ -284,8 +245,9 @@ pub(crate) mod tests {
 
     use ratatui::{backend::TestBackend, Terminal};
     use tcbee_common::stats::{
-        slot, RB_COUNT, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS,
-        RB_TCP6_INGRESS, STATS_LEN, STAT_DROPPED, STAT_HANDLED,
+        aggregated_slot, slot, suppressed_slot, RB_COUNT, RB_CUBIC, RB_SOCK_SEND,
+        RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
+        RB_TCP_EVENTS, STATS_LEN, STATS_STATE_ERR, STAT_DROPPED, STAT_HANDLED,
     };
 
     use super::*;
@@ -388,7 +350,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn screen_shows_status_tabs_and_flows() {
+    fn screen_shows_context_health_charts_and_flows() {
         let model = busy_model(&TC_RINGS, None);
         let view = View::new(context(&TC_RINGS));
         let flows = [Flow {
@@ -398,15 +360,20 @@ pub(crate) mod tests {
             dport: 40000,
         }];
         let (lines, areas) = screen(160, 45, &model, &view, &UiState::default(), &flows);
-        assert!(contains(&lines, "Time Elapsed"));
-        assert!(contains(&lines, "00:00:01"));
-        assert!(contains(&lines, "1.00K events/s"));
-        assert!(contains(&lines, "2.00 MB/s"));
-        assert!(contains(&lines, "Events Handled"));
+        assert!(contains(&lines, "TCBee 00:00:01"));
+        assert!(contains(&lines, "/data/run1"));
+        assert!(contains(&lines, "eth0  8 CPUs"));
+        assert!(contains(&lines, "rec/s            990  total 990"));
+        assert!(contains(&lines, "runs/s         1.00K"));
+        assert!(contains(&lines, "drops/s           10  total 10"));
+        assert!(contains(&lines, "drop %         1.00%  now 1.00%"));
+        assert!(contains(&lines, "disk       2.00 MB/s  2.00 MB"));
+        assert!(contains(&lines, "headers      1.00K    990     10 agg 0%"));
+        assert!(contains(&lines, "- BBR: tcp_bbr is not loaded"));
+        assert!(contains(&lines, " q quit  1-4 zoom  e rings"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Tracking 1 Flows"));
         assert!(contains(&lines, "10.0.0.2"));
-        assert!(contains(&lines, "Recording to /data/run1 at eth0, 8 CPUs"));
         assert!(contains(&lines, "tcp_bbr is not loaded"));
         assert_eq!(areas.slots.len(), 2);
         assert!(contains(
@@ -442,6 +409,70 @@ pub(crate) mod tests {
         assert_eq!(last(1), (1.5, 400.0));
         assert_eq!(model.drop_history, [0, 100]);
         assert_eq!(model.drop_percent(), 1.0);
+    }
+
+    #[test]
+    fn group_table_expands_into_rings() {
+        let rings = [
+            RB_TCP4_INGRESS,
+            RB_TCP4_EGRESS,
+            RB_SOCK_SEND,
+            RB_CUBIC,
+            RB_TCP_EVENTS,
+        ];
+        let mut model = Model::new(&rings, None);
+        for (tick, count) in [(1, 0), (2, 100), (3, 300)] {
+            let values = [
+                (slot(RB_TCP4_INGRESS, STAT_HANDLED), count),
+                (aggregated_slot(RB_TCP4_INGRESS), count / 2),
+                (slot(RB_TCP_EVENTS, STAT_HANDLED), count),
+                (STATS_STATE_ERR, 3),
+            ];
+            model.update(snapshot(&values), 0, Duration::from_secs(tick));
+            model.record_history();
+        }
+        let view = View::new(context(&[]));
+        let mut ui = UiState::default();
+        let (lines, _) = screen(160, 45, &model, &view, &ui, &[]);
+        assert!(contains(&lines, "headers        200    200      0 agg 50%"));
+        // TCP events have no chart, so a sparkline
+        assert!(contains(
+            &lines,
+            "tcp_ev         200    200      0 \u{2581}\u{2584}\u{2588}"
+        ));
+        assert!(contains(&lines, "! 3 state_err"));
+        assert!(!contains(&lines, "tc v4 in"));
+        ui.on_key(KeyCode::Char('e'), model.charts.len(), 0);
+        let (lines, _) = screen(160, 45, &model, &view, &ui, &[]);
+        assert!(contains(&lines, " tc v4 in      200    200      0 agg 50%"));
+        assert!(contains(&lines, " tc v4 out       0      0      0 agg 0%"));
+        assert!(contains(&lines, " tcp_events    200"));
+    }
+
+    #[test]
+    fn on_change_shows_the_suppressed_share() {
+        let mut model = Model::new(&[RB_SOCK_SEND], None);
+        model.update(snapshot(&[]), 0, Duration::from_secs(1));
+        let values = [
+            (slot(RB_SOCK_SEND, STAT_HANDLED), 10),
+            (suppressed_slot(RB_SOCK_SEND), 30),
+        ];
+        model.update(snapshot(&values), 0, Duration::from_secs(2));
+        let mut context = context(&[]);
+        context.on_change = true;
+        let (lines, _) = screen(
+            160,
+            45,
+            &model,
+            &View::new(context),
+            &UiState::default(),
+            &[],
+        );
+        assert!(contains(
+            &lines,
+            "sock            40     10      0 supp 75%"
+        ));
+        assert!(contains(&lines, "on change"));
     }
 
     #[test]

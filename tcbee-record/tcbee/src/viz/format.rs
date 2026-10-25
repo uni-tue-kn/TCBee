@@ -30,12 +30,6 @@ pub fn si(val: f64) -> String {
     let (number, prefix) = scaled(val);
     format!("{number}{prefix}")
 }
-
-/// A rate with its unit: "812K rec/s"
-pub fn rate(val: f64, unit: &str) -> String {
-    format!("{} {unit}", si(val))
-}
-
 /// Bytes with a decimal prefix: "1.90 GB"
 pub fn bytes(val: f64) -> String {
     let (number, prefix) = scaled(val);
@@ -56,6 +50,23 @@ pub fn axis_time(secs: f64) -> String {
         60..3600 => format!("{}:{:02}", secs / 60, secs % 60),
         _ => format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60),
     }
+}
+
+/// The last `width` values as a text sparkline, scaled to their maximum
+pub fn spark(values: &[f64], width: usize) -> String {
+    const BARS: [char; 8] = [
+        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
+    let shown = &values[values.len().saturating_sub(width)..];
+    let max = shown.iter().copied().fold(0.0, f64::max);
+    shown
+        .iter()
+        .map(|value| {
+            let level = if max > 0.0 { value / max * 7.0 } else { 0.0 };
+            BARS[(level as usize).min(7)]
+        })
+        .collect()
 }
 
 /// A rate in the status line of -q: "1.50 KEvents/s"
@@ -86,7 +97,6 @@ mod tests {
         assert_eq!(si(812_400.0), "812K");
         assert_eq!(si(151_000_000.0), "151M");
         assert_eq!(si(-3.0), "0");
-        assert_eq!(rate(1_200.0, "rec/s"), "1.20K rec/s");
         assert_eq!(bytes(1_900_000_000.0), "1.90 GB");
         assert_eq!(bytes(512.0), "512 B");
         assert_eq!(quiet_rate(1000.0, "pps"), "1.00 Kpps");
@@ -100,5 +110,15 @@ mod tests {
         assert_eq!(axis_time(42.4), "42s");
         assert_eq!(axis_time(725.0), "12:05");
         assert_eq!(axis_time(3723.0), "1:02:03");
+    }
+
+    #[test]
+    fn sparklines_scale_to_their_maximum() {
+        assert_eq!(
+            spark(&[0.0, 1.0, 2.0, 4.0, 8.0], 4),
+            "\u{2581}\u{2582}\u{2584}\u{2588}"
+        );
+        assert_eq!(spark(&[0.0, 0.0], 8), "\u{2581}\u{2581}");
+        assert_eq!(spark(&[], 8), "");
     }
 }
