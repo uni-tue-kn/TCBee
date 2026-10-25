@@ -3,7 +3,7 @@ use std::error::Error;
 use libbpf_rs::Link;
 use tcbee_common::records::cwnd_trace_entry;
 use tcbee_trace::{
-    onchange::{Hook, HookSet},
+    sock_hooks::{Hook, HookSet},
     TraceFile,
 };
 

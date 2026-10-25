@@ -4,8 +4,9 @@
 //! filter increments exactly one of `STAT_HANDLED` (record submitted), `STAT_DROPPED`
 //! (ring buffer full), `STAT_ERROR` (kernel read failed) or, in on-change mode, the ring's
 //! suppressed slot (watched fields unchanged, no record). The number of invocations is their
-//! sum. The suppressed slots and the state error slot follow the per-ring slots, so the
-//! layout of the first `RB_COUNT * STATS_PER_RB` slots does not depend on the mode.
+//! sum. The suppressed slots, the state error slot and the aggregated packet slots follow the
+//! per-ring slots, so the layout of the first `RB_COUNT * STATS_PER_RB` slots does not depend
+//! on the mode.
 
 use tcbee_trace::TraceFile;
 
@@ -24,7 +25,15 @@ pub const RB_CUBIC: u32 = 11;
 pub const RB_BBR: u32 = 12;
 pub const RB_MPTCP_PM: u32 = 13;
 pub const RB_TCP_EVENTS: u32 = 14;
-pub const RB_COUNT: u32 = 15;
+pub const RB_SOCK_TIMER: u32 = 15;
+pub const RB_SOCK_INGRESS: u32 = 16;
+pub const RB_SOCK_EVENT: u32 = 17;
+pub const RB_RENO: u32 = 18;
+pub const RB_TCP4_DRIVER_INGRESS: u32 = 19;
+pub const RB_TCP6_DRIVER_INGRESS: u32 = 20;
+pub const RB_TCP4_DRIVER_EGRESS: u32 = 21;
+pub const RB_TCP6_DRIVER_EGRESS: u32 = 22;
+pub const RB_COUNT: u32 = 23;
 
 pub const STAT_HANDLED: u32 = 0;
 pub const STAT_DROPPED: u32 = 1;
@@ -34,7 +43,10 @@ pub const STATS_PER_RB: u32 = 3;
 pub const STATS_SUPPRESSED_BASE: u32 = RB_COUNT * STATS_PER_RB;
 /// On-change runs that found no socket storage and wrote a full record
 pub const STATS_STATE_ERR: u32 = STATS_SUPPRESSED_BASE + RB_COUNT;
-pub const STATS_LEN: u32 = STATS_STATE_ERR + 1;
+/// First of the `RB_COUNT` slots of the packets a header hook saw that stand for several
+/// segments (GSO, GRO, LRO), counted on top of the run's outcome
+pub const STATS_AGGREGATED_BASE: u32 = STATS_STATE_ERR + 1;
+pub const STATS_LEN: u32 = STATS_AGGREGATED_BASE + RB_COUNT;
 
 /// Slots whose sum is the number of probe invocations of a ring buffer
 pub const fn invocation_slots(rb: u32) -> [u32; 4] {
@@ -49,6 +61,11 @@ pub const fn invocation_slots(rb: u32) -> [u32; 4] {
 /// Slot of the runs an on-change probe of this ring buffer suppressed
 pub const fn suppressed_slot(rb: u32) -> u32 {
     STATS_SUPPRESSED_BASE + rb
+}
+
+/// Slot of the aggregated packets of this ring buffer's header hook
+pub const fn aggregated_slot(rb: u32) -> u32 {
+    STATS_AGGREGATED_BASE + rb
 }
 
 #[inline(always)]
@@ -78,6 +95,22 @@ const fn rb(map: &'static str, file: TraceFile, group: &'static str, mib: u32) -
     }
 }
 
+/// The rings of the header records of received and sent packets, IPv4 and IPv6: those of the
+/// TC hooks, or with `driver` those of the driver hooks
+pub fn packet_rings(driver: bool) -> ([u32; 2], [u32; 2]) {
+    if driver {
+        (
+            [RB_TCP4_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS],
+            [RB_TCP4_DRIVER_EGRESS, RB_TCP6_DRIVER_EGRESS],
+        )
+    } else {
+        (
+            [RB_TCP4_INGRESS, RB_TCP6_INGRESS],
+            [RB_TCP4_EGRESS, RB_TCP6_EGRESS],
+        )
+    }
+}
+
 /// All ring buffer maps, indexed by `RB_*`. IPv6 rings are smaller as they stay empty in
 /// most recordings. `tests/c_mirror.rs` checks the ids and map names against the eBPF sources.
 pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
@@ -101,6 +134,45 @@ pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
     rb("BBR_EVENTS", TraceFile::Bbr, "bbr", 8),
     rb("MPTCP_PM_EVENTS", TraceFile::MptcpPm, "mptcp_pm", 1),
     rb("TCP_EVENTS", TraceFile::TcpEvents, "tcp_events", 4),
+    // The write timer runs a few times per RTO at most; its own group, so that a sock size
+    // does not apply to it
+    rb(
+        "TCP_TIMER_SOCK_EVENTS",
+        TraceFile::TimerSock,
+        "sock_timer",
+        1,
+    ),
+    // Once per received segment, like the receive ring of the sock probe
+    rb(
+        "TCP_INGRESS_SOCK_EVENTS",
+        TraceFile::IngressSock,
+        "sock",
+        16,
+    ),
+    // At TCP events, not per packet
+    rb(
+        "TCP_EVENT_SOCK_EVENTS",
+        TraceFile::EventSock,
+        "sock_event",
+        1,
+    ),
+    // Per ACK of every socket whose algorithm uses Reno's congestion avoidance, like cubic
+    rb("RENO_EVENTS", TraceFile::Reno, "reno", 8),
+    // The driver hooks of -h (--headers-at driver), in the size groups of the TC rings
+    rb(
+        "TCP4_DRIVER_INGRESS",
+        TraceFile::Tcp4DriverReceive,
+        "tcp4",
+        16,
+    ),
+    rb(
+        "TCP6_DRIVER_INGRESS",
+        TraceFile::Tcp6DriverReceive,
+        "tcp6",
+        4,
+    ),
+    rb("TCP4_DRIVER_EGRESS", TraceFile::Tcp4DriverSend, "tcp4", 16),
+    rb("TCP6_DRIVER_EGRESS", TraceFile::Tcp6DriverSend, "tcp6", 4),
 ];
 
 #[cfg(test)]
@@ -110,16 +182,34 @@ mod tests {
     #[test]
     fn appended_slots_follow_the_per_ring_slots() {
         // The first RB_COUNT * STATS_PER_RB slots keep their layout in every mode
-        assert_eq!(slot(RB_TCP_EVENTS, STAT_ERROR), RB_COUNT * STATS_PER_RB - 1);
+        assert_eq!(
+            slot(RB_TCP6_DRIVER_EGRESS, STAT_ERROR),
+            RB_COUNT * STATS_PER_RB - 1
+        );
         assert_eq!(suppressed_slot(0), RB_COUNT * STATS_PER_RB);
-        assert_eq!(suppressed_slot(RB_TCP_EVENTS) + 1, STATS_STATE_ERR);
-        assert_eq!(RB_TCP_EVENTS, RB_COUNT - 1);
-        assert_eq!(STATS_LEN, 61);
+        assert_eq!(suppressed_slot(RB_TCP6_DRIVER_EGRESS) + 1, STATS_STATE_ERR);
+        assert_eq!(RB_TCP6_DRIVER_EGRESS, RB_COUNT - 1);
+        assert_eq!(aggregated_slot(0), STATS_STATE_ERR + 1);
+        assert_eq!(aggregated_slot(RB_COUNT - 1) + 1, STATS_LEN);
+        assert_eq!(STATS_LEN, 116);
         let all: Vec<u32> = (0..RB_COUNT).flat_map(invocation_slots).collect();
         let mut sorted = all.clone();
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), all.len(), "a slot counts for two rings");
         assert!(!all.contains(&STATS_STATE_ERR));
+        assert!((0..RB_COUNT).all(|rb| !all.contains(&aggregated_slot(rb))));
+    }
+
+    #[test]
+    fn rings_added_later_keep_the_older_slots() {
+        // Readers of older metrics address the first 15 rings by these slots
+        assert_eq!(slot(RB_TCP_EVENTS, STAT_ERROR), 44);
+        assert_eq!(slot(RB_SOCK_TIMER, STAT_HANDLED), 45);
+        assert_eq!(slot(RB_SOCK_INGRESS, STAT_HANDLED), 48);
+        assert_eq!(slot(RB_SOCK_EVENT, STAT_HANDLED), 51);
+        assert_eq!(slot(RB_RENO, STAT_HANDLED), 54);
+        assert_eq!(slot(RB_TCP4_DRIVER_INGRESS, STAT_HANDLED), 57);
+        assert_eq!(slot(RB_TCP4_DRIVER_EGRESS, STAT_HANDLED), 63);
     }
 }

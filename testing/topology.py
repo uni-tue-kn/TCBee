@@ -280,8 +280,8 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
             test_ports = str(MPTCP_PORT)
             test_hosts = f"{TCBEE_IP},{RECV_IP},{TCBEE_IP2},{RECV_IP2}"
             # Path manager events and the connection of every subflow record
-            if not any(arg in ("-M", "--mptcp") for arg in shlex.split(record_args)):
-                record_args = f"{record_args} -M"
+            if not any(arg in ("-m", "-M", "--mptcp") for arg in shlex.split(record_args)):
+                record_args = f"{record_args} -m"
         else:
             test_ports = f"{PORT1},{PORT2}" if double else str(PORT1)
             test_hosts = f"{TCBEE_IP},{RECV_IP}"

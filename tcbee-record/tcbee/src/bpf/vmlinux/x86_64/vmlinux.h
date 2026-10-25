@@ -88,6 +88,30 @@ struct __sk_buff {
 	__u32 tc_classid;
 	__u32 data;
 	__u32 data_end;
+	__u32 napi_id;
+	__u32 family;
+	__u32 remote_ip4;
+	__u32 local_ip4;
+	__u32 remote_ip6[4];
+	__u32 local_ip6[4];
+	__u32 remote_port;
+	__u32 local_port;
+	__u32 data_meta;
+	/* __bpf_md_ptr(struct bpf_flow_keys *, flow_keys) */
+	__u64 flow_keys;
+	__u64 tstamp;
+	__u32 wire_len;
+	__u32 gso_segs;
+};
+
+/* The XDP context, a stable UAPI layout like struct __sk_buff */
+struct xdp_md {
+	__u32 data;
+	__u32 data_end;
+	__u32 data_meta;
+	__u32 ingress_ifindex;
+	__u32 rx_queue_index;
+	__u32 egress_ifindex;
 };
 
 struct trace_event_raw_tcp_probe {
@@ -159,6 +183,34 @@ struct sk_buff {
 	__u16 transport_header;
 	__u16 network_header;
 	unsigned char *head;
+	unsigned char *data;
+	unsigned int data_len;
+	/* union with skb_mstamp_ns */
+	__s64 tstamp;
+	/* sk_buff_data_t: an offset from head on 64 bit */
+	unsigned int end;
+};
+
+struct skb_shared_info {
+	unsigned short gso_segs;
+};
+
+struct ns_common {
+	unsigned int inum;
+};
+
+struct net {
+	struct ns_common ns;
+};
+
+/* Has its member only with CONFIG_NET_NS */
+typedef struct {
+	struct net *net;
+} possible_net_t;
+
+struct net_device {
+	int ifindex;
+	possible_net_t nd_net;
 };
 
 /* Only its existence is checked: 5.17 and newer */
@@ -223,6 +275,12 @@ struct tcp_sock {
 	u32 app_limited;
 	u8 chrono_type: 2;
 	u32 chrono_stat[3];
+	u32 write_seq;
+	u32 rate_delivered;
+	u32 rate_interval_us;
+	u64 tcp_wstamp_ns;
+	u32 dsack_dups;
+	u32 reord_seen;
 };
 
 struct in_addr {

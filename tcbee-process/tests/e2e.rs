@@ -45,7 +45,10 @@ const SMALL: &[(&str, &str, u8, u64, usize)] = &[
 ];
 
 /// Size of one `tcp4` record in the trace file.
-const TCP4_RECORD: usize = 43;
+const TCP4_RECORD: usize = 52;
+/// Size of the old `tcp4` records of the fixture, without `ecn` and `tstamp` (9 bytes before the
+/// divider).
+const TCP4_FIXTURE_RECORD: usize = 43;
 /// Byte offsets inside a `tcp4` record: `time` and `hook_seq` (u64) first, `seq` (u32) after both
 /// addresses and both ports, the divider in the last four bytes.
 const TCP4_SEQ_OFFSET: usize = 28;
@@ -699,7 +702,8 @@ fn plain_tcp_socket_on_the_reversed_tuple_stays_out_of_the_connection() {
 
 /// Writes a `tcp4_send.tcp` of `total` records of one flow into a new trace directory. Record `i`
 /// has `seq = i` and a timestamp that repeats three times (so ordering needs the record index),
-/// built from the first fixture record. `corrupt` lists records whose divider is broken.
+/// built from the first fixture record in the current layout. `corrupt` lists records whose
+/// divider is broken.
 fn write_tcp4_trace(
     dir: &Path,
     name: &str,
@@ -709,7 +713,10 @@ fn write_tcp4_trace(
 ) -> PathBuf {
     let trace = dir.join(name);
     fs::create_dir_all(&trace).unwrap();
-    let template = fs::read(fixture("tcbee_small").join("tcp4_send.tcp")).unwrap();
+    let fixture = fs::read(fixture("tcbee_small").join("tcp4_send.tcp")).unwrap();
+    let mut template = fixture[..TCP4_FIXTURE_RECORD - 4].to_vec();
+    template.extend_from_slice(&[0; 9]);
+    template.extend_from_slice(&fixture[TCP4_FIXTURE_RECORD - 4..TCP4_FIXTURE_RECORD]);
     let mut bytes = Vec::with_capacity(total * TCP4_RECORD);
     for i in 0..total {
         let mut rec = template[..TCP4_RECORD].to_vec();
@@ -783,7 +790,7 @@ fn corrupted_divider_fails_and_leaves_no_output() {
         let err = run(Args::new(&trace, &out, engine)).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("tcp4_send.tcp"), "{msg}");
-        assert!(msg.contains("offset 129"), "{msg}");
+        assert!(msg.contains("offset 156"), "{msg}");
         assert!(msg.contains("divider"), "{msg}");
         assert_no_output(&out);
     }

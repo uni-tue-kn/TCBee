@@ -114,22 +114,48 @@ pub fn create(
     Ok(())
 }
 
-/// The ring buffers of an array filled by `create`, one per online CPU
-pub fn of(array: &MapMut<'_>) -> Result<Vec<MapHandle>, EBPFRunnerError> {
+/// The ring buffers of an array filled by `create`, one per online CPU, with the CPU id
+pub fn of(array: &MapMut<'_>) -> Result<Vec<(u32, MapHandle)>, EBPFRunnerError> {
     let error = |source| EBPFRunnerError::MapError {
         name: array.name().to_string_lossy().into_owned(),
         source,
     };
-    let mut rings = Vec::new();
-    for cpu in 0..array.max_entries() {
+    let filled = filled_slots(array.max_entries(), |cpu| {
         // Userspace lookups in a map of maps return the inner map's id
-        if let Some(id) = array
+        let id = array
             .lookup(&cpu.to_ne_bytes(), MapFlags::ANY)
-            .map_err(error)?
-        {
-            let id = u32::from_ne_bytes(id[..4].try_into().expect("map id is 4 bytes"));
-            rings.push(MapHandle::from_map_id(id).map_err(error)?);
+            .map_err(error)?;
+        Ok(id.map(|id| u32::from_ne_bytes(id[..4].try_into().expect("map id is 4 bytes"))))
+    })?;
+    filled
+        .into_iter()
+        .map(|(cpu, id)| Ok((cpu, MapHandle::from_map_id(id).map_err(error)?)))
+        .collect()
+}
+
+/// (CPU id, inner map id) of the slots that hold a ring: the slot index is the CPU id, and
+/// offline CPUs leave gaps
+fn filled_slots<E>(
+    slots: u32,
+    mut lookup: impl FnMut(u32) -> Result<Option<u32>, E>,
+) -> Result<Vec<(u32, u32)>, E> {
+    let mut filled = Vec::new();
+    for cpu in 0..slots {
+        if let Some(id) = lookup(cpu)? {
+            filled.push((cpu, id));
         }
     }
-    Ok(rings)
+    Ok(filled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rings_keep_the_cpu_id_of_their_slot() {
+        let rings: [Option<u32>; 6] = [Some(10), None, Some(12), None, None, Some(15)];
+        let filled = filled_slots(6, |cpu| Ok::<_, ()>(rings[cpu as usize])).unwrap();
+        assert_eq!(filled, [(0, 10), (2, 12), (5, 15)]);
+    }
 }

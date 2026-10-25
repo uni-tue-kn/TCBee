@@ -4,13 +4,16 @@ pub mod cwnd;
 pub mod headers;
 pub mod kernel;
 pub mod mptcp;
+pub mod optional_hooks;
+pub mod reno;
+pub mod sock_events;
 pub mod tcp_events;
 pub mod tracepoints;
 
 use libbpf_rs::{Link, MapCore, MapHandle, MapMut, OpenProgramMut, ProgramMut};
 use log::{info, warn};
 use tcbee_trace::{
-    onchange::{Hook, HookSet},
+    sock_hooks::{Hook, HookSet},
     TraceFile,
 };
 

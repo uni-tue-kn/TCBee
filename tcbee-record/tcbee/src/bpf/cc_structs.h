@@ -4,7 +4,8 @@
  *
  * libbpf drops the ___tcbee flavor suffix and relocates the fields against `struct
  * bictcp` / `struct bbr` in the kernel's BTF, vmlinux or module (tcp_bbr, tcp_cubic)
- * alike. Only the fields we read are listed; their order here does not matter.
+ * alike. Only the fields we read are listed; their order and the widths of the bitfields here
+ * do not matter, BPF_CORE_READ_BITFIELD_PROBED() takes both from the kernel.
  */
 #ifndef __TCBEE_CC_STRUCTS_H
 #define __TCBEE_CC_STRUCTS_H
@@ -35,7 +36,16 @@ struct bbr___tcbee {
 	u32 rtt_cnt;
 	u32 next_rtt_delivered;
 	u64 cycle_mstamp;
-	/* BBRv1 only, read behind bpf_core_field_exists() */
+	u32 mode : 3, round_start : 1, idle_restart : 1;
+	u32 pacing_gain : 10, cwnd_gain : 10, full_bw_reached : 1, full_bw_cnt : 2, cycle_idx : 3;
+	/* BBRv1 only, read behind bpf_core_field_exists(); bw is a struct minmax */
+	struct {
+		struct {
+			u32 t;
+			u32 v;
+		} s[3];
+	} bw;
+	u32 packet_conservation : 1, lt_use_bw : 1;
 	u32 lt_bw;
 	u32 lt_last_delivered;
 	u32 lt_last_stamp;
@@ -43,6 +53,37 @@ struct bbr___tcbee {
 	u32 prior_cwnd;
 	u32 full_bw;
 } __attribute__((preserve_access_index));
+
+/* include/net/tcp.h, the rate sample that tcp_ack() hands to cong_control (bbr_main) */
+struct rate_sample___tcbee {
+	__s32 delivered;
+	long interval_us;
+	long rtt_us;
+	int losses;
+	bool is_app_limited;
+} __attribute__((preserve_access_index));
+
+/*
+ * The algorithm of a socket and Reno's ACK counter. Flavors of the vmlinux structs, so that
+ * the minimal vmlinux.h stays as it is; the loads through a cast tcp_sock are relocated
+ * against the kernel's struct inet_connection_sock (at offset 0 of tcp_sock) and tcp_sock.
+ */
+struct tcp_congestion_ops___tcbee {
+	char name[16];
+} __attribute__((preserve_access_index));
+
+struct inet_connection_sock___tcbee {
+	const struct tcp_congestion_ops___tcbee *icsk_ca_ops;
+} __attribute__((preserve_access_index));
+
+struct tcp_sock___tcbee {
+	u32 snd_cwnd_cnt;
+} __attribute__((preserve_access_index));
+
+/* Helpers of the running kernel, see bpf_core_enum_value_exists() */
+enum bpf_func_id___tcbee {
+	BPF_FUNC_get_func_arg_cnt___tcbee = 185,
+};
 
 /*
  * Congestion control private data of a socket, see inet_csk_ca(). The loads through the

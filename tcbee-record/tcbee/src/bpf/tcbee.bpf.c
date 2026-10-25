@@ -215,7 +215,7 @@ int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 	return 0;
 }
 
-/* ---- TC packet tracer (-h) ------------------------------------------------------- */
+/* ---- Packet header tracer (-h) --------------------------------------------------- */
 
 /*
  * Plain wire formats. The vmlinux.h variants carry preserve_access_index, which would
@@ -257,6 +257,7 @@ struct tc_tcp_hdr {
 
 #define TC_ETH_HLEN 14
 #define TC_ETH_PROTO_OFF 12
+#define VLAN_HLEN 4
 _Static_assert(sizeof(struct tc_ipv4_hdr) == 20, "ipv4 header");
 _Static_assert(sizeof(struct tc_ipv6_hdr) == 40, "ipv6 header");
 _Static_assert(sizeof(struct tc_tcp_hdr) == 20, "tcp header");
@@ -284,13 +285,100 @@ static __always_inline void *skb_header(struct __sk_buff *skb, __u32 off, void *
 	return buf;
 }
 
+/* skb_header() of an XDP program: the frame of a multi-buffer packet continues in frags */
+static __always_inline void *xdp_header(struct xdp_md *xdp, __u32 off, void *buf, __u32 len)
+{
+	void *data = (void *)(long)xdp->data;
+	void *data_end = (void *)(long)xdp->data_end;
+	void *ptr = data + off;
+
+	if (ptr + len <= data_end)
+		return ptr;
+	if (bpf_xdp_load_bytes(xdp, off, buf, len))
+		return NULL;
+	return buf;
+}
+
+/*
+ * skb_header() of a kernel sk_buff at net_dev_start_xmit, where data points at the MAC
+ * header. The stack builds the headers of a TCP packet in the linear data, the payload may
+ * be in frags, so only the linear data (len - data_len) is read.
+ */
+static __always_inline void *xmit_header(const struct sk_buff *skb, __u32 off, void *buf,
+					 __u32 len)
+{
+	if (off + len > skb->len - skb->data_len)
+		return NULL;
+	if (bpf_probe_read_kernel(buf, len, skb->data + off))
+		return NULL;
+	return buf;
+}
+
+/*
+ * The hooks that parse packet headers. The hook is a constant at every call, so each program
+ * keeps only its own branches.
+ */
+enum pkt_hook {
+	PKT_TC, /* TC program, ctx is a struct __sk_buff */
+	PKT_XDP, /* XDP program, ctx is a struct xdp_md */
+	PKT_XMIT, /* tp_btf/net_dev_start_xmit, ctx is a struct sk_buff */
+};
+
+static __always_inline void *pkt_header(void *ctx, enum pkt_hook hook, __u32 off, void *buf,
+					__u32 len)
+{
+	if (hook == PKT_TC)
+		return skb_header(ctx, off, buf, len);
+	if (hook == PKT_XDP)
+		return xdp_header(ctx, off, buf, len);
+	return xmit_header(ctx, off, buf, len);
+}
+
+/*
+ * skb->tstamp of a sent packet: the earliest departure time. XDP sees received frames, which
+ * have no skb yet.
+ */
+static __always_inline __u64 pkt_tstamp(void *ctx, enum pkt_hook hook)
+{
+	if (hook == PKT_TC)
+		return ((struct __sk_buff *)ctx)->tstamp;
+	if (hook == PKT_XMIT)
+		return ((const struct sk_buff *)ctx)->tstamp;
+	return 0;
+}
+
+/*
+ * Whether the packet stands for several segments: a GSO packet before segmentation at TC egress
+ * and net_dev_start_xmit (TSO), a GRO packet at TC ingress, a frame longer than the MTU at XDP
+ * (LRO or hardware GRO). l3 is the length of the link layer header.
+ */
+static __always_inline bool pkt_aggregated(void *ctx, enum pkt_hook hook, __u32 l3)
+{
+	const struct sk_buff *skb = ctx;
+	struct skb_shared_info *shinfo;
+
+	if (hook == PKT_TC)
+		return ((struct __sk_buff *)ctx)->gso_segs > 1;
+	if (hook == PKT_XDP)
+		return bpf_xdp_get_buff_len(ctx) > HEADERS_MTU + l3;
+	/* skb_shinfo(): the shared info follows the linear data */
+	shinfo = (void *)(skb->head + skb->end);
+	return BPF_CORE_READ(shinfo, gso_segs) > 1;
+}
+
 /*
  * Every early return happens before the filter, so a packet that passes the filter is
  * always counted as handled or dropped. IPv6 extension headers
- * are not parsed, nexthdr must be TCP directly.
+ * are not parsed, nexthdr must be TCP directly. Only sent packets carry skb->tstamp, the
+ * departure time; on a received packet it would be the receive timestamp, if any.
+ *
+ * The return value is the TC verdict, the other hooks ignore it.
+ *
+ * At TC the VLAN tag is out of the frame (skb->vlan_tci); XDP and net_dev_start_xmit see one
+ * when the driver leaves it in the frame (VLAN offload off, QinQ), so they skip one tag.
  */
-static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 rb4_id, void *rb6,
-					__u32 rb6_id)
+static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egress, void *rb4,
+					__u32 rb4_id, void *rb6, __u32 rb6_id)
 {
 	struct tc_tcp_hdr tcp_buf, *tcp;
 	__be16 proto_buf, *proto;
@@ -298,9 +386,19 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 	struct ip_tuple t;
 	__u64 hook_seq;
 
-	proto = skb_header(skb, TC_ETH_PROTO_OFF, &proto_buf, sizeof(proto_buf));
+	__u32 l3 = TC_ETH_HLEN;
+
+	proto = pkt_header(ctx, hook, TC_ETH_PROTO_OFF, &proto_buf, sizeof(proto_buf));
 	if (!proto)
 		return TC_ACT_UNSPEC;
+	if (hook != PKT_TC &&
+	    (*proto == bpf_htons(ETH_P_8021Q) || *proto == bpf_htons(ETH_P_8021AD))) {
+		proto = pkt_header(ctx, hook, TC_ETH_PROTO_OFF + VLAN_HLEN, &proto_buf,
+				   sizeof(proto_buf));
+		if (!proto)
+			return TC_ACT_UNSPEC;
+		l3 += VLAN_HLEN;
+	}
 
 	__builtin_memset(&t, 0, sizeof(t));
 	t.protocol = IPPROTO_TCP;
@@ -310,7 +408,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		struct tcp4_packet_trace *rec;
 		__u32 ip_hlen;
 
-		ip = skb_header(skb, TC_ETH_HLEN, &ip_buf, sizeof(ip_buf));
+		ip = pkt_header(ctx, hook, l3, &ip_buf, sizeof(ip_buf));
 		if (!ip)
 			return TC_ACT_UNSPEC;
 		/* Non-first fragments carry no TCP header */
@@ -319,7 +417,7 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		ip_hlen = (ip->version_ihl & 0x0F) << 2;
 		if (ip_hlen < sizeof(*ip))
 			ip_hlen = sizeof(*ip);
-		tcp = skb_header(skb, TC_ETH_HLEN + ip_hlen, &tcp_buf, sizeof(tcp_buf));
+		tcp = pkt_header(ctx, hook, l3 + ip_hlen, &tcp_buf, sizeof(tcp_buf));
 		if (!tcp)
 			return TC_ACT_UNSPEC;
 
@@ -332,6 +430,8 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
+		if (pkt_aggregated(ctx, hook, l3))
+			count_aggregated(rb4_id);
 
 		if (!hook_seq_tuple(&t, AF_INET, rb4_id, &hook_seq))
 			return TC_ACT_UNSPEC;
@@ -347,6 +447,9 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 			rec->ack = bpf_ntohl(tcp->ack_seq);
 			rec->window = bpf_ntohs(tcp->window);
 			rec->flags = tcp->flags;
+			rec->ecn = ip->tos & IP_ECN_MASK;
+			if (egress)
+				rec->tstamp = pkt_tstamp(ctx, hook);
 			commit(rec, rb4_id);
 		}
 
@@ -355,12 +458,12 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		struct tc_ipv6_hdr ip6_buf, *ip6;
 		struct tcp6_packet_trace *rec;
 
-		ip6 = skb_header(skb, TC_ETH_HLEN, &ip6_buf, sizeof(ip6_buf));
+		ip6 = pkt_header(ctx, hook, l3, &ip6_buf, sizeof(ip6_buf));
 		if (!ip6)
 			return TC_ACT_UNSPEC;
 		if (ip6->nexthdr != IPPROTO_TCP)
 			return TC_ACT_UNSPEC;
-		tcp = skb_header(skb, TC_ETH_HLEN + sizeof(*ip6), &tcp_buf, sizeof(tcp_buf));
+		tcp = pkt_header(ctx, hook, l3 + sizeof(*ip6), &tcp_buf, sizeof(tcp_buf));
 		if (!tcp)
 			return TC_ACT_UNSPEC;
 
@@ -373,6 +476,8 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
+		if (pkt_aggregated(ctx, hook, l3))
+			count_aggregated(rb6_id);
 
 		if (!hook_seq_tuple(&t, AF_INET6, rb6_id, &hook_seq))
 			return TC_ACT_UNSPEC;
@@ -388,6 +493,10 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 			rec->ack = bpf_ntohl(tcp->ack_seq);
 			rec->window = bpf_ntohs(tcp->window);
 			rec->flags = tcp->flags;
+			/* The traffic class follows the 4 version bits */
+			rec->ecn = (bpf_ntohl(ip6->version_tc_flow) >> 20) & IP_ECN_MASK;
+			if (egress)
+				rec->tstamp = pkt_tstamp(ctx, hook);
 			commit(rec, rb6_id);
 		}
 
@@ -404,15 +513,47 @@ static __always_inline int trace_packet(struct __sk_buff *skb, void *rb4, __u32 
 SEC("tc")
 int tc_ingress_packet_tracer(struct __sk_buff *skb)
 {
-	return trace_packet(skb, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS, &TCP6_PACKETS_INGRESS,
-			    RB_TCP6_INGRESS);
+	return trace_packet(skb, PKT_TC, false, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS,
+			    &TCP6_PACKETS_INGRESS, RB_TCP6_INGRESS);
 }
 
 SEC("tc")
 int tc_egress_packet_tracer(struct __sk_buff *skb)
 {
-	return trace_packet(skb, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS, &TCP6_PACKETS_EGRESS,
-			    RB_TCP6_EGRESS);
+	return trace_packet(skb, PKT_TC, true, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS,
+			    &TCP6_PACKETS_EGRESS, RB_TCP6_EGRESS);
+}
+
+/*
+ * --headers-at driver: received frames in the driver, before GRO and before the stack
+ * allocates an skb. Attached in native mode only (generic XDP runs after the skb is built and
+ * sees what TC sees), xdp.frags so that the driver may hand over multi-buffer frames. The
+ * frame always goes on to the stack.
+ */
+SEC("?xdp.frags")
+int xdp_ingress_packet_tracer(struct xdp_md *xdp)
+{
+	trace_packet(xdp, PKT_XDP, false, &TCP4_DRIVER_INGRESS, RB_TCP4_DRIVER_INGRESS,
+		     &TCP6_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS);
+	return XDP_PASS;
+}
+
+/*
+ * --headers-at driver: sent packets right before the driver gets them, after the qdisc and
+ * after software GSO (validate_xmit_skb()), so every segment unless the NIC does TSO. The
+ * tracepoint runs for the packets of every device on the host, so the device is compared
+ * first: by ifindex and network namespace, an ifindex is only unique within a namespace.
+ */
+SEC("?tp_btf/net_dev_start_xmit")
+int BPF_PROG(xmit_egress_packet_tracer, const struct sk_buff *skb, const struct net_device *dev)
+{
+	if (dev->ifindex != HEADERS_IFINDEX)
+		return 0;
+	if (bpf_core_field_exists(dev->nd_net.net) && dev->nd_net.net->ns.inum != HEADERS_NETNS)
+		return 0;
+	trace_packet((void *)skb, PKT_XMIT, true, &TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_EGRESS,
+		     &TCP6_DRIVER_EGRESS, RB_TCP6_DRIVER_EGRESS);
+	return 0;
 }
 
 /* ---- Socket state (-k) and cwnd only (-w) ---------------------------------------- */
@@ -513,11 +654,23 @@ static __always_inline __u64 sock_field(struct sock *sk, struct tcp_sock *tp,
 }
 
 /*
- * The fields of a sock record after rcv_wscale, which on-change mode does not watch: the
- * congestion state, the delivery rate sample, the time spent limited, the rest of TCP_INFO
- * and the MPTCP connection (mptcp.h). Stored in record order after the ones above.
+ * The send buffer fields of struct sock. A flavour (libbpf drops the ___ suffix and relocates
+ * against struct sock), so that struct sock in vmlinux.h keeps its size and the offsets of the
+ * structs that embed it, which the default programs' code is compared by.
  */
-static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct tcp_sock *tp)
+struct sock___sndbuf {
+	int sk_wmem_queued;
+	int sk_sndbuf;
+} __attribute__((preserve_access_index));
+
+/*
+ * The fields of a sock record after rcv_wscale, which on-change mode does not watch: the
+ * congestion state, the delivery rate sample, the time spent limited, the rest of TCP_INFO,
+ * the send buffer and the MPTCP connection (mptcp.h). Stored in record order after the ones
+ * above.
+ */
+static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct sock *sk,
+					    struct tcp_sock *tp)
 {
 	rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
 	rec->packets_out = tp->packets_out;
@@ -534,6 +687,14 @@ static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct
 	rec->snd_una = tp->snd_una;
 	rec->snd_nxt = tp->snd_nxt;
 	rec->lost_out = tp->lost_out;
+	rec->rate_delivered = tp->rate_delivered;
+	rec->rate_interval_us = tp->rate_interval_us;
+	rec->wstamp_ns = tp->tcp_wstamp_ns;
+	rec->reord_seen = tp->reord_seen;
+	rec->dsack_dups = tp->dsack_dups;
+	rec->wmem_queued = ((struct sock___sndbuf *)sk)->sk_wmem_queued;
+	rec->sndbuf = ((struct sock___sndbuf *)sk)->sk_sndbuf;
+	rec->notsent = tp->write_seq - tp->snd_nxt;
 	rec->conn_id = mptcp_conn_id(tp);
 }
 
@@ -571,18 +732,20 @@ static __always_inline void fill_sock_fields(struct sock_trace_entry *rec, struc
 	/* struct tcp_options_received, not read yet */
 	rec->snd_wscale = 0;
 	rec->rcv_wscale = 0;
-	fill_sock_extra(rec, tp);
+	fill_sock_extra(rec, sk, tp);
 }
 
-static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
-				      __u32 rb)
+/*
+ * The socket record of sk with ports sport and dport. hook_tag goes into ato; 0 in the
+ * default programs, so their code does not change.
+ */
+static __always_inline int trace_sock_ports(struct sock *sk, __u16 sport, __u16 dport,
+					    void *ringbufs, __u32 rb, __u32 hook_tag)
 {
 	struct sock_trace_entry *rec;
 	struct tcp_sock *tp;
-	__u16 sport, dport;
 	__u64 hook_seq;
 
-	sk_ports(sk, &sport, &dport);
 	if (!filter_sock(sk, sport, dport))
 		return 0;
 	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq))
@@ -594,6 +757,8 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 	} else if ((rec = reserve(ringbufs, rb, rec))) {
 		fill_header(rec, sk, sport, dport, hook_seq);
 		fill_sock_fields(rec, sk, tp);
+		if (hook_tag)
+			rec->ato = hook_tag;
 		commit(rec, rb);
 	}
 
@@ -601,17 +766,167 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 	return 0;
 }
 
+static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void *ringbufs,
+				      __u32 rb, __u32 hook_tag)
+{
+	__u16 sport, dport;
+
+	sk_ports(sk, &sport, &dport);
+	return trace_sock_ports(sk, sport, dport, ringbufs, rb, hook_tag);
+}
+
 SEC("fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND);
+	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, 0);
 }
 
 /* Only triggers in established state */
 SEC("fentry/tcp_rcv_established")
 int BPF_PROG(sock_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV);
+	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, 0);
+}
+
+/*
+ * The socket after every run of the write timer handler: RTO, loss probe, zero window
+ * probe, and runs that find no timer due. Optional (soft fail) and own ring, so its
+ * hook_seq series and counters stay apart from the ingress ones. The hook tag in ato is the
+ * one on-change records carry for the timer.
+ */
+SEC("?fexit/tcp_write_timer_handler")
+int BPF_PROG(sock_timer, struct sock *sk)
+{
+	return trace_sock(sk, NULL, &TCP_TIMER_SOCK_EVENTS, RB_SOCK_TIMER,
+			  SOCK_HOOK_TIMER << SOCK_HOOK_SHIFT);
+}
+
+/*
+ * The socket after every received segment was processed (--sock-hooks ingress): after ACK
+ * processing and the transmits it clocked, which tcp_rcv_established runs itself. Sends that
+ * TSQ, the pacing timer or tcp_release_cb defer come later. tcp_rcv_state_process handles the
+ * states but ESTABLISHED; listeners and closed sockets have no flow. Own ring, like the timer.
+ */
+static __always_inline int trace_sock_ingress(struct sock *sk)
+{
+	__u8 state = sk->__sk_common.skc_state;
+
+	if (state == TCP_LISTEN || state == TCP_CLOSE)
+		return 0;
+	return trace_sock(sk, NULL, &TCP_INGRESS_SOCK_EVENTS, RB_SOCK_INGRESS,
+			  SOCK_HOOK_INGRESS << SOCK_HOOK_SHIFT);
+}
+
+SEC("?fexit/tcp_rcv_established")
+int BPF_PROG(sock_ingress, struct sock *sk)
+{
+	return trace_sock_ingress(sk);
+}
+
+SEC("?fexit/tcp_rcv_state_process")
+int BPF_PROG(sock_ingress_state, struct sock *sk)
+{
+	return trace_sock_ingress(sk);
+}
+
+/*
+ * Newer kernels pass tcp_retransmit_skb an error and run it for attempts that failed too (the
+ * device queue was busy, the skb could not be cloned); those sent nothing and are left out.
+ * The tracepoint's raw event got the err field with the argument, so its existence tells
+ * whether ctx[2] may be read.
+ */
+struct trace_event_raw_tcp_retransmit_skb___tcbee {
+	int err;
+} __attribute__((preserve_access_index));
+
+static __always_inline bool retransmit_failed(unsigned long long *ctx)
+{
+	if (!bpf_core_field_exists(struct trace_event_raw_tcp_retransmit_skb___tcbee, err))
+		return false;
+	return (int)ctx[2] != 0;
+}
+
+/*
+ * The socket at TCP events (-k, event_sock.tcp): state and congestion state changes,
+ * retransmissions, the cwnd restart after idle and receive buffer growth. They run at events,
+ * not per packet. The hook is in bits 8-15 of ato, for state changes the new state in bits
+ * 16-23: the tracepoints run before the change, so the record still has the old one. One
+ * ring for all, so their hook_seq orders them within a flow; each hook is optional.
+ */
+static __always_inline int trace_sock_event_ports(struct sock *sk, __u16 sport, __u16 dport,
+						  __u32 hook, __u32 new_state)
+{
+	if (!sport || !dport)
+		return 0;
+	return trace_sock_ports(sk, sport, dport, &TCP_EVENT_SOCK_EVENTS, RB_SOCK_EVENT,
+				hook << SOCK_HOOK_SHIFT | new_state << SOCK_EVENT_STATE_SHIFT);
+}
+
+/* Sockets without both ports (not connected yet, or after the close) have no flow */
+static __always_inline int trace_sock_event(struct sock *sk, __u32 hook, __u32 new_state)
+{
+	__u16 sport, dport;
+
+	sk_ports(sk, &sport, &dport);
+	return trace_sock_event_ports(sk, sport, dport, hook, new_state);
+}
+
+/*
+ * Listeners and sockets without both ports have no flow. A change to CLOSE comes after the
+ * socket released its port; inet_sport still holds it.
+ */
+SEC("?tp_btf/inet_sock_set_state")
+int BPF_PROG(sock_event_state, const struct sock *sk, int oldstate, int newstate)
+{
+	struct sock *s = (struct sock *)sk;
+	__u16 sport, dport;
+
+	if (!s || s->sk_protocol != IPPROTO_TCP)
+		return 0;
+	if (oldstate == TCP_LISTEN || newstate == TCP_LISTEN)
+		return 0;
+	sk_ports(s, &sport, &dport);
+	if (!sport && newstate == TCP_CLOSE)
+		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)s, inet_sport));
+	return trace_sock_event_ports(s, sport, dport, SOCK_HOOK_STATE, newstate);
+}
+
+/* Kernel 5.19 and newer; also runs when the state does not change, which is left out */
+SEC("?tp_btf/tcp_cong_state_set")
+int BPF_PROG(sock_event_ca_state, struct sock *sk, const __u8 ca_state)
+{
+	struct tcp_sock *tp;
+
+	if (!sk)
+		return 0;
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp || BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state) == ca_state)
+		return 0;
+	return trace_sock_event(sk, SOCK_HOOK_CA_STATE, ca_state);
+}
+
+SEC("?tp_btf/tcp_retransmit_skb")
+int BPF_PROG(sock_event_retransmit, const struct sock *sk)
+{
+	if (!sk || retransmit_failed(ctx))
+		return 0;
+	return trace_sock_event((struct sock *)sk, SOCK_HOOK_RETRANSMIT, 0);
+}
+
+/* After the cwnd was cut for the idle time, when the sender starts again */
+SEC("?fexit/tcp_cwnd_restart")
+int BPF_PROG(sock_event_restart, struct sock *sk)
+{
+	return trace_sock_event(sk, SOCK_HOOK_RESTART, 0);
+}
+
+/* Newer kernels only (7.2 has it): the receive buffer grew for autotuning */
+SEC("?tp_btf/tcp_rcvbuf_grow")
+int BPF_PROG(sock_event_rcvbuf, struct sock *sk)
+{
+	if (!sk)
+		return 0;
+	return trace_sock_event(sk, SOCK_HOOK_RCVBUF, 0);
 }
 
 /* Lighter variants of the above that only record the cwnd */
@@ -767,11 +1082,11 @@ static __always_inline void fill_sock_fields_watched(struct sock_trace_entry *re
 	rec->ato = 0;
 	rec->snd_wscale = 0;
 	rec->rcv_wscale = 0;
-	fill_sock_extra(rec, tp);
+	fill_sock_extra(rec, sk, tp);
 }
 
 static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 rb,
-					 enum tcbee_onchg_hook hook)
+					 enum tcbee_sock_hook hook)
 {
 	struct sock_trace_entry *rec;
 	struct onchg_state *st;
@@ -830,7 +1145,7 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 	}
 	fill_header(rec, sk, sport, dport, hook_seq);
 	fill_sock_fields_watched(rec, sk, tp, snap);
-	rec->ato = hook << ONCHG_HOOK_SHIFT;
+	rec->ato = hook << SOCK_HOOK_SHIFT;
 	if (ONCHG_SHADOW)
 		rec->ato |= reason;
 	commit_shared(rec, rb);
@@ -851,31 +1166,32 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 SEC("?fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_oc_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, ONCHG_HOOK_EGRESS);
+	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, SOCK_HOOK_EGRESS);
 }
 
 SEC("?fexit/tcp_rcv_established")
 int BPF_PROG(sock_oc_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
-	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_INGRESS);
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_INGRESS);
 }
 
 SEC("?fexit/tcp_rcv_state_process")
 int BPF_PROG(sock_oc_rcv_state, struct sock *sk)
 {
-	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_INGRESS);
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_INGRESS);
 }
 
 /* The write timer writes the receive file, see the section comment */
 SEC("?fexit/tcp_write_timer_handler")
 int BPF_PROG(sock_oc_timer, struct sock *sk)
 {
-	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, ONCHG_HOOK_TIMER);
+	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_TIMER);
 }
 
 /* ---- CUBIC (-a) -------------------------------------------------------------------- */
 
-static __always_inline int trace_cubic(struct sock *sk)
+static __always_inline int trace_cubic(struct sock *sk, enum tcbee_cc_hook hook,
+				       __u8 new_state)
 {
 	struct cubic_trace_entry *rec;
 	struct bictcp___tcbee *ca;
@@ -895,6 +1211,8 @@ static __always_inline int trace_cubic(struct sock *sk)
 	} else if ((rec = reserve(&CUBIC_EVENTS, RB_CUBIC, rec))) {
 		ca = tcp_ca(tp);
 		fill_header(rec, sk, sport, dport, hook_seq);
+		rec->hook = hook;
+		rec->new_state = new_state;
 		rec->cnt = ca->cnt;
 		rec->last_max_cwnd = ca->last_max_cwnd;
 		rec->last_cwnd = ca->last_cwnd;
@@ -916,18 +1234,48 @@ static __always_inline int trace_cubic(struct sock *sk)
 	return 0;
 }
 
-/* Called on every ACK in congestion avoidance */
+/* Called on every ACK that may grow the cwnd (tcp_cong_avoid), in slow start too */
 SEC("fentry/cubictcp_cong_avoid")
 int BPF_PROG(cubic_cong_control, struct sock *sk)
 {
-	return trace_cubic(sk);
+	return trace_cubic(sk, TCBEE_CC_HOOK_ACK, 0);
 }
 
-/* Called on congestion events. TODO: probably the wrong hook */
+/*
+ * The cwnd_event operation. CUBIC only acts on the first transmission after idle, where it
+ * moves epoch_start by the idle time so that the cubic curve does not jump; 7.2 calls it only
+ * for that (cubictcp_cwnd_event_tx_start, see CubicTracer), older kernels at every CA event.
+ */
 SEC("fentry/cubictcp_cwnd_event")
 int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 {
-	return trace_cubic(sk);
+	return trace_cubic(sk, TCBEE_CC_HOOK_CWND_EVENT, 0);
+}
+
+/*
+ * After the loss reaction (the ssthresh operation, on entering Recovery, CWR or Loss): the new
+ * epoch, last_max_cwnd with fast convergence applied. tcp_sock's snd_ssthresh is only set by
+ * the caller from the return value.
+ */
+SEC("?fexit/cubictcp_recalc_ssthresh")
+int BPF_PROG(cubic_ssthresh, struct sock *sk)
+{
+	return trace_cubic(sk, TCBEE_CC_HOOK_SSTHRESH, 0);
+}
+
+/*
+ * After a congestion state change. fexit, because the only change CUBIC makes here is the
+ * reset of its state on entering Loss (an RTO), which fentry would miss. tcp_enter_loss()
+ * runs the ssthresh operation before only from Open or Disorder, once high_seq is no longer
+ * after snd_una, or in Loss without retransmissions; then the ssthresh record holds the state
+ * before the reset. An RTO in CWR or Recovery before high_seq is acknowledged, or a repeated
+ * RTO, resets it without an ssthresh record, so the state before is only in the last ACK
+ * record.
+ */
+SEC("?fexit/cubictcp_state")
+int BPF_PROG(cubic_state, struct sock *sk, __u8 new_state)
+{
+	return trace_cubic(sk, TCBEE_CC_HOOK_STATE, new_state);
 }
 
 /* ---- BBR (-a) ---------------------------------------------------------------------- */
@@ -937,7 +1285,8 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
  * struct bbr offsets are relocated against the module's BTF; the verifier only checks
  * the loads against icsk_ca_priv in the vmlinux tcp_sock.
  */
-static __always_inline int trace_bbr(struct sock *sk)
+static __always_inline int trace_bbr(struct sock *sk, enum tcbee_cc_hook hook,
+				     const struct rate_sample___tcbee *rs)
 {
 	struct bbr_trace_entry *rec;
 	struct bbr___tcbee *bbr;
@@ -962,6 +1311,7 @@ static __always_inline int trace_bbr(struct sock *sk)
 	} else if ((rec = reserve(&BBR_EVENTS, RB_BBR, rec))) {
 		bbr = tcp_ca(tp);
 		fill_header(rec, sk, sport, dport, hook_seq);
+		rec->hook = hook;
 		rec->min_rtt_us = bbr->min_rtt_us;
 		rec->min_rtt_stamp = bbr->min_rtt_stamp;
 		rec->probe_rtt_done_stamp = bbr->probe_rtt_done_stamp;
@@ -979,6 +1329,29 @@ static __always_inline int trace_bbr(struct sock *sk)
 			rec->lt_last_lost = bbr->lt_last_lost;
 		rec->prior_cwnd = bbr->prior_cwnd;
 		rec->full_bw = bbr->full_bw;
+		rec->mode = BPF_CORE_READ_BITFIELD_PROBED(bbr, mode);
+		rec->cycle_idx = BPF_CORE_READ_BITFIELD_PROBED(bbr, cycle_idx);
+		rec->pacing_gain = BPF_CORE_READ_BITFIELD_PROBED(bbr, pacing_gain);
+		rec->cwnd_gain = BPF_CORE_READ_BITFIELD_PROBED(bbr, cwnd_gain);
+		rec->full_bw_reached = BPF_CORE_READ_BITFIELD_PROBED(bbr, full_bw_reached);
+		rec->full_bw_cnt = BPF_CORE_READ_BITFIELD_PROBED(bbr, full_bw_cnt);
+		rec->round_start = BPF_CORE_READ_BITFIELD_PROBED(bbr, round_start);
+		rec->idle_restart = BPF_CORE_READ_BITFIELD_PROBED(bbr, idle_restart);
+		if (bpf_core_field_exists(bbr->packet_conservation))
+			rec->packet_conservation =
+				BPF_CORE_READ_BITFIELD_PROBED(bbr, packet_conservation);
+		if (bpf_core_field_exists(bbr->lt_use_bw))
+			rec->lt_use_bw = BPF_CORE_READ_BITFIELD_PROBED(bbr, lt_use_bw);
+		/* The filter keeps its maximum in the first sample, see minmax_get() */
+		if (bpf_core_field_exists(bbr->bw))
+			rec->max_bw = bbr->bw.s[0].v;
+		if (rs) {
+			rec->rs_delivered = BPF_CORE_READ(rs, delivered);
+			rec->rs_interval_us = BPF_CORE_READ(rs, interval_us);
+			rec->rs_rtt_us = BPF_CORE_READ(rs, rtt_us);
+			rec->rs_losses = BPF_CORE_READ(rs, losses);
+			rec->rs_is_app_limited = BPF_CORE_READ(rs, is_app_limited);
+		}
 		commit(rec, RB_BBR);
 	}
 
@@ -986,21 +1359,94 @@ static __always_inline int trace_bbr(struct sock *sk)
 	return 0;
 }
 
-/* Called on every ACK */
+/*
+ * Called on every ACK, with the rate sample of the ACK as the last argument: bbr_main(sk, rs)
+ * before 6.10, bbr_main(sk, ack, flag, rs) since. The argument helpers (5.17) find it on both;
+ * older kernels record no rate sample.
+ */
 SEC("fentry/bbr_main")
 int BPF_PROG(bbr_cong_control, struct sock *sk)
 {
-	return trace_bbr(sk);
+	__u64 rs = 0;
+
+	if (bpf_core_enum_value_exists(enum bpf_func_id___tcbee,
+				       BPF_FUNC_get_func_arg_cnt___tcbee))
+		bpf_get_func_arg(ctx, bpf_get_func_arg_cnt(ctx) - 1, &rs);
+	return trace_bbr(sk, TCBEE_CC_HOOK_ACK, (const struct rate_sample___tcbee *)rs);
 }
 
-/* Called on congestion events */
+/*
+ * The cwnd_event operation. BBR only acts on the first transmission after idle (idle_restart,
+ * pacing at the estimated bandwidth); 7.2 calls it only for that (bbr_cwnd_event_tx_start),
+ * older kernels at every CA event.
+ */
 SEC("fentry/bbr_cwnd_event")
 int BPF_PROG(bbr_cwnd_event, struct sock *sk)
 {
-	return trace_bbr(sk);
+	return trace_bbr(sk, TCBEE_CC_HOOK_CWND_EVENT, NULL);
 }
 
-/* ---- TCP events (-e) --------------------------------------------------------------- */
+/* ---- Reno (-a) --------------------------------------------------------------------- */
+
+/*
+ * Reno keeps no private state, so the record holds the tcp_sock fields it changes. Both
+ * functions are exported and also called by other algorithms (DCTCP, Vegas, Veno, ...),
+ * which ca_name tells apart.
+ */
+static __always_inline int trace_reno(struct sock *sk, enum tcbee_cc_hook hook, __u32 acked,
+				      __u32 new_ssthresh)
+{
+	struct inet_connection_sock___tcbee *icsk;
+	struct reno_trace_entry *rec;
+	struct tcp_sock *tp;
+	__u16 sport, dport;
+	__u64 hook_seq;
+
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, RB_RENO, &hook_seq))
+		return 0;
+
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
+		count_error(RB_RENO);
+	} else if ((rec = reserve(&RENO_EVENTS, RB_RENO, rec))) {
+		fill_header(rec, sk, sport, dport, hook_seq);
+		rec->hook = hook;
+		rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+		rec->snd_cwnd = tp->snd_cwnd;
+		rec->snd_ssthresh = tp->snd_ssthresh;
+		rec->snd_cwnd_cnt = ((struct tcp_sock___tcbee *)tp)->snd_cwnd_cnt;
+		rec->acked = acked;
+		rec->new_ssthresh = new_ssthresh;
+		icsk = (void *)tp;
+		bpf_probe_read_kernel(&rec->ca_name, sizeof(rec->ca_name), icsk->icsk_ca_ops->name);
+		commit(rec, RB_RENO);
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+/* After each ACK that may grow the cwnd, in slow start or congestion avoidance */
+SEC("?fexit/tcp_reno_cong_avoid")
+int BPF_PROG(reno_cong_avoid, struct sock *sk, __u32 ack, __u32 acked)
+{
+	return trace_reno(sk, TCBEE_CC_HOOK_ACK, acked, 0);
+}
+
+/*
+ * After the loss reaction (entering Recovery, CWR or Loss), with the new ssthresh it returns.
+ * DCTCP brings its own ssthresh (dctcp_ssthresh), which is not hooked.
+ */
+SEC("?fexit/tcp_reno_ssthresh")
+int BPF_PROG(reno_ssthresh, struct sock *sk, __u32 ret)
+{
+	return trace_reno(sk, TCBEE_CC_HOOK_SSTHRESH, 0, ret);
+}
+
+/* ---- TCP events (-t) --------------------------------------------------------------- */
 
 /*
  * One record per discrete event of a flow, all into TCP_EVENTS. The programs of a flow share
@@ -1171,7 +1617,7 @@ int BPF_PROG(tcp_event_retransmit, const struct sock *sk, const struct sk_buff *
 {
 	struct tcp_event_entry *rec;
 
-	if (!sk)
+	if (!sk || retransmit_failed(ctx))
 		return 0;
 	rec = tcp_event_reserve_sk((struct sock *)sk, TCBEE_TCP_RETRANSMIT);
 	if (!rec)
@@ -1284,6 +1730,32 @@ int BPF_PROG(tcp_event_cwr, struct sock *sk)
 	return trace_tcp_event_sk(sk, TCBEE_TCP_CWR);
 }
 
+/*
+ * Runs when the socket is freed, in CLOSE and after it released its port (skc_num is 0
+ * then); inet_sport still holds it. Listeners and sockets that never connected have no
+ * remote port and are left out.
+ */
+SEC("?tp_btf/tcp_destroy_sock")
+int BPF_PROG(tcp_event_destroy, struct sock *sk)
+{
+	struct tcp_event_entry *rec;
+	__u16 sport, dport;
+
+	if (!sk)
+		return 0;
+	sk_ports(sk, &sport, &dport);
+	if (!sport)
+		sport = bpf_ntohs(BPF_CORE_READ((struct inet_sock *)sk, inet_sport));
+	if (!sport || !dport)
+		return 0;
+	rec = tcp_event_reserve_ports(sk, sport, dport, TCBEE_TCP_DESTROY);
+	if (!rec)
+		return 0;
+	tcp_event_sock_fields(rec, sk);
+	commit(rec, RB_TCP_EVENTS);
+	return 0;
+}
+
 /* ---- TCP drops (--drops) ------------------------------------------------------------ */
 
 /*
@@ -1332,7 +1804,7 @@ int BPF_PROG(tcp_event_drop, struct sk_buff *skb, void *location)
 	return trace_tcp_event_skb(skb, BPF_CORE_READ(skb, skb_iif) != 0, TCBEE_TCP_DROP, reason);
 }
 
-/* ---- MPTCP path manager (-M pm) ---------------------------------------------------- */
+/* ---- MPTCP path manager (-m pm) ---------------------------------------------------- */
 
 /*
  * One record per path manager or lifecycle event of an MPTCP connection. These hooks run a

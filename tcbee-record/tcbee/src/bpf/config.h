@@ -20,7 +20,7 @@ const volatile __u64 RB_SUBMIT_FLAGS = BPF_RB_NO_WAKEUP;
 /* Set to 0 by userspace when the flow list is not displayed */
 const volatile __u8 FLOW_TRACKING = 1;
 
-/* Set to 1 by userspace (-M tag) to tag MPTCP subflow records with their connection, mptcp.h */
+/* Set to 1 by userspace (-m tag) to tag MPTCP subflow records with their connection, mptcp.h */
 const volatile __u8 MPTCP_TAG = 0;
 /*
  * On-change mode (--on-change, see onchange.h): the socket fields the sock probes compare,
@@ -30,13 +30,27 @@ const volatile __u8 MPTCP_TAG = 0;
 const volatile __u32 SOCK_WATCH_MASK = 0;
 const volatile __u8 ONCHG_SHADOW = 0;
 
+/*
+ * The interface of the driver header hook at net_dev_start_xmit (-h with --headers-at
+ * driver): its ifindex and the inode number of its network namespace (/proc/self/ns/net),
+ * as an ifindex is only unique within a namespace.
+ */
+const volatile __u32 HEADERS_IFINDEX = 0;
+const volatile __u32 HEADERS_NETNS = 0;
+/* Its MTU: a received frame with a longer IP packet was merged (LRO, hardware GRO) */
+const volatile __u32 HEADERS_MTU = 0;
+
 /* Constants that only exist as macros in the uapi headers, not in BTF */
 #define AF_INET 2
 #define AF_INET6 10
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
+#define ETH_P_8021Q 0x8100
+#define ETH_P_8021AD 0x88A8
 #define IP_OFFSET 0x1FFF
+#define IP_ECN_MASK 0x03
 #define TC_ACT_UNSPEC (-1)
+#define XDP_PASS 2
 #define TCP_TIME_WAIT 6
 #define TCP_CLOSE 7
 #define TCP_LISTEN 10

@@ -6,14 +6,19 @@ mod metrics;
 mod stats;
 mod viz;
 mod writer;
-use std::net::IpAddr;
+use std::{
+    io::{self, BufRead, IsTerminal, Write},
+    net::IpAddr,
+};
 
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_to_filter_addr, on_change_manifest, parse_on_change, parse_ringbuf_sizes, EbpfRunnerConfig,
-    FilterConfig, MptcpModes,
+    ip_to_filter_addr, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
+    FilterConfig, HookFlags, MptcpModes,
 };
+use eBPF::probes::headers::{check_offloads, HeadersAt};
+use metadata::Offloads;
 use tcbee_trace::TCBeeTrace;
 use writer::PollMode;
 
@@ -58,6 +63,8 @@ fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
 fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let mut iface: String = String::new();
+    let mut headers_at: String = String::new();
+    let mut yes: bool = false;
     let mut dir: String = "/tmp/".to_string();
     let mut quiet: bool = false;
     let mut port: u16 = 0;
@@ -76,6 +83,7 @@ fn main() -> anyhow::Result<()> {
     let mut trace_mptcp: bool = false;
     let mut trace_events: bool = false;
     let mut trace_drops: bool = false;
+    let mut tp: String = String::new();
     let mut mptcp_modes: String = String::new();
     let mut cpus: u16 = 1;
     let mut metrics: bool = false;
@@ -87,6 +95,8 @@ fn main() -> anyhow::Result<()> {
     let mut on_change: String = String::new();
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
+    let mut no_timer_hook: bool = false;
+    let mut sock_hooks: String = String::new();
 
     {
         let mut argparser = ArgumentParser::new();
@@ -96,7 +106,17 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut iface).add_option(
             &["-h", "--headers"],
             Store,
-            "Record TCP headers of incoming and outgoing packets on the specified interface.",
+            "Record the TCP headers of received and sent packets on the specified interface, at TC by default, see --headers-at.",
+        );
+        argparser.refer(&mut headers_at).add_option(
+            &["--headers-at"],
+            Store,
+            "Where -h records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO, and net_dev_start_xmit for sent ones, after the qdisc and software GSO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off. tc,driver records both, into separate files, to compare a packet at the two hooks (qdisc and pacing delay); it asks for confirmation.",
+        );
+        argparser.refer(&mut yes).add_option(
+            &["--yes"],
+            StoreTrue,
+            "Do not ask for confirmation (--headers-at tc,driver), for scripts.",
         );
         argparser.refer(&mut dir).add_option(
             &["-d", "--dir"],
@@ -167,15 +187,20 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut trace_tracepoints).add_option(
             &["-t", "--tracepoints"],
             StoreTrue,
-            "Record TCP metrics of tcp_probe kernel tracepoint. Covers main TCP metrics but not all!",
+            "Record the TCP tracepoints: tcp_probe (main TCP metrics at every received segment), SYN-ACK retransmissions, bad checksums, and as TCP events (tcp_events.tcp) retransmissions, RSTs sent and received, state and congestion state changes, retransmission timeouts and destroyed sockets. See --tp.",
+        );
+        argparser.refer(&mut tp).add_option(
+            &["--tp"],
+            Store,
+            "Tracepoints to record, comma-separated; implies -t. Names: probe, synack, bad_csum, retransmit, rst_sent, rst_received, state, ca_state, rto, destroy, and drops (kfree_skb: packets of TCP flows the kernel drops, with the reason; not in the default). 'all' and 'default' name the sets. +name and -name items add to or remove from the plain names, or from the default set in a list without plain names, e.g. +drops,-probe or all,-probe. _ and - are the same in names.",
         );
         argparser.refer(&mut trace_kernel).add_option(
             &["-k", "--kernel"],
             StoreTrue,
-            "Record TCP metrics from kernel calls to tcp_sendmsg and tcp_recvmsg! Covers all TCP metrics.",
+            "Record the socket (all TCP metrics) at the hooks of --sock-hooks: by default after every run of the write timer and at TCP events (state and congestion state changes, retransmissions, cwnd restarts, receive buffer growth), none per packet. Add +ingress for the state after every received segment.",
         );
         argparser.refer(&mut metrics).add_option(
-            &["-m", "--metrics"],
+            &["--metrics"],
             StoreTrue,
             "Write per ring buffer event counters, records written and per program recursion misses to metrics.json in the recording directory after shutdown.",
         );
@@ -202,7 +227,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
-            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, mptcp_pm, tcp_events.",
+            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, sock_timer, sock_event, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, reno, mptcp_pm, tcp_events.",
         );
         argparser.refer(&mut on_change).add_option(
             &["--on-change"],
@@ -212,37 +237,47 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut on_change_hooks).add_option(
             &["--on-change-hooks"],
             Store,
-            "With --on-change: comma-separated kernel hooks to compare at. ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process), timer = after each retransmission, loss probe, RACK reordering or zero window probe timer (fexit/tcp_write_timer_handler), both into the recv_*_oc.tcp files; egress = before each transmitted segment (fentry/__tcp_transmit_skb), into send_*_oc.tcp, one probe run per segment. Default: ingress,timer. In sock records, bits 8-15 of ato tell the hook (1 ingress, 2 timer, 3 egress).",
+            "With --on-change: comma-separated kernel hooks to compare at. ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process), timer = after each retransmission, loss probe, RACK reordering or zero window probe timer (fexit/tcp_write_timer_handler), both into the recv_*_oc.tcp files; egress = before each transmitted segment (fentry/__tcp_transmit_skb), into send_*_oc.tcp, one probe run per segment. Default: ingress,timer. The list works as in --tp, e.g. +egress. In sock records, bits 8-15 of ato tell the hook (1 ingress, 2 timer, 3 egress).",
         );
         argparser.refer(&mut on_change_shadow).add_option(
             &["--on-change-shadow"],
             StoreTrue,
             "With --on-change and -k: write every sock run anyway, with the decision as a reason code in bits 0-7 of the ato field (1 suppressed, 2 changed, 3 first or after a drop, 4 state change, 5 no socket storage).",
         );
+        argparser.refer(&mut no_timer_hook).add_option(
+            &["--no-timer-hook"],
+            StoreTrue,
+            "With -k: do not record the socket after each run of the write timer (timer_sock.tcp). Same as --sock-hooks -timer.",
+        );
+        argparser.refer(&mut sock_hooks).add_option(
+            &["--sock-hooks"],
+            Store,
+            "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. The list works as in --tp (all, default, +name, -name), e.g. +ingress on a sender. With --on-change and -k it is the same as --on-change-hooks (with -w alone, use --on-change-hooks).",
+        );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
             StoreTrue,
-            "Record behaviour of congestion algorithms: Cubic and BBR.",
+            "Record the internals of the congestion control algorithms: CUBIC and BBR state, and Reno's congestion avoidance (also where DCTCP and others reuse it).",
         );
         argparser.refer(&mut trace_events).add_option(
             &["-e", "--events"],
             StoreTrue,
-            "Record discrete TCP events: retransmissions, RSTs sent and received, state and congestion state changes, retransmission timeouts.",
+            "Record only the TCP events of -t. Kept for old command lines.",
         );
         argparser.refer(&mut trace_drops).add_option(
             &["--drops"],
             StoreTrue,
-            "Also record the packets of TCP flows that the kernel drops (kfree_skb), with the drop reason. Implies -e.",
+            "Record the TCP events of -t and the packets of TCP flows that the kernel drops (kfree_skb). Kept for old command lines, use --tp +drops.",
         );
         argparser.refer(&mut trace_mptcp).add_option(
-            &["-M", "--mptcp"],
+            &["-m", "-M", "--mptcp"],
             StoreTrue,
             "Record MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake, and with -k or -w the token of its MPTCP connection in the records of each subflow.",
         );
         argparser.refer(&mut mptcp_modes).add_option(
             &["--mptcp-modes"],
             Store,
-            "What -M records, comma-separated: tag (needs -k or -w), pm. Implies -M. Default is pm, plus tag with -k or -w.",
+            "What -m records, comma-separated: tag (needs -k or -w), pm. Implies -m. Default is pm, plus tag with -k or -w.",
         );
 
         // Will try to parse arguments or exit program on error!
@@ -250,7 +285,20 @@ fn main() -> anyhow::Result<()> {
     }
 
     let trace_headers = !iface.is_empty();
-    let trace_events = trace_events || trace_drops;
+    if !headers_at.is_empty() && !trace_headers {
+        return Err(anyhow!("--headers-at needs -h"));
+    }
+    let headers_at = if headers_at.is_empty() {
+        HeadersAt::default()
+    } else {
+        HeadersAt::parse(&headers_at).map_err(|e| anyhow!("--headers-at: {}", e))?
+    };
+    if headers_at.tc && headers_at.driver && !yes {
+        // An offload that rules out the driver hooks stops the start anyway, so before asking
+        check_offloads(&iface, headers_at, &Offloads::read(&iface)).map_err(|e| anyhow!(e))?;
+        confirm_both_header_hooks(&iface)?;
+    }
+    let tracepoints = tracepoint_set(trace_tracepoints, &tp, trace_events, trace_drops)?;
     let filter = FilterConfig {
         single_port: port,
         any_ports: parse_csv(&ports, "port")?,
@@ -292,22 +340,31 @@ fn main() -> anyhow::Result<()> {
         .map_err(|_| anyhow!("--duration must be a non-negative number of seconds"))?;
 
     if !trace_headers
-        && !trace_tracepoints
+        && tracepoints.is_empty()
         && !trace_kernel
         && !trace_cwnd
         && !trace_algorithms
-        && !trace_events
         && !mptcp.pm
     {
         return Err(anyhow!("No metrics to trace selected, stopping!"));
     }
-    let on_change = parse_on_change(
-        &on_change,
-        &on_change_hooks,
+    let chose_sock_hooks = !sock_hooks.is_empty();
+    let (on_change, sock_hooks) = HookFlags {
+        kernel: trace_kernel,
+        cwnd: trace_cwnd,
+        sock_hooks: &sock_hooks,
+        on_change: &on_change,
+        on_change_hooks: &on_change_hooks,
         on_change_shadow,
-        trace_kernel,
-        trace_cwnd,
-    )?;
+        no_timer_hook,
+    }
+    .resolve()?;
+    // A hint for plain -k only, not for a list someone chose
+    if !chose_sock_hooks && sock_hooks.is_some_and(|hooks| hooks.hooks().all(|h| !h.per_packet())) {
+        eprintln!(
+            "Note: -k records the socket at timers and TCP events only; on a sender, --sock-hooks +ingress adds the state after every ACK"
+        );
+    }
 
     // Create a timestamped recording directory inside the requested base dir
     let trace = TCBeeTrace::create(&dir)
@@ -330,20 +387,20 @@ fn main() -> anyhow::Result<()> {
         .update_period(update_period)
         .observation_window(observation_window)
         .headers(trace_headers)
-        .tracepoints(trace_tracepoints)
+        .headers_at(headers_at)
+        .tracepoints(tracepoints)
         .kernel(trace_kernel)
         .interface(iface)
         .cwnd(trace_cwnd)
         .metrics(metrics)
         .metadata(metadata)
         .algorithms(trace_algorithms)
-        .events(trace_events)
-        .drops(trace_drops)
         .mptcp(mptcp)
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())
         .on_change(on_change)
+        .sock_hooks(sock_hooks)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints
@@ -409,6 +466,39 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
+/// Asks on the terminal before recording headers at TC and in the driver at once. Without a
+/// terminal, or in the background, it refuses: scripts pass --yes.
+fn confirm_both_header_hooks(iface: &str) -> anyhow::Result<()> {
+    let warning = format!(
+        "--headers-at tc,driver records every packet of {iface} at two hooks, each with its own \
+         cost per packet, and attaches XDP to {iface}, which makes some drivers reset their \
+         rings (a short interruption of the traffic)."
+    );
+    if !io::stdin().is_terminal() || !in_foreground() {
+        return Err(anyhow!("{warning} Pass --yes to record without asking"));
+    }
+    eprint!("{warning}\nContinue? [y/N] ");
+    io::stderr().flush()?;
+    let mut answer = String::new();
+    io::stdin().lock().read_line(&mut answer)?;
+    if confirmed(&answer) {
+        Ok(())
+    } else {
+        Err(anyhow!("Not confirmed, nothing recorded"))
+    }
+}
+
+/// Whether the process runs in the foreground of its terminal: reading the terminal from the
+/// background would stop it (SIGTTIN)
+fn in_foreground() -> bool {
+    unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) == libc::getpgrp() }
+}
+
+/// Whether an answer to a [y/N] question says yes
+fn confirmed(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
 /// Keeps the calling thread off the CPUs the writer threads are pinned to, so that the
 /// control and UI threads don't take time from a busy writer. Does nothing if no
 /// writer CPUs are set or they cover every CPU.
@@ -432,6 +522,21 @@ fn avoid_cpus(writer_cpus: &[usize]) {
         }
         if any {
             libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_yes_confirms() {
+        for answer in ["y\n", "Y", " yes \n"] {
+            assert!(confirmed(answer), "{answer:?}");
+        }
+        for answer in ["", "\n", "n", "no", "yess", "j"] {
+            assert!(!confirmed(answer), "{answer:?}");
         }
     }
 }

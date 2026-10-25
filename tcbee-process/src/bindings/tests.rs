@@ -102,7 +102,9 @@ const SOCK_COLS: &str = "pacing_rate:U64 max_pacing_rate:U64 backoff:U8 rto:U32 
     rcv_rtt:U32 rcv_space:U32 bytes_received:U64 segs_out:U32 segs_in:U32 snd_wscale:U16 \
     rcv_wscale:U16 ca_state:U8 packets_out:U32 delivered:U32 delivered_ce:U32 app_limited:U32 \
     chrono_type:U8 chrono_busy:U32 chrono_rwnd_limited:U32 chrono_sndbuf_limited:U32 \
-    srtt:U32 mdev:U32 min_rtt:U32 snd_una:U32 snd_nxt:U32 lost_out:U32";
+    srtt:U32 mdev:U32 min_rtt:U32 snd_una:U32 snd_nxt:U32 lost_out:U32 rate_delivered:U32 \
+    rate_interval_us:U32 wstamp_ns:U64 reord_seen:U32 dsack_dups:U32 wmem_queued:U32 \
+    sndbuf:U32 notsent:U32";
 
 #[test]
 fn sock_send() {
@@ -116,7 +118,7 @@ fn sock_send() {
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
             MAX, MAX, 0, 1000, 0, 88, 10, 0, 2147483647, 0, 0, 0, 0, 0, 64240, 0, 1460, 3, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ],
     };
     // The fixture is a real recording in the old layout
@@ -135,7 +137,8 @@ fn sock_recv() {
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
             1157216, MAX, 0, 225, 0, 536, 10, 1, 2147483647, 0, 4, 0, 0, 0, 64088, 200000, 1448, 3,
-            0, 14480, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 14480, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0,
         ],
     };
     check::<legacy::Sock172Entry>(&x);
@@ -165,18 +168,20 @@ fn cubic() {
     let x = Expect {
         source: "cubic",
         entry_size: 122,
-        columns: "cnt:U32 last_max_cwnd:U32 last_cwnd:U32 last_time:U32 bic_origin_point:U32 \
-            bic_K:U32 delay_min:U32 epoch_start:U32 ack_cnt:U32 tcp_cwnd:U32 round_start:U32 \
+        columns:
+            "hook:U8 new_state:U8 cnt:U32 last_max_cwnd:U32 last_cwnd:U32 last_time:U32 \
+            bic_origin_point:U32 bic_K:U32 delay_min:U32 epoch_start:U32 ack_cnt:U32 tcp_cwnd:U32 round_start:U32 \
             end_seq:U32 last_ack:U32 curr_rtt:U32",
         file: "cubic.tcp",
         records: 2000,
         ts0: 7812305775840,
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
         row0: &[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3517337537, 3795926500, 3517337537, 4294967295,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3517337537, 3795926500, 3517337537, 4294967295,
         ],
     };
-    check::<cubic_trace_entry>(&x);
+    // The fixtures were recorded before the hook tag
+    check::<legacy::Cubic122Entry>(&x);
 }
 
 #[test]
@@ -184,16 +189,22 @@ fn bbr() {
     let x = Expect {
         source: "bbr",
         entry_size: 118,
-        columns: "min_rtt_us:U32 min_rtt_stamp:U32 probe_rtt_done_stamp:U32 rtt_cnt:U32 \
+        columns: "hook:U8 min_rtt_us:U32 min_rtt_stamp:U32 probe_rtt_done_stamp:U32 rtt_cnt:U32 \
             next_rtt_delivered:U32 cycle_mstamp:U64 lt_bw:U32 lt_last_delivered:U32 \
-            lt_last_stamp:U32 lt_last_lost:U32 prior_cwnd:U32 full_bw:U32",
+            lt_last_stamp:U32 lt_last_lost:U32 prior_cwnd:U32 full_bw:U32 mode:U8 cycle_idx:U8 \
+            pacing_gain:U16 cwnd_gain:U16 full_bw_reached:U8 full_bw_cnt:U8 round_start:U8 \
+            packet_conservation:U8 idle_restart:U8 lt_use_bw:U8 max_bw:U32 rs_delivered:I64 \
+            rs_interval_us:I64 rs_rtt_us:I64 rs_losses:I64 rs_is_app_limited:U8",
         file: "bbr.tcp",
         records: 500,
         ts0: 1_000_000_000_000,
         key0: tuple("10.0.0.1", "10.0.0.2", 40000, 5201),
-        row0: &[300, 1000, 2000, 0, 0, MAX, 5000, 0, 4000, 0, 20, 90000],
+        row0: &[
+            0, 300, 1000, 2000, 0, 0, MAX, 5000, 0, 4000, 0, 20, 90000, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0,
+        ],
     };
-    check::<bbr_trace_entry>(&x);
+    check::<legacy::Bbr118Entry>(&x);
 }
 
 #[test]
@@ -228,7 +239,7 @@ fn cwnd() {
     check::<cwnd_trace_entry>(&x);
 }
 
-const PKT_COLS: &str = "SEQ_NUM:U32 ACK_NUM:U32 WINDOW:U16 FLAGS:U8";
+const PKT_COLS: &str = "SEQ_NUM:U32 ACK_NUM:U32 WINDOW:U16 FLAGS:U8 ECN:U8 TSTAMP:U64";
 
 #[test]
 fn tcp4_send() {
@@ -240,9 +251,9 @@ fn tcp4_send() {
         records: 2000,
         ts0: 7812280671956,
         key0: tuple("192.168.1.22", "37.51.193.149", 50290, 8080),
-        row0: &[3795926499, 0, 64240, 2],
+        row0: &[3795926499, 0, 64240, 2, 0, 0],
     };
-    check::<tcp4_packet_trace>(&x);
+    check::<legacy::Tcp4Packet43Entry>(&x);
 }
 
 #[test]
@@ -255,9 +266,9 @@ fn tcp4_receive() {
         records: 2000,
         ts0: 7812304808828,
         key0: tuple("37.51.193.149", "192.168.1.22", 8080, 50290),
-        row0: &[478884330, 3795926500, 42600, 18],
+        row0: &[478884330, 3795926500, 42600, 18, 0, 0],
     };
-    check::<tcp4_packet_trace>(&x);
+    check::<legacy::Tcp4Packet43Entry>(&x);
 }
 
 #[test]
@@ -270,9 +281,9 @@ fn tcp6_send() {
         records: 500,
         ts0: 1_000_000_000_000,
         key0: tuple("2001:db8::1", "2001:db8::2", 40000, 5201),
-        row0: &[5000, 0, 1000, 16],
+        row0: &[5000, 0, 1000, 16, 0, 0],
     };
-    check::<tcp6_packet_trace>(&x);
+    check::<legacy::Tcp6Packet67Entry>(&x);
 }
 
 #[test]
@@ -285,9 +296,9 @@ fn tcp6_receive() {
         records: 500,
         ts0: 1_000_000_000_000,
         key0: tuple("2001:db8::2", "2001:db8::1", 5201, 40000),
-        row0: &[5000, 0, 1000, 16],
+        row0: &[5000, 0, 1000, 16, 0, 0],
     };
-    check::<tcp6_packet_trace>(&x);
+    check::<legacy::Tcp6Packet67Entry>(&x);
 }
 
 /// Expected `flow_key` (as "src>dst") for crafted records, in the loop order of the test below:
@@ -510,6 +521,14 @@ fn file_table_maps_every_trace_file() {
         (TraceFile::Bbr, "bbr", Dir::None),
         (TraceFile::MptcpPm, "mptcp_pm", Dir::None),
         (TraceFile::TcpEvents, "tcp_event", Dir::None),
+        (TraceFile::TimerSock, "sock_timer", Dir::None),
+        (TraceFile::IngressSock, "sock_ingress", Dir::None),
+        (TraceFile::EventSock, "sock_event", Dir::None),
+        (TraceFile::Reno, "reno", Dir::None),
+        (TraceFile::Tcp4DriverReceive, "tcp4_driver", Dir::Recv),
+        (TraceFile::Tcp6DriverReceive, "tcp6_driver", Dir::Recv),
+        (TraceFile::Tcp4DriverSend, "tcp4_driver", Dir::Send),
+        (TraceFile::Tcp6DriverSend, "tcp6_driver", Dir::Send),
         (TraceFile::SendSockOc, "sock_oc", Dir::Send),
         (TraceFile::RecvSockOc, "sock_oc", Dir::Recv),
         (TraceFile::SendCwndOc, "cwnd_oc", Dir::Send),
@@ -531,17 +550,23 @@ fn file_table_maps_every_trace_file() {
         .filter_map(|f| binding(*f).map(|b| (b.table.source, b.entry_size, b.table.columns.len())))
         .collect();
     for (s, size, n) in [
-        ("sock", 226, 40),
+        ("sock", 262, 48),
         ("tcp_probe", 124, 10),
-        ("cubic", 122, 14),
-        ("bbr", 118, 12),
+        ("cubic", 124, 16),
+        ("bbr", 168, 29),
         ("cwnd", 74, 1),
-        ("tcp6", 67, 4),
-        ("tcp4", 43, 4),
+        ("tcp6", 76, 6),
+        ("tcp4", 52, 6),
         ("mptcp_pm", 123, 17),
         ("tcp_event", 99, 13),
-        ("sock_oc", 226, 40),
+        ("sock_oc", 262, 48),
         ("cwnd_oc", 74, 1),
+        ("sock_timer", 262, 48),
+        ("sock_ingress", 262, 48),
+        ("sock_event", 262, 48),
+        ("reno", 96, 8),
+        ("tcp4_driver", 52, 6),
+        ("tcp6_driver", 76, 6),
     ] {
         assert!(sizes.contains(&(s, size, n)), "{s}");
     }
@@ -550,7 +575,7 @@ fn file_table_maps_every_trace_file() {
     names.sort();
     names.dedup();
     assert_eq!(names.len(), tables.len());
-    assert_eq!(names.len(), 11);
+    assert_eq!(names.len(), 17);
 }
 
 /// Every binding's entry size is its record's bincode encoding plus the divider.
@@ -654,7 +679,7 @@ fn sock_layout_is_detected_per_file() {
     }
     fs::write(&path, &bytes).unwrap();
     let current = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
-    assert_eq!(current.entry_size, 226);
+    assert_eq!(current.entry_size, 262);
     assert!(current.missing_columns.is_empty());
 
     // An empty file gets the current binding
@@ -664,7 +689,7 @@ fn sock_layout_is_detected_per_file() {
             .unwrap()
             .unwrap()
             .entry_size,
-        226
+        262
     );
     // Other files are not looked at
     assert!(binding_for(TraceFile::TcpBadCsum, &path).unwrap().is_none());
@@ -674,7 +699,8 @@ fn sock_layout_is_detected_per_file() {
 #[test]
 fn tcp_event_labels() {
     use tcbee_common::records::{
-        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_RETRANSMIT, TCBEE_TCP_RTO, TCBEE_TCP_STATE,
+        tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_DESTROY, TCBEE_TCP_RETRANSMIT,
+        TCBEE_TCP_RTO, TCBEE_TCP_STATE,
     };
     let e = |kind, old_state, new_state, backoff| tcp_event_entry {
         kind: kind as u8,
@@ -702,6 +728,10 @@ fn tcp_event_labels() {
     assert_eq!(
         tcp_event::label(&e(TCBEE_TCP_RTO, 0, 0, 2)),
         "RTO, backoff 2"
+    );
+    assert_eq!(
+        tcp_event::label(&e(TCBEE_TCP_DESTROY, 0, 0, 0)),
+        "socket destroyed"
     );
     assert_eq!(tcp_event::label(&e(200, 0, 0, 0)), "event 200");
 }
@@ -790,7 +820,14 @@ fn sock172_layout_is_the_current_one_without_the_missing_columns() {
 /// and no two layouts of a table have the same size.
 #[test]
 fn legacy_entry_sizes_match_their_encoding() {
-    for (source, current) in [("sock", sock_trace_entry::ENTRY_SIZE), ("cwnd", 74)] {
+    for (source, current) in [
+        ("sock", sock_trace_entry::ENTRY_SIZE),
+        ("cwnd", 74),
+        ("cubic", cubic_trace_entry::ENTRY_SIZE),
+        ("bbr", bbr_trace_entry::ENTRY_SIZE),
+        ("tcp4", tcp4_packet_trace::ENTRY_SIZE),
+        ("tcp6", tcp6_packet_trace::ENTRY_SIZE),
+    ] {
         let mut sizes = vec![current];
         for l in legacy::layouts(source) {
             let b = (l.binding)(Dir::Send);
@@ -814,7 +851,7 @@ fn legacy_entry_sizes_match_their_encoding() {
             .iter()
             .map(|l| l.entry_size)
             .collect::<Vec<_>>(),
-        [172, 168, 201, 202]
+        [172, 168, 201, 202, 226]
     );
     assert_eq!(
         legacy::layouts("cwnd")
@@ -823,6 +860,147 @@ fn legacy_entry_sizes_match_their_encoding() {
             .collect::<Vec<_>>(),
         [70]
     );
+    assert_eq!(
+        legacy::layouts("cubic")
+            .iter()
+            .map(|l| l.entry_size)
+            .collect::<Vec<_>>(),
+        [122, 123]
+    );
+    for (source, size) in [("bbr", 118), ("tcp4", 43), ("tcp6", 67)] {
+        assert_eq!(
+            legacy::layouts(source)
+                .iter()
+                .map(|l| l.entry_size)
+                .collect::<Vec<_>>(),
+            [size]
+        );
+    }
+}
+
+/// Cubic and bbr files from before the hook tag decode into the current tables with hook 0;
+/// current records keep their hook.
+#[test]
+fn cc_records_before_the_hook_tag_are_decoded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cubic.tcp");
+    let old = legacy::Cubic122Entry {
+        time: 3,
+        hook_seq: 1,
+        last_max_cwnd: 70,
+        curr_rtt: 9,
+        ..Default::default()
+    };
+    write_records(&path, &[old; 3], 0);
+    let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.table.source, b.missing_columns),
+        (122, "cubic", legacy::CUBIC122_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "last_max_cwnd"),
+            col(&batch, b.table, "curr_rtt")
+        ),
+        (0, 70, 9)
+    );
+    let old = legacy::Cubic123Entry {
+        time: 3,
+        hook_seq: 1,
+        hook: tcbee_common::records::TCBEE_CC_HOOK_STATE as u8,
+        last_max_cwnd: 70,
+        ..Default::default()
+    };
+    write_records(&path, &[old; 3], 0);
+    let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.table.source, b.missing_columns),
+        (123, "cubic", legacy::CUBIC123_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "new_state"),
+            col(&batch, b.table, "last_max_cwnd")
+        ),
+        (4, 0, 70)
+    );
+    let rec = cubic_trace_entry {
+        time: 3,
+        hook_seq: 1,
+        hook: tcbee_common::records::TCBEE_CC_HOOK_STATE as u8,
+        // TCP_CA_Loss
+        new_state: 4,
+        last_max_cwnd: 70,
+        ..Default::default()
+    };
+    write_records(&path, &[rec; 3], 0);
+    let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
+    assert!(b.missing_columns.is_empty());
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "new_state")
+        ),
+        (4, 4)
+    );
+
+    let path = dir.path().join("bbr.tcp");
+    let old = legacy::Bbr118Entry {
+        time: 3,
+        hook_seq: 1,
+        min_rtt_us: 250,
+        full_bw: 1000,
+        ..Default::default()
+    };
+    write_records(&path, &[old; 3], 0);
+    let b = binding_for(TraceFile::Bbr, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.table.source, b.missing_columns),
+        (118, "bbr", legacy::BBR118_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "min_rtt_us"),
+            col(&batch, b.table, "full_bw")
+        ),
+        (0, 250, 1000)
+    );
+    let rec = bbr_trace_entry {
+        time: 3,
+        hook_seq: 1,
+        hook: 1,
+        mode: 2,
+        pacing_gain: 320,
+        max_bw: 77,
+        rs_delivered: 10,
+        rs_rtt_us: -1,
+        rs_is_app_limited: 1,
+        ..Default::default()
+    };
+    write_records(&path, &[rec; 3], 0);
+    let b = binding_for(TraceFile::Bbr, &path).unwrap().unwrap();
+    assert!(b.missing_columns.is_empty());
+    let (batch, _) = decode_first(&b, &path);
+    let row: Vec<i128> = [
+        "hook",
+        "mode",
+        "pacing_gain",
+        "max_bw",
+        "rs_delivered",
+        "rs_rtt_us",
+        "rs_is_app_limited",
+    ]
+    .iter()
+    .map(|name| col(&batch, b.table, name))
+    .collect();
+    assert_eq!(row, [1, 2, 320, 77, 10, -1, 1]);
 }
 
 fn write_records<T: serde::Serialize>(path: &std::path::Path, recs: &[T], tail: usize) {
@@ -948,6 +1126,32 @@ fn legacy_layouts_are_detected_and_decoded() {
     );
     assert_eq!(conns, [0xBEEF]);
 
+    let r226 = legacy::Sock226Entry {
+        p,
+        ca_state: 4,
+        srtt: 120,
+        lost_out: 2,
+        conn_id: 0xCAFE,
+        ..Default::default()
+    };
+    write_records(&path, &[r226; 3], 0);
+    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.missing_columns),
+        (226, legacy::SOCK226_MISSING)
+    );
+    let (batch, conns) = decode_first(&b, &path);
+    assert_eq!(
+        (
+            col(&batch, b.table, "ca_state"),
+            col(&batch, b.table, "srtt"),
+            col(&batch, b.table, "lost_out"),
+            col(&batch, b.table, "notsent")
+        ),
+        (4, 120, 2, 0)
+    );
+    assert_eq!(conns, [0xCAFE]);
+
     let cpath = dir.path().join("send_cwnd.tcp");
     write_records(
         &cpath,
@@ -979,7 +1183,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
             .unwrap()
             .unwrap()
             .entry_size,
-        226
+        262
     );
     // only a partial first record: no complete record in any layout -> the current one
     fs::write(&path, [0u8; 50]).unwrap();
@@ -988,7 +1192,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
             .unwrap()
             .unwrap()
             .entry_size,
-        226
+        262
     );
     // a 201 B file whose last record was cut off by a kill
     let p = legacy::SockPrefix {
@@ -1025,7 +1229,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     // the same length, the first records 0xFF, then dividers only every 202 B: the later
     // records decide
     let mut data = vec![0u8; 201 * 202];
-    data[..8 * 226].fill(0xFF);
+    data[..8 * 262].fill(0xFF);
     for end in (202..=data.len()).step_by(202) {
         data[end - RECORD_DELIMITER.len()..end].copy_from_slice(&RECORD_DELIMITER);
     }
@@ -1040,7 +1244,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     // a killed writer's preallocated zeros within the deeper records rule out every size: the
     // length decides among the sizes that fit the first records
     let mut data = vec![0u8; 20 * 202];
-    data[..8 * 226].fill(0xFF);
+    data[..8 * 262].fill(0xFF);
     fs::write(&path, data).unwrap();
     assert_eq!(
         binding_for(TraceFile::SendSock, &path)
@@ -1056,4 +1260,127 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
 #[test]
 fn sock172_missing_ends_with_sock202_missing() {
     assert!(legacy::SOCK172_MISSING.ends_with(legacy::SOCK202_MISSING));
+    assert!(legacy::SOCK202_MISSING.ends_with(legacy::SOCK226_MISSING));
+    assert!(legacy::SOCK201_MISSING.ends_with(legacy::SOCK226_MISSING));
+}
+
+/// Write timer records (-k) decode into their own table and keep the hook tag in ato.
+#[test]
+fn timer_records_go_to_their_own_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("timer_sock.tcp");
+    let rec = tcbee_common::records::sock_trace_entry {
+        time: 7,
+        hook_seq: 1,
+        snd_cwnd: 1,
+        backoff: 2,
+        ato: 2 << 8,
+        ..Default::default()
+    };
+    write_records(&path, &[rec; 3], 0);
+    let b = binding_for(TraceFile::TimerSock, &path).unwrap().unwrap();
+    assert_eq!((b.table.source, b.dir), ("sock_timer", Dir::None));
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (col(&batch, b.table, "backoff"), col(&batch, b.table, "ato")),
+        (2, 512)
+    );
+}
+
+/// Reno records decode into their table; ca_name holds the first 8 bytes of the name.
+#[test]
+fn reno_records_carry_the_algorithm_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reno.tcp");
+    let rec = reno_trace_entry {
+        time: 7,
+        hook_seq: 1,
+        family: 2,
+        hook: tcbee_common::records::TCBEE_CC_HOOK_SSTHRESH as u8,
+        ca_state: 3,
+        snd_cwnd: 40,
+        new_ssthresh: 20,
+        ca_name: u64::from_le_bytes(*b"dctcp\0\0\0"),
+        ..Default::default()
+    };
+    write_records(&path, &[rec; 3], 0);
+    let b = binding_for(TraceFile::Reno, &path).unwrap().unwrap();
+    assert_eq!((b.table.source, b.dir), ("reno", Dir::None));
+    let (batch, _) = decode_first(&b, &path);
+    let name = col(&batch, b.table, "ca_name") as u64;
+    assert_eq!(&name.to_le_bytes()[..5], b"dctcp");
+    assert_eq!(
+        (
+            col(&batch, b.table, "hook"),
+            col(&batch, b.table, "ca_state"),
+            col(&batch, b.table, "new_ssthresh")
+        ),
+        (3, 3, 20)
+    );
+}
+
+/// Header files from before the ECN codepoint and the departure time decode without them; the
+/// current records carry both.
+#[test]
+fn packet_layouts_are_detected_per_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tcp4_send.tcp");
+    write_records(
+        &path,
+        &[legacy::Tcp4Packet43Entry {
+            time: 3,
+            hook_seq: 1,
+            seq: 1000,
+            flags: 0x10,
+            ..Default::default()
+        }; 3],
+        0,
+    );
+    let b = binding_for(TraceFile::Tcp4Send, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.missing_columns),
+        (43, legacy::PACKET_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(col(&batch, b.table, "SEQ_NUM"), 1000);
+    assert_eq!(col(&batch, b.table, "ECN"), 0);
+
+    write_records(
+        &path,
+        &[tcp4_packet_trace {
+            time: 3,
+            hook_seq: 1,
+            seq: 1000,
+            ecn: 3,
+            tstamp: 5_000_000,
+            ..Default::default()
+        }; 3],
+        0,
+    );
+    let b = binding_for(TraceFile::Tcp4Send, &path).unwrap().unwrap();
+    assert_eq!((b.entry_size, b.missing_columns.len()), (52, 0));
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(
+        (col(&batch, b.table, "ECN"), col(&batch, b.table, "TSTAMP")),
+        (3, 5_000_000)
+    );
+
+    let path = dir.path().join("tcp6_receive.tcp");
+    write_records(
+        &path,
+        &[legacy::Tcp6Packet67Entry {
+            time: 3,
+            hook_seq: 1,
+            window: 7,
+            ..Default::default()
+        }; 2],
+        0,
+    );
+    let b = binding_for(TraceFile::Tcp6Receive, &path).unwrap().unwrap();
+    assert_eq!(
+        (b.entry_size, b.table.source, b.missing_columns),
+        (67, "tcp6", legacy::PACKET_MISSING)
+    );
+    let (batch, _) = decode_first(&b, &path);
+    assert_eq!(col(&batch, b.table, "WINDOW"), 7);
 }

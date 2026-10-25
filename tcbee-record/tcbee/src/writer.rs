@@ -2,13 +2,13 @@ use std::{
     cell::RefCell,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{self, ErrorKind},
+    io::{self, BufWriter, ErrorKind, Write},
     mem,
     os::fd::AsRawFd,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -16,7 +16,7 @@ use std::{
 
 use bincode::ErrorKind as BincodeErrorKind;
 use libbpf_rs::{MapHandle, RingBufferBuilder};
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use memmap2::MmapMut;
 use serde::Serialize;
 use tcbee_common::{records::RECORD_DELIMITER, stats::RINGBUFS};
@@ -70,6 +70,8 @@ pub struct Writer {
     /// Requires `isolcpus=<ids>` in the kernel boot parameters for full isolation.
     cpu_pool: Vec<usize>,
     next_cpu: usize,
+    /// Where the file helpers of all writer threads run
+    helper_cpus: Arc<HelperCpus>,
 }
 
 impl Writer {
@@ -81,6 +83,7 @@ impl Writer {
             handles: Vec::new(),
             cpu_pool: Vec::new(),
             next_cpu: 0,
+            helper_cpus: Arc::new(HelperCpus::default()),
         }
     }
 
@@ -88,6 +91,7 @@ impl Writer {
     /// For full isolation, also boot with `isolcpus=<ids>` so the kernel
     /// scheduler never places other tasks on those cores.
     pub fn with_cpu_affinity(mut self, cpus: Vec<usize>) -> Self {
+        self.helper_cpus = Arc::new(HelperCpus::new(cpus.clone()));
         self.cpu_pool = cpus;
         self
     }
@@ -97,13 +101,14 @@ impl Writer {
         self.bytes_written.clone()
     }
 
-    /// Register the ring buffer maps of one output file. Spawns a dedicated worker thread
-    /// immediately. `rb` is the ring buffer index from `tcbee_common::stats`. The handles
-    /// keep the maps open, so the thread can drain them after the eBPF object is closed.
+    /// Register the ring buffer maps of one output file, with the CPU of each. Spawns a
+    /// dedicated worker thread immediately. `rb` is the ring buffer index from
+    /// `tcbee_common::stats`. The handles keep the maps open, so the thread can drain them
+    /// after the eBPF object is closed.
     pub fn register<T>(
         &mut self,
         rb: u32,
-        maps: Vec<MapHandle>,
+        maps: Vec<(u32, MapHandle)>,
         trace_dir: impl AsRef<Path>,
     ) -> Result<(), WriterError>
     where
@@ -117,7 +122,7 @@ impl Writer {
     pub fn register_as<T>(
         &mut self,
         rb: u32,
-        maps: Vec<MapHandle>,
+        maps: Vec<(u32, MapHandle)>,
         file: TraceFile,
         trace_dir: impl AsRef<Path>,
     ) -> Result<(), WriterError>
@@ -125,7 +130,8 @@ impl Writer {
         T: Serialize + Copy + Send + 'static,
     {
         let file_path = trace_dir.as_ref().join(file.filename());
-        let job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?;
+        let job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?
+            .with_helper_cpus(self.helper_cpus.clone());
         let running = self.running.clone();
 
         let cpu = if self.cpu_pool.is_empty() {
@@ -133,6 +139,7 @@ impl Writer {
         } else {
             let id = self.cpu_pool[self.next_cpu % self.cpu_pool.len()];
             self.next_cpu += 1;
+            self.helper_cpus.add_writer(id);
             Some(id)
         };
 
@@ -216,9 +223,92 @@ fn pin_to_cpu(cpu_id: usize) {
     }
 }
 
+/// The CPUs for the threads that grow and unmap trace files. A thread inherits the CPU
+/// affinity of the thread that starts it, so without this they would run on their writer's
+/// CPU: at about 1 GB/s into one file, zeroing the new tmpfs pages takes half of that CPU and
+/// the writer falls behind its ring buffers.
+#[derive(Default)]
+struct HelperCpus {
+    /// The writer CPU pool, empty if writers are not pinned
+    pool: Vec<usize>,
+    /// The CPUs that have a writer thread
+    writers: Mutex<Vec<usize>>,
+    /// The warning that helpers share the writers' CPUs was logged
+    warned: AtomicBool,
+}
+
+impl HelperCpus {
+    fn new(pool: Vec<usize>) -> Self {
+        HelperCpus {
+            pool,
+            writers: Mutex::new(Vec::new()),
+            warned: AtomicBool::new(false),
+        }
+    }
+
+    fn add_writer(&self, cpu: usize) {
+        self.writers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(cpu);
+    }
+
+    /// The pool CPUs without a writer, or the whole pool if every one has a writer. None if
+    /// writers are not pinned: helpers then run wherever their writer may.
+    fn set(&self) -> Option<libc::cpu_set_t> {
+        if self.pool.is_empty() {
+            return None;
+        }
+        let writers = self.writers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut free: Vec<usize> = self
+            .pool
+            .iter()
+            .copied()
+            .filter(|c| !writers.contains(c))
+            .collect();
+        if free.is_empty() {
+            if !self.warned.swap(true, Ordering::Relaxed) {
+                warn!("Every writer CPU has a writer, file growth shares their CPUs");
+            }
+            free = self.pool.clone();
+        }
+        unsafe {
+            let mut set: libc::cpu_set_t = mem::zeroed();
+            libc::CPU_ZERO(&mut set);
+            for cpu in free {
+                libc::CPU_SET(cpu, &mut set);
+            }
+            Some(set)
+        }
+    }
+}
+
+/// Runs `work` on a new thread restricted to `cpus`
+fn spawn_helper(
+    name: &str,
+    cpus: Option<libc::cpu_set_t>,
+    work: impl FnOnce() + Send + 'static,
+) -> io::Result<()> {
+    thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            if let Some(set) = cpus {
+                let ret = unsafe { libc::sched_setaffinity(0, mem::size_of_val(&set), &set) };
+                if ret != 0 {
+                    error!(
+                        "Failed to move a file helper off the writer's CPU: errno {}",
+                        io::Error::last_os_error()
+                    );
+                }
+            }
+            work()
+        })
+        .map(drop)
+}
+
 fn job_loop<T>(
     job: MapWriterJob<T>,
-    maps: Vec<MapHandle>,
+    maps: Vec<(u32, MapHandle)>,
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
     poll_mode: PollMode,
@@ -236,8 +326,10 @@ where
     let job = RefCell::new(job);
     let rb = (|| {
         let mut builder = RingBufferBuilder::new();
-        for map in &maps {
-            builder.add(map, |data| job.borrow_mut().write(data))?;
+        let job = &job;
+        for (cpu, map) in &maps {
+            let cpu = *cpu;
+            builder.add(map, move |data| job.borrow_mut().write_from(cpu, data))?;
         }
         builder.build()
     })();
@@ -370,6 +462,24 @@ const MAX_MMAP_GROWTH: usize = 1 << 30;
 /// helper every few kilobytes
 const MIN_BACKGROUND_GROWTH: usize = 16 << 20;
 
+/// Capacity after growing a file of `capacity` that must hold `required` bytes: geometric
+/// steps between MIN_BACKGROUND_GROWTH and MAX_MMAP_GROWTH, in multiples of `growth`
+fn next_capacity(capacity: usize, growth: usize, required: usize) -> usize {
+    let step = capacity.clamp(growth.max(MIN_BACKGROUND_GROWTH), MAX_MMAP_GROWTH);
+    required
+        .max(capacity.saturating_add(step))
+        .next_multiple_of(growth)
+}
+
+/// Whether to grow in the background once `required` bytes are used: when less than half of
+/// the file, and less than the next step, is free. Growing whenever half of the file was used
+/// kept the file at twice the bytes written once the step reached its maximum, and the helper
+/// zeroed new tmpfs pages at twice the write rate. Below the maximum step a step is as large
+/// as the file, so the half bound keeps small files small.
+fn starts_growth(capacity: usize, required: usize, new_capacity: usize) -> bool {
+    capacity.saturating_sub(required) < (new_capacity - capacity).min(capacity / 2)
+}
+
 struct MmapBackedFile {
     file: File,
     map: Option<MmapMut>,
@@ -378,6 +488,8 @@ struct MmapBackedFile {
     growth: usize,
     /// Background growth in flight: the new mapping and the capacity it covers
     pending: Option<mpsc::Receiver<io::Result<(MmapMut, usize)>>>,
+    /// Where the growth and unmap helpers run, None to inherit the writer's CPUs
+    helper_cpus: Option<Arc<HelperCpus>>,
 }
 
 impl MmapBackedFile {
@@ -411,18 +523,14 @@ impl MmapBackedFile {
             capacity,
             growth,
             pending: None,
+            helper_cpus: None,
         })
     }
 
     /// Next capacity when the file has to grow to hold `required` bytes. Grows
     /// geometrically so that remapping stays rare at high record rates.
     fn next_capacity(&self, required: usize) -> usize {
-        let step = self
-            .capacity
-            .clamp(self.growth.max(MIN_BACKGROUND_GROWTH), MAX_MMAP_GROWTH);
-        required
-            .max(self.capacity.saturating_add(step))
-            .next_multiple_of(self.growth)
+        next_capacity(self.capacity, self.growth, required)
     }
 
     /// Extends the file to `new_capacity` and maps all of it
@@ -439,14 +547,16 @@ impl MmapBackedFile {
         let file = self.file.try_clone()?;
         let old_capacity = self.capacity;
         let (tx, rx) = mpsc::channel();
-        thread::Builder::new()
-            .name("tcbee-grow".into())
-            .spawn(move || {
-                let _ = tx
-                    .send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
-            })?;
+        spawn_helper("tcbee-grow", self.helper_set(), move || {
+            let _ =
+                tx.send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
+        })?;
         self.pending = Some(rx);
         Ok(())
+    }
+
+    fn helper_set(&self) -> Option<libc::cpu_set_t> {
+        self.helper_cpus.as_ref().and_then(|h| h.set())
     }
 
     fn adopt(&mut self, map: MmapMut, capacity: usize) {
@@ -454,7 +564,9 @@ impl MmapBackedFile {
         if let Some(old) = self.map.replace(map) {
             // Unmapping a large dirty mapping is slow, keep it off the writer thread.
             // The written pages stay in the page cache.
-            thread::spawn(move || drop(old));
+            if let Err(err) = spawn_helper("tcbee-unmap", self.helper_set(), move || drop(old)) {
+                error!("Failed to start the unmap helper: {}", err);
+            }
         }
     }
 
@@ -499,10 +611,12 @@ impl MmapBackedFile {
             }
         }
 
-        // Start the next growth while half of the file is still free
-        if self.pending.is_none() && required > self.capacity / 2 {
+        // Start the next growth while one growth step is still free
+        if self.pending.is_none() {
             let new_capacity = self.next_capacity(required);
-            self.start_growth(new_capacity)?;
+            if starts_growth(self.capacity, required, new_capacity) {
+                self.start_growth(new_capacity)?;
+            }
         }
 
         Ok(())
@@ -556,15 +670,15 @@ struct PackedLayout {
 }
 
 impl PackedLayout {
-    /// Derives the ranges from bincode itself: a value whose byte `i` is `i` serializes to
-    /// the source offset of every output byte. A second pattern checks that the output is
-    /// a plain copy of the input bytes. None if that does not hold for `T` (or `T` is too
-    /// large to number its bytes), the caller then uses bincode.
+    /// Derives the ranges from bincode itself: values whose byte `i` is the low and the high
+    /// byte of `i` serialize to the source offset of every output byte. Their complements
+    /// check that the output is a plain copy of the input bytes. None if that does not hold
+    /// for `T` (or `T` is too large to number its bytes), the caller then uses bincode.
     ///
     /// `T` must be plain old data, valid for any bit pattern, like all record types.
     fn of<T: Serialize + Copy>() -> Option<Self> {
         let size = mem::size_of::<T>();
-        if size == 0 || size > usize::from(u8::MAX) + 1 {
+        if size == 0 || size > usize::from(u16::MAX) + 1 {
             return None;
         }
         let encode = |pattern: &dyn Fn(usize) -> u8| -> Option<Vec<u8>> {
@@ -572,16 +686,24 @@ impl PackedLayout {
             let value = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const T) };
             bincode::serialize(&value).ok()
         };
-        let offsets = encode(&|i| i as u8)?;
-        let check = encode(&|i| !(i as u8))?;
-        if offsets.len() != check.len()
-            || offsets.iter().zip(&check).any(|(&off, &byte)| byte != !off)
+        let low = encode(&|i| i as u8)?;
+        let high = encode(&|i| (i >> 8) as u8)?;
+        let low_check = encode(&|i| !(i as u8))?;
+        let high_check = encode(&|i| !((i >> 8) as u8))?;
+        if [&high, &low_check, &high_check]
+            .iter()
+            .any(|encoded| encoded.len() != low.len())
+            || (0..low.len()).any(|k| low_check[k] != !low[k] || high_check[k] != !high[k])
         {
             return None;
         }
+        let offsets = low
+            .iter()
+            .zip(&high)
+            .map(|(&lo, &hi)| usize::from(lo) | usize::from(hi) << 8);
 
         let mut runs: Vec<(usize, usize)> = Vec::new();
-        for off in offsets.iter().map(|&off| usize::from(off)) {
+        for off in offsets {
             match runs.last_mut() {
                 Some((start, len)) if *start + *len == off => *len += 1,
                 _ => runs.push((off, 1)),
@@ -619,6 +741,8 @@ where
     counted: u64,
     /// Error that made the callback stop consuming
     error: Option<JobError>,
+    /// The CPU of every written record, `<file>.cpu`
+    cpus: CpuRuns,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -656,6 +780,7 @@ where
         );
 
         Ok(Self {
+            cpus: CpuRuns::new(&file_path),
             bytes_written,
             sink: Some(sink),
             file_path,
@@ -668,12 +793,30 @@ where
         })
     }
 
+    /// Grows and unmaps the file on `helpers` instead of the writer's CPU
+    fn with_helper_cpus(mut self, helpers: Arc<HelperCpus>) -> Self {
+        if let Some(sink) = &mut self.sink {
+            sink.helper_cpus = Some(helpers);
+        }
+        self
+    }
+
     fn name(&self) -> &str {
         self.file_path.to_str().unwrap_or("<unknown>")
     }
 
-    /// Ring buffer callback, writes one record. A non-zero return value stops libbpf from
-    /// consuming further records, the error is kept for the writer loop.
+    /// Ring buffer callback of the ring of `cpu`: writes one record and notes its CPU
+    fn write_from(&mut self, cpu: u32, entry: &[u8]) -> i32 {
+        let index = self.records;
+        let ret = self.write(entry);
+        if ret == 0 {
+            self.cpus.note(index, cpu);
+        }
+        ret
+    }
+
+    /// Writes one record. A non-zero return value stops libbpf from consuming further
+    /// records, the error is kept for the writer loop.
     fn write(&mut self, entry: &[u8]) -> i32 {
         match self.try_write(entry) {
             Ok(()) => {
@@ -726,10 +869,97 @@ where
     }
 
     fn flush(&mut self) -> Result<(), JobError> {
+        // The side file is finished even if the trace is not, it describes the records written
+        self.cpus.finish(self.records);
         if let Some(sink) = self.sink.take() {
             sink.finish().map_err(JobError::Io)?;
         }
         Ok(())
+    }
+}
+
+/// `<file>.cpu` next to a trace file: the CPU (ring buffer) each record came from, as one
+/// 12-byte entry per run of records from the same CPU: u64 index of the run's first record
+/// and u32 CPU id, little endian. A last entry with CPU `CPU_SIDE_END` holds the number of
+/// records; a file without it was cut short. The records of a flow are spread over the CPUs'
+/// rings, so this tells which ring a gap in a flow's hook_seq belongs to. Entries are written
+/// as the runs start, so memory stays flat; the file is created with the first record, and a
+/// failure to write it only loses the side file, never the trace.
+const CPU_SIDE_END: u32 = u32::MAX;
+
+fn cpu_side_path(trace: &Path) -> PathBuf {
+    let mut path = trace.to_path_buf().into_os_string();
+    path.push(".cpu");
+    path.into()
+}
+
+struct CpuRuns {
+    path: PathBuf,
+    out: Option<BufWriter<File>>,
+    last: Option<u32>,
+    failed: bool,
+}
+
+impl CpuRuns {
+    fn new(trace: &Path) -> Self {
+        Self {
+            path: cpu_side_path(trace),
+            out: None,
+            last: None,
+            failed: false,
+        }
+    }
+
+    /// Notes that record `index` came from `cpu`
+    #[inline]
+    fn note(&mut self, index: u64, cpu: u32) {
+        if self.last == Some(cpu) || self.failed {
+            return;
+        }
+        self.last = Some(cpu);
+        self.entry(index, cpu);
+    }
+
+    fn entry(&mut self, index: u64, cpu: u32) {
+        let mut entry = [0u8; 12];
+        entry[..8].copy_from_slice(&index.to_le_bytes());
+        entry[8..].copy_from_slice(&cpu.to_le_bytes());
+        if let Err(err) = self.out().and_then(|out| out.write_all(&entry)) {
+            self.fail(err);
+        }
+    }
+
+    fn out(&mut self) -> io::Result<&mut BufWriter<File>> {
+        if self.out.is_none() {
+            let file = File::create(&self.path)?;
+            self.out = Some(BufWriter::with_capacity(64 << 10, file));
+        }
+        Ok(self.out.as_mut().expect("just created"))
+    }
+
+    /// Ends a side file that has entries with the number of records written
+    fn finish(&mut self, records: u64) {
+        if self.out.is_none() {
+            return;
+        }
+        self.entry(records, CPU_SIDE_END);
+        if let Some(mut out) = self.out.take() {
+            if let Err(err) = out.flush() {
+                self.fail(err);
+            }
+        }
+    }
+
+    /// An incomplete side file would point records at the wrong CPU, so it is removed
+    fn fail(&mut self, err: io::Error) {
+        error!(
+            "Writing {} failed, recording without it: {}",
+            self.path.display(),
+            err
+        );
+        self.failed = true;
+        self.out = None;
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -855,6 +1085,7 @@ mod tests {
         assert_packed_matches_bincode::<cwnd_trace_entry>();
         assert_packed_matches_bincode::<cubic_trace_entry>();
         assert_packed_matches_bincode::<bbr_trace_entry>();
+        assert_packed_matches_bincode::<reno_trace_entry>();
         assert_packed_matches_bincode::<tcp_probe_entry>();
         assert_packed_matches_bincode::<tcp_retransmit_synack_entry>();
         assert_packed_matches_bincode::<tcp_bad_csum_entry>();
@@ -900,6 +1131,92 @@ mod tests {
         assert!(written == expected);
     }
 
+    /// The free space ahead of the writer stays within a few growth steps, also for large files
+    #[test]
+    fn growth_stays_close_to_the_data() {
+        let growth = 1000 * WRITER_BUFFER_SIZE;
+        let mut capacity = growth.max(MIN_MMAP_GROWTH);
+        let mut grown = 0;
+        let mut position = 0;
+        while position < 50 << 30 {
+            position += 1 << 20;
+            if position > capacity {
+                capacity = next_capacity(capacity, growth, position);
+            }
+            let next = next_capacity(capacity, growth, position);
+            if starts_growth(capacity, position, next) {
+                capacity = next;
+                grown += 1;
+            }
+            assert!(
+                capacity - position <= 3 * MAX_MMAP_GROWTH,
+                "{capacity} for {position}"
+            );
+        }
+        // About one growth per step written, not one whenever half of the file is used
+        assert!(grown < 60, "{grown} growths");
+
+        // A file with a few records stays at its first size
+        let capacity = growth.max(MIN_MMAP_GROWTH);
+        let next = next_capacity(capacity, growth, 300);
+        assert!(!starts_growth(capacity, 300, next));
+    }
+
+    /// A writer's file grows and unmaps on the writer's helper CPUs
+    #[test]
+    fn writer_jobs_get_the_helper_cpus() {
+        let path = env::temp_dir().join(format!("tcbee-helper-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let job = MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+            .unwrap()
+            .with_helper_cpus(Arc::new(HelperCpus::new(vec![0])));
+        assert!(job.sink.as_ref().unwrap().helper_cpus.is_some());
+        drop(job);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Helpers run on the CPUs without a writer, not on the CPU of the thread that starts them
+    #[test]
+    fn helpers_avoid_writer_cpus() {
+        let online: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
+            .filter(|&c| unsafe {
+                let mut set: libc::cpu_set_t = mem::zeroed();
+                libc::sched_getaffinity(0, mem::size_of_val(&set), &mut set) == 0
+                    && libc::CPU_ISSET(c, &set)
+            })
+            .collect();
+        if online.len() < 2 {
+            return;
+        }
+        let (writer, other) = (online[0], online[1]);
+        let helpers = HelperCpus::new(vec![writer, other]);
+        helpers.add_writer(writer);
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            pin_to_cpu(writer);
+            spawn_helper("test-helper", helpers.set(), move || {
+                let mut set: libc::cpu_set_t = unsafe { mem::zeroed() };
+                unsafe { libc::sched_getaffinity(0, mem::size_of_val(&set), &mut set) };
+                let cpus: Vec<usize> = online
+                    .iter()
+                    .copied()
+                    .filter(|&c| unsafe { libc::CPU_ISSET(c, &set) })
+                    .collect();
+                tx.send(cpus).unwrap();
+            })
+            .unwrap();
+        })
+        .join()
+        .unwrap();
+        assert_eq!(rx.recv().unwrap(), vec![other]);
+        // Every pool CPU has a writer: the helpers may use the whole pool
+        let full = HelperCpus::new(vec![writer]);
+        full.add_writer(writer);
+        let set = full.set().unwrap();
+        assert!(unsafe { libc::CPU_ISSET(writer, &set) });
+        assert!(HelperCpus::default().set().is_none());
+    }
+
     /// A file that was opened but never written is removed, one with data is kept
     #[test]
     fn unused_file_is_removed() {
@@ -918,6 +1235,73 @@ mod tests {
         let kept = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(kept, RECORD_DELIMITER);
+    }
+
+    fn cpu_side_file(path: &Path) -> Vec<(u64, u32)> {
+        std::fs::read(cpu_side_path(path))
+            .unwrap()
+            .chunks(12)
+            .map(|e| {
+                (
+                    u64::from_le_bytes(e[..8].try_into().unwrap()),
+                    u32::from_le_bytes(e[8..].try_into().unwrap()),
+                )
+            })
+            .collect()
+    }
+
+    /// The side file has one entry per run of records from one CPU, with the CPU's real id
+    #[test]
+    fn side_file_notes_the_cpu_of_every_run() {
+        let path = env::temp_dir().join(format!("tcbee-cpu-side-{}", std::process::id()));
+        let mut job =
+            MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+                .unwrap();
+        let entry = vec![0u8; mem::size_of::<tcp4_packet_trace>()];
+        for cpu in [0, 0, 2, 5, 5, 0] {
+            assert_eq!(job.write_from(cpu, &entry), 0);
+        }
+        // A record that is not written starts no run
+        assert_ne!(job.write_from(7, &entry[..3]), 0);
+        job.flush().unwrap();
+        let runs = cpu_side_file(&path);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(job.cpus.path).unwrap();
+        assert_eq!(runs, [(0, 0), (2, 2), (3, 5), (5, 0), (6, CPU_SIDE_END)]);
+    }
+
+    /// Without records there is no side file
+    #[test]
+    fn no_side_file_without_records() {
+        let path = env::temp_dir().join(format!("tcbee-cpu-none-{}", std::process::id()));
+        let mut job =
+            MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+                .unwrap();
+        job.flush().unwrap();
+        remove_if_empty(&path);
+        assert!(!cpu_side_path(&path).exists());
+    }
+
+    /// A side file that cannot be written is given up, the trace is still written
+    #[test]
+    fn failing_side_file_keeps_the_trace() {
+        let path = env::temp_dir().join(format!("tcbee-cpu-fail-{}", std::process::id()));
+        let side = cpu_side_path(&path);
+        std::fs::create_dir_all(&side).unwrap();
+        let mut job =
+            MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+                .unwrap();
+        let entry = vec![0u8; mem::size_of::<tcp4_packet_trace>()];
+        for cpu in [0, 1, 0] {
+            assert_eq!(job.write_from(cpu, &entry), 0);
+        }
+        job.flush().unwrap();
+        let written = std::fs::metadata(&path).unwrap().len();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&side).unwrap();
+        assert!(job.cpus.failed);
+        assert_eq!(job.records, 3);
+        assert!(written > 0);
     }
 
     #[test]

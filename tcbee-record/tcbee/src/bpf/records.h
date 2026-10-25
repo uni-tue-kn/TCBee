@@ -25,7 +25,13 @@ typedef __INT64_TYPE__ int64_t;
 
 #include "onchange.h"
 
-/* TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}. Addresses in host byte order. */
+/*
+ * Header records of TC, ring buffers TCP4_PACKETS_{EGRESS,INGRESS}, and of the driver hooks,
+ * ring buffers TCP4_DRIVER_{EGRESS,INGRESS}. Addresses in host byte order. ecn is the
+ * ECN codepoint of the IP header (0 Not-ECT, 1 ECT(1), 2 ECT(0), 3 CE). tstamp is skb->tstamp
+ * of a sent packet, the earliest departure time that TCP or the qdisc set (CLOCK_MONOTONIC
+ * ns, the clock of time), 0 if none was set; received packets have 0.
+ */
 struct tcp4_packet_trace {
 	uint64_t time;
 	uint64_t hook_seq;
@@ -37,9 +43,11 @@ struct tcp4_packet_trace {
 	uint32_t ack;
 	uint16_t window;
 	uint8_t flags;
+	uint8_t ecn;
+	uint64_t tstamp;
 };
 
-/* TC, ring buffers TCP6_PACKETS_{EGRESS,INGRESS} */
+/* As tcp4_packet_trace, ring buffers TCP6_PACKETS_{EGRESS,INGRESS} and TCP6_DRIVER_* */
 struct tcp6_packet_trace {
 	uint64_t time;
 	uint64_t hook_seq;
@@ -51,6 +59,8 @@ struct tcp6_packet_trace {
 	uint32_t ack;
 	uint16_t window;
 	uint8_t flags;
+	uint8_t ecn;
+	uint64_t tstamp;
 };
 
 /*
@@ -121,7 +131,20 @@ struct sock_trace_entry {
 	uint32_t snd_una;
 	uint32_t snd_nxt;
 	uint32_t lost_out; /* = tcpi_lost (the record's `lost` is tp->lost) */
-	/* Token of the MPTCP connection of a subflow (-M tag), 0 otherwise. Last field. */
+	/* The last delivery rate sample: packets delivered over its interval (= tcpi_delivery_rate
+	 * once multiplied by the MSS) */
+	uint32_t rate_delivered;
+	uint32_t rate_interval_us;
+	/* Earliest departure time of the next packet (EDT pacing), ns of CLOCK_MONOTONIC */
+	uint64_t wstamp_ns;
+	uint32_t reord_seen;  /* reorderings seen (= tcpi_reord_seen) */
+	uint32_t dsack_dups;  /* segments the receiver reported as duplicates (DSACK) */
+	/* Send buffer: bytes queued in the socket, its limit, and bytes written but not yet sent
+	 * (write_seq - snd_nxt, = tcpi_notsent_bytes) */
+	uint32_t wmem_queued;
+	uint32_t sndbuf;
+	uint32_t notsent;
+	/* Token of the MPTCP connection of a subflow (-m tag), 0 otherwise. Last field. */
 	uint32_t conn_id;
 };
 
@@ -133,9 +156,39 @@ struct cwnd_trace_entry {
 	uint32_t conn_id;
 };
 
-/* fentry cubictcp_cong_avoid / cubictcp_cwnd_event, CUBIC_EVENTS */
+/*
+ * Hook of a congestion control record (cubic, bbr and reno_trace_entry), its hook field.
+ * The hooks of one algorithm write one ring buffer and share its hook_seq, so the records of
+ * a flow are in order across them.
+ */
+enum tcbee_cc_hook {
+	/* Per ACK: fentry cubictcp_cong_avoid, fentry bbr_main, fexit tcp_reno_cong_avoid */
+	TCBEE_CC_HOOK_ACK = 1,
+	/*
+	 * fentry of the cwnd_event operation. From 7.2 on it only runs at the first transmission
+	 * after idle (cubictcp_cwnd_event_tx_start, bbr_cwnd_event_tx_start); before, at every
+	 * CA_EVENT_*, of which CUBIC and BBR only act on TX_START
+	 */
+	TCBEE_CC_HOOK_CWND_EVENT = 2,
+	/*
+	 * After the slow start threshold was recalculated: fexit cubictcp_recalc_ssthresh,
+	 * fexit tcp_reno_ssthresh
+	 */
+	TCBEE_CC_HOOK_SSTHRESH = 3,
+	/* After a congestion state change: fexit cubictcp_state */
+	TCBEE_CC_HOOK_STATE = 4,
+};
+
+/* CUBIC_EVENTS: struct bictcp before (fentry) or after (fexit) the hooked function */
 struct cubic_trace_entry {
 	TCBEE_SOCK_HEADER
+	/* enum tcbee_cc_hook */
+	uint8_t hook;
+	/*
+	 * The state hook: the congestion state (TCP_CA_*) being entered, as the socket's
+	 * icsk_ca_state is only set after cubictcp_state(). 0 at the other hooks.
+	 */
+	uint8_t new_state;
 	uint32_t cnt;
 	uint32_t last_max_cwnd;
 	uint32_t last_cwnd;
@@ -152,9 +205,11 @@ struct cubic_trace_entry {
 	uint32_t curr_rtt;
 };
 
-/* fentry bbr_main / bbr_cwnd_event, BBR_EVENTS */
+/* BBR_EVENTS: struct bbr as the hook found it */
 struct bbr_trace_entry {
 	TCBEE_SOCK_HEADER
+	/* enum tcbee_cc_hook */
+	uint8_t hook;
 	uint32_t min_rtt_us;
 	uint32_t min_rtt_stamp;
 	uint32_t probe_rtt_done_stamp;
@@ -167,6 +222,58 @@ struct bbr_trace_entry {
 	uint32_t lt_last_lost;
 	uint32_t prior_cwnd;
 	uint32_t full_bw;
+	/* BBRv1: 0 STARTUP, 1 DRAIN, 2 PROBE_BW, 3 PROBE_RTT; cycle_idx is the PROBE_BW phase */
+	uint8_t mode;
+	uint8_t cycle_idx;
+	/* Gains in BBR_UNIT (256 = 1.0) */
+	uint16_t pacing_gain;
+	uint16_t cwnd_gain;
+	/* STARTUP found the bandwidth plateau; rounds without 25 % growth so far */
+	uint8_t full_bw_reached;
+	uint8_t full_bw_cnt;
+	/* The ACK starts a new round trip */
+	uint8_t round_start;
+	/* Flags; packet_conservation and lt_use_bw (policer found, pace at lt_bw) only BBRv1 */
+	uint8_t packet_conservation;
+	uint8_t idle_restart;
+	uint8_t lt_use_bw;
+	/* BBRv1: the windowed max bandwidth filter, packets per us << 24 (BW_SCALE) */
+	uint32_t max_bw;
+	/*
+	 * The rate sample of the ACK (the ACK hook only, 0 at the cwnd event), the input of BBR's
+	 * model: packets delivered over interval_us (interval_us -1 without a valid sample), the
+	 * RTT sample (-1 if none), packets newly marked lost, and whether the sender was
+	 * application limited during it
+	 */
+	int64_t rs_delivered;
+	int64_t rs_interval_us;
+	int64_t rs_rtt_us;
+	int64_t rs_losses;
+	uint8_t rs_is_app_limited;
+};
+
+/*
+ * RENO_EVENTS: the socket after Reno's congestion avoidance (tcp_reno_cong_avoid) and
+ * ssthresh (tcp_reno_ssthresh) functions. Other algorithms call them too, DCTCP, Vegas and
+ * Veno among others, so ca_name tells which algorithm the socket runs. DCTCP has its own
+ * ssthresh, which is not hooked.
+ */
+struct reno_trace_entry {
+	TCBEE_SOCK_HEADER
+	/* enum tcbee_cc_hook: ACK or SSTHRESH */
+	uint8_t hook;
+	/* TCP_CA_Open, Disorder, CWR, Recovery, Loss */
+	uint8_t ca_state;
+	uint32_t snd_cwnd;
+	uint32_t snd_ssthresh;
+	/* The ACKs counted towards the next cwnd increase in congestion avoidance */
+	uint32_t snd_cwnd_cnt;
+	/* ACK: the packets the ACK acknowledged (the acked argument) */
+	uint32_t acked;
+	/* SSTHRESH: the new slow start threshold, which the caller then sets */
+	uint32_t new_ssthresh;
+	/* The first 8 bytes of the algorithm's name (icsk_ca_ops->name), NUL padded, little endian */
+	uint64_t ca_name;
 };
 
 /* tracepoint tcp/tcp_probe, TCP_PROBE_QUEUE. saddr/daddr hold a sockaddr_in(6). */
@@ -252,7 +359,7 @@ enum tcbee_mptcp_event {
 };
 
 /*
- * MPTCP path manager and connection lifecycle (-M pm), MPTCP_PM_EVENTS. The header holds the
+ * MPTCP path manager and connection lifecycle (-m pm), MPTCP_PM_EVENTS. The header holds the
  * tuple of the subflow, or for connection events the tuple of the connection, which is the one
  * of its first subflow. Fields that do not apply to an event are 0.
  */
@@ -317,10 +424,12 @@ enum tcbee_tcp_event {
 	TCBEE_TCP_CWR = 7,
 	/* The kernel dropped a packet of the flow: reason is the kernel's skb_drop_reason */
 	TCBEE_TCP_DROP = 8,
+	/* The socket was destroyed after it closed; the socket fields are its last values */
+	TCBEE_TCP_DESTROY = 9,
 };
 
 /*
- * Discrete TCP events (-e, --drops), TCP_EVENTS. The header holds the tuple local -> remote.
+ * Discrete TCP events (-t, --tp drops), TCP_EVENTS. The header holds the tuple local -> remote.
  * The socket fields are read at the event; they are 0 for DROP and where there is no full
  * socket. Fields that do not apply to a kind are 0.
  */
@@ -380,12 +489,13 @@ struct filter_ip {
 };
 
 /* Sizes are mirrored by const asserts in tcbee-common */
-_Static_assert(sizeof(struct tcp4_packet_trace) == 40, "tcp4_packet_trace size");
-_Static_assert(sizeof(struct tcp6_packet_trace) == 64, "tcp6_packet_trace size");
-_Static_assert(sizeof(struct sock_trace_entry) == 248, "sock_trace_entry size");
+_Static_assert(sizeof(struct tcp4_packet_trace) == 48, "tcp4_packet_trace size");
+_Static_assert(sizeof(struct tcp6_packet_trace) == 72, "tcp6_packet_trace size");
+_Static_assert(sizeof(struct sock_trace_entry) == 280, "sock_trace_entry size");
 _Static_assert(sizeof(struct cwnd_trace_entry) == 72, "cwnd_trace_entry size");
 _Static_assert(sizeof(struct cubic_trace_entry) == 120, "cubic_trace_entry size");
-_Static_assert(sizeof(struct bbr_trace_entry) == 120, "bbr_trace_entry size");
+_Static_assert(sizeof(struct bbr_trace_entry) == 176, "bbr_trace_entry size");
+_Static_assert(sizeof(struct reno_trace_entry) == 96, "reno_trace_entry size");
 _Static_assert(sizeof(struct tcp_probe_entry) == 128, "tcp_probe_entry size");
 _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 	       "tcp_retransmit_synack_entry size");

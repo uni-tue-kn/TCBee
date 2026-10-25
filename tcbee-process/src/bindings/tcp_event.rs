@@ -4,8 +4,9 @@
 use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
 
 use tcbee_common::records::{
-    tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_CWR, TCBEE_TCP_DROP, TCBEE_TCP_RETRANSMIT,
-    TCBEE_TCP_RST_RECEIVED, TCBEE_TCP_RST_SENT, TCBEE_TCP_RTO, TCBEE_TCP_STATE,
+    tcp_event_entry, TCBEE_TCP_CA_STATE, TCBEE_TCP_CWR, TCBEE_TCP_DESTROY, TCBEE_TCP_DROP,
+    TCBEE_TCP_RETRANSMIT, TCBEE_TCP_RST_RECEIVED, TCBEE_TCP_RST_SENT, TCBEE_TCP_RTO,
+    TCBEE_TCP_STATE,
 };
 use ts_storage::{ColType, Column, EventBatch, EventTable, IpTuple};
 
@@ -88,6 +89,7 @@ pub fn label(e: &tcp_event_entry) -> String {
         TCBEE_TCP_RTO => "RTO".to_string(),
         TCBEE_TCP_CWR => "CWR".to_string(),
         TCBEE_TCP_DROP => drop_label(e.reason),
+        TCBEE_TCP_DESTROY => "socket destroyed".to_string(),
         other => format!("event {other}"),
     }
 }

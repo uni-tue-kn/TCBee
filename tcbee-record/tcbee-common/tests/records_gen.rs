@@ -19,6 +19,8 @@ const RECORDS: &[&str] = &[
     "cwnd_trace_entry",
     "cubic_trace_entry",
     "bbr_trace_entry",
+    "reno_trace_entry",
+    "tcbee_cc_hook",
     "tcp_probe_entry",
     "tcp_retransmit_synack_entry",
     "tcp_bad_csum_entry",
@@ -31,8 +33,11 @@ const RECORDS: &[&str] = &[
     "filter_ip",
     "tcbee_sock_field",
     "tcbee_onchg_reason",
-    "tcbee_onchg_hook",
+    "tcbee_sock_hook",
 ];
+
+/// Constants of the records, mirrored in tcbee-trace
+const CONSTANTS: &[&str] = &["SOCK_HOOK_SHIFT", "SOCK_EVENT_STATE_SHIFT"];
 
 /// C names that keep their historical Rust names
 const RENAMES: &[(&str, &str)] = &[("ip_tuple", "IpTuple"), ("filter_ip", "FilterIp")];
@@ -110,6 +115,9 @@ fn generate() -> String {
         .parse_callbacks(Box::new(Callbacks));
     for record in RECORDS {
         builder = builder.allowlist_type(record);
+    }
+    for constant in CONSTANTS {
+        builder = builder.allowlist_var(constant);
     }
     let bindings = builder
         .generate()

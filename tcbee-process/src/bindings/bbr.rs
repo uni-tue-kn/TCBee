@@ -8,7 +8,8 @@ use crate::{
 use tcbee_common::records::bbr_trace_entry;
 
 event_schema! {
-    bbr_trace_entry => "bbr", 118 {
+    bbr_trace_entry => "bbr", 168 {
+        hook: U8,
         min_rtt_us: U32,
         min_rtt_stamp: U32,
         probe_rtt_done_stamp: U32,
@@ -21,6 +22,22 @@ event_schema! {
         lt_last_lost: U32,
         prior_cwnd: U32,
         full_bw: U32,
+        mode: U8,
+        cycle_idx: U8,
+        pacing_gain: U16,
+        cwnd_gain: U16,
+        full_bw_reached: U8,
+        full_bw_cnt: U8,
+        round_start: U8,
+        packet_conservation: U8,
+        idle_restart: U8,
+        lt_use_bw: U8,
+        max_bw: U32,
+        rs_delivered: I64,
+        rs_interval_us: I64,
+        rs_rtt_us: I64,
+        rs_losses: I64,
+        rs_is_app_limited: U8,
     }
     {
         fn flow_key(&self) -> IpTuple {

@@ -57,14 +57,14 @@ At least one metric source is required.
 
 | Flag | Description |
 |---|---|
-| `-h IFACE` | TCP headers via TC on the given interface |
-| `-t` | `tcp_probe` and related tracepoints (most TCP metrics) |
-| `-k` | fentry on `__tcp_transmit_skb` and `tcp_rcv_established` (all TCP metrics) |
+| `-h IFACE` | TCP headers on the given interface, via TC by default, see [Header records](#header-records) |
+| `-t` | The TCP tracepoints: `tcp_probe` (most TCP metrics at every received segment), SYN-ACK retransmissions and bad checksums, and as discrete TCP events (`tcp_events.tcp`) retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each event hook is optional: one the kernel lacks or rejects is left out with a warning |
+| `--tp LIST` | The tracepoints of `-t` to record, implies `-t`. Names: `probe`, `synack`, `bad_csum`, `retransmit`, `rst_sent`, `rst_received`, `state`, `ca_state`, `rto`, `destroy`, and `drops`, which `-t` leaves out: the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason, and `drop_reasons.json` with the reason names of the running kernel. `all` and `default` name the sets. The list works as described below the table, e.g. `--tp +drops,-probe` |
+| `-k` | The socket (all TCP metrics) at the hooks of `--sock-hooks`: by default after every run of the write timer (`timer_sock.tcp`, see below) and at TCP events (`event_sock.tcp`), none per packet. On a sender, `--sock-hooks +ingress` adds the state after every ACK |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
-| `-a` | Congestion control internals (Cubic and BBR) |
-| `-e` | Discrete TCP events (`tcp_events.tcp`): retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss) and retransmission timeouts. Each hook is optional: one the kernel lacks or rejects is left out with a warning |
-| `--drops` | Also record the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason; implies `-e`. Writes `drop_reasons.json` with the reason names of the running kernel |
-| `-M` | MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
+| `-a` | Congestion control internals of CUBIC, BBR and Reno, see [Congestion control records](#congestion-control-records) |
+| `-e`, `--drops` | Kept for old command lines: `-e` records the TCP events of `-t` only, `--drops` those and the drops |
+| `-m` | MPTCP (`-M` works too): path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
 
 | Flag | Default | Description |
 |---|---|---|
@@ -72,26 +72,82 @@ At least one metric source is required.
 | `--duration SECS` | `0` | Stop after this many seconds; 0 records until Ctrl+C |
 | `-c N` | `1` | Number of CPUs used for processing |
 | `-q` | | Disable the terminal UI |
-| `-m` | | Write a `metrics.json` summary file |
+| `--metrics` | | Write a `metrics.json` summary file |
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
 | `--tui-observation-window-s N` | `0` | Sliding window of the TUI graphs in seconds; 0 shows the whole recording |
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
-| `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-M` records, comma-separated: `tag`, `pm` |
+| `--headers-at HOOKS` | `tc` | With `-h`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
+| `--yes` | | Do not ask for confirmation (`--headers-at tc,driver`) |
+| `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-m` records, comma-separated: `tag`, `pm` |
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
-| `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress` |
+| `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress`; the list works as described below the table |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
+| `--sock-hooks LIST` | `timer,state,ca-state,retransmit,restart,rcvbuf` | With `-k`: the kernel hooks to record the socket at. Per packet: `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`) and `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). Not per packet: `timer` (`timer_sock.tcp`) and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). The list works as described below the table, e.g. `+ingress` on a sender. With `--on-change` and `-k` the same as `--on-change-hooks` |
+| `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
+
+`--tp`, `--sock-hooks` and `--on-change-hooks` take the same kind of list: comma-separated
+names form the set; `+name` and `-name` items add to or remove from the plain names of the
+list, or from the option's default when the list has no plain names (`--tp +drops,-probe`,
+`--sock-hooks +ingress`); `all` and `default` name those sets (`--tp all,-drops`); `_` and `-`
+are the same in names. A list that selects nothing is an error.
 
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
-CPU to reserve space. The default sizes per CPU (tcp4 and sock 16 MiB, cwnd, cubic and bbr
-8 MiB, tcp6 and tcp_probe 4 MiB) need about 40 MiB per CPU with `-h` and 110 MiB per CPU with
-all probes; the log at startup prints the total. Records of one flow come from several CPUs,
-so their file order is not their order at the hook: every record carries `hook_seq`, its
-position among the events of its flow direction at its hook.
+CPU to reserve space. The default sizes per CPU are 16 MiB for tcp4 and sock (which also
+sizes the ring of the `ingress` sock hook), 8 MiB for cwnd, cubic, bbr and reno, 4 MiB for
+tcp6, tcp_probe and tcp_events, and 1 MiB for the rest. `-h` needs about 40 MiB per CPU, as
+much again for the driver hooks, and all rings together 181 MiB; the log at startup prints the
+total. Records of one flow come from several CPUs, so their file order is not their order at
+the hook: every record carries `hook_seq`, its position among the events of its flow
+direction at its hook.
+
+Next to every trace file with records, `<file>.cpu` tells which CPU's ring buffer each record
+came from: one 12-byte entry per run of consecutive records from the same CPU, the u64 index of
+the run's first record and the u32 CPU id, little endian. A last entry with CPU id `0xFFFFFFFF`
+holds the number of records; without it the file was cut short. With the per-CPU drop counters
+of `metrics.json`, it places a gap in a flow's `hook_seq` on the CPU whose ring was full.
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
+
+## Header records
+
+`-h IFACE` records the headers of the TCP packets on one interface: addresses, ports, sequence
+and ACK numbers, window, flags, the ECN codepoint of the IP header (`ecn`) and, for sent
+packets, `skb->tstamp` (`tstamp`), the earliest departure time that TCP or the qdisc (fq) set,
+in CLOCK_MONOTONIC like the record time; 0 if none was set and for received packets.
+
+`--headers-at` picks the hooks:
+
+| Hook | Received packets | Sent packets | Files (tcbee-process table) |
+|------|------------------|--------------|-------|
+| `tc` (default) | TC ingress, after GRO | TC egress, before the qdisc and GSO | `tcp{4,6}_receive.tcp`, `tcp{4,6}_send.tcp` (`tcp4`, `tcp6`) |
+| `driver` | native XDP, before GRO | `tp_btf/net_dev_start_xmit`, after the qdisc and software GSO | `tcp{4,6}_driver_receive.tcp`, `tcp{4,6}_driver_send.tcp` (`tcp4_driver`, `tcp6_driver`) |
+
+- `tc,driver` records at both hooks into their own files, for instance to see per packet how
+  long it waited in the qdisc or for its pacing time (`tcp4_send` against `tcp4_driver` with
+  the same sequence number). Each hook costs time per packet, and XDP is attached, so
+  tcbee-record asks for confirmation first; `--yes` skips the question, and without a
+  terminal and without `--yes` it refuses to start.
+- TC sees the packets as the stack handles them: with GSO or TSO a sent record can stand for
+  several segments, with GRO a received one. tcbee-record logs this at the start.
+- `driver` attaches an XDP program in native mode, which needs a driver with XDP support; it
+  never uses generic XDP (which runs where TC does) and never replaces an XDP program that is
+  already attached. The program passes every frame on and is detached on exit. Attaching XDP
+  makes some drivers reset their rings, a short interruption of the traffic.
+- `net_dev_start_xmit` runs for every device on the host; the program compares the device
+  (ifindex and network namespace) first. With TSO on, the NIC segments after this hook, so a
+  sent record can still stand for several segments; tcbee-record warns, `ethtool -K IFACE tso
+  off` gives one record per segment. A packet the driver refuses for a full queue
+  (`NETDEV_TX_BUSY`) passes the hook again when it is retried.
+- Every header hook counts the packets that stand for several segments: GSO packets at TC
+  egress and `net_dev_start_xmit` (`gso_segs` > 1), GRO packets at TC ingress, frames longer
+  than the MTU at XDP. `metrics.json` has them as `aggregated` per ring buffer and in total,
+  and tcbee-record prints a warning per hook at the end of a run that saw any.
+- With LRO or hardware GRO (`rx-gro-hw`) the NIC merges received packets before any hook, and
+  mlx5 refuses XDP then: `driver` stops with the hint `ethtool -K IFACE lro off rx-gro-hw off`.
+  With `tc`, tcbee-record warns. The metadata lists `gro_hw` with the other offloads.
 
 ## On-change mode
 
@@ -121,8 +177,9 @@ dropped records. The default mode is unchanged.
   `backoff`, `rto`). Changes of the send path (cwnd restart after idle, app-limited cwnd
   reduction) are seen by ingress at the next ACK; `egress` records them at once, at the cost of
   one probe run per transmitted segment. Ingress and timer records carry the state after the
-  segment or timer was processed, egress records the state before the transmit. The default
-  `-k`/`-w` programs use fentry on both sides and record the state before.
+  segment or timer was processed, egress records the state before the transmit. The `egress`
+  and `ingress-entry` hooks of `-k` and the `-w` programs use fentry and record the state
+  before.
 - The sock and cwnd probes each keep one last state per connection, which every hook
   compares with and updates, so a change is written once, by the first hook that sees it.
   Ingress and timer records share the receive file and its `hook_seq`; send and receive file
@@ -147,6 +204,91 @@ dropped records. The default mode is unchanged.
   changed, 5 no socket storage. A replay of such a trace checks the decisions record by
   record (`testing/onchange_smoke.sh`).
 
+## Write timer records
+
+`-k` writes the socket after every run of the write timer handler
+(`fexit/tcp_write_timer_handler`, also when deferred to `tcp_release_cb`) to `timer_sock.tcp`:
+retransmission timeouts, loss probes, RACK reordering timeouts and zero window probes.
+
+- The records carry the state after the timer was handled, and 2 (timer) in bits 8-15 of
+  `ato`, as on-change timer records do. They do not say which timer ran: a retransmission
+  timeout shows as a higher `backoff` and `total_retrans` than in the flow's previous record,
+  and runs that found no timer due change nothing.
+- `timer_sock.tcp` has its own ring buffer (1 MiB per CPU, size group `sock_timer`) and its own
+  `hook_seq`, so its order with `send_sock.tcp` and `recv_sock.tcp` is only the order of the
+  timestamps. Its `hook_seq` counters take one more entry per flow in the `HOOK_SEQ` map
+  (262144 entries for all hooks).
+- The hook is optional: if the kernel lacks the function or rejects the program, tcbee-record
+  runs without it and lists it as skipped in the metadata. `--no-timer-hook` leaves it out on
+  purpose, which the metadata lists too.
+- In on-change mode the `timer` hook writes into `recv_sock_oc.tcp` instead.
+- tcbee-process reads `timer_sock.tcp` into the table `sock_timer`, with the columns of
+  `sock`. The TUI counts the timer runs with the receive side.
+
+## Socket event records
+
+The socket event hooks of `--sock-hooks` write the socket at TCP events, not per packet, to
+`event_sock.tcp` (tcbee-process table `sock_event`):
+
+| Hook | Kernel hook | Runs |
+|------|-------------|------|
+| `state` | `tp_btf/inet_sock_set_state` | at each TCP state change |
+| `ca-state` | `tp_btf/tcp_cong_state_set` (5.19) | at each congestion state change (Open, Disorder, CWR, Recovery, Loss) |
+| `retransmit` | `tp_btf/tcp_retransmit_skb` | at each retransmitted segment |
+| `restart` | `fexit/tcp_cwnd_restart` | after the cwnd was cut for an idle period |
+| `rcvbuf` | `tp_btf/tcp_rcvbuf_grow` (newer kernels, 7.2 has it) | when receive autotuning grows the buffer |
+
+- Bits 8-15 of `ato` tell the hook (4 state, 5 ca-state, 6 retransmit, 7 restart, 8 rcvbuf).
+  The state tracepoints run before the change, so the record still holds the old state and
+  carries the new one in bits 16-23 of `ato`.
+- All hooks share one ring buffer (1 MiB per CPU, size group `sock_event`) and one `hook_seq`
+  series per flow, so their records are in order with each other.
+- Each hook is optional: one the kernel lacks or rejects is left out with a warning and listed
+  as skipped in the metadata.
+
+## Congestion control records
+
+`-a` writes the private state of CUBIC (`struct bictcp`, `cubic.tcp`) and BBR (`struct bbr`,
+`bbr.tcp`) of every socket that uses them, before (fentry) or after (fexit) the hooked function:
+
+| Hook | Kernel hook | Runs | `hook` |
+|------|-------------|------|--------|
+| ACK | `fentry/cubictcp_cong_avoid`, `fentry/bbr_main` | at each ACK that may grow the cwnd (CUBIC), at each ACK (BBR) | 1 |
+| cwnd event | `fentry/cubictcp_cwnd_event_tx_start`, `fentry/bbr_cwnd_event_tx_start` (before 7.2 `*_cwnd_event`) | at the first transmission after idle (before 7.2 at every congestion avoidance event) | 2 |
+| ssthresh | `fexit/cubictcp_recalc_ssthresh` | after CUBIC's loss reaction (entering Recovery, CWR or Loss): `last_max_cwnd` with fast convergence, the epoch ended | 3 |
+| state | `fexit/cubictcp_state` | after each congestion state change, with the state entered in `new_state` (`TCP_CA_*`, 0 at the other hooks); entering Loss resets the CUBIC state. The state before the reset is in the ssthresh record just before if the RTO recalculated ssthresh (from Open or Disorder, after `high_seq` was acknowledged, or in Loss without retransmissions); after an RTO in CWR or Recovery before `high_seq` was acknowledged, or a repeated RTO, it is only in the last ACK record | 4 |
+
+- The CUBIC ssthresh and state hooks are optional: one the kernel lacks or rejects is left out
+  with a warning and listed as skipped in the metadata. The new `snd_ssthresh` is set by the
+  caller after the ssthresh hook; `-k` or `-t` record it.
+
+- The hooks of one algorithm share its ring buffer and one `hook_seq` series per flow, so their
+  records are in order with each other.
+- BBR records carry the state machine (`mode`: 0 STARTUP, 1 DRAIN, 2 PROBE_BW, 3 PROBE_RTT;
+  `cycle_idx`, `pacing_gain` and `cwnd_gain` in units of 1/256, `full_bw_reached`,
+  `full_bw_cnt`, `round_start`, `packet_conservation`, `idle_restart`), the maximum of the
+  bandwidth filter (`max_bw`, packets per µs << 24) and the long-term (policer) estimate. ACK
+  records also carry the rate sample that BBR's model is updated with (`rs_delivered` packets
+  over `rs_interval_us`, `rs_rtt_us`, `rs_losses`, `rs_is_app_limited`; -1 marks a missing
+  sample, 0 on kernels before 5.17). Fields that only BBRv1 has (`max_bw`, the `lt_*` fields,
+  `packet_conservation`) are 0 with other BBR versions.
+
+Reno keeps no private state. `-a` writes the socket's `snd_cwnd`, `snd_ssthresh`,
+`snd_cwnd_cnt` and congestion state after Reno's functions to `reno.tcp` (tcbee-process table
+`reno`), with their own ring buffer (8 MiB per CPU, size group `reno`) and `hook_seq`:
+
+| Hook | Kernel hook | Runs | `hook` |
+|------|-------------|------|--------|
+| ACK | `fexit/tcp_reno_cong_avoid` | after each ACK that may grow the cwnd; `acked` is the number of packets it acknowledged | 1 |
+| ssthresh | `fexit/tcp_reno_ssthresh` | after the loss reaction; `new_ssthresh` is the threshold the caller sets next | 3 |
+
+- Other algorithms call these functions too (DCTCP, Vegas, Veno and others for their Reno
+  phases), so `ca_name` holds the first 8 bytes of the socket's algorithm name as a
+  little-endian u64 (`reno` is `0x6f6e6572`). DCTCP has its own ssthresh function, which is
+  not hooked: its cwnd cut on ECN marks shows in `-k` or `-t` records only.
+- Both hooks are optional together: if the kernel lacks or rejects one, `-a` records without
+  Reno and lists it as skipped in the metadata.
+
 ## Kernel requirements
 
 - BTF of the running kernel (`/sys/kernel/btf/vmlinux`, `CONFIG_DEBUG_INFO_BTF=y`)
@@ -155,23 +297,26 @@ dropped records. The default mode is unchanged.
   `tcp_bad_csum` tracepoint of `-t` appeared in 5.11.
 - `--on-change` uses BPF socket storage in fentry/fexit programs (5.11). The timer hook needs
   `tcp_write_timer_handler` as a traceable (not inlined) function with BTF; checked on 6.8.
-- `-a` with CUBIC or BBR built as a module needs module BTF (5.11). BBR is only traced if
-  `tcp_bbr` is loaded (or built in) when tcbee-record starts; otherwise it records CUBIC only
-  and logs an error. Load it beforehand with `sudo modprobe tcp_bbr`.
-- `-e` attaches BTF tracepoints (`tp_btf`) and fentry. Congestion state changes need the
-  `tcp_cong_state_set` tracepoint (5.19); older kernels record CWR through `tcp_enter_cwr`
+- `-a` with CUBIC or BBR built as a module needs module BTF (5.11). CUBIC and BBR are only
+  traced if `tcp_cubic` or `tcp_bbr` is loaded (or built in) when tcbee-record starts;
+  otherwise `-a` records the other algorithms, logs the missing one and lists it as skipped in
+  the metadata. Load them beforehand with `sudo modprobe tcp_bbr`. `-a` fails only
+  if the kernel has none of CUBIC, BBR and Reno and nothing else is recorded.
+- The TCP events of `-t` attach BTF tracepoints (`tp_btf`) and fentry. Congestion state changes
+  need the `tcp_cong_state_set` tracepoint (5.19); older kernels record CWR through `tcp_enter_cwr`
   instead, which may miss the CWR after ECN marks where the compiler inlined the call. RSTs that
   the stack sends without a socket and state changes before a socket has both ports (an active
   open entering SYN_SENT) are only recorded for flows that already have records.
-- `--drops` runs on every packet the kernel frees as dropped, so it costs a little on a host
+- `--tp +drops` runs on every packet the kernel frees as dropped, so it costs a little on a host
   with many drops of other traffic. Drop reasons exist from 5.17 on; before, the reason is 0.
   Drops of packets without a full socket are only recorded for flows that already have a TCP
   event record, so the drops of a flow that started before the recording show up after its
   first other event (or its first drop with a socket).
-- `-M` needs MPTCP in the kernel (`CONFIG_MPTCP`, 5.6). Without it, `conn_id` stays 0 and no path
+- `-m` needs MPTCP in the kernel (`CONFIG_MPTCP`, 5.6). Without it, `conn_id` stays 0 and no path
   manager events are recorded. A path manager hook whose kernel function is missing or inlined
   is left out with a warning. Not recorded: a stale subflow becoming active again and the
   fallback on the server side (both run through inlined code on 6.8).
+- `--headers-at driver` uses XDP with multi-buffer support (`xdp.frags`, 5.18) in native mode.
 - `-h` attaches with tcx on 6.6 and newer. Older kernels use a clsact qdisc, which
   tcbee-record creates through netlink (no `tc` command needed) and removes again on exit
   if it created it.

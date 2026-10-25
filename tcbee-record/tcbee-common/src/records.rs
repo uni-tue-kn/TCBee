@@ -12,12 +12,13 @@ pub const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 
 use core::mem::size_of;
 
-const _: () = assert!(size_of::<tcp4_packet_trace>() == 40);
-const _: () = assert!(size_of::<tcp6_packet_trace>() == 64);
-const _: () = assert!(size_of::<sock_trace_entry>() == 248);
+const _: () = assert!(size_of::<tcp4_packet_trace>() == 48);
+const _: () = assert!(size_of::<tcp6_packet_trace>() == 72);
+const _: () = assert!(size_of::<sock_trace_entry>() == 280);
 const _: () = assert!(size_of::<cwnd_trace_entry>() == 72);
 const _: () = assert!(size_of::<cubic_trace_entry>() == 120);
-const _: () = assert!(size_of::<bbr_trace_entry>() == 120);
+const _: () = assert!(size_of::<bbr_trace_entry>() == 176);
+const _: () = assert!(size_of::<reno_trace_entry>() == 96);
 const _: () = assert!(size_of::<tcp_probe_entry>() == 128);
 const _: () = assert!(size_of::<tcp_retransmit_synack_entry>() == 64);
 const _: () = assert!(size_of::<tcp_bad_csum_entry>() == 24);
@@ -27,14 +28,30 @@ const _: () = assert!(size_of::<IpTuple>() == 38);
 const _: () = assert!(size_of::<hook_seq_key>() == 40);
 const _: () = assert!(size_of::<FilterIp>() == 16);
 
-// The hook tags of on-change sock records in tcbee-trace mirror enum tcbee_onchg_hook
-mod onchg_hooks {
+// The hook tags of sock records in tcbee-trace mirror enum tcbee_sock_hook (bpf/onchange.h)
+mod sock_hooks {
     use super::*;
-    use tcbee_trace::onchange::Hook;
+    use tcbee_trace::sock_hooks::{Hook, HOOK_SHIFT, STATE_SHIFT};
 
-    const _: () = assert!(Hook::Ingress.tag() == ONCHG_HOOK_INGRESS);
-    const _: () = assert!(Hook::Timer.tag() == ONCHG_HOOK_TIMER);
-    const _: () = assert!(Hook::Egress.tag() == ONCHG_HOOK_EGRESS);
+    macro_rules! same {
+        ($($rust:ident = $c:ident),* $(,)?) => {
+            $(const _: () = assert!(matches!(Hook::$rust.tag(), Some($c)));)*
+        };
+    }
+
+    same!(
+        Ingress = SOCK_HOOK_INGRESS,
+        Timer = SOCK_HOOK_TIMER,
+        Egress = SOCK_HOOK_EGRESS,
+        State = SOCK_HOOK_STATE,
+        CaState = SOCK_HOOK_CA_STATE,
+        Retransmit = SOCK_HOOK_RETRANSMIT,
+        Restart = SOCK_HOOK_RESTART,
+        Rcvbuf = SOCK_HOOK_RCVBUF,
+    );
+    const _: () = assert!(Hook::IngressEntry.tag().is_none());
+    const _: () = assert!(HOOK_SHIFT == SOCK_HOOK_SHIFT);
+    const _: () = assert!(STATE_SHIFT == SOCK_EVENT_STATE_SHIFT);
 }
 
 // The watchable socket fields in tcbee-trace mirror enum tcbee_sock_field (bpf/onchange.h)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Two-path MPTCP test of tcbee-record. Needs root, iproute2 with `ip mptcp` and a kernel with
 # MPTCP. Builds two network namespaces joined by two veth pairs (the paths), records one MPTCP
-# and one plain TCP connection with -k -M and checks the recording with check_trace.py.
+# and one plain TCP connection with -k -m and checks the recording with check_trace.py.
 #
 #   sudo testing/mptcp/run.sh [SECONDS]
 #
@@ -60,7 +60,7 @@ disown -a
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
-"$RECORD" -q -k -M --ports "$MPTCP_PORT,$TCP_PORT" --poll wait -d "$OUT" \
+"$RECORD" -q -k --sock-hooks +egress,+ingress-entry -m --ports "$MPTCP_PORT,$TCP_PORT" --poll wait -d "$OUT" \
     --duration $((SECONDS_TRAFFIC + 3)) >"$OUT/record.log" 2>&1 &
 RECORDER=$!
 sleep 1.5

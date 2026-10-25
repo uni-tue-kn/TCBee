@@ -6,7 +6,12 @@
  * the CPUs, not the hook. The hook of one flow does run on several CPUs (TC egress from the
  * sending task, from ACK processing in softirq and from the TSQ and pacing timers), but the
  * runs never overlap: TCP transmits and the socket hooks hold the socket lock, TC ingress
- * runs under the NAPI ownership of the RX queue. The atomic fetch-add on the flow's counter
+ * and XDP run under the NAPI ownership of the RX queue. net_dev_start_xmit runs after the
+ * qdisc, which dequeues on one CPU at a time (qdisc_run_begin()) and hands the packets to the
+ * driver in dequeue order; without a qdisc it runs within the transmit that holds the socket
+ * lock. A flow moves to another TX queue only once none of its packets is left in the host
+ * (ooo_okay). A packet the driver refuses (NETDEV_TX_BUSY) is requeued and passes the hook
+ * again, with a new number. The atomic fetch-add on the flow's counter
  * happens inside that critical section, so the numbers follow the order in which the hook
  * ran. Timestamps cannot do that: bpf_ktime_get_ns() is not guaranteed to be monotonic
  * across CPUs and can repeat.

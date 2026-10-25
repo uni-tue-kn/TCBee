@@ -29,7 +29,15 @@
 #define RB_BBR 12
 #define RB_MPTCP_PM 13
 #define RB_TCP_EVENTS 14
-#define RB_COUNT 15
+#define RB_SOCK_TIMER 15
+#define RB_SOCK_INGRESS 16
+#define RB_SOCK_EVENT 17
+#define RB_RENO 18
+#define RB_TCP4_DRIVER_INGRESS 19
+#define RB_TCP6_DRIVER_INGRESS 20
+#define RB_TCP4_DRIVER_EGRESS 21
+#define RB_TCP6_DRIVER_EGRESS 22
+#define RB_COUNT 23
 
 #define STAT_HANDLED 0
 #define STAT_DROPPED 1
@@ -39,12 +47,14 @@
 /*
  * Appended after the per-ring slots: the runs an on-change probe suppressed, one slot per
  * ring, then the runs that found no socket storage and wrote a full record. Both stay 0 in
- * the default mode.
+ * the default mode. Last, per ring, the packets a header hook saw that stand for several
+ * segments (GSO, GRO or LRO); they are counted on top of the outcome of the run.
  */
 #define STATS_SUPPRESSED_BASE (RB_COUNT * STATS_PER_RB)
 #define STATS_STATE_ERR (STATS_SUPPRESSED_BASE + RB_COUNT)
+#define STATS_AGGREGATED_BASE (STATS_STATE_ERR + 1)
 
-_Static_assert(STATS_STATE_ERR + 1 == TCBEE_STATS_LEN, "STATS length");
+_Static_assert(STATS_AGGREGATED_BASE + RB_COUNT == TCBEE_STATS_LEN, "STATS length");
 
 /*
  * fentry and tracepoint programs only run with migration disabled, so a softirq can
@@ -67,8 +77,8 @@ static __always_inline void add_stat(__u32 slot, __u64 value)
  *    bpf_prog_active is held on the CPU;
  *  - fentry programs are skipped while the same program is active on the CPU, which also
  *    covers preemption (bpf_prog->active).
- * TC programs and the CUBIC/BBR hooks, which share a ring buffer between two programs,
- * always use the atomic add.
+ * TC and XDP programs and the CUBIC/BBR hooks, which share a ring buffer between two
+ * programs, always use the atomic add.
  */
 static __always_inline void add_stat_owned(__u32 slot, __u64 value)
 {
@@ -136,6 +146,12 @@ static __always_inline void count_suppressed(__u32 rb)
 static __always_inline void count_state_err(void)
 {
 	add_stat(STATS_STATE_ERR, 1);
+}
+
+/* A packet of a header hook that stands for several segments, see STATS_AGGREGATED_BASE */
+static __always_inline void count_aggregated(__u32 rb)
+{
+	add_stat(STATS_AGGREGATED_BASE + rb, 1);
 }
 
 /*

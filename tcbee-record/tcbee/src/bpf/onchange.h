@@ -55,15 +55,25 @@ enum tcbee_onchg_reason {
 };
 
 /*
- * The hook of an on-change sock record, in bits 8-15 of its ato field (bits 0-7 hold the
- * shadow reason). Mirrored by tcbee_trace::onchange::Hook::tag.
+ * The hook of a sock record, in bits 8-15 of its ato field (bits 0-7 hold the shadow reason
+ * of on-change records), in the full mode of -k and in on-change mode. 0 in the egress and
+ * ingress-entry records without on-change.
+ * Mirrored by tcbee_trace::sock_hooks: Hook::tag, HOOK_SHIFT and STATE_SHIFT.
  */
-enum tcbee_onchg_hook {
-	ONCHG_HOOK_INGRESS = 1, /* fexit/tcp_rcv_established, fexit/tcp_rcv_state_process */
-	ONCHG_HOOK_TIMER = 2, /* fexit/tcp_write_timer_handler */
-	ONCHG_HOOK_EGRESS = 3, /* fentry/__tcp_transmit_skb */
+enum tcbee_sock_hook {
+	SOCK_HOOK_INGRESS = 1, /* fexit/tcp_rcv_established, fexit/tcp_rcv_state_process */
+	SOCK_HOOK_TIMER = 2, /* fexit/tcp_write_timer_handler */
+	SOCK_HOOK_EGRESS = 3, /* fentry/__tcp_transmit_skb */
+	/* The socket event hooks of -k (event_sock.tcp) */
+	SOCK_HOOK_STATE = 4, /* tp_btf/inet_sock_set_state, the new state in bits 16-23 */
+	SOCK_HOOK_CA_STATE = 5, /* tp_btf/tcp_cong_state_set, the new ca_state in bits 16-23 */
+	SOCK_HOOK_RETRANSMIT = 6, /* tp_btf/tcp_retransmit_skb */
+	SOCK_HOOK_RESTART = 7, /* fexit/tcp_cwnd_restart */
+	SOCK_HOOK_RCVBUF = 8, /* tp_btf/tcp_rcvbuf_grow */
 };
 
-#define ONCHG_HOOK_SHIFT 8
+#define SOCK_HOOK_SHIFT 8
+/* The new state of a STATE or CA_STATE record, in ato */
+#define SOCK_EVENT_STATE_SHIFT 16
 
 #endif /* __TCBEE_ONCHANGE_H */

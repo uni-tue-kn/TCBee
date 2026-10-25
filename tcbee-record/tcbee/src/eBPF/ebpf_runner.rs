@@ -12,11 +12,13 @@ use libbpf_rs::{
     skel::{OpenSkel, Skel, SkelBuilder},
     Link, MapCore, MapFlags, MapHandle, MapMut, PrintLevel,
 };
-use log::{debug, error, info, warn};
+use log::{debug, error, info, log, warn};
 use tcbee_common::stats::{
-    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RETRANSMIT_SYNACK,
-    RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
-    RB_TCP_EVENTS, RB_TCP_PROBE, RINGBUFS,
+    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RENO,
+    RB_RETRANSMIT_SYNACK, RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
+    RB_SOCK_TIMER, RB_TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
+    RB_TCP6_DRIVER_EGRESS, RB_TCP6_DRIVER_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS,
+    RB_TCP_PROBE, RINGBUFS,
 };
 use tokio::{
     task::{spawn_blocking, JoinHandle},
@@ -33,21 +35,26 @@ use crate::{
             cubic::CubicTracer,
             cwnd::CwndTracer,
             handle,
-            headers::{uses_tcx, TCTracer, TcAttachment},
+            headers::{
+                check_offloads, if_index, uses_tcx, DriverTracer, TCTracer, TcAttachment, XdpLink,
+            },
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
+            reno::RenoTracer,
+            sock_events::SockEventTracer,
             tcp_events::TcpEventTracer,
-            tracepoints::TracepointTracer,
+            tracepoints::{Tracepoint, TracepointTracer},
         },
         rings,
         skel::{OpenTcbeeSkel, TcbeeSkel, TcbeeSkelBuilder},
     },
-    metadata::{NamedRingCounters, Recorder, RunMetadata},
+    metadata::{NamedRingCounters, Offloads, Recorder, RunMetadata},
     metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
 };
+use tcbee_trace::sock_hooks::Hook;
 
 use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig, MptcpModes};
 
@@ -60,6 +67,8 @@ pub struct EbpfRunner {
     /// Attached fentry and tracepoint programs, dropping a link detaches it
     links: Vec<Link>,
     tc: Option<TcAttachment>,
+    /// The XDP program of the driver header hook, detached when dropped
+    xdp: Option<XdpLink>,
     writer: Option<Writer>,
     stats: Option<Arc<Stats>>,
     /// The hook_seq counters, read for the metrics after the programs are detached
@@ -177,16 +186,81 @@ fn load(open: OpenTcbeeSkel<'static>) -> Result<TcbeeSkel<'static>, LoadError> {
     })
 }
 
+/// -k without on-change has only optional hooks unless a per-packet one was asked for. False
+/// if the kernel lacks or rejected all of them and -k records nothing, an error if -k is the
+/// only thing to record.
+fn sock_hooks_left(
+    config: &EbpfRunnerConfig,
+    optional: &BTreeSet<OptionalGroup>,
+) -> Result<bool, Box<dyn Error>> {
+    let Some(hooks) = config.sock_hooks else {
+        return Ok(true);
+    };
+    let left = hooks.hooks().any(Hook::per_packet)
+        || optional
+            .iter()
+            .any(|group| *group == OptionalGroup::SockTimer || group.is_sock_event());
+    let others = config.headers
+        || !config.tracepoints.is_empty()
+        || config.cwnd
+        || config.algorithms
+        || config.mptcp.pm;
+    if !left && !others {
+        return Err("-k has no hook left in this kernel, it would record nothing".into());
+    }
+    Ok(left)
+}
+
+/// -a records CUBIC, BBR and Reno, each only if the kernel has it. False if it has none of
+/// them, or rejected them, and -a records nothing; an error if -a is the only thing to record.
+fn algorithms_left(
+    config: &EbpfRunnerConfig,
+    optional: &BTreeSet<OptionalGroup>,
+) -> Result<bool, Box<dyn Error>> {
+    if !config.algorithms {
+        return Ok(true);
+    }
+    let left = [
+        OptionalGroup::Cubic,
+        OptionalGroup::Bbr,
+        OptionalGroup::Reno,
+    ]
+    .iter()
+    .any(|group| optional.contains(group));
+    let others = config.headers
+        || !config.tracepoints.is_empty()
+        || config.kernel
+        || config.cwnd
+        || config.mptcp.pm;
+    if !left && !others {
+        return Err(
+            "-a has none of CUBIC (is tcp_cubic loaded?), BBR and Reno in this kernel, it would \
+             record nothing"
+                .into(),
+        );
+    }
+    Ok(left)
+}
+
 /// Ring buffers that the enabled probe groups write to
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
-    // In on-change mode, the hooks decide which of the send and receive rings are written
+    let sock_events = optional.iter().any(|group| group.is_sock_event());
+    // In on-change mode, the hooks decide which of the send and receive rings are written;
+    // without, the sock probe's hooks and every cwnd hook
     let (send, receive) = config
         .on_change
         .map_or((true, true), |o| (o.hooks.send(), o.hooks.receive()));
-    let groups: [(bool, &[u32]); 10] = [
+    let (sock_send, sock_receive) = match config.on_change {
+        Some(_) => (send, receive),
+        None => (
+            config.sock_hooked(Hook::Egress),
+            config.sock_hooked(Hook::IngressEntry),
+        ),
+    };
+    let groups: [(bool, &[u32]); 17] = [
         (
-            config.headers,
+            config.headers && config.headers_at.tc,
             &[
                 RB_TCP4_EGRESS,
                 RB_TCP4_INGRESS,
@@ -194,18 +268,42 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
                 RB_TCP6_INGRESS,
             ],
         ),
-        (config.kernel && send, &[RB_SOCK_SEND]),
-        (config.kernel && receive, &[RB_SOCK_RECV]),
+        (
+            config.headers && config.headers_at.driver,
+            &[
+                RB_TCP4_DRIVER_INGRESS,
+                RB_TCP6_DRIVER_INGRESS,
+                RB_TCP4_DRIVER_EGRESS,
+                RB_TCP6_DRIVER_EGRESS,
+            ],
+        ),
+        (config.kernel && sock_send, &[RB_SOCK_SEND]),
+        (config.kernel && sock_receive, &[RB_SOCK_RECV]),
+        (config.sock_hooked(Hook::Ingress), &[RB_SOCK_INGRESS]),
+        (
+            optional.contains(&OptionalGroup::SockTimer),
+            &[RB_SOCK_TIMER],
+        ),
         (config.cwnd && send, &[RB_CWND_SEND]),
         (config.cwnd && receive, &[RB_CWND_RECV]),
         (
-            config.tracepoints,
-            &[RB_TCP_PROBE, RB_RETRANSMIT_SYNACK, RB_BAD_CSUM],
+            config.tracepoints.contains(Tracepoint::Probe),
+            &[RB_TCP_PROBE],
         ),
-        (config.algorithms, &[RB_CUBIC]),
+        (
+            config.tracepoints.contains(Tracepoint::Synack),
+            &[RB_RETRANSMIT_SYNACK],
+        ),
+        (
+            config.tracepoints.contains(Tracepoint::BadCsum),
+            &[RB_BAD_CSUM],
+        ),
+        (optional.contains(&OptionalGroup::Cubic), &[RB_CUBIC]),
         (optional.contains(&OptionalGroup::Bbr), &[RB_BBR]),
         (optional.contains(&OptionalGroup::MptcpPm), &[RB_MPTCP_PM]),
         (tcp_events, &[RB_TCP_EVENTS]),
+        (sock_events, &[RB_SOCK_EVENT]),
+        (optional.contains(&OptionalGroup::Reno), &[RB_RENO]),
     ];
     groups
         .into_iter()
@@ -225,6 +323,7 @@ impl EbpfRunner {
             skel: None,
             links: Vec::new(),
             tc: None,
+            xdp: None,
             writer: None,
             stats: None,
             hook_seq: None,
@@ -263,6 +362,7 @@ impl EbpfRunner {
         if let Some(tc) = self.tc.take() {
             tc.detach();
         }
+        drop(self.xdp.take());
         drop(self.skel.take());
 
         // Programs that were already running when they were detached may still submit
@@ -297,9 +397,41 @@ impl EbpfRunner {
             }
         }
 
+        if self.config.headers {
+            self.warn_aggregated();
+        }
+
         if let Some(mut metadata) = self.metadata.take() {
             metadata.finish(self.ring_counters());
             self.write_metadata(&metadata);
+        }
+    }
+
+    /// Tells at the end of the run how many packets the header hooks saw as one that stand for
+    /// several segments
+    fn warn_aggregated(&self) {
+        let Some(snapshot) = self.stats.as_ref().and_then(|stats| stats.snapshot().ok()) else {
+            return;
+        };
+        let hooks = [
+            ("TC egress", [RB_TCP4_EGRESS, RB_TCP6_EGRESS]),
+            ("TC ingress", [RB_TCP4_INGRESS, RB_TCP6_INGRESS]),
+            (
+                "net_dev_start_xmit",
+                [RB_TCP4_DRIVER_EGRESS, RB_TCP6_DRIVER_EGRESS],
+            ),
+            ("XDP", [RB_TCP4_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS]),
+        ];
+        for (hook, rbs) in hooks {
+            let aggregated: u64 = rbs.iter().map(|rb| snapshot.aggregated(*rb)).sum();
+            if aggregated == 0 {
+                continue;
+            }
+            let packets: u64 = rbs.iter().map(|rb| snapshot.invocations(*rb)).sum();
+            eprintln!(
+                "Warning: {aggregated} of the {packets} packets at {hook} were aggregated \
+                 (GSO, GRO or LRO); each of their header records stands for several segments"
+            );
         }
     }
 
@@ -362,14 +494,37 @@ impl EbpfRunner {
             (c.headers, "headers"),
             (c.kernel, "kernel"),
             (c.cwnd, "cwnd"),
-            (c.tracepoints, "tracepoints"),
-            (c.algorithms, "cubic"),
+            (
+                c.tracepoints.intersects(TracepointTracer::TRACEPOINTS),
+                "tracepoints",
+            ),
+            (optional.contains(&OptionalGroup::Cubic), "cubic"),
         ]
         .into_iter()
         .filter(|(enabled, _)| *enabled)
         .map(|(_, name)| name.to_string())
         .collect();
-        groups.extend(optional.iter().map(|group| group.name().to_string()));
+        // CUBIC keeps the name it had before it became optional
+        groups.extend(
+            optional
+                .iter()
+                .filter(|group| **group != OptionalGroup::Cubic)
+                .map(|group| group.name().to_string()),
+        );
+        if c.headers {
+            let at = c.headers_at;
+            let hooks = [(at.tc, "tc"), (at.driver, "driver")]
+                .into_iter()
+                .filter_map(|(on, name)| on.then_some(name));
+            groups.push(format!(
+                "headers at: {}",
+                hooks.collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if let Some(hooks) = c.sock_hooks {
+            let hooks: Vec<_> = hooks.hooks().map(|hook| hook.name()).collect();
+            groups.push(format!("sock hooks: {}", hooks.join(", ")));
+        }
         if let Some(on_change) = c.on_change.filter(|_| c.kernel || c.cwnd) {
             let hooks: Vec<_> = on_change.hooks.hooks().map(|hook| hook.name()).collect();
             groups.push(format!("on-change: {}", hooks.join(", ")));
@@ -452,6 +607,11 @@ impl EbpfRunner {
         rodata.RB_SUBMIT_FLAGS = self.config.poll_mode.submit_flags();
         let mptcp_tag = self.config.mptcp.tag && !disabled.contains(&OptionalGroup::MptcpTag);
         rodata.MPTCP_TAG = mptcp_tag as u8;
+        if self.config.headers && self.config.headers_at.driver {
+            rodata.HEADERS_IFINDEX = if_index(&self.config.iface)? as u32;
+            rodata.HEADERS_NETNS = DriverTracer::netns()?;
+            rodata.HEADERS_MTU = DriverTracer::mtu(&self.config.iface)?;
+        }
         if let Some(on_change) = self.config.on_change {
             rodata.SOCK_WATCH_MASK = on_change.watch.mask();
             rodata.ONCHG_SHADOW = on_change.shadow as u8;
@@ -479,12 +639,32 @@ impl EbpfRunner {
 
         // A skeleton loads all programs, the ones of disabled groups must be switched off.
         // Their attach targets may not even exist on this kernel.
-        TCTracer::configure(&mut open.progs, self.config.headers, tcx);
-        KernelTracer::configure(&mut open.progs, self.config.kernel, on_change);
+        let headers_at = self.config.headers_at;
+        TCTracer::configure(&mut open.progs, self.config.headers && headers_at.tc, tcx);
+        DriverTracer::configure(&mut open.progs, self.config.headers && headers_at.driver);
+        // The write timer program of -k fails softly: without the function or if the kernel
+        // rejects it, the recording runs without it
+        let timer_wanted =
+            self.config.sock_hooked(Hook::Timer) && !disabled.contains(&OptionalGroup::SockTimer);
+        let has_timer = !btf.available() || btf.has_func(None, "tcp_write_timer_handler");
+        let timer =
+            KernelTracer::timer_hook(self.config.kernel, on_change, timer_wanted, has_timer);
+        KernelTracer::configure(
+            &mut open.progs,
+            self.config.kernel,
+            on_change,
+            self.config.sock_hooks,
+            timer,
+        );
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
-        CubicTracer::configure(&mut open.progs, self.config.algorithms, btf)?;
-        let mut optional = BTreeSet::new();
+        let (cubic, cubic_hooks, missing_cubic) =
+            CubicTracer::configure(&mut open, self.config.algorithms, disabled, btf)?;
+        let mut optional =
+            BTreeSet::from_iter(cubic_hooks.into_iter().map(OptionalGroup::CubicHook));
+        if cubic {
+            optional.insert(OptionalGroup::Cubic);
+        }
         if mptcp_tag {
             optional.insert(OptionalGroup::MptcpTag);
         }
@@ -492,50 +672,70 @@ impl EbpfRunner {
         if BBRTracer::configure(&mut open.progs, bbr, btf) {
             optional.insert(OptionalGroup::Bbr);
         }
+        let (reno, missing_reno) = RenoTracer::configure(
+            open.open_object_mut(),
+            self.config.algorithms,
+            disabled,
+            btf,
+        );
+        if reno {
+            optional.insert(OptionalGroup::Reno);
+        }
+        if timer {
+            optional.insert(OptionalGroup::SockTimer);
+        }
         let pm = self.config.mptcp.pm && !disabled.contains(&OptionalGroup::MptcpPm);
         let (any_pm, mut missing) = MptcpPmTracer::configure(open.open_object_mut(), pm, btf);
+        if !has_timer && KernelTracer::timer_hook(self.config.kernel, on_change, timer_wanted, true)
+        {
+            missing.push("write timer hook: the kernel has no tcp_write_timer_handler".to_string());
+        }
         if any_pm {
             optional.insert(OptionalGroup::MptcpPm);
         }
-        let disabled_hooks: Vec<usize> = disabled
-            .iter()
-            .filter_map(|group| match group {
-                OptionalGroup::TcpEvent(i) => Some(*i),
-                _ => None,
-            })
-            .collect();
+        missing.extend(missing_cubic);
+        missing.extend(missing_reno);
         let (hooks, missing_events) = TcpEventTracer::configure(
             open.open_object_mut(),
-            self.config.events,
-            self.config.drops,
-            &disabled_hooks,
+            self.config.tracepoints,
+            disabled,
             btf,
         );
         optional.extend(hooks.into_iter().map(OptionalGroup::TcpEvent));
         missing.extend(missing_events);
+        let (hooks, missing_sock_events) = SockEventTracer::configure(
+            open.open_object_mut(),
+            self.config.sock_hooks,
+            disabled,
+            btf,
+        );
+        optional.extend(hooks.into_iter().map(OptionalGroup::SockEvent));
+        missing.extend(missing_sock_events);
         Ok((open, optional, missing))
     }
 
-    /// Without MPTCP in the kernel, -M records nothing: a warning, or an error if it is the
+    /// Without MPTCP in the kernel, -m records nothing: a warning, or an error if it is the
     /// only thing to record. The kernel has struct mptcp_sock whenever it has MPTCP; missing
     /// path manager functions are handled per hook.
     fn check_kernel_mptcp(&mut self, btf: &mut KernelBtf) -> Result<(), Box<dyn Error>> {
         let wanted = self.config.mptcp.tag || self.config.mptcp.pm;
-        if !wanted || !btf.available() || btf.has_struct("mptcp_sock") {
+        if !wanted {
+            return Ok(());
+        }
+        if !btf.available() || btf.has_struct("mptcp_sock") {
+            let modes = &self.config.mptcp;
+            info!(
+                "Recording MPTCP:{}{}",
+                if modes.pm { " path manager events" } else { "" },
+                if modes.tag { " connection tags" } else { "" }
+            );
             return Ok(());
         }
         let c = &self.config;
-        if !(c.headers
-            || c.tracepoints
-            || c.kernel
-            || c.cwnd
-            || c.algorithms
-            || c.events
-            || c.drops)
-        {
-            return Err("The kernel has no MPTCP (CONFIG_MPTCP), -M has nothing to record".into());
+        if !(c.headers || !c.tracepoints.is_empty() || c.kernel || c.cwnd || c.algorithms) {
+            return Err("The kernel has no MPTCP (CONFIG_MPTCP), -m has nothing to record".into());
         }
-        warn!("The kernel has no MPTCP (CONFIG_MPTCP), -M records nothing");
+        warn!("The kernel has no MPTCP (CONFIG_MPTCP), -m records nothing");
         self.config.mptcp = MptcpModes::default();
         Ok(())
     }
@@ -557,10 +757,17 @@ impl EbpfRunner {
 
         // If loading fails in an optional group, the object is opened again without that
         // group. Every retry disables at least one more group, so this ends.
-        let tcx = self.config.headers && uses_tcx();
+        let tcx = self.config.headers && self.config.headers_at.tc && uses_tcx();
         let cpus = rings::Cpus::get()?;
         let mut btf = KernelBtf::default();
         self.check_kernel_mptcp(&mut btf)?;
+        if self.config.headers {
+            let iface = &self.config.iface;
+            let offloads = Offloads::read(iface);
+            for (level, message) in check_offloads(iface, self.config.headers_at, &offloads)? {
+                log!(level, "{}", message);
+            }
+        }
         let mut disabled = BTreeSet::new();
         let (skel, mut optional, missing) = loop {
             let (open, optional, missing) =
@@ -578,7 +785,7 @@ impl EbpfRunner {
                 },
             }
         };
-        if self.config.drops {
+        if self.config.tracepoints.contains(Tracepoint::Drops) {
             self.write_drop_reasons(&mut btf);
         }
         drop(btf);
@@ -588,6 +795,14 @@ impl EbpfRunner {
                 "{}: the kernel rejected its programs",
                 group.name()
             ));
+        }
+        if self
+            .config
+            .sock_hooks
+            .is_some_and(|hooks| !hooks.contains(Hook::Timer))
+        {
+            self.skipped
+                .push("write timer hook: off (--sock-hooks, --no-timer-hook)".to_string());
         }
         if self.config.algorithms
             && !optional.contains(&OptionalGroup::Bbr)
@@ -626,10 +841,14 @@ impl EbpfRunner {
         let dir = self.config.dir.as_str();
         let links = &mut self.links;
 
-        // Tracing for packet headers via TC
-        if self.config.headers {
+        // Tracing for packet headers via TC and in the driver
+        if self.config.headers && self.config.headers_at.tc {
             TCTracer::spawn(skel, &self.config.iface, dir, writer, tcx, &mut self.tc)?;
-
+        }
+        if self.config.headers && self.config.headers_at.driver {
+            DriverTracer::spawn(skel, &self.config.iface, dir, writer, links, &mut self.xdp)?;
+        }
+        if self.config.headers {
             watcher_config.graphs.packets = true;
         }
 
@@ -641,6 +860,7 @@ impl EbpfRunner {
                 writer,
                 links,
                 self.config.on_change.map(|o| o.hooks),
+                self.config.sock_hooks,
             )?;
 
             watcher_config.graphs.kernel = true;
@@ -659,30 +879,62 @@ impl EbpfRunner {
         }
 
         // Tracing kernel tracepoints
-        if self.config.tracepoints {
-            TracepointTracer::spawn(skel, dir, writer, links)?;
+        let tracepoints = self.config.tracepoints;
+        if tracepoints.intersects(TracepointTracer::TRACEPOINTS) {
+            TracepointTracer::spawn(skel, tracepoints, dir, writer, links)?;
 
             watcher_config.graphs.tracepoints = true;
         }
 
-        if self.config.algorithms {
-            CubicTracer::spawn(skel, dir, writer, links)?;
-            watcher_config.graphs.cubic = true;
-            if optional.contains(&OptionalGroup::Bbr) {
-                // BBR fails softly, so a program that was attached before the error has
-                // to be detached here. Other groups fail the start, stop() detaches them.
-                let attached = links.len();
-                match BBRTracer::spawn(skel, dir, writer, links) {
-                    Ok(()) => watcher_config.graphs.bbr = true,
-                    Err(err) => {
-                        links.truncate(attached);
-                        self.skipped.push(format!("BBR: attaching failed: {}", err));
-                        error!(
-                            "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
-                            err
-                        );
+        if optional.contains(&OptionalGroup::Cubic) {
+            // CUBIC fails softly like BBR below
+            let attached = links.len();
+            match CubicTracer::spawn(skel, dir, writer, links) {
+                Ok(failed) => {
+                    for (hook, message) in failed {
+                        optional.remove(&OptionalGroup::CubicHook(hook));
+                        self.skipped.push(message);
                     }
+                    watcher_config.graphs.cubic = true;
                 }
+                Err(err) => {
+                    links.truncate(attached);
+                    optional.retain(|group| {
+                        !matches!(group, OptionalGroup::Cubic | OptionalGroup::CubicHook(_))
+                    });
+                    self.ringbuf_sizes[RB_CUBIC as usize] = None;
+                    self.skipped
+                        .push(format!("CUBIC: attaching failed: {}", err));
+                    warn!("Recording without CUBIC: {}", err);
+                }
+            }
+        }
+        if optional.contains(&OptionalGroup::Bbr) {
+            // BBR fails softly, so a program that was attached before the error has
+            // to be detached here. Other groups fail the start, stop() detaches them.
+            let attached = links.len();
+            match BBRTracer::spawn(skel, dir, writer, links) {
+                Ok(()) => watcher_config.graphs.bbr = true,
+                Err(err) => {
+                    links.truncate(attached);
+                    optional.remove(&OptionalGroup::Bbr);
+                    // Its ring exists but holds nothing, like the timer's below
+                    self.ringbuf_sizes[RB_BBR as usize] = None;
+                    self.skipped.push(format!("BBR: attaching failed: {}", err));
+                    error!(
+                        "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
+                        err
+                    );
+                }
+            }
+        }
+
+        if optional.contains(&OptionalGroup::Reno) {
+            if let Some(message) = RenoTracer::spawn(skel, dir, writer, links)? {
+                optional.remove(&OptionalGroup::Reno);
+                // Its ring exists but holds nothing, like the TCP events' below
+                self.ringbuf_sizes[RB_RENO as usize] = None;
+                self.skipped.push(message);
             }
         }
 
@@ -695,6 +947,46 @@ impl EbpfRunner {
                 optional.remove(&OptionalGroup::TcpEvent(hook));
                 self.skipped.push(message);
             }
+            if !optional.iter().any(|group| group.is_tcp_event()) {
+                // Its ring exists but holds nothing, like the socket events' below
+                self.ringbuf_sizes[RB_TCP_EVENTS as usize] = None;
+            }
+        }
+
+        if optional.iter().any(|group| group.is_sock_event()) {
+            for (hook, message) in SockEventTracer::spawn(skel, dir, writer, links)? {
+                optional.remove(&OptionalGroup::SockEvent(hook));
+                self.skipped.push(message);
+            }
+            if !optional.iter().any(|group| group.is_sock_event()) {
+                // Its ring exists but holds nothing, like the timer's below
+                self.ringbuf_sizes[RB_SOCK_EVENT as usize] = None;
+            }
+        }
+
+        // Last, so the other writers keep their writer CPUs. Fails softly like BBR.
+        if optional.contains(&OptionalGroup::SockTimer) {
+            let attached = links.len();
+            if let Err(err) = KernelTracer::spawn_timer(skel, dir, writer, links) {
+                links.truncate(attached);
+                optional.remove(&OptionalGroup::SockTimer);
+                // Its ring exists but holds nothing, the metadata lists only the rings in use
+                self.ringbuf_sizes[RB_SOCK_TIMER as usize] = None;
+                self.skipped
+                    .push(format!("write timer hook: attaching failed: {}", err));
+                warn!("Recording without the write timer hook: {}", err);
+            }
+        }
+
+        if !sock_hooks_left(&self.config, &optional)? {
+            warn!("-k has no hook left in this kernel and records nothing");
+            self.skipped
+                .push("-k: no hook left in this kernel".to_string());
+        }
+        if !algorithms_left(&self.config, &optional)? {
+            warn!("-a has none of CUBIC, BBR and Reno in this kernel and records nothing");
+            self.skipped
+                .push("-a: no algorithm left in this kernel".to_string());
         }
 
         // TODO: should be true by default in get_watcher_config()
@@ -729,5 +1021,90 @@ impl EbpfRunner {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tcbee_trace::sock_hooks::HookSet;
+
+    use crate::eBPF::ebpf_runner_config::parse_on_change;
+
+    #[test]
+    fn timer_ring_follows_the_timer_group() {
+        let config = EbpfRunnerConfig::new().kernel(true);
+        let none = BTreeSet::new();
+        let timer = BTreeSet::from([OptionalGroup::SockTimer]);
+        assert!(!enabled_ringbufs(&config, &none).contains(&RB_SOCK_TIMER));
+        assert!(enabled_ringbufs(&config, &timer).contains(&RB_SOCK_TIMER));
+        let on_change = parse_on_change("cc", "", false, true, false).unwrap();
+        let config = EbpfRunnerConfig::new().kernel(true).on_change(on_change);
+        let rings = enabled_ringbufs(&config, &none);
+        assert!(rings.contains(&RB_SOCK_RECV) && !rings.contains(&RB_SOCK_TIMER));
+    }
+
+    #[test]
+    fn sock_rings_follow_the_sock_hooks() {
+        let config = EbpfRunnerConfig::new()
+            .kernel(true)
+            .sock_hooks(Some(HookSet::FULL_DEFAULT));
+        let events = BTreeSet::from([OptionalGroup::SockEvent(0)]);
+        let rings = enabled_ringbufs(&config, &events);
+        assert!(rings.contains(&RB_SOCK_EVENT));
+        assert!(![RB_SOCK_SEND, RB_SOCK_RECV, RB_SOCK_INGRESS]
+            .iter()
+            .any(|rb| rings.contains(rb)));
+        assert!(!enabled_ringbufs(&config, &BTreeSet::new()).contains(&RB_SOCK_EVENT));
+        let config = config.sock_hooks(Some(HookSet::of(&[Hook::Ingress, Hook::Egress])));
+        let rings = enabled_ringbufs(&config, &BTreeSet::new());
+        assert!(rings.contains(&RB_SOCK_INGRESS) && rings.contains(&RB_SOCK_SEND));
+        assert!(!rings.contains(&RB_SOCK_RECV));
+    }
+
+    #[test]
+    fn k_without_any_hook_left_is_an_error_only_alone() {
+        let config = EbpfRunnerConfig::new()
+            .kernel(true)
+            .sock_hooks(Some(HookSet::FULL_DEFAULT));
+        let none = BTreeSet::new();
+        assert!(sock_hooks_left(&config, &none).is_err());
+        let timer = BTreeSet::from([OptionalGroup::SockTimer]);
+        assert!(sock_hooks_left(&config, &timer).unwrap());
+        let with_headers = EbpfRunnerConfig::new()
+            .kernel(true)
+            .headers(true)
+            .sock_hooks(Some(HookSet::FULL_DEFAULT));
+        assert!(!sock_hooks_left(&with_headers, &none).unwrap());
+        let ingress = config.sock_hooks(Some(HookSet::of(&[Hook::Ingress])));
+        assert!(sock_hooks_left(&ingress, &none).unwrap());
+    }
+
+    #[test]
+    fn algorithm_rings_follow_their_groups() {
+        let config = EbpfRunnerConfig::new().algorithms(true);
+        let none = BTreeSet::new();
+        assert!(enabled_ringbufs(&config, &none).is_empty());
+        let reno = BTreeSet::from([OptionalGroup::Reno]);
+        assert_eq!(enabled_ringbufs(&config, &reno), [RB_RENO]);
+        let cubic = BTreeSet::from([OptionalGroup::Cubic]);
+        assert_eq!(enabled_ringbufs(&config, &cubic), [RB_CUBIC]);
+    }
+
+    #[test]
+    fn a_without_any_algorithm_left_is_an_error_only_alone() {
+        let config = EbpfRunnerConfig::new().algorithms(true);
+        let none = BTreeSet::new();
+        assert!(algorithms_left(&config, &none).is_err());
+        for group in [
+            OptionalGroup::Cubic,
+            OptionalGroup::Bbr,
+            OptionalGroup::Reno,
+        ] {
+            assert!(algorithms_left(&config, &BTreeSet::from([group])).unwrap());
+        }
+        let with_headers = EbpfRunnerConfig::new().algorithms(true).headers(true);
+        assert!(!algorithms_left(&with_headers, &none).unwrap());
+        assert!(algorithms_left(&EbpfRunnerConfig::new(), &none).unwrap());
     }
 }
