@@ -869,6 +869,8 @@ impl EbpfRunner {
                     Ok(()) => watcher_config.graphs.bbr = true,
                     Err(err) => {
                         links.truncate(attached);
+                        // Its ring exists but holds nothing, like the timer's below
+                        self.ringbuf_sizes[RB_BBR as usize] = None;
                         self.skipped.push(format!("BBR: attaching failed: {}", err));
                         error!(
                             "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
