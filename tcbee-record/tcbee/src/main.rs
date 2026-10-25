@@ -281,6 +281,12 @@ fn main() -> anyhow::Result<()> {
         );
 
         // Will try to parse arguments or exit program on error!
+        // Without any argument there is nothing to record, so show what can be recorded
+        if std::env::args().len() == 1 {
+            // A closed pipe (| head) is no error
+            let _ = argparser.print_help("tcbee-record", &mut io::stdout());
+            return Ok(());
+        }
         argparser.parse_args_or_exit();
     }
 
