@@ -3,7 +3,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::viz::rate_watcher::RateWatcher;
+use crate::viz::format;
 
 #[derive(Default)]
 pub struct Status {}
@@ -59,7 +59,7 @@ impl Status {
                     .border_style(block_style)
                     .title("Event Rate"),
             ),
-            Paragraph::new(RateWatcher::format_sum(files_size, "Byte"))
+            Paragraph::new(format::sum(files_size, "Byte"))
                 .style(value_style)
                 .block(
                     Block::bordered()

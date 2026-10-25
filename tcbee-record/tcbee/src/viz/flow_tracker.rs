@@ -8,93 +8,36 @@ use log::warn;
 use ratatui::{
     layout::Constraint,
     style::{Color, Modifier, Style, Stylize},
-    widgets::{Cell, Row, ScrollbarState, Table},
+    widgets::{Cell, Row, Table},
 };
 use tcbee_common::records::IpTuple;
 
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub struct Flow {
-    src: IpAddr,
-    dst: IpAddr,
-    sport: u16,
-    dport: u16,
+    pub src: IpAddr,
+    pub dst: IpAddr,
+    pub sport: u16,
+    pub dport: u16,
 }
 pub struct FlowTracker {
     map: MapHandle,
     // TODO: other metrics to track in hash map?
     flows: HashMap<Flow, bool>,
-    pub num_flows: usize,
 }
 
 impl FlowTracker {
     pub fn new(map: MapHandle) -> FlowTracker {
         let flows: HashMap<Flow, bool> = HashMap::new();
-        FlowTracker {
-            map,
-            flows,
-            num_flows: 0,
-        }
+        FlowTracker { map, flows }
     }
 
     fn shorten_to_ipv4(arg: [u8; 16]) -> [u8; 4] {
         std::array::from_fn(|i| arg[i])
     }
 
-    pub fn update_scrollbar_state(&self, state: ScrollbarState) -> ScrollbarState {
-        state.content_length(self.num_flows)
-    }
-
-    pub fn get_flows(&mut self) -> Table<'_> {
-        let header = [
-            "#",
-            "Source",
-            "Source Port",
-            "Destination",
-            "Destination Port",
-        ]
-        .into_iter()
-        .map(Cell::from)
-        .collect::<Row>()
-        .height(1)
-        .style(Style::new().fg(Color::Reset).bold());
-
-        let rows = self.flows.iter().enumerate().map(|(i, (flow, _is_ipv6))| {
-            let src = flow.src.to_string();
-            let dst = flow.dst.to_string();
-            let sport = flow.sport.to_string();
-            let dport = flow.dport.to_string();
-
-            let style = if i % 2 == 0 {
-                Style::new().fg(Color::Reset)
-            } else {
-                Style::new().fg(Color::Reset).add_modifier(Modifier::DIM)
-            };
-
-            [(i + 1).to_string(), src, sport, dst, dport]
-                .into_iter()
-                .collect::<Row>()
-                .height(1)
-                .style(style)
-        });
-
-        // Update number of entries that can be scrolled
-        self.num_flows = rows.len();
-
-        let tab = Table::new(
-            rows,
-            [
-                Constraint::Length(5),
-                Constraint::Percentage(32),
-                Constraint::Length(13),
-                Constraint::Percentage(32),
-                Constraint::Length(18),
-            ],
-        )
-        .header(header)
-        .column_spacing(1)
-        .style(Style::new().fg(Color::Reset));
-
-        tab
+    /// The flows seen so far
+    pub fn flows(&self) -> Vec<Flow> {
+        self.flows.keys().cloned().collect()
     }
 
     /// Values of one FLOWS entry on all CPUs
@@ -162,4 +105,53 @@ impl FlowTracker {
             }
         }
     }
+}
+
+/// The table of the flows
+pub fn flow_table(flows: &[Flow]) -> Table<'static> {
+    let header = [
+        "#",
+        "Source",
+        "Source Port",
+        "Destination",
+        "Destination Port",
+    ]
+    .into_iter()
+    .map(Cell::from)
+    .collect::<Row>()
+    .height(1)
+    .style(Style::new().fg(Color::Reset).bold());
+
+    let rows = flows.iter().enumerate().map(|(i, flow)| {
+        let src = flow.src.to_string();
+        let dst = flow.dst.to_string();
+        let sport = flow.sport.to_string();
+        let dport = flow.dport.to_string();
+
+        let style = if i % 2 == 0 {
+            Style::new().fg(Color::Reset)
+        } else {
+            Style::new().fg(Color::Reset).add_modifier(Modifier::DIM)
+        };
+
+        [(i + 1).to_string(), src, sport, dst, dport]
+            .into_iter()
+            .collect::<Row>()
+            .height(1)
+            .style(style)
+    });
+
+    Table::new(
+        rows,
+        [
+            Constraint::Length(5),
+            Constraint::Percentage(32),
+            Constraint::Length(13),
+            Constraint::Percentage(32),
+            Constraint::Length(18),
+        ],
+    )
+    .header(header)
+    .column_spacing(1)
+    .style(Style::new().fg(Color::Reset))
 }

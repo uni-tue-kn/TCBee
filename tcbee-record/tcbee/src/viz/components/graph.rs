@@ -4,7 +4,7 @@ use ratatui::symbols::Marker::Braille;
 use ratatui::text::Span;
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, LegendPosition};
 
-use crate::viz::rate_watcher::RateWatcher;
+use crate::viz::format;
 
 pub struct Graph {
     data: Vec<Vec<(f64, f64)>>,
@@ -84,11 +84,11 @@ impl Graph {
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("{}", RateWatcher::format_rate(ymax / 2.0, y_suffix)),
+                format!("{}", format::rate(ymax / 2.0, y_suffix)),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("{}", RateWatcher::format_rate(ymax, y_suffix)),
+                format!("{}", format::rate(ymax, y_suffix)),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
         ];

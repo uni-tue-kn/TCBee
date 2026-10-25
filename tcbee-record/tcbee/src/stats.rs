@@ -40,6 +40,12 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// A snapshot with the given slot values, for tests
+    #[cfg(test)]
+    pub fn from_values(values: Vec<u64>) -> Snapshot {
+        Snapshot { values }
+    }
+
     pub fn get(&self, index: u32) -> u64 {
         self.values.get(index as usize).copied().unwrap_or(0)
     }
