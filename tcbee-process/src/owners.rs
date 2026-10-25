@@ -8,7 +8,8 @@
 //! create flows: the owner of a connection without any other record is counted as unmatched.
 //! Dual-stack sockets name IPv4 peers with v4-mapped addresses, which become the IPv4 addresses
 //! the event tables use. A tuple that is reused gets one owner per connection, told apart by
-//! time.
+//! time. The subflows that the MPTCP path manager adds have no owner of their own, they take the
+//! owner of their connection.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -21,7 +22,7 @@ use tcbee_common::records::{
     flow_owner_entry, TCBEE_OWNER_ACCEPT, TCBEE_OWNER_CONNECT, TCBEE_OWNER_KTHREAD,
 };
 use tcbee_trace::owners::{FlowOwners, ProcessInfo};
-use ts_storage::{Flow, FlowOwner, IpTuple};
+use ts_storage::{ConnectionFlow, ConnectionInfo, Flow, FlowOwner, IpTuple};
 
 use crate::{
     event::{decode_record, DecodeError},
@@ -238,6 +239,53 @@ pub fn join(owned: &[Owned], flows: &[Flow]) -> (Vec<FlowOwner>, usize) {
     (rows, unmatched)
 }
 
+/// Gives the flows of each connection that have no owner of their own the owner of the
+/// connection, from their first record on. The recorder writes no owner record for an MPTCP
+/// subflow the path manager added: its process is the one that opened the connection's first
+/// subflow. The connection's owner is the one that opened a member flow last before the
+/// connection ended; a flow has an owner of its own if one opened it since.
+pub fn inherit(
+    rows: &mut Vec<FlowOwner>,
+    connections: &[ConnectionInfo],
+    members: &[ConnectionFlow],
+) {
+    let mut inherited = Vec::new();
+    for c in connections {
+        let flows: Vec<&ConnectionFlow> =
+            members.iter().filter(|m| m.connection_id == c.id).collect();
+        let candidates: Vec<&FlowOwner> = rows
+            .iter()
+            .filter(|r| r.ts <= c.end_ts && flows.iter().any(|m| m.flow_id == r.flow_id))
+            .collect();
+        let Some(opened) = candidates.iter().map(|r| r.ts).max() else {
+            continue;
+        };
+        for m in &flows {
+            let own = candidates
+                .iter()
+                .any(|r| r.flow_id == m.flow_id && r.ts >= opened && r.ts <= m.last_ts);
+            if own {
+                continue;
+            }
+            inherited.extend(
+                candidates
+                    .iter()
+                    .filter(|r| r.ts == opened)
+                    .map(|r| FlowOwner {
+                        flow_id: m.flow_id,
+                        ts: m.first_ts,
+                        source: FlowOwner::SOURCE_CONNECTION.to_string(),
+                        ..(*r).clone()
+                    }),
+            );
+        }
+    }
+    rows.extend(inherited);
+    let mut seen = HashSet::new();
+    rows.retain(|r| seen.insert((r.flow_id, r.ts, r.pid)));
+    rows.sort_by_key(|r| (r.flow_id, r.ts, r.pid));
+}
+
 #[cfg(test)]
 mod tests {
     use tcbee_trace::owners::SnapshotConnection;
@@ -439,6 +487,47 @@ mod tests {
         let (rows, _) = join(&owned, &flow);
         let got: Vec<_> = rows.iter().map(|r| (r.pid, r.source.as_str())).collect();
         assert_eq!(got, [(42, "connect"), (43, "snapshot")]);
+    }
+
+    /// The first subflow has the owner record, a joined subflow takes it from the connection
+    #[test]
+    fn joined_subflows_take_the_owner_of_their_connection() {
+        let first = tuple("10.0.0.1", "10.0.0.2", 40000, 5201);
+        let joined = tuple("10.0.1.1", "10.0.0.2", 40100, 5201);
+        let unrelated = tuple("10.0.0.1", "10.0.0.3", 40200, 22);
+        let all = flows(&[first, joined, unrelated]);
+        let owned = decode_records(
+            &encode(&[record(5, 42, TCBEE_OWNER_CONNECT, 40000, 5201)]),
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let (mut rows, _) = join(&owned, &all);
+        let connection = ConnectionInfo {
+            id: 1,
+            kind: ConnectionInfo::KIND_MPTCP.into(),
+            key: 7,
+            flow_id: None,
+            start_ts: 10,
+            end_ts: 500,
+        };
+        let member = |flow_id, first_ts, last_ts| ConnectionFlow {
+            connection_id: 1,
+            flow_id,
+            subflow_id: None,
+            first_ts,
+            last_ts,
+        };
+        inherit(
+            &mut rows,
+            &[connection],
+            &[member(1, 10, 500), member(2, 100, 400)],
+        );
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.flow_id, r.ts, r.pid, r.source.as_str()))
+            .collect();
+        assert_eq!(got, [(1, 5, 42, "connect"), (2, 100, 42, "connection")]);
     }
 
     #[test]

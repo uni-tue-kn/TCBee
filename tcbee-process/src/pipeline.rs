@@ -527,7 +527,8 @@ fn build_catalog(
 ) -> (Catalog, usize) {
     let flows = registry.into_flows();
     let (connections, connection_flows) = connections::assemble(tagged, pm_events, &flows);
-    let (owners, unmatched_owners) = owners::join(owned, &flows);
+    let (mut owners, unmatched_owners) = owners::join(owned, &flows);
+    owners::inherit(&mut owners, &connections, &connection_flows);
     // Columns a file's records do not have hold 0; a series of them would look recorded
     let mut series = stats.into_series(1);
     series.retain(|s| {

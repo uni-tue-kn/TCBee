@@ -94,6 +94,8 @@ impl FlowOwner {
     pub const SOURCE_ACCEPT: &'static str = "accept";
     /// The process held the socket when the recording started
     pub const SOURCE_SNAPSHOT: &'static str = "snapshot";
+    /// The owner of the flow's connection: an MPTCP subflow that the path manager added
+    pub const SOURCE_CONNECTION: &'static str = "connection";
 }
 
 /// One value of a series.
