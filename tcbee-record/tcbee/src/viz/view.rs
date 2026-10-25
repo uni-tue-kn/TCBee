@@ -157,12 +157,12 @@ pub fn render(
 
     // Render Selected Graph
     let graph = view.tabs.get(ui.tab).map_or(GRAPH_EVENTS, |(_, id)| *id);
-    let suffix = match graph {
+    let unit = match graph {
         GRAPH_PACKETS => "pps",
-        GRAPH_CALLS => "Calls/s",
-        _ => "Events/s",
+        GRAPH_CALLS => "calls/s",
+        _ => "events/s",
     };
-    let chart = model.graphs[graph].get_chart(suffix, Color::Reset, Color::Reset);
+    let chart = model.graphs[graph].get_chart(unit, Color::Reset, Color::Reset);
     frame.render_widget(chart, chart_area);
 
     render_status(frame, model, top_areas[0]);
@@ -171,10 +171,10 @@ pub fn render(
     // Tooltips
     let window_label = view
         .observation_window
-        .map(|window| format!(" | Window: {:.2}s", window))
+        .map(|window| format!(" | Window: {}", format::axis_time(window)))
         .unwrap_or_default();
     let keybindings = Paragraph::new(format!(
-        "Close: q | Tabs: Tab | Scroll: \u{2191}\u{2193} | Legend: (K)ilo, (M)ega, (G)iga{}",
+        "Close: q | Tabs: Tab | Scroll: \u{2191}\u{2193} | K, M, G: 10^3, 10^6, 10^9{}",
         window_label
     ))
     .style(Style::default().fg(Color::Reset));
@@ -200,13 +200,13 @@ fn render_status(frame: &mut Frame, model: &Model, area: Rect) {
 
     let snap = &model.snapshot;
     let elapsed = model.elapsed;
-    let time_string = format!("{}s {}ms", elapsed.as_secs(), elapsed.subsec_millis());
-    let event_rate = format::rate(model.handled_rate() + model.dropped_rate(), " Events/s");
-    let file_rate = format::rate(model.disk_rate(), "Byte/s");
+    let time_string = format::clock(elapsed);
+    let event_rate = format::rate(model.handled_rate() + model.dropped_rate(), "events/s");
+    let file_rate = format!("{}/s", format::bytes(model.disk_rate()));
     let blocks = status.get_blocks(
         time_string,
-        format::sum(snap.handled(), ""),
-        format::sum(snap.dropped(), ""),
+        format::si(snap.handled() as f64),
+        format::si(snap.dropped() as f64),
         snap.dropped() > 0,
         event_rate,
         model.bytes_written,
@@ -354,7 +354,9 @@ pub(crate) mod tests {
         }];
         let (lines, areas) = screen(160, 45, &model, &view, &UiState::default(), &flows);
         assert!(contains(&lines, "Time Elapsed"));
-        assert!(contains(&lines, "1s 500ms"));
+        assert!(contains(&lines, "00:00:01"));
+        assert!(contains(&lines, "1.00K events/s"));
+        assert!(contains(&lines, "2.00 MB/s"));
         assert!(contains(&lines, "Events Handled"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Packets"));

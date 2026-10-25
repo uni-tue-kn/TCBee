@@ -213,10 +213,10 @@ impl Model {
             elapsed.subsec_millis(),
             self.snapshot.handled(),
             self.snapshot.dropped(),
-            format::rate(self.handled_rate(), "Events/s"),
-            format::rate(self.dropped_rate(), "Events/s"),
-            format::rate(self.ingress_rate(), "pps"),
-            format::rate(self.egress_rate(), "pps"),
+            format::quiet_rate(self.handled_rate(), "Events/s"),
+            format::quiet_rate(self.dropped_rate(), "Events/s"),
+            format::quiet_rate(self.ingress_rate(), "pps"),
+            format::quiet_rate(self.egress_rate(), "pps"),
         )
     }
 }

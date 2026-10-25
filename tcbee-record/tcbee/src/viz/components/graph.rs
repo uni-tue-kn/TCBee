@@ -56,42 +56,22 @@ impl Graph {
         }
     }
 
-    pub fn get_chart(&self, y_suffix: &str, axis_color: Color, border_color: Color) -> Chart<'_> {
+    pub fn get_chart(&self, unit: &str, axis_color: Color, border_color: Color) -> Chart<'_> {
         let xmax = if self.xmax > self.xmin {
             self.xmax
         } else {
             self.xmin + 1.0
         };
         let ymax = if self.ymax > 0.0 { self.ymax } else { 1.0 };
-        let x_labels = vec![
-            Span::styled(
-                format!("{:.2}s", self.xmin),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:.2}s", (self.xmin + xmax) / 2.0),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:.2}s", xmax),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ];
-
-        let y_labels = vec![
-            Span::styled(
-                format!("{}", 0),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}", format::rate(ymax / 2.0, y_suffix)),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}", format::rate(ymax, y_suffix)),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ];
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let x_labels = [self.xmin, (self.xmin + xmax) / 2.0, xmax]
+            .into_iter()
+            .map(|x| Span::styled(format::axis_time(x), bold))
+            .collect::<Vec<_>>();
+        let y_labels = [0.0, ymax / 2.0, ymax]
+            .into_iter()
+            .map(|y| Span::styled(format::si(y), bold))
+            .collect::<Vec<_>>();
 
         let datasets: Vec<Dataset> = self
             .data
@@ -113,7 +93,7 @@ impl Graph {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(border_color))
-                    .title(self.name.clone()),
+                    .title(format!("{} ({unit})", self.name)),
             )
             .x_axis(
                 Axis::default()

@@ -59,7 +59,7 @@ impl Status {
                     .border_style(block_style)
                     .title("Event Rate"),
             ),
-            Paragraph::new(format::sum(files_size, "Byte"))
+            Paragraph::new(format::bytes(files_size as f64))
                 .style(value_style)
                 .block(
                     Block::bordered()
