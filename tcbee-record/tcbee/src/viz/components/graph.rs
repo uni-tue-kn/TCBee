@@ -56,7 +56,7 @@ impl Graph {
         }
     }
 
-    pub fn get_chart(&self, unit: &str, axis_color: Color, border_color: Color) -> Chart<'_> {
+    pub fn get_chart(&self, title: String, axis_color: Color, border_color: Color) -> Chart<'_> {
         let xmax = if self.xmax > self.xmin {
             self.xmax
         } else {
@@ -93,7 +93,7 @@ impl Graph {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(border_color))
-                    .title(format!("{} ({unit})", self.name)),
+                    .title(title),
             )
             .x_axis(
                 Axis::default()
@@ -109,6 +109,10 @@ impl Graph {
             )
             .legend_position(Some(LegendPosition::TopLeft))
             .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)))
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn add_val(&mut self, idx: usize, val: (f64, f64)) {
