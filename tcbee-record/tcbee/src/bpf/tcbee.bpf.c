@@ -1265,8 +1265,12 @@ int BPF_PROG(cubic_ssthresh, struct sock *sk)
 
 /*
  * After a congestion state change. fexit, because the only change CUBIC makes here is the
- * reset of its state on entering Loss (an RTO), which fentry would miss; the state before
- * it is in the record of the ssthresh hook that tcp_enter_loss() runs just before.
+ * reset of its state on entering Loss (an RTO), which fentry would miss. tcp_enter_loss()
+ * runs the ssthresh operation before only from Open or Disorder, once high_seq is no longer
+ * after snd_una, or in Loss without retransmissions; then the ssthresh record holds the state
+ * before the reset. An RTO in CWR or Recovery before high_seq is acknowledged, or a repeated
+ * RTO, resets it without an ssthresh record, so the state before is only in the last ACK
+ * record.
  */
 SEC("?fexit/cubictcp_state")
 int BPF_PROG(cubic_state, struct sock *sk, __u8 new_state)

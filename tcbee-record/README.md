@@ -256,7 +256,7 @@ The socket event hooks of `--sock-hooks` write the socket at TCP events, not per
 | ACK | `fentry/cubictcp_cong_avoid`, `fentry/bbr_main` | at each ACK that may grow the cwnd (CUBIC), at each ACK (BBR) | 1 |
 | cwnd event | `fentry/cubictcp_cwnd_event_tx_start`, `fentry/bbr_cwnd_event_tx_start` (before 7.2 `*_cwnd_event`) | at the first transmission after idle (before 7.2 at every congestion avoidance event) | 2 |
 | ssthresh | `fexit/cubictcp_recalc_ssthresh` | after CUBIC's loss reaction (entering Recovery, CWR or Loss): `last_max_cwnd` with fast convergence, the epoch ended | 3 |
-| state | `fexit/cubictcp_state` | after each congestion state change, with the state entered in `new_state` (`TCP_CA_*`, 0 at the other hooks); entering Loss resets the CUBIC state | 4 |
+| state | `fexit/cubictcp_state` | after each congestion state change, with the state entered in `new_state` (`TCP_CA_*`, 0 at the other hooks); entering Loss resets the CUBIC state. The state before the reset is in the ssthresh record just before if the RTO recalculated ssthresh (from Open or Disorder, after `high_seq` was acknowledged, or in Loss without retransmissions); after an RTO in CWR or Recovery before `high_seq` was acknowledged, or a repeated RTO, it is only in the last ACK record | 4 |
 
 - The CUBIC ssthresh and state hooks are optional: one the kernel lacks or rejects is left out
   with a warning and listed as skipped in the metadata. The new `snd_ssthresh` is set by the
