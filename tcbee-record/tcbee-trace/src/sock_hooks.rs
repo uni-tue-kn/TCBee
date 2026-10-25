@@ -136,7 +136,7 @@ pub struct HookSet(u16);
 impl HookSet {
     /// The hooks of on-change mode by default, ingress and timer: every change ACK processing
     /// and the retransmission timers make, without a run per transmitted segment
-    pub const DEFAULT: HookSet = HookSet::of(&[Hook::Ingress, Hook::Timer]);
+    pub const ON_CHANGE_DEFAULT: HookSet = HookSet::of(&[Hook::Ingress, Hook::Timer]);
 
     /// The hooks of `-k` without on-change: the write timer and the socket events, none that
     /// runs per packet. A saturated sender loses goodput to a hook on its send path, and a
@@ -164,6 +164,11 @@ impl HookSet {
     /// changes starts from
     pub fn parse(spec: &str, default: HookSet) -> Result<HookSet, ListError> {
         name_list::parse(spec, default)
+    }
+
+    /// A list of the hooks on-change mode can compare at (`--on-change-hooks`)
+    pub fn parse_on_change(spec: &str) -> Result<HookSet, ListError> {
+        name_list::parse_among(spec, HookSet::ON_CHANGE_DEFAULT, &Hook::ON_CHANGE)
     }
 
     pub fn contains(self, hook: Hook) -> bool {
@@ -225,7 +230,7 @@ mod tests {
 
     #[test]
     fn parse_hooks() {
-        let default = HookSet::DEFAULT;
+        let default = HookSet::ON_CHANGE_DEFAULT;
         let all = HookSet::parse("egress, ingress,timer,egress", default).unwrap();
         assert_eq!(all.hooks().collect::<Vec<_>>(), Hook::ON_CHANGE);
         assert!(all.send() && all.receive());

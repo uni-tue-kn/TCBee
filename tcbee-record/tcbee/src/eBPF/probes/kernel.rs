@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn timer_hook_only_in_the_default_mode_of_k() {
-        let on_change = Some(HookSet::DEFAULT);
+        let on_change = Some(HookSet::ON_CHANGE_DEFAULT);
         assert!(KernelTracer::timer_hook(true, None, true, true));
         assert!(!KernelTracer::timer_hook(false, None, true, true));
         assert!(!KernelTracer::timer_hook(true, on_change, true, true));
@@ -178,11 +178,11 @@ mod tests {
         KernelTracer::configure(&mut open.progs, true, None, Some(full), false);
         assert!(!open.progs.sock_timer.autoload());
         assert!(open.progs.sock_recvmsg.autoload());
-        let timer = KernelTracer::timer_hook(true, Some(HookSet::DEFAULT), true, true);
+        let timer = KernelTracer::timer_hook(true, Some(HookSet::ON_CHANGE_DEFAULT), true, true);
         KernelTracer::configure(
             &mut open.progs,
             true,
-            Some(HookSet::DEFAULT),
+            Some(HookSet::ON_CHANGE_DEFAULT),
             Some(full),
             timer,
         );
@@ -205,7 +205,13 @@ mod tests {
         KernelTracer::configure(&mut open.progs, true, None, hooks, false);
         assert!(open.progs.sock_ingress.autoload() && open.progs.sock_ingress_state.autoload());
         assert!(!open.progs.sock_recvmsg.autoload() && !open.progs.sock_oc_recvmsg.autoload());
-        KernelTracer::configure(&mut open.progs, true, Some(HookSet::DEFAULT), None, false);
+        KernelTracer::configure(
+            &mut open.progs,
+            true,
+            Some(HookSet::ON_CHANGE_DEFAULT),
+            None,
+            false,
+        );
         assert!(!open.progs.sock_ingress.autoload());
     }
 }

@@ -282,16 +282,10 @@ pub fn parse_on_change(
     }
     let watch = WatchSet::parse(fields).map_err(|e| anyhow!("--on-change: {}", e))?;
     let hooks = if hooks.is_empty() {
-        HookSet::DEFAULT
+        HookSet::ON_CHANGE_DEFAULT
     } else {
-        HookSet::parse(hooks, HookSet::DEFAULT).map_err(|e| anyhow!("--on-change-hooks: {}", e))?
+        HookSet::parse_on_change(hooks).map_err(|e| anyhow!("--on-change-hooks: {}", e))?
     };
-    if let Some(hook) = hooks.hooks().find(|h| !Hook::ON_CHANGE.contains(h)) {
-        return Err(anyhow!(
-            "--on-change compares at ingress, timer and egress only, not at {}",
-            hook.name()
-        ));
-    }
     let per_packet: Vec<&str> = watch
         .fields()
         .filter(|f| f.changes_per_packet())
@@ -673,6 +667,17 @@ impl EbpfRunnerConfig {
 mod tests {
     use super::*;
 
+    /// `all` in an on-change list names the hooks on-change mode can use
+    #[test]
+    fn on_change_lists_know_only_their_hooks() {
+        let oc = parse_on_change("cc", "all", false, true, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(oc.hooks, HookSet::of(&Hook::ON_CHANGE));
+        let err = parse_on_change("cc", "state", false, true, false).unwrap_err();
+        assert!(!err.to_string().contains("ingress-entry"), "{err}");
+    }
+
     #[test]
     fn headers_at() {
         assert_eq!(HeadersAt::parse("tc").unwrap(), HeadersAt::default());
@@ -710,7 +715,7 @@ mod tests {
         assert!(full_sock_hooks("timer", true).is_err());
         assert_eq!(
             full_sock_hooks("ingress,timer", false).unwrap(),
-            HookSet::DEFAULT
+            HookSet::ON_CHANGE_DEFAULT
         );
         assert!(full_sock_hooks("rx", false).is_err());
         assert_eq!(
@@ -846,7 +851,7 @@ mod tests {
             ..k()
         };
         let (on_change, full) = flags.resolve().unwrap();
-        assert_eq!(on_change.unwrap().hooks, HookSet::DEFAULT);
+        assert_eq!(on_change.unwrap().hooks, HookSet::ON_CHANGE_DEFAULT);
         assert!(full.is_none());
         // --sock-hooks names the compared hooks like --on-change-hooks
         for hooks in [("+egress", ""), ("", "+egress")] {
@@ -926,7 +931,7 @@ mod tests {
             .unwrap();
         assert_eq!(oc.watch, WatchSet::CC);
         assert!(oc.shadow);
-        assert_eq!(oc.hooks, HookSet::DEFAULT);
+        assert_eq!(oc.hooks, HookSet::ON_CHANGE_DEFAULT);
         let oc = parse_on_change("cc", "ingress", false, true, false)
             .unwrap()
             .unwrap();
@@ -979,7 +984,7 @@ mod tests {
         assert_eq!(on_change_manifest(oc, false, true).sources.len(), 2);
 
         // The default hooks write no send files
-        oc.hooks = HookSet::DEFAULT;
+        oc.hooks = HookSet::ON_CHANGE_DEFAULT;
         let m = on_change_manifest(oc, true, true);
         assert_eq!(files(&m), ["recv_sock_oc.tcp", "recv_cwnd_oc.tcp"]);
         oc.hooks = HookSet::of(&[Hook::Egress]);

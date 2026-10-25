@@ -63,16 +63,20 @@ fn same_name(name: &str, item: &str) -> bool {
             .all(|(a, b)| unify(a) == unify(b))
 }
 
-/// The items a name or keyword selects
-fn select<S: NamedSet>(name: &str, default: S) -> Result<Vec<S::Item>, ListError> {
+/// The items a name or keyword selects among `items`
+fn select<S: NamedSet>(
+    name: &str,
+    default: S,
+    items: &[S::Item],
+) -> Result<Vec<S::Item>, ListError> {
     match name {
-        "all" => Ok(S::ITEMS.to_vec()),
-        "default" => Ok(S::ITEMS
+        "all" => Ok(items.to_vec()),
+        "default" => Ok(items
             .iter()
             .copied()
             .filter(|item| default.contains(*item))
             .collect()),
-        name => S::ITEMS
+        name => items
             .iter()
             .copied()
             .find(|item| same_name(name, S::item_name(*item)))
@@ -80,7 +84,7 @@ fn select<S: NamedSet>(name: &str, default: S) -> Result<Vec<S::Item>, ListError
             .ok_or_else(|| ListError::Unknown {
                 kind: S::KIND,
                 name: name.to_string(),
-                names: S::ITEMS.iter().map(|item| S::item_name(*item)).collect(),
+                names: items.iter().map(|item| S::item_name(*item)).collect(),
             }),
     }
 }
@@ -88,6 +92,12 @@ fn select<S: NamedSet>(name: &str, default: S) -> Result<Vec<S::Item>, ListError
 /// Parses a list flag, see the module documentation. `default` is the set that `default`
 /// names and that a list of only changes starts from.
 pub fn parse<S: NamedSet>(spec: &str, default: S) -> Result<S, ListError> {
+    parse_among(spec, default, S::ITEMS)
+}
+
+/// As `parse`, for a flag that takes only some of the items: `all` names those, and other
+/// names are unknown
+pub fn parse_among<S: NamedSet>(spec: &str, default: S, items: &[S::Item]) -> Result<S, ListError> {
     let (changes, names): (Vec<&str>, Vec<&str>) = spec
         .split(',')
         .map(str::trim)
@@ -102,13 +112,13 @@ pub fn parse<S: NamedSet>(spec: &str, default: S) -> Result<S, ListError> {
         S::empty()
     };
     for name in names {
-        for item in select(name, default)? {
+        for item in select(name, default, items)? {
             set = set.with(item);
         }
     }
     for change in changes {
         let (sign, name) = change.split_at(1);
-        for item in select(name, default)? {
+        for item in select(name, default, items)? {
             set = if sign == "-" {
                 set.without(item)
             } else {
