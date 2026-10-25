@@ -17,6 +17,8 @@ use eBPF::ebpf_runner_config::{
     ip_to_filter_addr, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
     FilterConfig, HeadersAt, HookFlags, MptcpModes,
 };
+use eBPF::probes::headers::check_offloads;
+use metadata::Offloads;
 use tcbee_trace::TCBeeTrace;
 use writer::PollMode;
 
@@ -292,6 +294,8 @@ fn main() -> anyhow::Result<()> {
         HeadersAt::parse(&headers_at)?
     };
     if headers_at.tc && headers_at.driver && !yes {
+        // An offload that rules out the driver hooks stops the start anyway, so before asking
+        check_offloads(&iface, headers_at, &Offloads::read(&iface)).map_err(|e| anyhow!(e))?;
         confirm_both_header_hooks(&iface)?;
     }
     let tracepoints = tracepoint_set(trace_tracepoints, &tp, trace_events, trace_drops)?;
@@ -463,14 +467,14 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// Asks on the terminal before recording headers at TC and in the driver at once. Without a
-/// terminal it refuses, scripts pass --yes.
+/// terminal, or in the background, it refuses: scripts pass --yes.
 fn confirm_both_header_hooks(iface: &str) -> anyhow::Result<()> {
     let warning = format!(
         "--headers-at tc,driver records every packet of {iface} at two hooks, each with its own \
          cost per packet, and attaches XDP to {iface}, which makes some drivers reset their \
          rings (a short interruption of the traffic)."
     );
-    if !io::stdin().is_terminal() {
+    if !io::stdin().is_terminal() || !in_foreground() {
         return Err(anyhow!("{warning} Pass --yes to record without asking"));
     }
     eprint!("{warning}\nContinue? [y/N] ");
@@ -482,6 +486,12 @@ fn confirm_both_header_hooks(iface: &str) -> anyhow::Result<()> {
     } else {
         Err(anyhow!("Not confirmed, nothing recorded"))
     }
+}
+
+/// Whether the process runs in the foreground of its terminal: reading the terminal from the
+/// background would stop it (SIGTTIN)
+fn in_foreground() -> bool {
+    unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) == libc::getpgrp() }
 }
 
 /// Whether an answer to a [y/N] question says yes
