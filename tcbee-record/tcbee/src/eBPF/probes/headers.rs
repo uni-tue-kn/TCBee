@@ -328,14 +328,16 @@ fn attach_xdp(
         return Ok(XdpLink(unsafe { OwnedFd::from_raw_fd(fd) }));
     }
     let err = io::Error::from_raw_os_error(-fd);
+    // A driver also refuses XDP for its current settings (MTU, queue layout), and the
+    // kernel's reason goes to the kernel log only
     let reason = match err.raw_os_error() {
-        Some(libc::EOPNOTSUPP) => {
-            format!("the driver of {interface} has no native XDP, which --headers-at driver needs")
-        }
         Some(libc::EBUSY) | Some(libc::EEXIST) => {
             format!("{interface} already has an XDP program, tcbee-record does not replace it")
         }
-        _ => format!("attaching XDP to {interface} failed: {err}"),
+        _ => format!(
+            "the driver of {interface} refused native XDP, which --headers-at driver needs: \
+             it has none, or not in its current configuration ({err}; see dmesg)"
+        ),
     };
     Err(EBPFRunnerError::Unavailable(reason))
 }
