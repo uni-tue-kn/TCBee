@@ -19,8 +19,7 @@ use crate::{
             status::{self, LEFT_WIDTH},
         },
         flow_tracker::{flow_table, Flow},
-        format,
-        history::Span,
+        history::{window_name, window_step, Span, WINDOWS},
         model::Model,
     },
 };
@@ -41,10 +40,13 @@ impl View {
 }
 
 /// What the user selected
-#[derive(Default)]
 pub struct UiState {
     /// The chart slot shown alone
     pub zoom: Option<usize>,
+    /// The charts show the whole run, not the window
+    pub whole: bool,
+    /// Step of the window length in `WINDOWS`
+    pub window: usize,
     /// First flow shown
     pub scroll: usize,
     /// The group table lists the rings of each group
@@ -58,13 +60,49 @@ pub struct Areas {
     pub slots: Vec<(usize, Rect)>,
 }
 
+impl Default for UiState {
+    fn default() -> UiState {
+        UiState::new(None)
+    }
+}
+
 impl UiState {
+    /// Charts of the whole run, or with `window` seconds of the window step at least as long
+    pub fn new(window: Option<f64>) -> UiState {
+        UiState {
+            zoom: None,
+            whole: window.is_none(),
+            // One minute until chosen
+            window: window_step(window.unwrap_or(60.0)),
+            scroll: 0,
+            expanded: false,
+        }
+    }
+
+    /// What the charts show
+    pub fn span(&self) -> Span {
+        match self.whole {
+            true => Span::Whole,
+            false => Span::Last(WINDOWS[self.window]),
+        }
+    }
+
     /// Handles a key, returns whether to quit
     pub fn on_key(&mut self, code: KeyCode, charts: usize, flows: usize) -> bool {
         match code {
             KeyCode::Char('q') => return true,
             KeyCode::Esc => self.zoom = None,
             KeyCode::Char('e') => self.expanded = !self.expanded,
+            KeyCode::Char('w') => self.whole = !self.whole,
+            // Changing the length shows the window
+            KeyCode::Char('+' | '=') => {
+                self.window = (self.window + 1).min(WINDOWS.len() - 1);
+                self.whole = false;
+            }
+            KeyCode::Char('-') => {
+                self.window = self.window.saturating_sub(1);
+                self.whole = false;
+            }
             KeyCode::Char(key @ '1'..='4') => {
                 let slot = key as usize - '1' as usize;
                 if slot < charts {
@@ -155,10 +193,7 @@ pub fn render(
     };
     let areas = grid(chart_area, shown.len());
     let slots: Vec<(usize, Rect)> = shown.into_iter().zip(areas).collect();
-    let span = match view.context.observation_window {
-        Some(window) => Span::Last(window),
-        None => Span::Whole,
-    };
+    let span = ui.span();
     for (slot, rect) in &slots {
         let mut rect = *rect;
         // The events chart shows the dropped share below
@@ -173,16 +208,16 @@ pub fn render(
 
     status::render(frame, model, view, ui.expanded, left);
 
-    let window = match view.context.observation_window {
-        Some(window) => format!("last {}", format::axis_time(window)),
-        None => "whole run".to_string(),
+    let span = match span {
+        Span::Whole => "whole run".to_string(),
+        Span::Last(window) => format!("window {}", window_name(window)),
     };
     let zoom = match ui.zoom {
         Some(_) => "Esc back",
         None => "1-4 zoom",
     };
     let keys = format!(
-        " q quit  {zoom}  e rings  \u{2191}\u{2193} scroll flows   charts: {window}, K M G = 10^3 10^6 10^9"
+        " q quit  {zoom}  e rings  \u{2191}\u{2193} scroll flows   charts: {span}  w whole/window  +/- length"
     );
     frame.render_widget(
         Paragraph::new(keys).style(Style::default().add_modifier(Modifier::DIM)),
@@ -473,6 +508,60 @@ pub(crate) mod tests {
             "sock            40     10      0 supp 75%"
         ));
         assert!(contains(&lines, "on change"));
+    }
+
+    #[test]
+    fn keys_switch_between_the_whole_run_and_a_window() {
+        let mut ui = UiState::new(None);
+        assert_eq!(ui.span(), Span::Whole);
+        ui.on_key(KeyCode::Char('w'), 1, 0);
+        assert_eq!(ui.span(), Span::Last(60.0));
+        ui.on_key(KeyCode::Char('+'), 1, 0);
+        ui.on_key(KeyCode::Char('='), 1, 0);
+        assert_eq!(ui.span(), Span::Last(300.0));
+        for _ in 0..10 {
+            ui.on_key(KeyCode::Char('+'), 1, 0);
+        }
+        assert_eq!(ui.span(), Span::Last(1800.0));
+        ui.on_key(KeyCode::Char('w'), 1, 0);
+        assert_eq!(ui.span(), Span::Whole);
+        // - shows the window again, one step shorter
+        ui.on_key(KeyCode::Char('-'), 1, 0);
+        assert_eq!(ui.span(), Span::Last(600.0));
+        assert_eq!(UiState::new(Some(45.0)).span(), Span::Last(60.0));
+    }
+
+    #[test]
+    fn window_shows_the_last_seconds_at_full_resolution() {
+        let mut model = Model::new(&TC_RINGS);
+        // 200 s at one tick per second, 600 packets per second, a spike at 100 s
+        for t in 0..=200u64 {
+            let count = 600 * t + if t >= 100 { 6000 } else { 0 };
+            model.update(
+                snapshot(&[(slot(RB_TCP4_INGRESS, STAT_HANDLED), count)]),
+                0,
+                Duration::from_secs(t),
+            );
+            model.record_history();
+        }
+        let view = View::new(context(&TC_RINGS));
+        let mut ui = UiState::new(Some(60.0));
+        let (lines, _) = screen(160, 45, &model, &view, &ui, &[]);
+        assert!(contains(&lines, "charts: window 1 min"));
+        // The x axis counts back from now, the spike is outside
+        assert!(contains(&lines, "-1:00"));
+        assert!(contains(&lines, "now"));
+        assert!(contains(&lines, "\u{2502}600 \u{2502}"));
+        ui.on_key(KeyCode::Char('w'), 4, 0);
+        let (lines, _) = screen(160, 45, &model, &view, &ui, &[]);
+        assert!(contains(&lines, "charts: whole run"));
+        assert!(contains(&lines, "3:20"));
+        assert!(contains(&lines, "6.60K\u{2502}"));
+        // Every point of the window, the spike in a longer one
+        let headers = &model.charts[1].series[0];
+        assert_eq!(headers.points(Span::Last(30.0), 200.0).len(), 31);
+        let points = headers.points(Span::Last(120.0), 200.0);
+        assert_eq!(points.iter().map(|(_, y)| *y).fold(0.0, f64::max), 6600.0);
     }
 
     #[test]

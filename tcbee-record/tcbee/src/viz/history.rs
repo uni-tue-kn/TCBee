@@ -13,6 +13,26 @@ pub const RECENT_SECONDS: f64 = 1800.0;
 /// cover less than `RECENT_SECONDS`.
 pub const RECENT_POINTS: usize = 36_000;
 
+/// Window lengths in seconds that `+` and `-` step through, up to `RECENT_SECONDS`
+pub const WINDOWS: [f64; 7] = [10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0];
+
+/// The step of the shortest window of at least `seconds`, the longest for longer ones
+pub fn window_step(seconds: f64) -> usize {
+    WINDOWS
+        .iter()
+        .position(|window| *window >= seconds)
+        .unwrap_or(WINDOWS.len() - 1)
+}
+
+/// A window length as people say it: "30 s", "2 min"
+pub fn window_name(seconds: f64) -> String {
+    if seconds < 60.0 {
+        format!("{seconds:.0} s")
+    } else {
+        format!("{:.0} min", seconds / 60.0)
+    }
+}
+
 /// What a chart shows
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Span {
@@ -183,6 +203,18 @@ mod tests {
             recent.push(i as f64 / 1000.0, 1.0);
         }
         assert_eq!(recent.len(), RECENT_POINTS);
+    }
+
+    #[test]
+    fn windows_round_up_to_a_step() {
+        assert_eq!(window_step(0.5), 0);
+        assert_eq!(window_step(10.0), 0);
+        assert_eq!(window_step(11.0), 1);
+        assert_eq!(window_step(90.0), 3);
+        assert_eq!(window_step(7200.0), WINDOWS.len() - 1);
+        assert_eq!(window_name(WINDOWS[1]), "30 s");
+        assert_eq!(window_name(WINDOWS[3]), "2 min");
+        assert_eq!(*WINDOWS.last().unwrap(), RECENT_SECONDS);
     }
 
     #[test]

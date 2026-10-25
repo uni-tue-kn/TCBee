@@ -106,7 +106,7 @@ impl EBPFWatcher {
 
     fn run_tui(&mut self) {
         let application_start = Instant::now();
-        let mut ui = UiState::default();
+        let mut ui = UiState::new(self.view.context.observation_window);
 
         while !self.token.is_cancelled() {
             self.update_model(application_start.elapsed());

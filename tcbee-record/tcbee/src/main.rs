@@ -166,7 +166,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut observation_window).add_option(
             &["--tui-observation-window-s"],
             Store,
-            "Sliding TUI graph observation window in seconds. Use 0 for the full recording. Default is 0.",
+            "Time window of the TUI charts at the start, in seconds, rounded up to 10 s, 30 s, 1, 2, 5, 10 or 30 min. 0 starts with the whole recording. In the TUI, w switches between the window and the whole recording, + and - change the window. Default is 0.",
         );
         argparser.refer(&mut cpus).add_option(
             &["-c", "--cpus"],

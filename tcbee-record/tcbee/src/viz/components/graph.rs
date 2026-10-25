@@ -31,11 +31,10 @@ pub fn title(chart: &ChartModel, key: usize) -> Line<'static> {
 /// The Braille line chart of a chart's histories in `span`, the legend is in the title
 pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::Span, area: Rect) {
     let end = chart.end();
-    let xmin = match span {
-        history::Span::Whole => 0.0,
-        history::Span::Last(window) => (end - window).max(0.0),
+    let (xmin, xmax) = match span {
+        history::Span::Whole => (0.0, end.max(1.0)),
+        history::Span::Last(window) => (end - window, end),
     };
-    let xmax = if end > xmin { end } else { xmin + 1.0 };
     // Two points per Braille dot are enough, more only cost drawing time
     let data: Vec<_> = chart
         .series
@@ -48,10 +47,17 @@ pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::
         .fold(0.0, f64::max);
     let ymax = if ymax > 0.0 { ymax } else { 1.0 };
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let x_labels = [xmin, (xmin + xmax) / 2.0, xmax]
-        .into_iter()
-        .map(|x| Span::styled(format::axis_time(x), bold))
-        .collect::<Vec<_>>();
+    // A window counts back from now
+    let x_labels = match span {
+        history::Span::Whole => [xmin, (xmin + xmax) / 2.0, xmax].map(format::axis_time),
+        history::Span::Last(window) => [
+            format!("-{}", format::axis_time(window)),
+            format!("-{}", format::axis_time(window / 2.0)),
+            "now".to_string(),
+        ],
+    }
+    .map(|label| Span::styled(label, bold))
+    .to_vec();
     let y_labels = [0.0, ymax / 2.0, ymax]
         .into_iter()
         .map(|y| Span::styled(format::si(y), bold))
