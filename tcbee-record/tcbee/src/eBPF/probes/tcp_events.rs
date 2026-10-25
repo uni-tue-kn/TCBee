@@ -122,6 +122,18 @@ const fn hook_index(program: &str) -> usize {
 /// is selected with them (`Tracepoint::CaState`)
 const CA_STATE_HOOK: usize = hook_index("tcp_event_ca_state");
 const CWR_HOOK: usize = hook_index("tcp_event_cwr");
+const RTO_HOOK: usize = hook_index("tcp_event_rto");
+
+/// What is left of the congestion state changes without their tracepoint: the entries into
+/// Loss and CWR, as far as their hooks load
+fn ca_state_fallback(load: &[bool]) -> &'static str {
+    match (load[RTO_HOOK], load[CWR_HOOK]) {
+        (true, true) => "only RTOs and CWR are recorded",
+        (true, false) => "only RTOs are recorded",
+        (false, true) => "only CWR is recorded",
+        (false, false) => "they are not recorded",
+    }
+}
 
 /// Which hooks to load, given which ones exist in the kernel and which ones the kernel
 /// rejected (`disabled`), and a message for each requested hook that the kernel lacks
@@ -138,6 +150,9 @@ fn hooks_to_load(
         disabled,
         OptionalGroup::TcpEvent,
     );
+    if load[CA_STATE_HOOK] {
+        load[CWR_HOOK] = false;
+    }
     let skipped = missing
         .into_iter()
         .map(|i| {
@@ -146,16 +161,11 @@ fn hooks_to_load(
                 return optional_hooks::report_missing(hook, not_recorded);
             }
             let target = hook.target;
-            warn!("The {target} does not exist (before 5.19), only RTOs and CWR are recorded");
-            format!(
-                "{}: no {target} in this kernel, only RTOs and CWR",
-                hook.name
-            )
+            let fallback = ca_state_fallback(&load);
+            warn!("The {target} does not exist (before 5.19), {fallback}");
+            format!("{}: no {target} in this kernel, {fallback}", hook.name)
         })
         .collect();
-    if load[CA_STATE_HOOK] {
-        load[CWR_HOOK] = false;
-    }
     (load, skipped)
 }
 
@@ -233,6 +243,11 @@ mod tests {
         let (load, skipped) = hooks_to_load(events(), &exists, &BTreeSet::new());
         assert!(loaded(&load).contains(&"tcp_event_cwr"));
         assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].ends_with("only RTOs and CWR are recorded"));
+        // Without RTOs (--tp -rto) the message does not promise them
+        let set = TracepointSet::of(&[Tracepoint::CaState]);
+        let (_, skipped) = hooks_to_load(set, &exists, &BTreeSet::new());
+        assert!(skipped[0].ends_with("only CWR is recorded"));
 
         let (load, _) = hooks_to_load(
             events(),
