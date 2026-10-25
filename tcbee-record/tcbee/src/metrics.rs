@@ -14,9 +14,8 @@ use serde::Serialize;
 use tcbee_common::{
     records::hook_seq_key,
     stats::{
-        RB_COUNT, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
-        RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RINGBUFS, STAT_DROPPED,
-        STAT_ERROR, STAT_HANDLED,
+        packet_rings, RB_COUNT, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_INGRESS, RB_SOCK_RECV,
+        RB_SOCK_SEND, RB_TCP4_INGRESS, RINGBUFS, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
     },
 };
 
@@ -146,6 +145,13 @@ impl Metrics {
         hook_seq: Option<&HookSeqTotals>,
     ) -> Metrics {
         let attempts = |rbs: &[u32]| rbs.iter().map(|rb| snapshot.invocations(*rb)).sum();
+        // The packets of the TC hooks, or of the driver hooks when only those ran
+        let tc_ran = ringbuf_sizes
+            .get(RB_TCP4_INGRESS as usize)
+            .copied()
+            .flatten()
+            .is_some();
+        let (ingress, egress) = packet_rings(!tc_ran);
 
         let ringbufs: Vec<RingBufMetrics> = RINGBUFS
             .iter()
@@ -176,8 +182,8 @@ impl Metrics {
             state_errors: snapshot.state_errors(),
             aggregated: snapshot.aggregated_total(),
             records_written: reports.iter().map(|r| r.records).sum(),
-            ingress: attempts(&[RB_TCP4_INGRESS, RB_TCP6_INGRESS]),
-            egress: attempts(&[RB_TCP4_EGRESS, RB_TCP6_EGRESS]),
+            ingress: attempts(&ingress),
+            egress: attempts(&egress),
             ingress_calls: attempts(&[RB_SOCK_RECV, RB_CWND_RECV, RB_SOCK_INGRESS]),
             egress_calls: attempts(&[RB_SOCK_SEND, RB_CWND_SEND]),
             ringbufs,

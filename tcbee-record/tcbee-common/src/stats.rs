@@ -95,6 +95,22 @@ const fn rb(map: &'static str, file: TraceFile, group: &'static str, mib: u32) -
     }
 }
 
+/// The rings of the header records of received and sent packets, IPv4 and IPv6: those of the
+/// TC hooks, or with `driver` those of the driver hooks
+pub fn packet_rings(driver: bool) -> ([u32; 2], [u32; 2]) {
+    if driver {
+        (
+            [RB_TCP4_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS],
+            [RB_TCP4_DRIVER_EGRESS, RB_TCP6_DRIVER_EGRESS],
+        )
+    } else {
+        (
+            [RB_TCP4_INGRESS, RB_TCP6_INGRESS],
+            [RB_TCP4_EGRESS, RB_TCP6_EGRESS],
+        )
+    }
+}
+
 /// All ring buffer maps, indexed by `RB_*`. IPv6 rings are smaller as they stay empty in
 /// most recordings. `tests/c_mirror.rs` checks the ids and map names against the eBPF sources.
 pub const RINGBUFS: [RingBuf; RB_COUNT as usize] = [
