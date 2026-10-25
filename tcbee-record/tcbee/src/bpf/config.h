@@ -45,6 +45,8 @@ const volatile __u32 HEADERS_MTU = 0;
 #define AF_INET6 10
 #define ETH_P_IP 0x0800
 #define ETH_P_IPV6 0x86DD
+#define ETH_P_8021Q 0x8100
+#define ETH_P_8021AD 0x88A8
 #define IP_OFFSET 0x1FFF
 #define IP_ECN_MASK 0x03
 #define TC_ACT_UNSPEC (-1)

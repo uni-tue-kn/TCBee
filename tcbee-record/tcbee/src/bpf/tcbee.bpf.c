@@ -257,6 +257,7 @@ struct tc_tcp_hdr {
 
 #define TC_ETH_HLEN 14
 #define TC_ETH_PROTO_OFF 12
+#define VLAN_HLEN 4
 _Static_assert(sizeof(struct tc_ipv4_hdr) == 20, "ipv4 header");
 _Static_assert(sizeof(struct tc_ipv6_hdr) == 40, "ipv6 header");
 _Static_assert(sizeof(struct tc_tcp_hdr) == 20, "tcp header");
@@ -349,9 +350,9 @@ static __always_inline __u64 pkt_tstamp(void *ctx, enum pkt_hook hook)
 /*
  * Whether the packet stands for several segments: a GSO packet before segmentation at TC egress
  * and net_dev_start_xmit (TSO), a GRO packet at TC ingress, a frame longer than the MTU at XDP
- * (LRO or hardware GRO).
+ * (LRO or hardware GRO). l3 is the length of the link layer header.
  */
-static __always_inline bool pkt_aggregated(void *ctx, enum pkt_hook hook)
+static __always_inline bool pkt_aggregated(void *ctx, enum pkt_hook hook, __u32 l3)
 {
 	const struct sk_buff *skb = ctx;
 	struct skb_shared_info *shinfo;
@@ -359,7 +360,7 @@ static __always_inline bool pkt_aggregated(void *ctx, enum pkt_hook hook)
 	if (hook == PKT_TC)
 		return ((struct __sk_buff *)ctx)->gso_segs > 1;
 	if (hook == PKT_XDP)
-		return bpf_xdp_get_buff_len(ctx) > HEADERS_MTU + TC_ETH_HLEN;
+		return bpf_xdp_get_buff_len(ctx) > HEADERS_MTU + l3;
 	/* skb_shinfo(): the shared info follows the linear data */
 	shinfo = (void *)(skb->head + skb->end);
 	return BPF_CORE_READ(shinfo, gso_segs) > 1;
@@ -372,6 +373,9 @@ static __always_inline bool pkt_aggregated(void *ctx, enum pkt_hook hook)
  * departure time; on a received packet it would be the receive timestamp, if any.
  *
  * The return value is the TC verdict, the other hooks ignore it.
+ *
+ * At TC the VLAN tag is out of the frame (skb->vlan_tci); XDP and net_dev_start_xmit see one
+ * when the driver leaves it in the frame (VLAN offload off, QinQ), so they skip one tag.
  */
 static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egress, void *rb4,
 					__u32 rb4_id, void *rb6, __u32 rb6_id)
@@ -382,9 +386,19 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 	struct ip_tuple t;
 	__u64 hook_seq;
 
+	__u32 l3 = TC_ETH_HLEN;
+
 	proto = pkt_header(ctx, hook, TC_ETH_PROTO_OFF, &proto_buf, sizeof(proto_buf));
 	if (!proto)
 		return TC_ACT_UNSPEC;
+	if (hook != PKT_TC &&
+	    (*proto == bpf_htons(ETH_P_8021Q) || *proto == bpf_htons(ETH_P_8021AD))) {
+		proto = pkt_header(ctx, hook, TC_ETH_PROTO_OFF + VLAN_HLEN, &proto_buf,
+				   sizeof(proto_buf));
+		if (!proto)
+			return TC_ACT_UNSPEC;
+		l3 += VLAN_HLEN;
+	}
 
 	__builtin_memset(&t, 0, sizeof(t));
 	t.protocol = IPPROTO_TCP;
@@ -394,7 +408,7 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 		struct tcp4_packet_trace *rec;
 		__u32 ip_hlen;
 
-		ip = pkt_header(ctx, hook, TC_ETH_HLEN, &ip_buf, sizeof(ip_buf));
+		ip = pkt_header(ctx, hook, l3, &ip_buf, sizeof(ip_buf));
 		if (!ip)
 			return TC_ACT_UNSPEC;
 		/* Non-first fragments carry no TCP header */
@@ -403,7 +417,7 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 		ip_hlen = (ip->version_ihl & 0x0F) << 2;
 		if (ip_hlen < sizeof(*ip))
 			ip_hlen = sizeof(*ip);
-		tcp = pkt_header(ctx, hook, TC_ETH_HLEN + ip_hlen, &tcp_buf, sizeof(tcp_buf));
+		tcp = pkt_header(ctx, hook, l3 + ip_hlen, &tcp_buf, sizeof(tcp_buf));
 		if (!tcp)
 			return TC_ACT_UNSPEC;
 
@@ -416,7 +430,7 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
-		if (pkt_aggregated(ctx, hook))
+		if (pkt_aggregated(ctx, hook, l3))
 			count_aggregated(rb4_id);
 
 		if (!hook_seq_tuple(&t, AF_INET, rb4_id, &hook_seq))
@@ -444,12 +458,12 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 		struct tc_ipv6_hdr ip6_buf, *ip6;
 		struct tcp6_packet_trace *rec;
 
-		ip6 = pkt_header(ctx, hook, TC_ETH_HLEN, &ip6_buf, sizeof(ip6_buf));
+		ip6 = pkt_header(ctx, hook, l3, &ip6_buf, sizeof(ip6_buf));
 		if (!ip6)
 			return TC_ACT_UNSPEC;
 		if (ip6->nexthdr != IPPROTO_TCP)
 			return TC_ACT_UNSPEC;
-		tcp = pkt_header(ctx, hook, TC_ETH_HLEN + sizeof(*ip6), &tcp_buf, sizeof(tcp_buf));
+		tcp = pkt_header(ctx, hook, l3 + sizeof(*ip6), &tcp_buf, sizeof(tcp_buf));
 		if (!tcp)
 			return TC_ACT_UNSPEC;
 
@@ -462,7 +476,7 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 		if (!filter_ports_match(sport, dport) ||
 		    (filter_needs_tuple() && !filter_tuple_match(&t)))
 			return TC_ACT_UNSPEC;
-		if (pkt_aggregated(ctx, hook))
+		if (pkt_aggregated(ctx, hook, l3))
 			count_aggregated(rb6_id);
 
 		if (!hook_seq_tuple(&t, AF_INET6, rb6_id, &hook_seq))
