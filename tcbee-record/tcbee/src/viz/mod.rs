@@ -3,5 +3,6 @@ pub mod ebpf_watcher;
 pub mod flow_tracker;
 pub mod format;
 pub mod groups;
+pub mod history;
 pub mod model;
 pub mod view;

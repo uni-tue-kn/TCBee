@@ -4,15 +4,15 @@ use ratatui::symbols::Marker::Braille;
 use ratatui::text::Span;
 use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, LegendPosition};
 
-use crate::viz::format;
+use crate::viz::{
+    format,
+    history::{History, HISTORY_POINTS},
+};
 
 pub struct Graph {
-    data: Vec<Vec<(f64, f64)>>,
+    data: Vec<History>,
     labels: Vec<String>,
     colors: Vec<Color>,
-    ymax: f64,
-    xmin: f64,
-    xmax: f64,
     observation_window: Option<f64>,
     name: String,
 }
@@ -27,12 +27,12 @@ impl Graph {
         name: String,
     ) -> Graph {
         Graph {
-            data: vec![Vec::new(), Vec::new()],
+            data: vec![
+                History::new(HISTORY_POINTS, observation_window),
+                History::new(HISTORY_POINTS, observation_window),
+            ],
             labels: vec![label_1, label_2],
             colors: vec![color_1, color_2],
-            ymax: 0.0,
-            xmin: 0.0,
-            xmax: 0.0,
             observation_window,
             name,
         }
@@ -45,26 +45,28 @@ impl Graph {
         name: String,
     ) -> Graph {
         Graph {
-            data: vec![Vec::new()],
+            data: vec![History::new(HISTORY_POINTS, observation_window)],
             labels: vec![label],
             colors: vec![color],
-            ymax: 0.0,
-            xmin: 0.0,
-            xmax: 0.0,
             observation_window,
             name,
         }
     }
 
     pub fn get_chart(&self, title: String, axis_color: Color, border_color: Color) -> Chart<'_> {
-        let xmax = if self.xmax > self.xmin {
-            self.xmax
-        } else {
-            self.xmin + 1.0
-        };
-        let ymax = if self.ymax > 0.0 { self.ymax } else { 1.0 };
+        let end = self
+            .data
+            .iter()
+            .filter_map(History::end)
+            .fold(0.0, f64::max);
+        let xmin = self
+            .observation_window
+            .map_or(0.0, |window| (end - window).max(0.0));
+        let xmax = if end > xmin { end } else { xmin + 1.0 };
+        let ymax = self.data.iter().map(History::max).fold(0.0, f64::max);
+        let ymax = if ymax > 0.0 { ymax } else { 1.0 };
         let bold = Style::default().add_modifier(Modifier::BOLD);
-        let x_labels = [self.xmin, (self.xmin + xmax) / 2.0, xmax]
+        let x_labels = [xmin, (xmin + xmax) / 2.0, xmax]
             .into_iter()
             .map(|x| Span::styled(format::axis_time(x), bold))
             .collect::<Vec<_>>();
@@ -84,7 +86,7 @@ impl Graph {
                     .marker(Braille)
                     .style(Style::default().fg(*color))
                     .graph_type(GraphType::Line)
-                    .data(data)
+                    .data(data.points())
             })
             .collect();
 
@@ -98,7 +100,7 @@ impl Graph {
             .x_axis(
                 Axis::default()
                     .style(Style::default().fg(axis_color))
-                    .bounds([self.xmin, xmax])
+                    .bounds([xmin, xmax])
                     .labels(x_labels),
             )
             .y_axis(
@@ -117,28 +119,7 @@ impl Graph {
 
     pub fn add_val(&mut self, idx: usize, val: (f64, f64)) {
         if let Some(data) = self.data.get_mut(idx) {
-            data.push(val);
-            self.update_bounds(val.0);
+            data.push(val.0, val.1);
         }
-    }
-
-    fn update_bounds(&mut self, latest_x: f64) {
-        self.xmax = self.xmax.max(latest_x);
-        self.xmin = self
-            .observation_window
-            .map(|window| (self.xmax - window).max(0.0))
-            .unwrap_or(0.0);
-
-        if self.observation_window.is_some() {
-            for data in &mut self.data {
-                data.retain(|(x, _)| *x >= self.xmin);
-            }
-        }
-
-        self.ymax = self
-            .data
-            .iter()
-            .flat_map(|data| data.iter().map(|(_, y)| *y))
-            .fold(0.0, f64::max);
     }
 }
