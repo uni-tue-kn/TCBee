@@ -97,6 +97,7 @@ fn main() -> anyhow::Result<()> {
     let mut on_change_shadow: bool = false;
     let mut no_timer_hook: bool = false;
     let mut sock_hooks: String = String::new();
+    let mut no_owners: bool = false;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -254,6 +255,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. The list works as in --tp (all, default, +name, -name), e.g. +ingress on a sender. With --on-change and -k it is the same as --on-change-hooks (with -w alone, use --on-change-hooks).",
         );
+        argparser.refer(&mut no_owners).add_option(
+            &["--no-owners"],
+            StoreTrue,
+            "Do not record the process that opens each connection. By default every recording writes flow_owners.tcp: one record per connect and accept, with the process id, uid, name and cgroup.",
+        );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
             StoreTrue,
@@ -407,6 +413,7 @@ fn main() -> anyhow::Result<()> {
         .writer_cpus(writer_cpus.clone())
         .on_change(on_change)
         .sock_hooks(sock_hooks)
+        .owners(!no_owners)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints

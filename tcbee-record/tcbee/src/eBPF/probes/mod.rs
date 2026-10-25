@@ -5,6 +5,7 @@ pub mod headers;
 pub mod kernel;
 pub mod mptcp;
 pub mod optional_hooks;
+pub mod owners;
 pub mod reno;
 pub mod sock_events;
 pub mod tcp_events;

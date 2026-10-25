@@ -317,6 +317,16 @@ struct mptcp_subflow_context {
 	struct sock *conn;
 };
 
+/* The flow owner programs' field of struct mptcp_subflow_context, a flavour as above */
+struct mptcp_subflow_context___join {
+	u32 request_join: 1;
+};
+
+/* Only its existence is checked: 6.10 and newer, inet_csk_accept() takes it */
+struct proto_accept_arg {
+	int flags;
+};
+
 struct mptcp_sock {
 	u64 snd_una;
 	u64 bytes_retrans;

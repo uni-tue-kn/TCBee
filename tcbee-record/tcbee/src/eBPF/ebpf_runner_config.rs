@@ -441,6 +441,9 @@ pub struct EbpfRunnerConfig {
     pub on_change: Option<OnChange>,
     /// The hooks of -k in full mode, None without -k or in on-change mode (`HookFlags`)
     pub sock_hooks: Option<HookSet>,
+    /// Record the process that opens each connection (`flow_owners.tcp`), along with
+    /// whatever else records; never a reason to record on its own
+    pub owners: bool,
 }
 
 #[derive(Default)]
@@ -492,6 +495,7 @@ impl EbpfRunnerConfig {
             writer_cpus: Vec::new(),
             on_change: None,
             sock_hooks: None,
+            owners: false,
         }
     }
 
@@ -548,6 +552,11 @@ impl EbpfRunnerConfig {
     /// Whether -k records at `hook` in full mode
     pub fn sock_hooked(&self, hook: Hook) -> bool {
         self.sock_hooks.is_some_and(|hooks| hooks.contains(hook))
+    }
+
+    pub fn owners(mut self, set: bool) -> EbpfRunnerConfig {
+        self.owners = set;
+        self
     }
 
     pub fn cwnd(mut self, set: bool) -> EbpfRunnerConfig {

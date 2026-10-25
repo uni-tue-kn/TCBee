@@ -9,13 +9,14 @@
 use std::collections::BTreeSet;
 
 use crate::eBPF::probes::{
-    cubic::CUBIC_HOOKS, mptcp::PM_HOOKS, reno::RENO_HOOKS, sock_events::SOCK_EVENT_HOOKS,
-    tcp_events::TCP_EVENT_HOOKS,
+    cubic::CUBIC_HOOKS, mptcp::PM_HOOKS, owners::OWNER_HOOKS, reno::RENO_HOOKS,
+    sock_events::SOCK_EVENT_HOOKS, tcp_events::TCP_EVENT_HOOKS,
 };
 
 /// Number of optional groups: BBR, CUBIC, Reno, MPTCP tagging, the timer, the path manager
 /// and one per hook of the tables
-const GROUPS: usize = 6 + CUBIC_HOOKS.len() + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len();
+const GROUPS: usize =
+    6 + CUBIC_HOOKS.len() + TCP_EVENT_HOOKS.len() + SOCK_EVENT_HOOKS.len() + OWNER_HOOKS.len();
 
 /// The program names of `PM_HOOKS`
 const MPTCP_PM_PROGRAMS: [&str; PM_HOOKS.len()] = {
@@ -47,6 +48,8 @@ pub enum OptionalGroup {
     TcpEvent(usize),
     /// One socket event program of -k, the index into `SOCK_EVENT_HOOKS`
     SockEvent(usize),
+    /// One flow owner program, the index into `OWNER_HOOKS`
+    Owner(usize),
 }
 
 impl OptionalGroup {
@@ -82,6 +85,12 @@ impl OptionalGroup {
             n += 1;
             i += 1;
         }
+        let mut i = 0;
+        while i < OWNER_HOOKS.len() {
+            all[n] = OptionalGroup::Owner(i);
+            n += 1;
+            i += 1;
+        }
         all
     };
 
@@ -96,6 +105,7 @@ impl OptionalGroup {
             OptionalGroup::MptcpPm => "MPTCP path manager events",
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].name,
             OptionalGroup::SockEvent(i) => SOCK_EVENT_HOOKS[i].name,
+            OptionalGroup::Owner(i) => OWNER_HOOKS[i].name,
         }
     }
 
@@ -105,6 +115,10 @@ impl OptionalGroup {
 
     pub fn is_sock_event(self) -> bool {
         matches!(self, OptionalGroup::SockEvent(_))
+    }
+
+    pub fn is_owner(self) -> bool {
+        matches!(self, OptionalGroup::Owner(_))
     }
 
     /// The group's programs, as libbpf names them (the C function names)
@@ -140,6 +154,7 @@ impl OptionalGroup {
             OptionalGroup::MptcpPm => &MPTCP_PM_PROGRAMS,
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].programs,
             OptionalGroup::SockEvent(i) => SOCK_EVENT_HOOKS[i].programs,
+            OptionalGroup::Owner(i) => OWNER_HOOKS[i].programs,
         }
     }
 
@@ -333,6 +348,16 @@ mod tests {
         assert_eq!(
             to_disable(&enabled, &w),
             Some(BTreeSet::from([OptionalGroup::SockEvent(4)]))
+        );
+    }
+
+    #[test]
+    fn failing_owner_program_disables_only_its_hook() {
+        let w = warnings(&["libbpf: prog 'owner_accept': failed to load: -22"]);
+        let enabled = BTreeSet::from(OptionalGroup::ALL);
+        assert_eq!(
+            to_disable(&enabled, &w),
+            Some(BTreeSet::from([OptionalGroup::Owner(2)]))
         );
     }
 
