@@ -115,7 +115,11 @@ impl FlowTracker {
                 let ipv4_mapped = tuple.src_ip[0..10].iter().all(|&b| b == 0)
                     && tuple.src_ip[10] == 0xFF
                     && tuple.src_ip[11] == 0xFF;
-                let ipv4_compat = tuple.src_ip[4..16].iter().all(|&b| b == 0);
+                // The map holds IPv4 addresses in the first 4 bytes. An IPv6 address can end
+                // in 12 zero bytes too (2001:db8::), both rarely do.
+                let ipv4_compat = [tuple.src_ip, tuple.dst_ip]
+                    .iter()
+                    .all(|ip| ip[4..16].iter().all(|&b| b == 0));
 
                 let (src, dst) = if ipv4_mapped {
                     let src = IpAddr::V4(Ipv4Addr::from([
