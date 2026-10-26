@@ -663,7 +663,7 @@ mod tests {
             .filter_map(|y| {
                 let row: String = lines[y as usize].chars().skip(rows.x as usize).collect();
                 row.split_whitespace()
-                    .nth(4)
+                    .nth(3)
                     .and_then(|port| port.parse().ok())
             })
             .collect()
@@ -855,15 +855,15 @@ mod tests {
             })
             .map(|row| row.split_whitespace().collect::<Vec<_>>().join(" "))
             .collect();
-        assert_eq!(rows[0], "10.0.0.2 40000 iperf3[812] 10.0.0.1 5201");
-        assert_eq!(rows[1], "10.0.0.1 5201 svc sshd[90] 10.0.0.2 22");
+        assert_eq!(rows[0], "10.0.0.2 40000 10.0.0.1 5201 iperf3[812]");
+        assert_eq!(rows[1], "10.0.0.1 5201 svc 10.0.0.2 22 sshd[90]");
         // Without an owner, the map's order and no process
-        assert_eq!(rows[2], "10.0.0.1 5201 ? 10.0.0.2 9");
-        // The process gets the spare room, the remote port stays next to its address
+        assert_eq!(rows[2], "10.0.0.1 5201 10.0.0.2 9 ?");
+        // The addresses sit together, the process comes last and gets the spare room
         let first = &lines[areas.flow_rows.y as usize];
+        let row = first.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(row.contains("10.0.0.1 5201 iperf3[812]"), "{first}");
         assert!(first.contains("iperf3[812]          "), "{first}");
-        let row = first.trim_end_matches(['\u{2502}', '\u{2588}', '\u{2551}', ' ']);
-        assert!(row.ends_with(" 10.0.0.1 5201"), "{first}");
     }
 
     /// A busy run with every group, its flows and their owners

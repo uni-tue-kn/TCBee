@@ -119,7 +119,7 @@ impl FlowTracker {
 }
 
 /// Headers of the flow table columns
-const HEADERS: [&str; 5] = ["Local/A", "port", "Process", "Remote/B", "port"];
+const HEADERS: [&str; 5] = ["Local/A", "port", "Remote/B", "port", "Process"];
 /// Widest address column, a full IPv6 address
 const MAX_ADDRESS: usize = 39;
 /// Narrowest address column the process takes room from
@@ -141,9 +141,9 @@ fn cells(flow: &Flow, owner: Option<&Owner>) -> ([String; 5], bool) {
             let cells = [
                 owner.local.0.to_string(),
                 local_port,
-                owner.process.clone(),
                 owner.remote.0.to_string(),
                 owner.remote.1.to_string(),
+                owner.process.clone(),
             ];
             (cells, true)
         }
@@ -151,9 +151,9 @@ fn cells(flow: &Flow, owner: Option<&Owner>) -> ([String; 5], bool) {
             let cells = [
                 flow.src.to_string(),
                 flow.sport.to_string(),
-                "?".to_string(),
                 flow.dst.to_string(),
                 flow.dport.to_string(),
+                "?".to_string(),
             ];
             (cells, false)
         }
@@ -172,9 +172,9 @@ pub fn flow_columns(rows: &[[String; 5]], width: u16) -> [Constraint; 5] {
             .unwrap_or_default()
     };
     let mut local = content(0).min(MAX_ADDRESS);
-    let mut remote = content(3).min(MAX_ADDRESS);
+    let mut remote = content(2).min(MAX_ADDRESS);
     let local_port = content(1).clamp(MIN_PORT, MAX_PORT);
-    let remote_port = content(4).clamp(MIN_PORT, MAX_PORT);
+    let remote_port = content(3).clamp(MIN_PORT, MAX_PORT);
     // Four spaces between the columns
     let room = (width as usize).saturating_sub(local_port + remote_port + 4);
     while local + remote + MIN_PROCESS > room && local.max(remote) > MIN_ADDRESS {
@@ -185,11 +185,11 @@ pub fn flow_columns(rows: &[[String; 5]], width: u16) -> [Constraint; 5] {
         }
     }
     let process = room.saturating_sub(local + remote);
-    [local, local_port, process, remote, remote_port].map(|width| Constraint::Length(width as u16))
+    [local, local_port, remote, remote_port, process].map(|width| Constraint::Length(width as u16))
 }
 
 /// The table of the flows in `width` cells, the selected row highlighted. A flow with a known
-/// owner shows its local side first and the process. One without is dimmed with "?" as
+/// owner shows its local side first and the process last. One without is dimmed with "?" as
 /// process; its sides are endpoints A and B in the map's address order, so neither is known to
 /// be local, which the headers say.
 pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn columns_fit_the_content_and_the_process_gets_the_rest() {
         let row = |local: &str, port: &str, remote: &str| {
-            [local, port, "iperf3[812]", remote, "5201"].map(str::to_string)
+            [local, port, remote, "5201", "iperf3[812]"].map(str::to_string)
         };
         let lengths = |widths: [Constraint; 5]| {
             widths.map(|width| match width {
@@ -365,17 +365,17 @@ mod tests {
             })
         };
         let v4 = [row("10.0.0.2", "40000", "10.0.0.1")];
-        assert_eq!(lengths(flow_columns(&v4, 100)), [8, 5, 70, 8, 5]);
+        assert_eq!(lengths(flow_columns(&v4, 100)), [8, 5, 8, 5, 70]);
         // The headers are wider than a short address, a service mark widens the port
         let short = [row("::1", "22 svc", "::1")];
-        assert_eq!(lengths(flow_columns(&short, 60)), [7, 6, 30, 8, 5]);
+        assert_eq!(lengths(flow_columns(&short, 60)), [7, 6, 8, 5, 30]);
         // A full IPv6 address fits, a longer one is cut
         let v6 = "2001:db8:85a3:8d3:1319:8a2e:370:7348";
         let long = [row(v6, "40000", &"f".repeat(50))];
-        assert_eq!(lengths(flow_columns(&long, 200)), [36, 5, 111, 39, 5]);
+        assert_eq!(lengths(flow_columns(&long, 200)), [36, 5, 39, 5, 111]);
         // A narrow table shortens the longer address first, the process keeps 8 cells
-        assert_eq!(lengths(flow_columns(&long, 80)), [29, 5, 8, 29, 5]);
-        assert_eq!(lengths(flow_columns(&long, 30)), [8, 5, 0, 8, 5]);
-        assert_eq!(lengths(flow_columns(&[], 50)), [7, 5, 21, 8, 5]);
+        assert_eq!(lengths(flow_columns(&long, 80)), [29, 5, 29, 5, 8]);
+        assert_eq!(lengths(flow_columns(&long, 30)), [8, 5, 8, 5, 0]);
+        assert_eq!(lengths(flow_columns(&[], 50)), [7, 5, 8, 5, 21]);
     }
 }
