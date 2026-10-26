@@ -137,8 +137,12 @@ impl EBPFWatcher {
 
             // Update tracker of all flows internal list and then show it
             self.flow_tracker.read_flows();
-            if let Some(owners) = self.owners.as_ref().and_then(|owners| owners.lock().ok()) {
-                self.flow_tracker.flows.find_owners(&owners);
+            if let Some(owners) = &self.owners {
+                if let Ok(live) = owners.live.lock() {
+                    self.flow_tracker
+                        .flows
+                        .find_owners(&live, owners.snapshot.get());
+                }
             }
             let mut areas = self.draw(&ui);
 

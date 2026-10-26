@@ -12,7 +12,7 @@ use ratatui::{
 };
 use tcbee_common::records::IpTuple;
 
-use crate::viz::flow_owners::{Owner, OwnerTable};
+use crate::viz::flow_owners::{Owner, OwnerTable, SnapshotOwners};
 
 /// A flow as the FLOWS map keys it: the endpoints in canonical order, not by direction
 #[derive(Clone, Hash, Eq, PartialEq)]
@@ -45,12 +45,15 @@ impl Flows {
         }
     }
 
-    /// Looks up the owners of the flows that have none yet
-    pub fn find_owners(&mut self, table: &OwnerTable) {
+    /// Looks up the owners of the flows that have none yet: in the records, then in the
+    /// snapshot
+    pub fn find_owners(&mut self, live: &OwnerTable, snapshot: Option<&SnapshotOwners>) {
         for (flow, owner) in self.list.iter().zip(self.owners.iter_mut()) {
             if owner.is_none() {
-                *owner = table
-                    .find((flow.src, flow.sport), (flow.dst, flow.dport))
+                let (a, b) = ((flow.src, flow.sport), (flow.dst, flow.dport));
+                *owner = live
+                    .find(a, b)
+                    .or_else(|| snapshot.and_then(|s| s.find(a, b)))
                     .cloned();
             }
         }
@@ -236,7 +239,7 @@ mod tests {
         flows.add(flow(40000));
         flows.add(flow(40001));
         let mut table = OwnerTable::default();
-        flows.find_owners(&table);
+        flows.find_owners(&table, None);
         assert!(flows.owners.iter().all(Option::is_none));
         // The map orders 10.0.0.1 first, the owner has it as the remote side
         table.insert(Owner {
@@ -245,7 +248,7 @@ mod tests {
             process: "iperf3[812]".to_string(),
             service: false,
         });
-        flows.find_owners(&table);
+        flows.find_owners(&table, None);
         assert!(flows.owners[0].is_none());
         assert_eq!(
             flows.owners[1].as_ref().unwrap().local,

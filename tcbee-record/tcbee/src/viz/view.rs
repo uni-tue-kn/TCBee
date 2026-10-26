@@ -813,7 +813,7 @@ mod tests {
             90,
             2,
         ));
-        flows.find_owners(&owners.lock().unwrap());
+        flows.find_owners(&owners.live.lock().unwrap(), None);
         flows.add(flow(9));
         let (lines, areas) = screen(160, 45, &model, &view, &UiState::default(), &flows);
         let rows: Vec<String> = (0..3)

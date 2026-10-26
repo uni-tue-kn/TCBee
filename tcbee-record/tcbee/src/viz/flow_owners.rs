@@ -6,7 +6,7 @@ use std::{
     mem,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ptr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use tcbee_common::records::{flow_owner_entry, TCBEE_OWNER_ACCEPT, TCBEE_OWNER_KTHREAD};
@@ -31,15 +31,16 @@ pub struct Owner {
     pub service: bool,
 }
 
+/// A connection: its local and remote side
+type Connection = (Endpoint, Endpoint);
+
 /// The latest owner of each connection, at most `OWNERS_KEPT`
 #[derive(Default)]
 pub struct OwnerTable {
-    owners: HashMap<(Endpoint, Endpoint), Owner>,
+    owners: HashMap<Connection, Owner>,
     /// Connections in the order they came in
-    order: VecDeque<(Endpoint, Endpoint)>,
+    order: VecDeque<Connection>,
 }
-
-pub type SharedOwners = Arc<Mutex<OwnerTable>>;
 
 impl OwnerTable {
     /// Adds `owner`, a newer record of a connection replaces the older one
@@ -57,10 +58,7 @@ impl OwnerTable {
 
     /// The owner of the connection between `a` and `b`, either of them local
     pub fn find(&self, a: Endpoint, b: Endpoint) -> Option<&Owner> {
-        let (a, b) = (canonical(a), canonical(b));
-        self.owners
-            .get(&(a, b))
-            .or_else(|| self.owners.get(&(b, a)))
+        find(&self.owners, a, b)
     }
 
     #[cfg(test)]
@@ -68,6 +66,33 @@ impl OwnerTable {
         self.owners.len()
     }
 }
+
+/// The owners of the connections that existed at the start, from the snapshot
+pub struct SnapshotOwners {
+    owners: HashMap<Connection, Owner>,
+}
+
+impl SnapshotOwners {
+    pub fn find(&self, a: Endpoint, b: Endpoint) -> Option<&Owner> {
+        find(&self.owners, a, b)
+    }
+}
+
+fn find(owners: &HashMap<Connection, Owner>, a: Endpoint, b: Endpoint) -> Option<&Owner> {
+    let (a, b) = (canonical(a), canonical(b));
+    owners.get(&(a, b)).or_else(|| owners.get(&(b, a)))
+}
+
+/// What the TUI knows about the owners: the records the owner ring's writer saw, filled by
+/// its thread, and the snapshot, set once by the snapshot thread. They stay apart, so the
+/// snapshot neither waits for the lock nor pushes records out of the bounded table.
+#[derive(Default)]
+pub struct Owners {
+    pub live: Mutex<OwnerTable>,
+    pub snapshot: OnceLock<SnapshotOwners>,
+}
+
+pub type SharedOwners = Arc<Owners>;
 
 /// IPv4 addresses as IPv4, also when an IPv6 socket holds them
 fn canonical((ip, port): Endpoint) -> Endpoint {
@@ -114,38 +139,36 @@ pub fn observer(owners: SharedOwners) -> Observer {
         // SAFETY: entry holds at least one flow_owner_entry (checked above), a plain old data
         // struct valid for any bytes; read_unaligned does not need its alignment
         let rec = unsafe { ptr::read_unaligned(entry.as_ptr() as *const flow_owner_entry) };
-        if let Ok(mut owners) = owners.lock() {
-            owners.insert(decode(&rec));
+        if let Ok(mut live) = owners.live.lock() {
+            live.insert(decode(&rec));
         }
     })
 }
 
-/// Adds the connections that existed at the start, unless an owner record named them since.
-/// A connection takes the first process holding its socket.
-pub fn add_snapshot(owners: &SharedOwners, snapshot: &FlowOwners) {
+/// Sets the connections that existed at the start, with the first process holding each
+/// socket. Built before it is shared, it takes no lock. The snapshot leaves listeners out, so
+/// it cannot tell which side accepted: its owners are never marked as a service.
+pub fn add_snapshot(owners: &Owners, snapshot: &FlowOwners) {
     let processes = snapshot.process_index();
-    let Ok(mut owners) = owners.lock() else {
-        return;
-    };
+    let mut found = HashMap::new();
     for connection in &snapshot.connections {
         let Some(holder) = connection.holders.first() else {
             continue;
         };
         let local = canonical((connection.local.ip(), connection.local.port()));
         let remote = canonical((connection.remote.ip(), connection.remote.port()));
-        if owners.find(local, remote).is_some() {
-            continue;
-        }
         let comm = processes
             .get(&(holder.pid, holder.start_ticks))
             .map_or("?", |process| process.comm.as_str());
-        owners.insert(Owner {
+        let owner = Owner {
             local,
             remote,
             process: format!("{comm}[{}]", holder.pid),
             service: false,
-        });
+        };
+        found.insert((local, remote), owner);
     }
+    let _ = owners.snapshot.set(SnapshotOwners { owners: found });
 }
 
 #[cfg(test)]
@@ -153,7 +176,10 @@ mod tests {
     use tcbee_trace::owners::{Holder, ProcessInfo, SnapshotConnection};
 
     use super::*;
-    use crate::viz::test_support::{ep, record};
+    use crate::{
+        viz::test_support::{ep, record},
+        writer::observe_all,
+    };
 
     #[test]
     fn records_name_the_local_side_and_the_process() {
@@ -175,7 +201,7 @@ mod tests {
             TCBEE_OWNER_ACCEPT,
         ));
         observe(&[0; 8]);
-        let owners = owners.lock().unwrap();
+        let owners = owners.live.lock().unwrap();
         assert_eq!(owners.len(), 2);
         // Found from either side
         let iperf = owners
@@ -218,7 +244,18 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_fills_in_what_the_records_did_not_name() {
+    fn both_observers_see_every_record() {
+        let (first, second) = (SharedOwners::default(), SharedOwners::default());
+        let mut observe =
+            observe_all(vec![observer(first.clone()), observer(second.clone())]).unwrap();
+        observe(&record(ep("10.0.0.1:1"), ep("10.0.0.2:2"), "a", 1, 1));
+        assert_eq!(first.live.lock().unwrap().len(), 1);
+        assert_eq!(second.live.lock().unwrap().len(), 1);
+        assert!(observe_all(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn snapshot_stays_apart_from_the_records() {
         let owners = SharedOwners::default();
         observer(owners.clone())(&record(
             ep("10.0.0.1:22"),
@@ -228,7 +265,7 @@ mod tests {
             TCBEE_OWNER_ACCEPT,
         ));
         let mut snapshot = FlowOwners::new(0, 100);
-        let connection = |local: &str, remote: &str, pid| SnapshotConnection {
+        let connection = |local: String, remote: &str, pid| SnapshotConnection {
             local: local.parse().unwrap(),
             remote: remote.parse().unwrap(),
             netns: 1,
@@ -240,33 +277,38 @@ mod tests {
                 start_ticks: 7,
             }],
         };
-        snapshot.connections = vec![
-            connection("10.0.0.1:22", "10.0.0.9:51000", 1),
-            connection("10.0.0.1:443", "10.0.0.3:60000", 300),
-        ];
+        // More connections than the record table keeps
+        snapshot.connections = (0..OWNERS_KEPT as u16 + 100)
+            .map(|port| connection(format!("10.0.0.1:{}", 1000 + port), "10.0.0.3:443", 300))
+            .collect();
+        snapshot
+            .connections
+            .push(connection("10.0.0.1:22".to_string(), "10.0.0.9:51000", 1));
         snapshot.processes = vec![ProcessInfo {
             pid: 300,
             start_ticks: 7,
-            comm: "nginx".to_string(),
+            comm: "curl".to_string(),
             cmdline: Vec::new(),
             uid: None,
             cgroup: None,
         }];
         add_snapshot(&owners, &snapshot);
-        let owners = owners.lock().unwrap();
-        assert_eq!(
-            owners
-                .find(ep("10.0.0.1:22"), ep("10.0.0.9:51000"))
-                .unwrap()
-                .process,
-            "sshd[90]"
-        );
-        assert_eq!(
-            owners
-                .find(ep("10.0.0.1:443"), ep("10.0.0.3:60000"))
-                .unwrap()
-                .process,
-            "nginx[300]"
-        );
+        // The record stays, and wins over the snapshot
+        let live = owners.live.lock().unwrap();
+        assert_eq!(live.len(), 1);
+        let sshd = live.find(ep("10.0.0.1:22"), ep("10.0.0.9:51000")).unwrap();
+        assert_eq!(sshd.process, "sshd[90]");
+        let snapshot = owners.snapshot.get().unwrap();
+        let curl = snapshot
+            .find(ep("10.0.0.3:443"), ep("10.0.0.1:1000"))
+            .unwrap();
+        assert_eq!(curl.process, "curl[300]");
+        assert_eq!(curl.local, ep("10.0.0.1:1000"));
+        assert!(!curl.service);
+        // A holder without process information keeps its pid
+        let unknown = snapshot
+            .find(ep("10.0.0.1:22"), ep("10.0.0.9:51000"))
+            .unwrap();
+        assert_eq!(unknown.process, "?[1]");
     }
 }
