@@ -145,15 +145,16 @@ Without `-q`, tcbee-record shows what it records while it runs.
   at full resolution. The window keeps 36 000 updates: with `--tui-update-ms` below 50 the
   longest window is shorter, and the footer says when the window is at that limit.
 - **Flows**: the flows the probes saw (at most 100, the title says when the map is full),
-  in the order they were first seen. The columns are as wide as their content, the process
-  in the last column gets the rest. With the owner programs (see [Flow owners](#flow-owners))
-  a flow shows its local side first (`Local/A`) and the process that opened it
-  (`comm[pid]`, `[kernel]` for a kernel thread); `svc` marks the local port of a connection
-  the process accepted. The owner comes from the owner records, a newer one for a reused
-  port pair replaces it; connections that existed at the start take it from the snapshot,
-  which has no listeners and so never marks `svc`. Flows without a known owner are dimmed,
-  show `?` as process and their endpoints as A and B in address order: neither is known to
-  be local.
+  in the order they were first seen. The columns are as wide as their content, each port
+  next to its address; the spare room goes in equal parts to a gap after each endpoint (at
+  most 16 cells) and to the process in the last column, which gets the rest. With the
+  owner programs (see [Flow owners](#flow-owners)) a flow shows its local side first
+  (`Local/A`) and the process that opened it (`comm[pid]`, `[kernel]` for a kernel
+  thread); `svc` marks the local port of a connection the process accepted. The owner
+  comes from the owner records, a newer one for a reused port pair replaces it;
+  connections that existed at the start take it from the snapshot, which has no listeners
+  and so never marks `svc`. Flows without a known owner are dimmed, show `?` as process
+  and their endpoints as A and B in address order: neither is known to be local.
 - **Small terminals**: below 120x30 the left column is narrower and two charts are shown,
   below 80x24 no charts, and every probe group shows a sparkline of its records per second
   in the last 30 s instead; below 40x12 only a hint.

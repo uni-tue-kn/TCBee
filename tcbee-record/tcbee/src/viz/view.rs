@@ -856,10 +856,14 @@ mod tests {
         assert_eq!(rows[1], "10.0.0.1 5201 svc 10.0.0.2 22 sshd[90]");
         // Without an owner, the map's order and no process
         assert_eq!(rows[2], "10.0.0.1 5201 10.0.0.2 9 ?");
-        // The addresses sit together, the process comes last and gets the spare room
+        // Each port next to its address, after the port column ("5201 svc") the widest gap of
+        // 16 cells and the column space, the process last
         let first = &lines[areas.flow_rows.y as usize];
-        let row = first.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(row.contains("10.0.0.1 5201 iperf3[812]"), "{first}");
+        let spaced = |left: &str, spaces: usize, right: &str| {
+            first.contains(&format!("{left}{}{right}", " ".repeat(spaces)))
+        };
+        assert!(spaced("10.0.0.2 40000", 3 + 17, "10.0.0.1 5201"), "{first}");
+        assert!(spaced("10.0.0.1 5201", 1 + 17, "iperf3[812]"), "{first}");
         assert!(first.contains("iperf3[812]          "), "{first}");
     }
 

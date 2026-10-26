@@ -129,6 +129,8 @@ const MIN_PORT: usize = 5;
 const MAX_PORT: usize = 9;
 /// Narrowest process column the addresses give room to
 const MIN_PROCESS: usize = 8;
+/// Widest gap after an endpoint, so that a wide table keeps a row readable
+const MAX_GAP: usize = 16;
 
 /// The cells of a flow row and whether its owner is known
 fn cells(flow: &Flow, owner: Option<&Owner>) -> ([String; 5], bool) {
@@ -161,8 +163,9 @@ fn cells(flow: &Flow, owner: Option<&Owner>) -> ([String; 5], bool) {
 }
 
 /// Widths of the flow table columns for `rows` in `width` cells: each as wide as its cells,
-/// an address up to a full IPv6 address, a port 5 to 9 cells; the process gets the rest. A
-/// narrow table shortens the longer address first, down to 8 cells, for a process of 8.
+/// an address up to a full IPv6 address, a port 5 to 9 cells. The spare room is split evenly
+/// into a gap after each endpoint, at most 16 cells, and the process; the process gets the
+/// rest. A narrow table shortens the longer address first, down to 8 cells, for a process of 8.
 pub fn flow_columns(rows: &[[String; 5]], width: u16) -> [Constraint; 5] {
     let content = |column: usize| {
         rows.iter()
@@ -184,8 +187,12 @@ pub fn flow_columns(rows: &[[String; 5]], width: u16) -> [Constraint; 5] {
             remote -= 1;
         }
     }
-    let process = room.saturating_sub(local + remote);
-    [local, local_port, remote, remote_port, process].map(|width| Constraint::Length(width as u16))
+    // A port column ends in the gap after its endpoint
+    let spare = room.saturating_sub(local + remote + content(4).max(MIN_PROCESS));
+    let gap = (spare / 3).min(MAX_GAP);
+    let process = room.saturating_sub(local + remote + 2 * gap);
+    [local, local_port + gap, remote, remote_port + gap, process]
+        .map(|width| Constraint::Length(width as u16))
 }
 
 /// The table of the flows in `width` cells, the selected row highlighted. A flow with a known
@@ -354,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn columns_fit_the_content_and_the_process_gets_the_rest() {
+    fn columns_fit_the_content_and_share_the_spare_room() {
         let row = |local: &str, port: &str, remote: &str| {
             [local, port, remote, "5201", "iperf3[812]"].map(str::to_string)
         };
@@ -365,17 +372,19 @@ mod tests {
             })
         };
         let v4 = [row("10.0.0.2", "40000", "10.0.0.1")];
-        assert_eq!(lengths(flow_columns(&v4, 100)), [8, 5, 8, 5, 70]);
+        assert_eq!(lengths(flow_columns(&v4, 100)), [8, 21, 8, 21, 38]);
+        // A third of the spare room after each endpoint, up to 16 cells
+        assert_eq!(lengths(flow_columns(&v4, 60)), [8, 11, 8, 11, 18]);
         // The headers are wider than a short address, a service mark widens the port
         let short = [row("::1", "22 svc", "::1")];
-        assert_eq!(lengths(flow_columns(&short, 60)), [7, 6, 8, 5, 30]);
+        assert_eq!(lengths(flow_columns(&short, 60)), [7, 12, 8, 11, 18]);
         // A full IPv6 address fits, a longer one is cut
         let v6 = "2001:db8:85a3:8d3:1319:8a2e:370:7348";
         let long = [row(v6, "40000", &"f".repeat(50))];
-        assert_eq!(lengths(flow_columns(&long, 200)), [36, 5, 39, 5, 111]);
-        // A narrow table shortens the longer address first, the process keeps 8 cells
+        assert_eq!(lengths(flow_columns(&long, 200)), [36, 21, 39, 21, 79]);
+        // A narrow table has no gaps and shortens the longer address first, the process keeps 8
         assert_eq!(lengths(flow_columns(&long, 80)), [29, 5, 29, 5, 8]);
         assert_eq!(lengths(flow_columns(&long, 30)), [8, 5, 8, 5, 0]);
-        assert_eq!(lengths(flow_columns(&[], 50)), [7, 5, 8, 5, 21]);
+        assert_eq!(lengths(flow_columns(&[], 50)), [7, 9, 8, 9, 13]);
     }
 }
