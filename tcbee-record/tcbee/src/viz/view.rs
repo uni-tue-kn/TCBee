@@ -896,6 +896,11 @@ mod tests {
         assert!(contains(&lines, "1 Events"));
         assert!(contains(&lines, "2 Headers"));
         assert!(!contains(&lines, "3 Socket"));
+        // The events legend still fits
+        assert!(contains(
+            &lines,
+            "1 Events (rec/s) \u{25a0} rec \u{25a0} drop \u{2500}\u{2510}"
+        ));
         // The same columns in a narrow column, no sparklines next to the charts
         assert!(contains(
             &lines,

@@ -17,8 +17,8 @@ use crate::viz::{
 /// names in their colours. Names get shorter or go when they do not fit, the colour squares stay.
 pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
     let head = format!(" {key} {} ({}) ", chart.title, chart.unit);
-    // Corners and a bit of border stay visible
-    let room = (width as usize).saturating_sub(4);
+    // The corners and a cell of border stay visible
+    let room = (width as usize).saturating_sub(3);
     let legend = |chars: usize| -> Vec<String> {
         chart
             .series
