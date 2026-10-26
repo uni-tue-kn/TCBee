@@ -276,6 +276,11 @@ impl Model {
         self.rate(&self.runs)
     }
 
+    /// Probe runs since the start over all rings
+    pub fn runs_total(&self) -> u64 {
+        self.snapshot.sum(&self.runs)
+    }
+
     /// Dropped share of all events since the start in percent
     pub fn drop_percent_total(&self) -> f64 {
         let dropped = self.snapshot.dropped() as f64;

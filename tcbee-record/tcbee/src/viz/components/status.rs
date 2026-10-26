@@ -26,8 +26,10 @@ pub fn render(
     area: Rect,
 ) {
     let compact = fit.narrow_column();
+    // Inside the borders and the padding
+    let inner = (area.width as usize).saturating_sub(4);
     let context = context_lines(run);
-    let health = health_lines(model, compact);
+    let health = health_lines(model, run, inner);
     // What the borders, the padding and the name, rate and drop columns leave
     let fixed = if compact { 27 } else { 37 };
     let spark = (area.width as usize).saturating_sub(fixed).clamp(1, 16);
@@ -44,8 +46,12 @@ pub fn render(
     .areas(area);
 
     let title = format!("TCBee  {}", format::clock(model.elapsed));
-    frame.render_widget(Paragraph::new(context).block(block(title)), context_area);
-    frame.render_widget(Paragraph::new(health).block(block("Health")), health_area);
+    frame.render_widget(
+        Paragraph::new(context).block(block(bold_title(title).into())),
+        context_area,
+    );
+    let title = column_title("Health", &HEALTH_LABELS, &HEALTH_WIDTHS, inner);
+    frame.render_widget(Paragraph::new(health).block(block(title)), health_area);
 
     let (header, widths) = if compact {
         (
@@ -76,7 +82,7 @@ pub fn render(
         .style(Style::default().add_modifier(Modifier::BOLD));
     let table = Table::new(rows, widths)
         .header(header)
-        .block(block("Probe groups (e: rings)"));
+        .block(block(bold_title("Probe groups (e: rings)").into()));
     frame.render_widget(table, groups_area);
 
     if !skipped.is_empty() {
@@ -87,15 +93,15 @@ pub fn render(
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(Color::Yellow))
             .wrap(Wrap { trim: false })
-            .block(block("Skipped"));
+            .block(block(bold_title("Skipped").into()));
         frame.render_widget(paragraph, skipped_area);
     }
 }
 
-/// A bordered block with a bold title, its content one cell in from the sides
-fn block<'a>(title: impl Into<String>) -> Block<'a> {
+/// A bordered block, its content one cell in from the sides
+fn block(title: Line<'_>) -> Block<'_> {
     Block::bordered()
-        .title(bold_title(title))
+        .title(title)
         .padding(Padding::horizontal(1))
 }
 
@@ -105,6 +111,34 @@ pub fn bold_title(title: impl Into<String>) -> Span<'static> {
         format!(" {} ", title.into()),
         Style::default().add_modifier(Modifier::BOLD),
     )
+}
+
+/// A block title that names the value columns: the name in bold on the left, each label
+/// right-aligned above its column. `widths` are those of the value columns, which end the
+/// rows of a content area `inner` cells wide with a space between them. Labels that do not fit
+/// next to the name are left out.
+pub fn column_title(name: &str, labels: &[&str], widths: &[usize], inner: usize) -> Line<'static> {
+    let name = bold_title(name);
+    // From corner to corner: a padding cell, the content, a padding cell
+    let mut cells = vec!['\u{2500}'; inner + 2];
+    let mut end = inner + 1;
+    for (label, width) in labels.iter().zip(widths).rev() {
+        let label = format!(" {label} ");
+        let length = label.chars().count();
+        // The label ends one cell after the last of its column, over the padding or the gap
+        let Some(start) = (end + 1).checked_sub(length) else {
+            break;
+        };
+        if start < name.width() || end >= cells.len() {
+            break;
+        }
+        for (cell, char) in cells[start..=end].iter_mut().zip(label.chars()) {
+            *cell = char;
+        }
+        end = end.saturating_sub(width + 1);
+    }
+    let rest: String = cells.into_iter().skip(name.width()).collect();
+    Line::from(vec![name, Span::raw(rest)])
 }
 
 /// Lines of the skipped block in a column `width` cells wide, its reasons wrapped
@@ -137,8 +171,23 @@ fn context_lines(context: &RunContext) -> Vec<Line<'static>> {
     ]
 }
 
-/// Whether the recording keeps up
-fn health_lines(model: &Model, compact: bool) -> Vec<Line<'static>> {
+/// Labels and widths of the value columns of the health block
+const HEALTH_LABELS: [&str; 2] = ["now", "total"];
+const HEALTH_WIDTHS: [usize; 2] = [9, 7];
+
+/// A row of `name` and values right-aligned in `widths`, in a content area `inner` cells wide
+fn columns(name: &str, values: &[String], widths: &[usize], inner: usize) -> String {
+    let taken: usize = widths.iter().map(|width| width + 1).sum();
+    let mut row = format!("{name:<0$}", inner.saturating_sub(taken));
+    for (value, width) in values.iter().zip(widths) {
+        row.push_str(&format!(" {value:>width$}"));
+    }
+    row
+}
+
+/// Whether the recording keeps up: each row now and since the start, in a content area
+/// `inner` cells wide
+fn health_lines(model: &Model, run: &RunContext, inner: usize) -> Vec<Line<'static>> {
     let snap = &model.snapshot;
     let red = Style::default().fg(Color::Red);
     let drop_style = if snap.dropped() > 0 {
@@ -146,30 +195,36 @@ fn health_lines(model: &Model, compact: bool) -> Vec<Line<'static>> {
     } else {
         Style::default()
     };
-    let row = |name: &str, value: String, total: String| match compact {
-        true => format!("{name:<8}{value:>9} {}", total.trim_start_matches("total ")),
-        false => format!("{name:<8}{value:>12}  {total}"),
+    let row = |name: &str, now: String, total: String| {
+        columns(name, &[now, total], &HEALTH_WIDTHS, inner)
     };
-    let mut lines = vec![
-        Line::from(row(
-            "rec/s",
-            format::si(model.handled_rate()),
-            format!("total {}", format::si(snap.handled() as f64)),
-        )),
-        Line::from(row("runs/s", format::si(model.runs_rate()), String::new())),
+    let mut lines = vec![Line::from(row(
+        "records/s",
+        format::si(model.handled_rate()),
+        format::si(snap.handled() as f64),
+    ))];
+    // Runs that write no record are only the dropped ones, but for suppressed runs on change
+    if run.on_change {
+        lines.push(Line::from(row(
+            "runs/s",
+            format::si(model.runs_rate()),
+            format::si(model.runs_total() as f64),
+        )));
+    }
+    lines.extend([
         Line::styled(
             row(
                 "drops/s",
                 format::si(model.dropped_rate()),
-                format!("total {}", format::si(snap.dropped() as f64)),
+                format::si(snap.dropped() as f64),
             ),
             drop_style,
         ),
         Line::styled(
             row(
                 "drop %",
+                format!("{:.2}%", model.drop_percent()),
                 format!("{:.2}%", model.drop_percent_total()),
-                format!("now {:.2}%", model.drop_percent()),
             ),
             drop_style,
         ),
@@ -178,19 +233,14 @@ fn health_lines(model: &Model, compact: bool) -> Vec<Line<'static>> {
             format!("{}/s", format::bytes(model.disk_rate())),
             format::bytes(model.bytes_written as f64),
         )),
-    ];
-    let mut warnings = Vec::new();
+    ]);
     if snap.state_errors() > 0 {
-        warnings.push(format!(
-            "{} state_err",
-            format::si(snap.state_errors() as f64)
-        ));
+        let count = format::si(snap.state_errors() as f64);
+        lines.push(Line::styled(format!("! {count} state errors"), red));
     }
     if snap.errors() > 0 {
-        warnings.push(format!("{} read errors", format::si(snap.errors() as f64)));
-    }
-    if !warnings.is_empty() {
-        lines.push(Line::styled(format!("! {}", warnings.join(", ")), red));
+        let count = format::si(snap.errors() as f64);
+        lines.push(Line::styled(format!("! {count} read errors"), red));
     }
     lines
 }

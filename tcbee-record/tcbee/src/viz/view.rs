@@ -407,11 +407,22 @@ mod tests {
         assert!(contains(&lines, "TCBee  00:00:01"));
         assert!(contains(&lines, "/data/run1"));
         assert!(contains(&lines, "eth0 \u{b7} 8 CPUs"));
-        assert_eq!(row(&lines, "rec/s"), ["rec/s", "990", "total", "990"]);
-        assert_eq!(row(&lines, "runs/s"), ["runs/s", "1.00K"]);
-        assert_eq!(row(&lines, "drops/s"), ["drops/s", "10", "total", "10"]);
-        assert_eq!(row(&lines, "drop"), ["drop", "%", "1.00%", "now", "1.00%"]);
+        // Every value of the health block below its column, now and since the start
+        assert!(contains(&lines, "\u{250c} Health "));
+        assert!(contains(&lines, " now \u{2500} total \u{2510}"));
+        assert_eq!(row(&lines, "records/s"), ["records/s", "990", "990"]);
+        assert_eq!(row(&lines, "drops/s"), ["drops/s", "10", "10"]);
+        assert_eq!(row(&lines, "drop"), ["drop", "%", "1.00%", "1.00%"]);
         assert_eq!(row(&lines, "disk"), ["disk", "2.00", "MB/s", "2.00", "MB"]);
+        // The cell after `text` on the line of `name`
+        let end = |name: &str, text: &str| {
+            let line = lines.iter().find(|line| line.contains(name)).unwrap();
+            line[..line.find(text).unwrap()].chars().count() + text.chars().count()
+        };
+        assert_eq!(end("Health", "total"), end("records/s", "990 \u{2502}") - 2);
+        assert_eq!(end("Health", "total"), end("disk", "MB \u{2502}") - 2);
+        // The runs only differ from the records on change
+        assert!(!contains(&lines, "\u{2502} runs/s"));
         assert_eq!(
             row(&lines, "headers"),
             ["headers", "1.00K", "990", "10", "agg", "0%"]
@@ -469,7 +480,7 @@ mod tests {
             row(&lines, "tcp_ev"),
             ["tcp_ev", "200", "200", "0", "\u{2581}\u{2584}\u{2588}"]
         );
-        assert!(contains(&lines, "! 3 state_err"));
+        assert!(contains(&lines, "! 3 state errors"));
         assert!(!contains(&lines, "tc v4 in"));
         ui.on_key(KeyCode::Char('e'), &charts(model.charts.len()), 0);
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
@@ -502,6 +513,8 @@ mod tests {
         );
         assert_eq!(row(&lines, "sock")[..5], ["sock", "40", "10", "0", "supp"]);
         assert!(contains(&lines, "on change"));
+        assert_eq!(row(&lines, "runs/s"), ["runs/s", "40", "40"]);
+        assert_eq!(row(&lines, "records/s"), ["records/s", "10", "10"]);
     }
 
     #[test]
