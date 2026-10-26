@@ -8,7 +8,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    fs, mem,
+    mem,
     net::SocketAddr,
     path::{Path, PathBuf},
     ptr,
@@ -22,7 +22,7 @@ use procfs::{
     process::{all_processes_with_root, FDTarget, Process},
 };
 use tcbee_common::records::{flow_owner_entry, TCBEE_OWNER_KTHREAD};
-use tcbee_trace::owners::{same_start, FlowOwners, ProcessInfo, SnapshotConnection};
+use tcbee_trace::owners::{same_start, FlowOwners, Holder, ProcessInfo, SnapshotConnection};
 
 use crate::{metadata::clock_ns, writer::Observer};
 
@@ -50,26 +50,25 @@ fn state_name(state: TcpState) -> &'static str {
     }
 }
 
-/// Inode number of the network namespace of a process, from its `ns/net` link
-/// (`net:[4026531840]`)
-fn netns(proc_root: &Path, pid: i32) -> Option<u32> {
-    let link = fs::read_link(proc_root.join(pid.to_string()).join("ns/net")).ok()?;
-    link.to_str()?
-        .strip_prefix("net:[")?
-        .strip_suffix(']')?
-        .parse()
-        .ok()
+/// Inode number of the network namespace of a process
+fn netns(process: &Process) -> Option<u32> {
+    let namespaces = process.namespaces().ok()?;
+    let net = namespaces.0.get(std::ffi::OsStr::new("net"))?;
+    u32::try_from(net.identifier).ok()
 }
 
 /// The cgroup v2 path of a process
-fn cgroup(proc_root: &Path, pid: u32) -> Option<String> {
-    let text = fs::read_to_string(proc_root.join(pid.to_string()).join("cgroup")).ok()?;
-    text.lines()
-        .find_map(|line| line.strip_prefix("0::"))
-        .map(str::to_string)
+fn cgroup(process: &Process) -> Option<String> {
+    let cgroups = process.cgroups().ok()?;
+    cgroups
+        .0
+        .into_iter()
+        .find(|c| c.hierarchy == 0)
+        .map(|c| c.pathname)
 }
 
-/// The process `pid` below `proc_root`, None if it exited
+/// The process `pid` below `proc_root`, None if it exited. Its uid is the real one, as in the
+/// owner records.
 pub fn process_info(proc_root: &Path, pid: u32) -> Option<ProcessInfo> {
     let process = Process::new_with_root(proc_root.join(pid.to_string())).ok()?;
     let stat = process.stat().ok()?;
@@ -78,8 +77,8 @@ pub fn process_info(proc_root: &Path, pid: u32) -> Option<ProcessInfo> {
         start_ticks: stat.starttime,
         comm: stat.comm,
         cmdline: process.cmdline().unwrap_or_default(),
-        uid: process.uid().ok(),
-        cgroup: cgroup(proc_root, pid),
+        uid: process.status().ok().map(|status| status.ruid),
+        cgroup: cgroup(&process),
     })
 }
 
@@ -103,18 +102,31 @@ pub fn snapshot(proc_root: &Path, keep: &dyn Fn(SocketAddr, SocketAddr) -> bool)
     };
     // A process per network namespace, and the processes holding each socket inode
     let mut namespaces: BTreeMap<u32, i32> = BTreeMap::new();
-    let mut holders: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
+    let mut holders: BTreeMap<u64, BTreeSet<Holder>> = BTreeMap::new();
     for process in all.flatten() {
         let pid = process.pid();
         let Ok(fds) = process.fd() else {
             continue;
         };
-        for fd in fds.flatten() {
-            if let FDTarget::Socket(inode) = fd.target {
-                holders.entry(inode).or_default().insert(pid as u32);
+        let sockets: Vec<u64> = fds
+            .flatten()
+            .filter_map(|fd| match fd.target {
+                FDTarget::Socket(inode) => Some(inode),
+                _ => None,
+            })
+            .collect();
+        // The start names the process, its pid may belong to another one by the time the
+        // process list is read
+        if let (false, Ok(stat)) = (sockets.is_empty(), process.stat()) {
+            let holder = Holder {
+                pid: pid as u32,
+                start_ticks: stat.starttime,
+            };
+            for inode in sockets {
+                holders.entry(inode).or_default().insert(holder);
             }
         }
-        if let Some(ns) = netns(proc_root, pid) {
+        if let Some(ns) = netns(&process) {
             namespaces.entry(ns).or_insert(pid);
         }
     }
@@ -142,23 +154,24 @@ pub fn snapshot(proc_root: &Path, keep: &dyn Fn(SocketAddr, SocketAddr) -> bool)
                 state: state_name(entry.state).to_string(),
                 uid: entry.uid,
                 inode: entry.inode,
-                pids: holders
+                holders: holders
                     .get(&entry.inode)
-                    .map(|pids| pids.iter().copied().collect())
+                    .map(|holders| holders.iter().copied().collect())
                     .unwrap_or_default(),
             });
         }
     }
 
-    let pids: BTreeSet<u32> = owners
+    let holders: BTreeSet<Holder> = owners
         .connections
         .iter()
-        .flat_map(|c| c.pids.iter().copied())
+        .flat_map(|c| c.holders.iter().copied())
         .collect();
-    owners.processes = pids
+    owners.processes = holders
         .into_iter()
-        .filter_map(|pid| process_info(proc_root, pid))
+        .filter_map(|h| process_info(proc_root, h.pid).filter(|p| p.start_ticks == h.start_ticks))
         .collect();
+    owners.snapshot_end_ns = clock_ns(libc::CLOCK_MONOTONIC) as u64;
     owners
 }
 
@@ -222,7 +235,11 @@ fn resolve(proc_root: &Path, processes: mpsc::Receiver<(u32, u64)>) -> Vec<Proce
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::{env, os::unix::fs::symlink, path::PathBuf};
+    use std::{
+        env, fs,
+        os::unix::fs::{symlink, MetadataExt},
+        path::PathBuf,
+    };
 
     use super::*;
 
@@ -265,6 +282,20 @@ pub(crate) mod tests {
             args.push('\0');
             fs::write(dir.join("cmdline"), args).unwrap();
             fs::write(dir.join("cgroup"), "0::/user.slice/test.scope\n").unwrap();
+            // The status of this test process, with the pid and the real uid 1000 of the
+            // process (effective uid 0, which the owner of /proc/<pid> would show)
+            let status: String = fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .map(|line| match line.split(':').next() {
+                    Some("Pid" | "Tgid") => {
+                        format!("{}:\t{pid}\n", &line[..line.find(':').unwrap()])
+                    }
+                    Some("Uid") => "Uid:\t1000\t0\t0\t0\n".to_string(),
+                    _ => format!("{line}\n"),
+                })
+                .collect();
+            fs::write(dir.join("status"), status).unwrap();
             for (fd, inode) in sockets.iter().enumerate() {
                 symlink(
                     format!("socket:[{inode}]"),
@@ -273,7 +304,20 @@ pub(crate) mod tests {
                 .unwrap();
             }
             symlink("pipe:[9]", dir.join("fd/0")).unwrap();
-            symlink(format!("net:[{ns}]"), dir.join("ns/net")).unwrap();
+            // ns/net names its namespace by the inode it leads to, a file per namespace here
+            let ns_file = self.root.join(format!("netns-{ns}"));
+            if !ns_file.exists() {
+                fs::write(&ns_file, "").unwrap();
+            }
+            symlink(&ns_file, dir.join("ns/net")).unwrap();
+        }
+
+        /// The inode number that stands for namespace `ns` of `process`
+        pub fn netns(&self, ns: u32) -> u32 {
+            let ino = fs::metadata(self.root.join(format!("netns-{ns}")))
+                .unwrap()
+                .ino();
+            ino as u32
         }
 
         /// The tcp and tcp6 tables of the namespace of `pid`, lines without the header
@@ -320,6 +364,7 @@ pub(crate) mod tests {
         proc.tables(102, &[V4, LISTEN, TIME_WAIT], &[MAPPED]);
 
         let owners = snapshot(&proc.root, &|_, _| true);
+        let ns = proc.netns(7);
         let connections: Vec<_> = owners
             .connections
             .iter()
@@ -329,7 +374,7 @@ pub(crate) mod tests {
                     c.remote.to_string(),
                     c.netns,
                     c.state.as_str(),
-                    c.pids.clone(),
+                    c.holders.iter().map(|h| h.pid).collect::<Vec<_>>(),
                 )
             })
             .collect();
@@ -339,14 +384,14 @@ pub(crate) mod tests {
                 (
                     "10.0.0.1:40000".to_string(),
                     "10.0.0.2:5201".to_string(),
-                    7,
+                    ns,
                     "ESTABLISHED",
                     vec![100, 102]
                 ),
                 (
                     "[::ffff:10.0.0.1]:40002".to_string(),
                     "[::ffff:10.0.0.3]:443".to_string(),
-                    7,
+                    ns,
                     "ESTABLISHED",
                     vec![101]
                 ),
@@ -371,6 +416,8 @@ pub(crate) mod tests {
             Some("/user.slice/test.scope")
         );
         assert_eq!(owners.clock_ticks, clock_ticks());
+        // The real uid, not the effective one or the owner of /proc/<pid>
+        assert_eq!(owners.processes[0].uid, Some(1000));
     }
 
     /// Only the connections the filter takes, and only their processes
@@ -400,9 +447,20 @@ pub(crate) mod tests {
         let found: Vec<_> = owners
             .connections
             .iter()
-            .map(|c| (c.netns, c.inode, c.pids.clone()))
+            .map(|c| {
+                (
+                    c.netns,
+                    c.inode,
+                    c.holders.iter().map(|h| h.pid).collect::<Vec<_>>(),
+                )
+            })
             .collect();
-        assert_eq!(found, [(7, 1001, vec![200]), (8, 1003, vec![201])]);
+        let mut want = [
+            (proc.netns(7), 1001, vec![200]),
+            (proc.netns(8), 1003, vec![201]),
+        ];
+        want.sort();
+        assert_eq!(found, want);
     }
 
     /// Whatever this host runs: every process of a connection is listed, at most once
@@ -414,6 +472,7 @@ pub(crate) mod tests {
         for c in &owners.connections {
             assert!(c.inode != 0 && c.state != "LISTEN");
         }
+        assert!(owners.snapshot_end_ns >= owners.snapshot_ns);
         assert!(owners.clock_ticks > 0);
     }
 

@@ -3,7 +3,12 @@
 //! recording started, with the processes that held them, as netstat or `ss -p` find them; and
 //! the command lines of the processes, which the records do not carry.
 
-use std::{fs, io, net::SocketAddr, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs, io,
+    net::SocketAddr,
+    path::Path,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -13,10 +18,12 @@ pub const FLOW_OWNERS_FORMAT: u32 = 1;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FlowOwners {
     pub format: u32,
-    /// When the snapshot of the existing connections started, ns of CLOCK_MONOTONIC (the clock
-    /// of the records). The owner programs ran already, so a connection opened meanwhile can
-    /// be in both.
+    /// When the snapshot of the existing connections started and ended, ns of CLOCK_MONOTONIC
+    /// (the clock of the records). The owner programs ran already, so a connection opened
+    /// meanwhile can be in both.
     pub snapshot_ns: u64,
+    #[serde(default)]
+    pub snapshot_end_ns: u64,
     /// Clock ticks per second, the unit of `ProcessInfo::start_ticks`
     pub clock_ticks: u64,
     /// The TCP connections that existed at the start, listeners left out
@@ -40,7 +47,14 @@ pub struct SnapshotConnection {
     pub inode: u64,
     /// The processes holding the socket open (an fd of theirs refers to it); empty if none
     /// does (a kernel socket), or the process exited before it was looked at
-    pub pids: Vec<u32>,
+    pub holders: Vec<Holder>,
+}
+
+/// A process that holds a socket, named by pid and start as in `ProcessInfo`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Holder {
+    pub pid: u32,
+    pub start_ticks: u64,
 }
 
 /// A process, from `/proc/<pid>`
@@ -86,32 +100,49 @@ impl FlowOwners {
 
     /// Adds the processes that are not listed yet (by pid and start)
     pub fn add_processes(&mut self, processes: impl IntoIterator<Item = ProcessInfo>) {
+        let mut listed: HashSet<(u32, u64)> = self
+            .processes
+            .iter()
+            .map(|p| (p.pid, p.start_ticks))
+            .collect();
         for process in processes {
-            let listed = self
-                .processes
-                .iter()
-                .any(|p| p.pid == process.pid && p.start_ticks == process.start_ticks);
-            if !listed {
+            if listed.insert((process.pid, process.start_ticks)) {
                 self.processes.push(process);
             }
         }
     }
 
-    /// The process `pid` that started at `start_ns` (ns since boot, as in the owner records)
-    pub fn process(&self, pid: u32, start_ns: u64) -> Option<&ProcessInfo> {
+    /// The processes by pid and start in clock ticks
+    pub fn process_index(&self) -> HashMap<(u32, u64), &ProcessInfo> {
         self.processes
             .iter()
-            .find(|p| p.pid == pid && same_start(start_ns, p.start_ticks, self.clock_ticks))
+            .map(|p| ((p.pid, p.start_ticks), p))
+            .collect()
     }
+
+    /// A start in clock ticks in ns since boot, the unit of the owner records; rounded down to
+    /// a tick by the kernel. None without a tick length.
+    pub fn start_ns(&self, start_ticks: u64) -> Option<u64> {
+        tick_ns(self.clock_ticks).map(|tick| start_ticks * tick)
+    }
+
+    /// A start in ns since boot, as in the owner records, in clock ticks
+    pub fn start_ticks(&self, start_ns: u64) -> Option<u64> {
+        tick_ns(self.clock_ticks).map(|tick| start_ns / tick)
+    }
+}
+
+/// The length of a clock tick in ns, None for no ticks per second
+fn tick_ns(clock_ticks: u64) -> Option<u64> {
+    1_000_000_000u64
+        .checked_div(clock_ticks)
+        .filter(|tick| *tick > 0)
 }
 
 /// Whether a start time in ns since boot and one in clock ticks are the same: the kernel shows
 /// the ns divided by the length of a tick, rounded down
 pub fn same_start(start_ns: u64, start_ticks: u64, clock_ticks: u64) -> bool {
-    match 1_000_000_000u64.checked_div(clock_ticks) {
-        Some(tick_ns) if tick_ns > 0 => start_ns / tick_ns == start_ticks,
-        _ => false,
-    }
+    tick_ns(clock_ticks).is_some_and(|tick| start_ns / tick == start_ticks)
 }
 
 #[cfg(test)]
@@ -139,7 +170,10 @@ mod tests {
             state: "ESTABLISHED".into(),
             uid: 1000,
             inode: 77,
-            pids: vec![42],
+            holders: vec![Holder {
+                pid: 42,
+                start_ticks: 123,
+            }],
         });
         owners.processes.push(ProcessInfo {
             pid: 42,
@@ -152,8 +186,12 @@ mod tests {
         owners.write(&dir).unwrap();
         let read = FlowOwners::read(&dir).unwrap().unwrap();
         assert_eq!(read, owners);
-        assert_eq!(read.process(42, 1_230_000_000).unwrap().comm, "iperf3");
-        assert!(read.process(42, 1_240_000_000).is_none());
+        let index = read.process_index();
+        let ticks = read.start_ticks(1_239_999_999).unwrap();
+        assert_eq!(index[&(42, ticks)].comm, "iperf3");
+        assert!(!index.contains_key(&(42, read.start_ticks(1_240_000_000).unwrap())));
+        assert_eq!(read.start_ns(123), Some(1_230_000_000));
+        assert_eq!(FlowOwners::new(0, 0).start_ns(1), None);
         let mut more = read.clone();
         let later = ProcessInfo {
             start_ticks: 200,

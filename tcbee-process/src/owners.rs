@@ -22,7 +22,7 @@ use tcbee_common::records::{
     flow_owner_entry, TCBEE_OWNER_ACCEPT, TCBEE_OWNER_CONNECT, TCBEE_OWNER_KTHREAD,
 };
 use tcbee_trace::owners::{FlowOwners, ProcessInfo};
-use ts_storage::{ConnectionFlow, ConnectionInfo, Flow, FlowOwner, IpTuple};
+use ts_storage::{Catalog, ConnectionFlow, ConnectionInfo, Flow, FlowOwner, IpTuple};
 
 use crate::{
     event::{decode_record, DecodeError},
@@ -38,6 +38,9 @@ pub struct Owned {
     pub tuple: IpTuple,
     /// `flow_id` is set by the join
     pub owner: FlowOwner,
+    /// A snapshot owner: when the snapshot ended. An owner record of the same flow and process
+    /// from before then is the same connection, opened while the snapshot ran.
+    pub seen_until: Option<i64>,
 }
 
 /// The owners of a recording, from both files; a part that cannot be read is a warning
@@ -45,6 +48,15 @@ pub struct Owned {
 pub struct Owners {
     pub owned: Vec<Owned>,
     pub warnings: Vec<String>,
+}
+
+/// Owners whose connection has no flow
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Unmatched {
+    /// Owner records: connections without any other record
+    pub records: usize,
+    /// Holders of the snapshot: mostly connections that sent nothing while recording
+    pub snapshot: usize,
 }
 
 /// The tuple of an owner record, as the event tables write it
@@ -63,15 +75,36 @@ fn cmdline(process: &ProcessInfo) -> Option<String> {
     (!process.cmdline.is_empty()).then(|| process.cmdline.join(" "))
 }
 
+/// The processes of `flow_owners.json`, by pid and start
+struct Processes<'a> {
+    json: &'a FlowOwners,
+    index: HashMap<(u32, u64), &'a ProcessInfo>,
+}
+
+impl<'a> Processes<'a> {
+    fn new(json: &'a FlowOwners) -> Self {
+        Processes {
+            json,
+            index: json.process_index(),
+        }
+    }
+
+    /// The process `pid` that started at `start_ns`, ns since boot as in the owner records
+    fn started_at(&self, pid: u32, start_ns: u64) -> Option<&'a ProcessInfo> {
+        let ticks = self.json.start_ticks(start_ns)?;
+        self.index.get(&(pid, ticks)).copied()
+    }
+}
+
 /// The owner of one record. The command line and cgroup path come from `flow_owners.json`, if
 /// the recorder found the process there.
-fn record_owner(r: &flow_owner_entry, json: Option<&FlowOwners>) -> Owned {
+fn record_owner(r: &flow_owner_entry, processes: Option<&Processes>) -> Owned {
     let source = match u32::from(r.kind) {
         TCBEE_OWNER_CONNECT => FlowOwner::SOURCE_CONNECT.to_string(),
         TCBEE_OWNER_ACCEPT => FlowOwner::SOURCE_ACCEPT.to_string(),
         other => format!("kind {other}"),
     };
-    let process = json.and_then(|j| j.process(r.pid, r.start_time));
+    let process = processes.and_then(|p| p.started_at(r.pid, r.start_time));
     Owned {
         tuple: record_tuple(r),
         owner: FlowOwner {
@@ -88,6 +121,7 @@ fn record_owner(r: &flow_owner_entry, json: Option<&FlowOwners>) -> Owned {
             netns: Some(i64::from(r.netns)),
             kthread: u32::from(r.flags) & TCBEE_OWNER_KTHREAD != 0,
         },
+        seen_until: None,
     }
 }
 
@@ -97,17 +131,20 @@ pub fn decode_records(
     json: Option<&FlowOwners>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Owned>, DecodeError> {
-    let tail = bytes.len() % ENTRY_SIZE;
-    if tail != 0 {
+    let (records, tail) = bytes.as_chunks::<ENTRY_SIZE>();
+    if !tail.is_empty() {
         warnings.push(format!(
-            "flow_owners.tcp: {tail} trailing bytes do not form a whole record ({ENTRY_SIZE} \
-             bytes) and are ignored (recording stopped mid-write?)"
+            "flow_owners.tcp: {} trailing bytes do not form a whole record ({ENTRY_SIZE} \
+             bytes) and are ignored (recording stopped mid-write?)",
+            tail.len()
         ));
     }
-    bytes
-        .chunks_exact(ENTRY_SIZE)
-        .map(|chunk| {
-            decode_record::<flow_owner_entry>(chunk, ENTRY_SIZE).map(|r| record_owner(&r, json))
+    let processes = json.map(Processes::new);
+    records
+        .iter()
+        .map(|record| {
+            decode_record::<flow_owner_entry>(record, ENTRY_SIZE)
+                .map(|r| record_owner(&r, processes.as_ref()))
         })
         .collect()
 }
@@ -121,33 +158,38 @@ fn snapshot_addr(addr: SocketAddr) -> (IpAddr, u16) {
     (ip, addr.port())
 }
 
-/// The owners of the connections that existed at the start: every process that held the socket
+/// The owners of the connections that existed at the start: every process that held the
+/// socket. Their start is the one /proc shows, rounded down to a clock tick.
 pub fn snapshot_owners(json: &FlowOwners) -> Vec<Owned> {
-    let tick_ns = 1_000_000_000u64.checked_div(json.clock_ticks).unwrap_or(0);
+    let processes = Processes::new(json);
+    let seen_until = json.snapshot_end_ns.max(json.snapshot_ns) as i64;
     let mut owned = Vec::new();
     for c in &json.connections {
         let (src, sport) = snapshot_addr(c.local);
         let (dst, dport) = snapshot_addr(c.remote);
         let tuple = flow_tuple(src, dst, sport, dport);
-        for &pid in &c.pids {
-            // The snapshot's processes come first, before those of the owner records
-            let process = json.processes.iter().find(|p| p.pid == pid);
+        for holder in &c.holders {
+            let process = processes
+                .index
+                .get(&(holder.pid, holder.start_ticks))
+                .copied();
             owned.push(Owned {
                 tuple: tuple.clone(),
                 owner: FlowOwner {
                     flow_id: 0,
                     ts: json.snapshot_ns as i64,
                     source: FlowOwner::SOURCE_SNAPSHOT.to_string(),
-                    pid: i64::from(pid),
+                    pid: i64::from(holder.pid),
                     uid: Some(i64::from(process.and_then(|p| p.uid).unwrap_or(c.uid))),
                     comm: process.map(|p| p.comm.clone()).unwrap_or_default(),
                     cmdline: process.and_then(cmdline),
-                    start_time: process.map(|p| (p.start_ticks * tick_ns) as i64),
+                    start_time: json.start_ns(holder.start_ticks).map(|ns| ns as i64),
                     cgroup_id: None,
                     cgroup: process.and_then(|p| p.cgroup.clone()),
                     netns: Some(i64::from(c.netns)),
                     kthread: false,
                 },
+                seen_until: Some(seen_until),
             });
         }
     }
@@ -195,13 +237,20 @@ fn reversed(t: &IpTuple) -> IpTuple {
     }
 }
 
-/// The owner rows of `flows`, and the number of owners whose connection has no flow. A snapshot
-/// owner that an owner record of the same process already names, from before the snapshot, is
-/// left out: the connection was opened while the snapshot started.
-pub fn join(owned: &[Owned], flows: &[Flow]) -> (Vec<FlowOwner>, usize) {
+/// Keeps one row per key of the table (flow, time, process), sorted by it
+fn by_key(rows: &mut Vec<FlowOwner>) {
+    let mut seen = HashSet::new();
+    rows.retain(|r| seen.insert((r.flow_id, r.ts, r.pid)));
+    rows.sort_by_key(|r| (r.flow_id, r.ts, r.pid));
+}
+
+/// The owner rows of `flows`, and the owners whose connection has no flow. A snapshot owner
+/// that an owner record of the same flow and process names from before the snapshot ended is
+/// left out: the connection was opened while the snapshot ran.
+pub fn join(owned: &[Owned], flows: &[Flow]) -> (Vec<FlowOwner>, Unmatched) {
     let ids: HashMap<&IpTuple, i64> = flows.iter().map(|f| (&f.tuple, f.id)).collect();
-    let mut rows: Vec<FlowOwner> = Vec::new();
-    let mut unmatched = 0;
+    let mut rows: Vec<(FlowOwner, Option<i64>)> = Vec::new();
+    let mut unmatched = Unmatched::default();
     for o in owned {
         let back = reversed(&o.tuple);
         let mut matched: Vec<i64> = [&o.tuple, &back]
@@ -210,32 +259,36 @@ pub fn join(owned: &[Owned], flows: &[Flow]) -> (Vec<FlowOwner>, usize) {
             .collect();
         matched.dedup();
         if matched.is_empty() {
-            unmatched += 1;
+            match o.seen_until {
+                Some(_) => unmatched.snapshot += 1,
+                None => unmatched.records += 1,
+            }
         }
-        rows.extend(matched.into_iter().map(|flow_id| FlowOwner {
-            flow_id,
-            ..o.owner.clone()
+        rows.extend(matched.into_iter().map(|flow_id| {
+            let owner = FlowOwner {
+                flow_id,
+                ..o.owner.clone()
+            };
+            (owner, o.seen_until)
         }));
     }
     // The first owner record of each flow and process
     let mut recorded: HashMap<(i64, i64), i64> = HashMap::new();
-    for r in rows
-        .iter()
-        .filter(|r| r.source != FlowOwner::SOURCE_SNAPSHOT)
-    {
+    for (r, _) in rows.iter().filter(|(_, seen_until)| seen_until.is_none()) {
         let first = recorded.entry((r.flow_id, r.pid)).or_insert(r.ts);
         *first = (*first).min(r.ts);
     }
-    rows.retain(|r| {
-        r.source != FlowOwner::SOURCE_SNAPSHOT
-            || recorded
+    let mut rows: Vec<FlowOwner> = rows
+        .into_iter()
+        .filter(|(r, seen_until)| match seen_until {
+            Some(until) => recorded
                 .get(&(r.flow_id, r.pid))
-                .is_none_or(|&first| first > r.ts)
-    });
-    // One row per flow, time and process, the key of the table
-    let mut seen = HashSet::new();
-    rows.retain(|r| seen.insert((r.flow_id, r.ts, r.pid)));
-    rows.sort_by_key(|r| (r.flow_id, r.ts, r.pid));
+                .is_none_or(|first| first > until),
+            None => true,
+        })
+        .map(|(r, _)| r)
+        .collect();
+    by_key(&mut rows);
     (rows, unmatched)
 }
 
@@ -249,18 +302,30 @@ pub fn inherit(
     connections: &[ConnectionInfo],
     members: &[ConnectionFlow],
 ) {
+    let mut by_flow: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (i, r) in rows.iter().enumerate() {
+        by_flow.entry(r.flow_id).or_default().push(i);
+    }
+    let mut by_connection: HashMap<i64, Vec<&ConnectionFlow>> = HashMap::new();
+    for m in members {
+        by_connection.entry(m.connection_id).or_default().push(m);
+    }
     let mut inherited = Vec::new();
     for c in connections {
-        let flows: Vec<&ConnectionFlow> =
-            members.iter().filter(|m| m.connection_id == c.id).collect();
-        let candidates: Vec<&FlowOwner> = rows
+        let Some(flows) = by_connection.get(&c.id) else {
+            continue;
+        };
+        let candidates: Vec<&FlowOwner> = flows
             .iter()
-            .filter(|r| r.ts <= c.end_ts && flows.iter().any(|m| m.flow_id == r.flow_id))
+            .filter_map(|m| by_flow.get(&m.flow_id))
+            .flatten()
+            .map(|&i| &rows[i])
+            .filter(|r| r.ts <= c.end_ts)
             .collect();
         let Some(opened) = candidates.iter().map(|r| r.ts).max() else {
             continue;
         };
-        for m in &flows {
+        for m in flows {
             let own = candidates
                 .iter()
                 .any(|r| r.flow_id == m.flow_id && r.ts >= opened && r.ts <= m.last_ts);
@@ -281,14 +346,21 @@ pub fn inherit(
         }
     }
     rows.extend(inherited);
-    let mut seen = HashSet::new();
-    rows.retain(|r| seen.insert((r.flow_id, r.ts, r.pid)));
-    rows.sort_by_key(|r| (r.flow_id, r.ts, r.pid));
+    by_key(rows);
+}
+
+/// Fills the owners of `catalog`, whose flows and connections are in place, and returns the
+/// owners whose connection has no flow
+pub fn add_to(catalog: &mut Catalog, owned: &[Owned]) -> Unmatched {
+    let (mut rows, unmatched) = join(owned, &catalog.flows);
+    inherit(&mut rows, &catalog.connections, &catalog.connection_flows);
+    catalog.owners = rows;
+    unmatched
 }
 
 #[cfg(test)]
 mod tests {
-    use tcbee_trace::owners::SnapshotConnection;
+    use tcbee_trace::owners::{Holder, SnapshotConnection};
 
     use super::*;
 
@@ -392,7 +464,10 @@ mod tests {
             state: "ESTABLISHED".into(),
             uid: 1000,
             inode: 5,
-            pids: vec![42],
+            holders: vec![Holder {
+                pid: 42,
+                start_ticks: 1,
+            }],
         });
         let snap = snapshot_owners(&json);
         assert_eq!(snap[0].tuple, tuple("10.0.0.1", "10.0.0.2", 40000, 5201));
@@ -416,7 +491,13 @@ mod tests {
         let (rows, unmatched) = join(&owned, &flows(&[out, other, back]));
         let got: Vec<(i64, i64)> = rows.iter().map(|r| (r.flow_id, r.pid)).collect();
         assert_eq!(got, [(1, 42), (3, 42)]);
-        assert_eq!(unmatched, 1);
+        assert_eq!(
+            unmatched,
+            Unmatched {
+                records: 1,
+                snapshot: 0
+            }
+        );
     }
 
     /// A reused tuple has an owner per connection, by time
@@ -449,7 +530,16 @@ mod tests {
             state: "ESTABLISHED".into(),
             uid: 1000,
             inode: 5,
-            pids: vec![42, 43],
+            holders: vec![
+                Holder {
+                    pid: 42,
+                    start_ticks: 1,
+                },
+                Holder {
+                    pid: 43,
+                    start_ticks: 2,
+                },
+            ],
         });
         json.processes.push(ProcessInfo {
             pid: 43,
@@ -459,10 +549,17 @@ mod tests {
             cgroup: Some("/a".into()),
             uid: Some(0),
         });
+        // A later process with pid 42, whose command line the resolver found: not the holder
+        json.processes.push(ProcessInfo {
+            pid: 42,
+            start_ticks: 99,
+            comm: "later".into(),
+            ..ProcessInfo::default()
+        });
         let flow = flows(&[tuple("10.0.0.1", "10.0.0.2", 40000, 5201)]);
         let snap = snapshot_owners(&json);
         let (rows, unmatched) = join(&snap, &flow);
-        assert_eq!(unmatched, 0);
+        assert_eq!(unmatched, Unmatched::default());
         let got: Vec<_> = rows
             .iter()
             .map(|r| (r.pid, r.comm.as_str(), r.uid, r.start_time))
@@ -470,7 +567,7 @@ mod tests {
         assert_eq!(
             got,
             [
-                (42, "", Some(1000), None),
+                (42, "", Some(1000), Some(10_000_000)),
                 (43, "worker", Some(0), Some(20_000_000))
             ]
         );
@@ -487,6 +584,67 @@ mod tests {
         let (rows, _) = join(&owned, &flow);
         let got: Vec<_> = rows.iter().map(|r| (r.pid, r.source.as_str())).collect();
         assert_eq!(got, [(42, "connect"), (43, "snapshot")]);
+    }
+
+    /// A record of the same process from while the snapshot ran is the same connection
+    #[test]
+    fn records_from_during_the_snapshot_replace_it() {
+        let mut json = FlowOwners::new(50, 100);
+        json.snapshot_end_ns = 70;
+        let holder = |pid| Holder {
+            pid,
+            start_ticks: 1,
+        };
+        json.connections.push(SnapshotConnection {
+            local: "10.0.0.1:40000".parse().unwrap(),
+            remote: "10.0.0.2:5201".parse().unwrap(),
+            netns: 7,
+            state: "ESTABLISHED".into(),
+            uid: 1000,
+            inode: 5,
+            holders: vec![holder(42), holder(43)],
+        });
+        // Not a flow: counted apart from the records
+        json.connections.push(SnapshotConnection {
+            local: "10.0.0.1:40009".parse().unwrap(),
+            remote: "10.0.0.2:22".parse().unwrap(),
+            netns: 7,
+            state: "ESTABLISHED".into(),
+            uid: 1000,
+            inode: 6,
+            holders: vec![holder(44)],
+        });
+        let mut owned = decode_records(
+            &encode(&[
+                record(60, 42, TCBEE_OWNER_CONNECT, 40000, 5201),
+                record(80, 43, TCBEE_OWNER_CONNECT, 40000, 5201),
+            ]),
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        owned.extend(snapshot_owners(&json));
+        let flow = flows(&[tuple("10.0.0.1", "10.0.0.2", 40000, 5201)]);
+        let (rows, unmatched) = join(&owned, &flow);
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.ts, r.pid, r.source.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (50, 43, "snapshot"),
+                (60, 42, "connect"),
+                (80, 43, "connect")
+            ]
+        );
+        assert_eq!(
+            unmatched,
+            Unmatched {
+                records: 0,
+                snapshot: 1
+            }
+        );
     }
 
     /// The first subflow has the owner record, a joined subflow takes it from the connection

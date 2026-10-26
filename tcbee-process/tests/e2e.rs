@@ -705,7 +705,7 @@ fn plain_tcp_socket_on_the_reversed_tuple_stays_out_of_the_connection() {
 #[test]
 fn owners_are_joined_to_their_flows() {
     use tcbee_common::records::{flow_owner_entry, sock_trace_entry, TCBEE_OWNER_CONNECT};
-    use tcbee_trace::owners::{FlowOwners, ProcessInfo, SnapshotConnection};
+    use tcbee_trace::owners::{FlowOwners, Holder, ProcessInfo, SnapshotConnection};
     const AF_INET: u16 = 2;
     let addr_v4 = |local: [u8; 4], remote: [u8; 4]| {
         ((u32::from_le_bytes(local) as u64) << 32) | u32::from_le_bytes(remote) as u64
@@ -766,7 +766,10 @@ fn owners_are_joined_to_their_flows() {
             state: "ESTABLISHED".into(),
             uid: 1000,
             inode: 9,
-            pids: vec![7],
+            holders: vec![Holder {
+                pid: 7,
+                start_ticks: 1,
+            }],
         });
         json.processes.push(ProcessInfo {
             pid: 42,
@@ -787,8 +790,12 @@ fn owners_are_joined_to_their_flows() {
         assert!(summary.skipped.is_empty(), "{:?}", summary.skipped);
         assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
         assert_eq!(
-            (summary.owners, summary.unmatched_owners),
-            (3, 1),
+            (
+                summary.owners,
+                summary.unmatched_owners,
+                summary.unmatched_snapshot
+            ),
+            (3, 1, 0),
             "{engine:?}"
         );
         let store = ts_storage::open(&out).unwrap();
