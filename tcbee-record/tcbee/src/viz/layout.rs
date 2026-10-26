@@ -17,9 +17,9 @@ pub const COMPACT_HEIGHT: u16 = 24;
 pub const COMPACT_CHARTS: usize = 2;
 
 /// Width of the left column on full terminals
-pub const LEFT_WIDTH: u16 = 42;
+pub const LEFT_WIDTH: u16 = 44;
 /// Width of the narrow left column
-pub const NARROW_LEFT_WIDTH: u16 = 30;
+pub const NARROW_LEFT_WIDTH: u16 = 32;
 /// Width the flow table needs next to the narrow column on a minimal terminal
 pub const MIN_FLOWS_WIDTH: u16 = 40;
 
@@ -102,8 +102,8 @@ mod tests {
         assert_eq!(fit(100, 30), Fit::Compact);
         assert_eq!(fit(79, 45), Fit::Minimal);
         assert_eq!(Fit::Full.left_width(120), LEFT_WIDTH);
-        assert_eq!(Fit::Minimal.left_width(70), NARROW_LEFT_WIDTH);
-        assert_eq!(Fit::Minimal.left_width(69), 69);
+        assert_eq!(Fit::Minimal.left_width(72), NARROW_LEFT_WIDTH);
+        assert_eq!(Fit::Minimal.left_width(71), 71);
     }
 
     #[test]

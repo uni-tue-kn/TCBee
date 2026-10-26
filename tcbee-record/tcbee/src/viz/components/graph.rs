@@ -13,10 +13,10 @@ use crate::viz::{
     model::ChartModel,
 };
 
-/// Title of a chart `width` cells wide: its zoom key, name and unit, then the series names in
-/// their colours. Names get shorter or go when they do not fit, the colour squares stay.
+/// Title of a chart `width` cells wide: its zoom key, name and unit in bold, then the series
+/// names in their colours. Names get shorter or go when they do not fit, the colour squares stay.
 pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
-    let head = format!("{key} {} ({}) ", chart.title, chart.unit);
+    let head = format!(" {key} {} ({}) ", chart.title, chart.unit);
     // Corners and a bit of border stay visible
     let room = (width as usize).saturating_sub(4);
     let legend = |chars: usize| -> Vec<String> {
@@ -40,7 +40,10 @@ pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
         .map(legend)
         .find(|names| length(names) <= room)
         .unwrap_or_else(|| legend(0));
-    let mut spans = vec![Span::raw(head)];
+    let mut spans = vec![Span::styled(
+        head,
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
     for (series, name) in chart.series.iter().zip(names) {
         spans.push(Span::styled(
             format!("{name} "),

@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Cell, Padding, Paragraph, Row, Table, Wrap},
     Frame,
 };
 
@@ -28,32 +28,24 @@ pub fn render(
     let compact = fit.narrow_column();
     let context = context_lines(run);
     let health = health_lines(model, compact);
-    // What the name, rate and drop columns leave
-    let fixed = if compact { 23 } else { 33 };
+    // What the borders, the padding and the name, rate and drop columns leave
+    let fixed = if compact { 27 } else { 37 };
     let spark = (area.width as usize).saturating_sub(fixed).clamp(1, 16);
     let rows = group_rows(model, run, expanded, fit.charts(), compact, spark);
     let skipped = &run.skipped;
+    // Each block has a border above and below
     let [context_area, health_area, groups_area, skipped_area] = Layout::vertical([
-        Constraint::Length(context.len() as u16 + 1),
-        Constraint::Length(health.len() as u16 + 1),
-        // Header and title
-        Constraint::Length(rows.len() as u16 + 2),
-        Constraint::Min(0),
+        Constraint::Length(context.len() as u16 + 2),
+        Constraint::Length(health.len() as u16 + 2),
+        // And a header
+        Constraint::Length(rows.len() as u16 + 3),
+        Constraint::Length(skipped_height(&run.skipped, area.width)),
     ])
     .areas(area);
 
-    let title = Span::styled(
-        format!("TCBee {}", format::clock(model.elapsed)),
-        Style::default().add_modifier(Modifier::BOLD),
-    );
-    frame.render_widget(
-        Paragraph::new(context).block(Block::new().borders(Borders::TOP).title(title)),
-        context_area,
-    );
-    frame.render_widget(
-        Paragraph::new(health).block(Block::new().borders(Borders::TOP).title("Health")),
-        health_area,
-    );
+    let title = format!("TCBee  {}", format::clock(model.elapsed));
+    frame.render_widget(Paragraph::new(context).block(block(title)), context_area);
+    frame.render_widget(Paragraph::new(health).block(block("Health")), health_area);
 
     let (header, widths) = if compact {
         (
@@ -82,24 +74,51 @@ pub fn render(
         .map(Cell::from)
         .collect::<Row>()
         .style(Style::default().add_modifier(Modifier::BOLD));
-    let table = Table::new(rows, widths).header(header).block(
-        Block::new()
-            .borders(Borders::TOP)
-            .title("Probe groups (e: rings)"),
-    );
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(block("Probe groups (e: rings)"));
     frame.render_widget(table, groups_area);
 
     if !skipped.is_empty() {
         let lines: Vec<Line> = skipped
             .iter()
-            .map(|reason| Line::from(format!("- {reason}")))
+            .map(|reason| Line::from(reason.clone()))
             .collect();
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(Color::Yellow))
             .wrap(Wrap { trim: false })
-            .block(Block::new().borders(Borders::TOP).title("Skipped"));
+            .block(block("Skipped"));
         frame.render_widget(paragraph, skipped_area);
     }
+}
+
+/// A bordered block with a bold title, its content one cell in from the sides
+fn block<'a>(title: impl Into<String>) -> Block<'a> {
+    Block::bordered()
+        .title(bold_title(title))
+        .padding(Padding::horizontal(1))
+}
+
+/// A block title that stands out from the border: bold, a space on each side
+pub fn bold_title(title: impl Into<String>) -> Span<'static> {
+    Span::styled(
+        format!(" {} ", title.into()),
+        Style::default().add_modifier(Modifier::BOLD),
+    )
+}
+
+/// Lines of the skipped block in a column `width` cells wide, its reasons wrapped
+fn skipped_height(skipped: &[String], width: u16) -> u16 {
+    if skipped.is_empty() {
+        return 0;
+    }
+    // Inside the borders and the padding, and a cell to spare for the word wrap
+    let inner = (width as usize).saturating_sub(5).max(1);
+    let lines: usize = skipped
+        .iter()
+        .map(|reason| reason.chars().count().div_ceil(inner).max(1))
+        .sum();
+    lines as u16 + 2
 }
 
 /// Where and how the run records
@@ -114,7 +133,7 @@ fn context_lines(context: &RunContext) -> Vec<Line<'static>> {
     }
     vec![
         Line::from(context.dir.clone()),
-        Line::from(setup.join("  ")),
+        Line::from(setup.join(" \u{b7} ")),
     ]
 }
 

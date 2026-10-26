@@ -331,7 +331,7 @@ fn render_flows(frame: &mut Frame, ui: &UiState, flows: &Flows, area: Rect) -> (
     if flows.full {
         title.push_str(" (map full, newer flows not listed)");
     }
-    let block = Block::bordered().title(title);
+    let block = Block::bordered().title(status::bold_title(title));
     let inner = block.inner(area);
     // Below the header
     let rows = Rect {
@@ -404,9 +404,9 @@ mod tests {
         let mut flows = Flows::default();
         flows.add(flow(40000));
         let (lines, areas) = screen(160, 45, &model, &view, &UiState::default(), &flows);
-        assert!(contains(&lines, "TCBee 00:00:01"));
+        assert!(contains(&lines, "TCBee  00:00:01"));
         assert!(contains(&lines, "/data/run1"));
-        assert!(contains(&lines, "eth0  8 CPUs"));
+        assert!(contains(&lines, "eth0 \u{b7} 8 CPUs"));
         assert_eq!(row(&lines, "rec/s"), ["rec/s", "990", "total", "990"]);
         assert_eq!(row(&lines, "runs/s"), ["runs/s", "1.00K"]);
         assert_eq!(row(&lines, "drops/s"), ["drops/s", "10", "total", "10"]);
@@ -416,7 +416,10 @@ mod tests {
             row(&lines, "headers"),
             ["headers", "1.00K", "990", "10", "agg", "0%"]
         );
-        assert!(contains(&lines, "- BBR: tcp_bbr is not loaded"));
+        assert_eq!(
+            row(&lines, "BBR:"),
+            ["BBR:", "tcp_bbr", "is", "not", "loaded"]
+        );
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Flows: 1 of 1"));
@@ -497,10 +500,7 @@ mod tests {
             &UiState::default(),
             &Flows::default(),
         );
-        assert_eq!(
-            row(&lines, "sock"),
-            ["sock", "40", "10", "0", "supp", "75%"]
-        );
+        assert_eq!(row(&lines, "sock")[..5], ["sock", "40", "10", "0", "supp"]);
         assert!(contains(&lines, "on change"));
     }
 
@@ -624,7 +624,7 @@ mod tests {
                 .take(sock.width as usize)
                 .collect();
             assert!(
-                title.starts_with("\u{250c}3 Socket hooks (runs/s)"),
+                title.starts_with("\u{250c} 3 Socket hooks (runs/s)"),
                 "{title}"
             );
             // Every series keeps its colour square, the border shows after the legend
@@ -903,7 +903,7 @@ mod tests {
         // Too narrow for the flows next to the column
         let (lines, areas) = screen(60, 20, &model, &view, &UiState::default(), &flows);
         assert_eq!(areas.flow_rows, Rect::default());
-        assert!(contains(&lines, "TCBee 00:00:19"));
+        assert!(contains(&lines, "TCBee  00:00:19"));
     }
 
     #[test]

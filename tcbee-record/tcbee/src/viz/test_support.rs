@@ -94,14 +94,17 @@ pub fn contains(lines: &[String], text: &str) -> bool {
     lines.iter().any(|line| line.contains(text))
 }
 
-/// The words of the first left column line that starts with `name`, up to the first box
-/// border: the values of a health or group table row, whatever their padding
+/// The words of the first left column line that starts with `name`, inside the borders of
+/// its block: the values of a health or group table row, whatever their padding
 pub fn row(lines: &[String], name: &str) -> Vec<String> {
     lines
         .iter()
         .map(|line| {
-            let left = line.split(['\u{2502}', '\u{250c}', '\u{2514}']).next();
-            left.unwrap_or_default()
+            let inside = line
+                .split(['\u{2502}', '\u{250c}', '\u{2514}'])
+                .find(|part| !part.trim().is_empty());
+            inside
+                .unwrap_or_default()
                 .split_whitespace()
                 .map(str::to_string)
                 .collect::<Vec<_>>()
