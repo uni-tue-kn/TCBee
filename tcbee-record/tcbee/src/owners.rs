@@ -28,8 +28,23 @@ use crate::{metadata::clock_ns, writer::Observer};
 
 /// Clock ticks per second, the unit of the start times in `/proc/<pid>/stat`
 pub fn clock_ticks() -> u64 {
+    // SAFETY: sysconf only reads a configuration value, it has no memory arguments
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     u64::try_from(ticks).unwrap_or(0)
+}
+
+/// Inode number of the initial pid namespace, PROC_PID_INIT_INO in include/linux/proc_ns.h. It
+/// is fixed, so it tells the host's pid namespace apart from that of a container, also where the
+/// container mounted a procfs of its own (whose NSpid lines then show a single level).
+const PROC_PID_INIT_INO: u64 = 0xEFFF_FFFC;
+
+/// Whether the process of `proc_root/self` runs in the initial pid namespace, where the owner
+/// records take their pids from; None if procfs does not tell
+pub fn in_initial_pid_namespace(proc_root: &Path) -> Option<bool> {
+    let process = Process::new_with_root(proc_root.join("self")).ok()?;
+    let namespaces = process.namespaces().ok()?;
+    let pid = namespaces.0.get(std::ffi::OsStr::new("pid"))?;
+    Some(pid.identifier == PROC_PID_INIT_INO)
 }
 
 /// The kernel's name of a TCP state, as `ss` shows it
@@ -199,7 +214,8 @@ impl Resolver {
             if entry.len() < mem::size_of::<flow_owner_entry>() {
                 return;
             }
-            // A record of the ring buffer, plain old data
+            // SAFETY: entry holds at least one flow_owner_entry (checked above), a plain old
+            // data struct valid for any bytes; read_unaligned does not need its alignment
             let rec = unsafe { ptr::read_unaligned(entry.as_ptr() as *const flow_owner_entry) };
             if u32::from(rec.flags) & TCBEE_OWNER_KTHREAD == 0 {
                 let _ = processes.send((rec.pid, rec.start_time));
@@ -310,6 +326,17 @@ pub(crate) mod tests {
                 fs::write(&ns_file, "").unwrap();
             }
             symlink(&ns_file, dir.join("ns/net")).unwrap();
+            // A pid namespace of its own, never the initial one
+            let pid_ns = self.root.join("pidns");
+            if !pid_ns.exists() {
+                fs::write(&pid_ns, "").unwrap();
+            }
+            symlink(&pid_ns, dir.join("ns/pid")).unwrap();
+        }
+
+        /// `self` names process `pid`
+        pub fn myself(&self, pid: u32) {
+            symlink(pid.to_string(), self.root.join("self")).unwrap();
         }
 
         /// The inode number that stands for namespace `ns` of `process`
@@ -483,6 +510,7 @@ pub(crate) mod tests {
             flags,
             ..Default::default()
         };
+        // SAFETY: rec is a plain old data struct that lives for the whole borrow
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 &rec as *const flow_owner_entry as *const u8,
@@ -513,6 +541,17 @@ pub(crate) mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].pid, 300);
         assert_eq!(found[0].cmdline, ["curl", "-O", "x"]);
+    }
+
+    #[test]
+    fn a_pid_namespace_of_its_own_is_not_the_hosts() {
+        let proc = FakeProc::new("pidns");
+        assert_eq!(in_initial_pid_namespace(&proc.root), None);
+        proc.process(100, "tcbee-record", &["tcbee-record"], 1, &[], 7);
+        proc.myself(100);
+        assert_eq!(in_initial_pid_namespace(&proc.root), Some(false));
+        // This host's procfs tells, whichever namespace the test runs in
+        assert!(in_initial_pid_namespace(Path::new("/proc")).is_some());
     }
 
     #[test]

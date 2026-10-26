@@ -334,8 +334,9 @@ needed. Nothing runs per packet.
   holder is listed. Names are cut to 15 characters by the kernel.
 - The pids are those of the pid namespace tcbee-record sees in `/proc`, the owner records
   those of the initial one. Run tcbee-record in the pid namespace of the host (not in a
-  container with a pid namespace of its own), or the snapshot and the command lines do not
-  match the records.
+  container with a pid namespace of its own). Elsewhere it records the owners without the
+  snapshot and the command lines, which would name other processes, and says so in a warning
+  and in the skipped hooks of `metadata.json`.
 - Each of the three programs is optional: one the kernel lacks or rejects is left out with a
   warning and listed as skipped in `metadata.json`, whose groups name `owners` when they
   record. `inet_csk_accept` takes its arguments differently from 6.10 on, the program reads

@@ -114,7 +114,7 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
-        self.register_as::<T>(rb, maps, RINGBUFS[rb as usize].file, trace_dir)
+        self.spawn::<T>(rb, maps, RINGBUFS[rb as usize].file, trace_dir, None)
     }
 
     /// As `register`, but into `file` instead of the ring buffer's own file (on-change mode
@@ -144,8 +144,13 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
-        let file = RINGBUFS[rb as usize].file;
-        self.spawn::<T>(rb, maps, file, trace_dir, Some(observer))
+        self.spawn::<T>(
+            rb,
+            maps,
+            RINGBUFS[rb as usize].file,
+            trace_dir,
+            Some(observer),
+        )
     }
 
     fn spawn<T>(

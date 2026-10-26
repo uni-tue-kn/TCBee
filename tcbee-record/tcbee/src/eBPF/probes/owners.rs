@@ -84,23 +84,24 @@ impl OwnerTracer {
 
     /// Attaches the loaded programs. A program that does not attach is left out with a
     /// warning; returns its hook index and a message for each. Without any attached program
-    /// the ring gets no writer and no file. `observer` sees every record written.
+    /// the ring gets no writer and no file. `observer`, if any, sees every record written.
     pub fn spawn(
         skel: &TcbeeSkel<'_>,
         dir: &str,
         writer: &mut Writer,
         links: &mut Vec<Link>,
-        observer: Observer,
+        observer: Option<Observer>,
     ) -> Result<Vec<(usize, String)>, Box<dyn Error>> {
         let (attached, failed) =
             optional_hooks::attach_loaded(&OWNER_HOOKS, skel, links, not_recorded);
         if attached {
-            writer.register_observed::<flow_owner_entry>(
-                RB_OWNERS,
-                rings::of(&skel.maps.FLOW_OWNERS)?,
-                dir,
-                observer,
-            )?;
+            let maps = rings::of(&skel.maps.FLOW_OWNERS)?;
+            match observer {
+                Some(observer) => {
+                    writer.register_observed::<flow_owner_entry>(RB_OWNERS, maps, dir, observer)?
+                }
+                None => writer.register::<flow_owner_entry>(RB_OWNERS, maps, dir)?,
+            }
         }
         Ok(failed)
     }

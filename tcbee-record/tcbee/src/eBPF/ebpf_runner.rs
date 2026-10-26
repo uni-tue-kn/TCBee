@@ -431,10 +431,11 @@ impl EbpfRunner {
         let resolver = self.owner_resolver.take();
         let dir = PathBuf::from(&self.config.dir);
         let finished = spawn_blocking(move || {
-            let Ok(mut owners) = snapshot.join() else {
+            // Without the snapshot, the command lines of the owner records are still worth a file
+            let mut owners = snapshot.join().unwrap_or_else(|_| {
                 error!("The snapshot of the existing connections failed");
-                return;
-            };
+                FlowOwners::new(0, owners::clock_ticks())
+            });
             if let Some(resolver) = resolver {
                 owners.add_processes(resolver.finish());
             }
@@ -1027,12 +1028,31 @@ impl EbpfRunner {
             }
         }
 
+        // The pids of the owner records are those of the initial pid namespace, /proc shows those
+        // of the recorder's: in a namespace of its own, the snapshot and the command lines would
+        // name other processes
+        let host_pids = self.config.owners
+            && owners::in_initial_pid_namespace(Path::new("/proc")).unwrap_or(true);
+        if self.config.owners && !host_pids {
+            warn!(
+                "tcbee-record runs in a pid namespace of its own, the owners are recorded without \
+                 the existing connections and the command lines"
+            );
+            self.skipped.push(
+                "owner snapshot and command lines: not in the host's pid namespace".to_string(),
+            );
+        }
+
         // After the timer: one record per connection is rarer still
         if optional.iter().any(|group| group.is_owner()) {
-            let resolver = self
-                .owner_resolver
-                .insert(owners::Resolver::start(PathBuf::from("/proc")));
-            let observer = resolver.observer();
+            let observer = if host_pids {
+                let resolver = owners::Resolver::start(PathBuf::from("/proc"));
+                let observer = resolver.observer();
+                self.owner_resolver = Some(resolver);
+                Some(observer)
+            } else {
+                None
+            };
             for (hook, message) in OwnerTracer::spawn(skel, dir, writer, links, observer)? {
                 optional.remove(&OptionalGroup::Owner(hook));
                 self.skipped.push(message);
@@ -1044,7 +1064,7 @@ impl EbpfRunner {
         }
         // The connections that exist already, now that the owner programs see the new ones.
         // It reads all of /proc, so it runs on a thread of its own and writes its file when done.
-        if self.config.owners {
+        if host_pids {
             let dir = PathBuf::from(&self.config.dir);
             let filter = self.config.filter.clone();
             self.owner_snapshot = Some(thread::spawn(move || {
