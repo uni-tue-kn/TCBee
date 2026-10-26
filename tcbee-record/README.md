@@ -79,7 +79,7 @@ At least one metric source is required.
 | `--metrics` | | Write a `metrics.json` summary file |
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
-| `--tui-observation-window-s N` | `0` | Start the TUI charts with a window of N seconds, rounded up to 10 s, 30 s, 1, 2, 5, 10 or 30 min; 0 starts with the whole recording, see [Terminal UI](#terminal-ui) |
+| `--tui-observation-window-s N` | `0` | Start the TUI charts with a window of N seconds, rounded up to 10 s, 30 s, 1, 2, 5, 10 or 30 min (at most what the update rate keeps); 0 starts with the whole recording, see [Terminal UI](#terminal-ui) |
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
@@ -130,23 +130,30 @@ Without `-q`, tcbee-record shows what it records while it runs.
   failed kernel reads. Below, *Probe groups*: one row per group of ring buffers that records
   (`headers`, `sock`, `cc`, `tracept`, `tcp_ev`, `mptcp`, `owners`) with runs/s, rec/s and
   drops; `agg` is the share of header hook packets that stand for several segments (GSO,
-  GRO, LRO), `supp` the share of runs suppressed in on-change mode. A group without a
-  chart on screen shows a sparkline of its runs/s. *Skipped* lists the requested hooks
-  that do not record, with the reason.
+  GRO, LRO), `supp` the share of runs suppressed in on-change mode; both count since the
+  start. Any other group without a chart on screen shows a sparkline of its runs/s in that
+  place. `e` adds a row per ring buffer. *Skipped* lists the requested hooks that do not
+  record, with the reason.
 - **Charts**: up to four, in a fixed order: the events (records and drops per second, with
   a red sparkline of the dropped share from 0 to 1 % below), then headers (packets per
   second in and out, per hook), socket hooks, congestion control internals and the
   remaining groups. Each series is named in its colour in the chart title. The charts show
-  the whole recording or a window of the last 10 s to 30 min at full resolution; the whole
-  recording keeps the peak of each interval.
+  the whole recording, which keeps the peak of each interval, or a window of the last 10 s
+  to 30 min at full resolution. The window keeps 36 000 updates: with
+  `--tui-update-ms` below 50 the longest window is shorter, and the footer says when the
+  window is at that limit.
 - **Flows**: the flows the probes saw (at most 100, the title says when the map is full),
   in the order they were first seen. With the owner programs (see [Flow owners](#flow-owners))
-  a flow shows its local side first and the process that opened it (`comm[pid]`, `[kernel]`
-  for a kernel thread); `svc` marks the local port of a connection the process accepted.
-  Flows without a known owner are dimmed, show `?` as process and their endpoints in
-  address order.
-- **Small terminals**: below 120x30 the left column narrows and two charts are shown,
-  below 80x24 no charts and every group gets a sparkline; below 40x12 only a hint.
+  a flow shows its local side first (`Local / A`) and the process that opened it
+  (`comm[pid]`, `[kernel]` for a kernel thread); `svc` marks the local port of a connection
+  the process accepted. The owner comes from the owner records, a newer one for a reused
+  port pair replaces it; connections that existed at the start take it from the snapshot,
+  which has no listeners and so never marks `svc`. Flows without a known owner are dimmed,
+  show `?` as process and their endpoints as A and B in address order: neither is known to
+  be local.
+- **Small terminals**: below 120x30 the left column leaves out the rec/s column and two
+  charts are shown, below 80x24 no charts, so every group without an `agg` or `supp` share
+  shows a sparkline; below 40x12 only a hint.
 
 | Key | Action |
 |---|---|
