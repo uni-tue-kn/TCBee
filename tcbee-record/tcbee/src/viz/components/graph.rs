@@ -13,12 +13,12 @@ use crate::viz::{
     model::ChartModel,
 };
 
-/// Title of a chart `width` cells wide: its zoom key, name and unit, then the series names in
-/// their colours. Names get shorter or go when they do not fit, the colour squares stay.
+/// Title of a chart `width` cells wide: its zoom key, name and unit in bold, then the series
+/// names in their colours. Names get shorter or go when they do not fit, the colour squares stay.
 pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
-    let head = format!("{key} {} ({}) ", chart.title, chart.unit);
-    // Corners and a bit of border stay visible
-    let room = (width as usize).saturating_sub(4);
+    let head = format!(" {key} {} ({}) ", chart.title, chart.unit);
+    // The corners and a cell of border stay visible
+    let room = (width as usize).saturating_sub(3);
     let legend = |chars: usize| -> Vec<String> {
         chart
             .series
@@ -40,7 +40,10 @@ pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
         .map(legend)
         .find(|names| length(names) <= room)
         .unwrap_or_else(|| legend(0));
-    let mut spans = vec![Span::raw(head)];
+    let mut spans = vec![Span::styled(
+        head,
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
     for (series, name) in chart.series.iter().zip(names) {
         spans.push(Span::styled(
             format!("{name} "),
@@ -50,8 +53,16 @@ pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The Braille line chart of a chart's histories in `span`, the legend is in the title
-pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::Span, area: Rect) {
+/// The Braille line chart of a chart's histories in `span`, the legend is in the title and
+/// `bottom` at the right of the bottom border
+pub fn render(
+    frame: &mut Frame,
+    chart: &ChartModel,
+    key: usize,
+    span: history::Span,
+    bottom: Option<Line<'static>>,
+    area: Rect,
+) {
     let end = chart.end();
     let (xmin, xmax) = match span {
         history::Span::Whole => (0.0, end.max(1.0)),
@@ -98,12 +109,14 @@ pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::
         })
         .collect();
 
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(title(chart, key, area.width));
+    if let Some(bottom) = bottom {
+        block = block.title_bottom(bottom.right_aligned());
+    }
     let widget = Chart::new(datasets)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title(chart, key, area.width)),
-        )
+        .block(block)
         .x_axis(Axis::default().bounds([xmin, xmax]).labels(x_labels))
         .y_axis(Axis::default().bounds([0.0, ymax]).labels(y_labels))
         .legend_position(None);

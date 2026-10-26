@@ -33,6 +33,16 @@ fn all_slots(stat: u32) -> Vec<u32> {
     (0..RB_COUNT).map(|rb| slot(rb, stat)).collect()
 }
 
+/// Slots of the runs of every ring
+fn all_runs() -> Vec<u32> {
+    run_slots(&(0..RB_COUNT).collect::<Vec<_>>())
+}
+
+/// Slots of the records of `rings`
+fn handled_slots(rings: &[u32]) -> Vec<u32> {
+    rings.iter().map(|rb| slot(*rb, STAT_HANDLED)).collect()
+}
+
 /// A line of a chart: the rate of a sum of counter slots
 pub struct ChartSeries {
     pub label: &'static str,
@@ -117,24 +127,23 @@ impl ChartModel {
     }
 }
 
-/// Rate points a group row keeps for its sparkline
-pub const ROW_HISTORY: usize = 64;
+/// How often the left column takes new counters: its rates are averages over this period
+pub const SUMMARY_PERIOD: Duration = Duration::from_secs(1);
+
+/// Seconds a group row keeps for its sparkline, one value per summary
+pub const ROW_HISTORY: usize = 30;
 
 /// A row of the probe group table
 pub struct GroupRow {
     pub group: Group,
     /// Its rings that record
     pub rings: Vec<u32>,
-    /// Index of its chart in `Model::charts`
-    pub chart: Option<usize>,
-    /// Runs per second of the last ticks
+    /// Records per second of the last summaries, the newest last
     pub history: Vec<f64>,
 }
 
 /// Counters and rates of some rings
 pub struct RingStats {
-    /// Probe runs per second
-    pub runs: f64,
     /// Records per second
     pub records: f64,
     pub drops: u64,
@@ -144,19 +153,107 @@ pub struct RingStats {
     pub aggregated: f64,
 }
 
-pub struct Model {
-    /// Time since the watcher started, at the current snapshot
+/// The counters taken last and those taken before: the totals and the rates between them
+#[derive(Default)]
+pub struct Counters {
+    /// Time since the watcher started, at `snapshot`
     pub elapsed: Duration,
     pub snapshot: Snapshot,
-    /// The snapshot before and its time, None until the second tick
-    previous: Option<(Snapshot, Duration)>,
-    ticks: u64,
     /// Bytes the writers wrote so far
     pub bytes_written: u64,
-    previous_bytes: u64,
-    handled: Vec<u32>,
-    dropped: Vec<u32>,
-    runs: Vec<u32>,
+    /// The counters before, their time and the bytes, None until the second take
+    previous: Option<(Snapshot, Duration, u64)>,
+    /// Whether counters were taken
+    taken: bool,
+}
+
+impl Counters {
+    fn take(&mut self, snapshot: Snapshot, bytes_written: u64, elapsed: Duration) {
+        let current = std::mem::replace(&mut self.snapshot, snapshot);
+        if self.taken {
+            self.previous = Some((current, self.elapsed, self.bytes_written));
+        }
+        self.taken = true;
+        self.bytes_written = bytes_written;
+        self.elapsed = elapsed;
+    }
+
+    /// Seconds between the previous and the current counters, None after the first take
+    fn interval(&self) -> Option<f64> {
+        let (_, before, _) = self.previous.as_ref()?;
+        let secs = self.elapsed.saturating_sub(*before).as_secs_f64();
+        (secs > 0.0).then_some(secs)
+    }
+
+    /// Increase of the sum of `slots` per second since the previous counters
+    fn rate(&self, slots: &[u32]) -> f64 {
+        let (Some(secs), Some((previous, _, _))) = (self.interval(), self.previous.as_ref()) else {
+            return 0.0;
+        };
+        self.snapshot.sum(slots).wrapping_sub(previous.sum(slots)) as f64 / secs
+    }
+
+    pub fn handled_rate(&self) -> f64 {
+        self.rate(&all_slots(STAT_HANDLED))
+    }
+
+    pub fn dropped_rate(&self) -> f64 {
+        self.rate(&all_slots(STAT_DROPPED))
+    }
+
+    /// Probe runs per second over all rings
+    pub fn runs_rate(&self) -> f64 {
+        self.rate(&all_runs())
+    }
+
+    /// Probe runs since the start over all rings
+    pub fn runs_total(&self) -> u64 {
+        self.snapshot.sum(&all_runs())
+    }
+
+    /// Counters of `rings`: rates since the previous counters, the rest since the start
+    pub fn ring_stats(&self, rings: &[u32]) -> RingStats {
+        let snap = &self.snapshot;
+        let runs: u64 = rings.iter().map(|rb| snap.invocations(*rb)).sum();
+        let suppressed: u64 = rings.iter().map(|rb| snap.suppressed(*rb)).sum();
+        let aggregated: u64 = rings.iter().map(|rb| snap.aggregated(*rb)).sum();
+        RingStats {
+            records: self.rate(&handled_slots(rings)),
+            drops: rings.iter().map(|rb| snap.rb(*rb, STAT_DROPPED)).sum(),
+            suppressed: percent(suppressed as f64, runs as f64),
+            aggregated: percent(aggregated as f64, runs as f64),
+        }
+    }
+
+    /// Dropped share of all events since the start in percent
+    pub fn drop_percent_total(&self) -> f64 {
+        let dropped = self.snapshot.dropped() as f64;
+        percent(dropped, self.snapshot.handled() as f64 + dropped)
+    }
+
+    /// Dropped share of the events since the previous counters in percent
+    pub fn drop_percent(&self) -> f64 {
+        percent(
+            self.dropped_rate(),
+            self.handled_rate() + self.dropped_rate(),
+        )
+    }
+
+    /// Bytes written per second since the previous counters
+    pub fn disk_rate(&self) -> f64 {
+        let (Some(secs), Some((_, _, bytes))) = (self.interval(), self.previous.as_ref()) else {
+            return 0.0;
+        };
+        self.bytes_written.saturating_sub(*bytes) as f64 / secs
+    }
+}
+
+pub struct Model {
+    /// The counters of the last tick and the tick before, for the charts and the -q line
+    pub tick: Counters,
+    /// The counters of the last summary and the one before, at least `SUMMARY_PERIOD` apart,
+    /// for the left column: it changes once per period, with the rates averaged over it
+    pub second: Counters,
     /// Runs of the header hooks of the -q line
     ingress: Vec<u32>,
     egress: Vec<u32>,
@@ -184,8 +281,6 @@ impl Model {
                     .copied()
                     .filter(|rb| display_group(*rb) == Some(group))
                     .collect(),
-                // The events chart comes first
-                chart: charted.iter().position(|g| *g == group).map(|i| i + 1),
                 history: Vec::new(),
             })
             .filter(|row| !row.rings.is_empty())
@@ -195,15 +290,8 @@ impl Model {
             && active_rings.contains(&RB_TCP4_DRIVER_INGRESS);
         let (ingress, egress) = packet_rings(driver_packets);
         Model {
-            elapsed: Duration::ZERO,
-            snapshot: Snapshot::default(),
-            previous: None,
-            ticks: 0,
-            bytes_written: 0,
-            previous_bytes: 0,
-            handled: all_slots(STAT_HANDLED),
-            dropped: all_slots(STAT_DROPPED),
-            runs: run_slots(&(0..RB_COUNT).collect::<Vec<_>>()),
+            tick: Counters::default(),
+            second: Counters::default(),
             ingress: run_slots(&ingress),
             egress: run_slots(&egress),
             charts,
@@ -212,129 +300,68 @@ impl Model {
         }
     }
 
-    /// Takes the counters of a tick. Rates compare them with the tick before.
+    /// Takes the counters of a tick. Rates compare them with the tick before, those of the
+    /// left column with the last summary once it is a period old.
     pub fn update(&mut self, snapshot: Snapshot, bytes_written: u64, elapsed: Duration) {
-        let current = std::mem::replace(&mut self.snapshot, snapshot);
-        if self.ticks > 0 {
-            self.previous = Some((current, self.elapsed));
+        let summary =
+            !self.second.taken || elapsed.saturating_sub(self.second.elapsed) >= SUMMARY_PERIOD;
+        if summary {
+            self.second.take(snapshot.clone(), bytes_written, elapsed);
+            for row in &mut self.groups {
+                if row.history.len() == ROW_HISTORY {
+                    row.history.remove(0);
+                }
+                row.history
+                    .push(self.second.rate(&handled_slots(&row.rings)));
+            }
         }
-        self.ticks += 1;
-        self.previous_bytes = self.bytes_written;
-        self.bytes_written = bytes_written;
-        self.elapsed = elapsed;
+        self.tick.take(snapshot, bytes_written, elapsed);
     }
 
-    /// Seconds between the previous and the current snapshot, None on the first tick
-    fn interval(&self) -> Option<f64> {
-        let (_, before) = self.previous.as_ref()?;
-        let secs = self.elapsed.saturating_sub(*before).as_secs_f64();
-        (secs > 0.0).then_some(secs)
-    }
-
-    /// Increase of the sum of `slots` per second since the previous tick
-    fn rate(&self, slots: &[u32]) -> f64 {
-        let (Some(secs), Some((previous, _))) = (self.interval(), self.previous.as_ref()) else {
-            return 0.0;
-        };
-        self.snapshot.sum(slots).wrapping_sub(previous.sum(slots)) as f64 / secs
-    }
-
-    pub fn handled_rate(&self) -> f64 {
-        self.rate(&self.handled)
-    }
-
-    pub fn dropped_rate(&self) -> f64 {
-        self.rate(&self.dropped)
+    /// Time since the watcher started, at the last tick
+    pub fn elapsed(&self) -> Duration {
+        self.tick.elapsed
     }
 
     pub fn ingress_rate(&self) -> f64 {
-        self.rate(&self.ingress)
+        self.tick.rate(&self.ingress)
     }
 
     pub fn egress_rate(&self) -> f64 {
-        self.rate(&self.egress)
+        self.tick.rate(&self.egress)
     }
 
-    /// Counters of `rings`: rates since the previous tick, the rest since the start
-    pub fn ring_stats(&self, rings: &[u32]) -> RingStats {
-        let snap = &self.snapshot;
-        let runs: u64 = rings.iter().map(|rb| snap.invocations(*rb)).sum();
-        let suppressed: u64 = rings.iter().map(|rb| snap.suppressed(*rb)).sum();
-        let aggregated: u64 = rings.iter().map(|rb| snap.aggregated(*rb)).sum();
-        let handled: Vec<u32> = rings.iter().map(|rb| slot(*rb, STAT_HANDLED)).collect();
-        RingStats {
-            runs: self.rate(&run_slots(rings)),
-            records: self.rate(&handled),
-            drops: rings.iter().map(|rb| snap.rb(*rb, STAT_DROPPED)).sum(),
-            suppressed: percent(suppressed as f64, runs as f64),
-            aggregated: percent(aggregated as f64, runs as f64),
-        }
-    }
-
-    /// Probe runs per second over all rings
-    pub fn runs_rate(&self) -> f64 {
-        self.rate(&self.runs)
-    }
-
-    /// Dropped share of all events since the start in percent
-    pub fn drop_percent_total(&self) -> f64 {
-        let dropped = self.snapshot.dropped() as f64;
-        percent(dropped, self.snapshot.handled() as f64 + dropped)
-    }
-
-    /// Dropped share of the events since the previous tick in percent
-    pub fn drop_percent(&self) -> f64 {
-        percent(
-            self.dropped_rate(),
-            self.handled_rate() + self.dropped_rate(),
-        )
-    }
-
-    /// Bytes written per second since the previous tick
-    pub fn disk_rate(&self) -> f64 {
-        self.interval().map_or(0.0, |secs| {
-            self.bytes_written.saturating_sub(self.previous_bytes) as f64 / secs
-        })
-    }
-
-    /// Adds the current rates to the chart histories
+    /// Adds the rates of the tick to the chart histories
     pub fn record_history(&mut self) {
-        let x = self.elapsed.as_secs_f64();
+        let x = self.tick.elapsed.as_secs_f64();
         for c in 0..self.charts.len() {
             for s in 0..self.charts[c].series.len() {
-                let y = self.rate(&self.charts[c].series[s].slots);
+                let y = self.tick.rate(&self.charts[c].series[s].slots);
                 let series = &mut self.charts[c].series[s];
                 series.whole.push(x, y);
                 series.recent.push(x, y);
             }
         }
-        for g in 0..self.groups.len() {
-            let runs = self.rate(&run_slots(&self.groups[g].rings));
-            let history = &mut self.groups[g].history;
-            if history.len() == ROW_HISTORY {
-                history.remove(0);
-            }
-            history.push(runs);
-        }
         if self.drop_history.len() == DROP_TICKS {
             self.drop_history.pop_front();
         }
         self.drop_history
-            .push_back((self.drop_percent() * 100.0).round() as u64);
+            .push_back((self.tick.drop_percent() * 100.0).round() as u64);
     }
 
     /// The status line of -q, overwriting the line before
     pub fn quiet_line(&self) -> String {
-        let elapsed = self.elapsed;
+        let elapsed = self.tick.elapsed;
+        let snap = &self.tick.snapshot;
         format!(
             // \r returns cursor to beginning of line, effectively overwriting the last line
             "\r| {}s {}ms time elapsed | {} handled | {} dropped | {} events/s | {} drops/s | {} ingress packets/s | {} egress packets/s | ",
             elapsed.as_secs(),
             elapsed.subsec_millis(),
-            self.snapshot.handled(),
-            self.snapshot.dropped(),
-            format::quiet_rate(self.handled_rate(), "Events/s"),
-            format::quiet_rate(self.dropped_rate(), "Events/s"),
+            snap.handled(),
+            snap.dropped(),
+            format::quiet_rate(self.tick.handled_rate(), "Events/s"),
+            format::quiet_rate(self.tick.dropped_rate(), "Events/s"),
             format::quiet_rate(self.ingress_rate(), "pps"),
             format::quiet_rate(self.egress_rate(), "pps"),
         )
@@ -397,13 +424,34 @@ mod tests {
     #[test]
     fn rates_follow_the_counters() {
         let model = busy_model(&TC_RINGS);
-        assert_eq!(model.handled_rate(), 990.0);
-        assert_eq!(model.dropped_rate(), 10.0);
+        assert_eq!(model.tick.handled_rate(), 990.0);
+        assert_eq!(model.tick.dropped_rate(), 10.0);
         assert_eq!(model.ingress_rate(), 600.0);
         assert_eq!(model.egress_rate(), 400.0);
-        assert_eq!(model.disk_rate(), 2_000_000.0);
+        assert_eq!(model.tick.disk_rate(), 2_000_000.0);
         // The driver rings saw nothing
         assert_eq!(busy_model(&[RB_TCP4_DRIVER_INGRESS]).ingress_rate(), 0.0);
+    }
+
+    #[test]
+    fn the_left_column_takes_one_second_averages() {
+        let mut model = Model::new(&TC_RINGS);
+        // 100 ms ticks, 100 packets in each but the 1000 of the fifth
+        let mut count = 0;
+        for tick in 0..=10u64 {
+            count += if tick == 5 { 1000 } else { 100 };
+            let values = [(slot(RB_TCP4_INGRESS, STAT_HANDLED), count)];
+            model.update(snapshot(&values), 0, Duration::from_millis(100 * tick));
+            if tick < 10 {
+                // The counters of the first tick stay
+                assert_eq!(model.second.snapshot.handled(), 100, "{tick}");
+                assert_eq!(model.second.handled_rate(), 0.0);
+            }
+        }
+        assert_eq!(model.tick.handled_rate(), 1000.0);
+        assert_eq!(model.second.handled_rate(), 1900.0);
+        assert_eq!(model.second.snapshot.handled(), 2000);
+        assert_eq!(model.groups[0].history, [0.0, 1900.0]);
     }
 
     #[test]
@@ -415,7 +463,7 @@ mod tests {
             Duration::from_secs(1),
         );
         assert_eq!(model.ingress_rate(), 0.0);
-        assert_eq!(model.disk_rate(), 0.0);
+        assert_eq!(model.tick.disk_rate(), 0.0);
     }
 
     #[test]
@@ -442,6 +490,6 @@ mod tests {
         assert_eq!(last(0), (1.5, 600.0));
         assert_eq!(last(1), (1.5, 400.0));
         assert_eq!(model.drop_history, [0, 100]);
-        assert_eq!(model.drop_percent(), 1.0);
+        assert_eq!(model.tick.drop_percent(), 1.0);
     }
 }

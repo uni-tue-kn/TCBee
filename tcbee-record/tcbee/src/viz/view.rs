@@ -6,9 +6,9 @@ use ratatui::{
     crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind},
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
+    text::{self, Line},
     widgets::{
-        Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline, TableState,
-        Wrap,
+        Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState, Wrap,
     },
     Frame,
 };
@@ -17,6 +17,7 @@ use crate::viz::{
     components::{graph, status},
     context::RunContext,
     flow_tracker::{flow_table, Flows},
+    format,
     history::{window_name, window_step, window_steps, Span, WINDOWS},
     layout::{grid, Fit, MIN_HEIGHT, MIN_WIDTH},
     model::Model,
@@ -235,15 +236,9 @@ pub fn render(
     let slots: Vec<(usize, Rect)> = shown.into_iter().zip(areas).collect();
     let span = ui.span();
     for (slot, rect) in &slots {
-        let mut rect = *rect;
-        // The events chart shows the dropped share below
-        if *slot == 0 && rect.height >= 10 {
-            let [above, drops] =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(rect);
-            render_drops(frame, model, drops);
-            rect = above;
-        }
-        graph::render(frame, &model.charts[*slot], slot + 1, span, rect);
+        // The events chart shows the dropped share in its bottom border
+        let bottom = (*slot == 0).then(|| drop_line(model, rect.width));
+        graph::render(frame, &model.charts[*slot], slot + 1, span, bottom, *rect);
     }
 
     status::render(frame, model, context, ui.expanded, fit, left);
@@ -299,25 +294,24 @@ pub fn render(
 /// Dropped share of the events that fills the drop sparkline, in hundredths of a percent
 const DROP_SCALE: u64 = 100;
 
-/// The dropped share of the events per tick as a red sparkline from 0 to 1 %
-fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
-    let red = Style::default().fg(Color::Red);
-    let label = format!(" drop {:.2}%  0-1%: ", model.drop_percent());
-    let [label_area, spark_area] =
-        Layout::horizontal([Constraint::Length(label.len() as u16), Constraint::Min(0)])
-            .areas(area);
-    frame.render_widget(Paragraph::new(label).style(red), label_area);
-    let history = &model.drop_history;
+/// Cells a drop line leaves of the bottom border of a chart: the corners and some border
+const DROP_LINE_MARGIN: usize = 6;
+
+/// The dropped share of the events now and per tick as a red sparkline from 0 to 1 %, for the
+/// bottom border of a chart `width` cells wide
+fn drop_line(model: &Model, width: u16) -> Line<'static> {
+    let label = format!(" drop {:.2}% ", model.tick.drop_percent());
+    let scale = " 0\u{2013}1% ";
+    let room = (width as usize).saturating_sub(DROP_LINE_MARGIN + label.len() + scale.len());
+    let history: Vec<u64> = model.drop_history.iter().copied().collect();
     // A fixed scale, so the bars compare between ticks; more than 1 % fills a bar
-    let shown: Vec<u64> = history
-        .iter()
-        .skip(history.len().saturating_sub(spark_area.width as usize))
-        .map(|value| (*value).min(DROP_SCALE))
-        .collect();
-    frame.render_widget(
-        Sparkline::default().data(&shown).max(DROP_SCALE).style(red),
-        spark_area,
-    );
+    let spark = format::spark_fixed(&history, DROP_SCALE, room);
+    let mut spans = vec![text::Span::raw(label)];
+    if !spark.is_empty() {
+        spans.push(text::Span::raw(spark));
+        spans.push(text::Span::raw(scale));
+    }
+    Line::from(spans).style(Style::default().fg(Color::Red))
 }
 
 /// The flow table with the selected row highlighted, returns the area of its rows and the
@@ -331,7 +325,7 @@ fn render_flows(frame: &mut Frame, ui: &UiState, flows: &Flows, area: Rect) -> (
     if flows.full {
         title.push_str(" (map full, newer flows not listed)");
     }
-    let block = Block::bordered().title(title);
+    let block = Block::bordered().title(status::bold_title(title));
     let inner = block.inner(area);
     // Below the header
     let rows = Rect {
@@ -404,19 +398,35 @@ mod tests {
         let mut flows = Flows::default();
         flows.add(flow(40000));
         let (lines, areas) = screen(160, 45, &model, &view, &UiState::default(), &flows);
-        assert!(contains(&lines, "TCBee 00:00:01"));
+        assert!(contains(&lines, "TCBee  00:00:01"));
         assert!(contains(&lines, "/data/run1"));
-        assert!(contains(&lines, "eth0  8 CPUs"));
-        assert_eq!(row(&lines, "rec/s"), ["rec/s", "990", "total", "990"]);
-        assert_eq!(row(&lines, "runs/s"), ["runs/s", "1.00K"]);
-        assert_eq!(row(&lines, "drops/s"), ["drops/s", "10", "total", "10"]);
-        assert_eq!(row(&lines, "drop"), ["drop", "%", "1.00%", "now", "1.00%"]);
+        assert!(contains(&lines, "eth0 \u{b7} 8 CPUs"));
+        // Every value of the health block below its column, now and since the start
+        assert!(contains(&lines, "\u{250c} Health "));
+        assert!(contains(&lines, " now \u{2500} total \u{2510}"));
+        assert_eq!(row(&lines, "records/s"), ["records/s", "990", "990"]);
+        assert_eq!(row(&lines, "drops/s"), ["drops/s", "10", "10"]);
+        assert_eq!(row(&lines, "drop"), ["drop", "%", "1.00%", "1.00%"]);
         assert_eq!(row(&lines, "disk"), ["disk", "2.00", "MB/s", "2.00", "MB"]);
+        // The cell after `text` on the line of `name`
+        let end = |name: &str, text: &str| {
+            let line = lines.iter().find(|line| line.contains(name)).unwrap();
+            line[..line.find(text).unwrap()].chars().count() + text.chars().count()
+        };
+        assert_eq!(end("Health", "total"), end("records/s", "990 \u{2502}") - 2);
+        assert_eq!(end("Health", "total"), end("disk", "MB \u{2502}") - 2);
+        // The runs only differ from the records on change
+        assert!(!contains(&lines, "\u{2502} runs/s"));
+        // The groups with their records and drops, the headers with their aggregated share
+        assert!(contains(&lines, "\u{250c} Probe groups "));
+        assert!(contains(&lines, " rec/s  drops \u{2510}"));
+        assert_eq!(row(&lines, "headers"), ["headers", "990", "10"]);
+        assert!(contains(&lines, "\u{2502}   0% of pkts GSO/GRO "));
+        assert!(contains(&lines, "e: show rings"));
         assert_eq!(
-            row(&lines, "headers"),
-            ["headers", "1.00K", "990", "10", "agg", "0%"]
+            row(&lines, "BBR:"),
+            ["BBR:", "tcp_bbr", "is", "not", "loaded"]
         );
-        assert!(contains(&lines, "- BBR: tcp_bbr is not loaded"));
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Flows: 1 of 1"));
@@ -431,7 +441,15 @@ mod tests {
             "1 Events (rec/s) \u{25a0} rec \u{25a0} drop"
         ));
         assert!(contains(&lines, "2 Headers (pps) \u{25a0} in \u{25a0} out"));
-        assert!(contains(&lines, " drop 1.00%  0-1%: "));
+        // The drop line sits in the bottom border of the events chart, so both charts of a row
+        // are as high
+        assert!(contains(
+            &lines,
+            " drop 1.00% \u{2581}\u{2588} 0\u{2013}1% \u{2518}"
+        ));
+        let (_, events) = areas.slots[0];
+        let (_, headers) = areas.slots[1];
+        assert_eq!(events.height, headers.height);
     }
 
     #[test]
@@ -457,25 +475,24 @@ mod tests {
         let view = context(&[]);
         let mut ui = UiState::default();
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
-        assert_eq!(
-            row(&lines, "headers"),
-            ["headers", "200", "200", "0", "agg", "50%"]
-        );
-        // TCP events have no chart, so a sparkline
-        assert_eq!(
-            row(&lines, "tcp_ev"),
-            ["tcp_ev", "200", "200", "0", "\u{2581}\u{2584}\u{2588}"]
-        );
-        assert!(contains(&lines, "! 3 state_err"));
+        assert_eq!(row(&lines, "headers"), ["headers", "200", "\u{b7}"]);
+        assert!(contains(&lines, "50% of pkts GSO/GRO"));
+        // Nothing is a dot, no sparklines next to the charts
+        assert_eq!(row(&lines, "sock"), ["sock", "\u{b7}", "\u{b7}"]);
+        assert_eq!(row(&lines, "tcp"), ["tcp", "events", "200", "\u{b7}"]);
+        assert!(contains(&lines, "! 3 state errors"));
         assert!(!contains(&lines, "tc v4 in"));
         ui.on_key(KeyCode::Char('e'), &charts(model.charts.len()), 0);
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
+        assert_eq!(row(&lines, "tc"), ["tc", "v4", "in", "200", "\u{b7}"]);
+        assert!(contains(&lines, "   tc v4 out "));
+        assert_eq!(row(&lines, "tcp_events"), ["tcp_events", "200", "\u{b7}"]);
+        assert!(contains(&lines, "e: hide rings"));
+        // The share is the group's only
         assert_eq!(
-            row(&lines, "tc"),
-            ["tc", "v4", "in", "200", "200", "0", "agg", "50%"]
+            lines.iter().filter(|line| line.contains("GSO/GRO")).count(),
+            1
         );
-        assert!(contains(&lines, " tc v4 out "));
-        assert_eq!(row(&lines, "tcp_events")[1], "200");
     }
 
     #[test]
@@ -497,11 +514,11 @@ mod tests {
             &UiState::default(),
             &Flows::default(),
         );
-        assert_eq!(
-            row(&lines, "sock"),
-            ["sock", "40", "10", "0", "supp", "75%"]
-        );
+        assert_eq!(row(&lines, "sock"), ["sock", "10", "\u{b7}"]);
+        assert!(contains(&lines, "\u{2502}   75% runs unchanged "));
         assert!(contains(&lines, "on change"));
+        assert_eq!(row(&lines, "runs/s"), ["runs/s", "40", "40"]);
+        assert_eq!(row(&lines, "records/s"), ["records/s", "10", "10"]);
     }
 
     #[test]
@@ -601,7 +618,10 @@ mod tests {
             &Flows::default(),
         );
         // Half a bar, then a full one for more than 1 %
-        assert!(contains(&lines, " drop 3.00%  0-1%:  \u{2584}\u{2588}"));
+        assert!(contains(
+            &lines,
+            " drop 3.00% \u{2581}\u{2585}\u{2588} 0\u{2013}1% \u{2518}"
+        ));
     }
 
     #[test]
@@ -624,7 +644,7 @@ mod tests {
                 .take(sock.width as usize)
                 .collect();
             assert!(
-                title.starts_with("\u{250c}3 Socket hooks (runs/s)"),
+                title.starts_with("\u{250c} 3 Socket hooks (runs/s)"),
                 "{title}"
             );
             // Every series keeps its colour square, the border shows after the legend
@@ -640,7 +660,7 @@ mod tests {
             .filter_map(|y| {
                 let row: String = lines[y as usize].chars().skip(rows.x as usize).collect();
                 row.split_whitespace()
-                    .nth(4)
+                    .nth(3)
                     .and_then(|port| port.parse().ok())
             })
             .collect()
@@ -832,10 +852,19 @@ mod tests {
             })
             .map(|row| row.split_whitespace().collect::<Vec<_>>().join(" "))
             .collect();
-        assert_eq!(rows[0], "10.0.0.2 40000 iperf3[812] 10.0.0.1 5201");
-        assert_eq!(rows[1], "10.0.0.1 5201 svc sshd[90] 10.0.0.2 22");
+        assert_eq!(rows[0], "10.0.0.2 40000 10.0.0.1 5201 iperf3[812]");
+        assert_eq!(rows[1], "10.0.0.1 5201 svc 10.0.0.2 22 sshd[90]");
         // Without an owner, the map's order and no process
-        assert_eq!(rows[2], "10.0.0.1 5201 ? 10.0.0.2 9");
+        assert_eq!(rows[2], "10.0.0.1 5201 10.0.0.2 9 ?");
+        // Each port next to its address, after the port column ("5201 svc") the widest gap of
+        // 16 cells and the column space, the process last
+        let first = &lines[areas.flow_rows.y as usize];
+        let spaced = |left: &str, spaces: usize, right: &str| {
+            first.contains(&format!("{left}{}{right}", " ".repeat(spaces)))
+        };
+        assert!(spaced("10.0.0.2 40000", 3 + 17, "10.0.0.1 5201"), "{first}");
+        assert!(spaced("10.0.0.1 5201", 1 + 17, "iperf3[812]"), "{first}");
+        assert!(first.contains("iperf3[812]          "), "{first}");
     }
 
     /// A busy run with every group, its flows and their owners
@@ -868,11 +897,18 @@ mod tests {
         assert!(contains(&lines, "1 Events"));
         assert!(contains(&lines, "2 Headers"));
         assert!(!contains(&lines, "3 Socket"));
-        // No rec/s column, the groups without a shown chart get a sparkline
-        assert_eq!(row(&lines, "group"), ["group", "runs/s", "drops"]);
-        let sock = row(&lines, "sock");
-        assert_eq!(sock.len(), 4);
-        assert!(sock[3].ends_with('\u{2588}'), "{sock:?}");
+        // The events legend still fits
+        assert!(contains(
+            &lines,
+            "1 Events (rec/s) \u{25a0} rec \u{25a0} drop \u{2500}\u{2510}"
+        ));
+        // The same columns in a narrow column, no sparklines next to the charts
+        assert!(contains(
+            &lines,
+            "\u{250c} Probe groups \u{2500}\u{2500} rec/s  drops \u{2510}"
+        ));
+        assert_eq!(row(&lines, "sock").len(), 3);
+        assert_eq!(row(&lines, "owners").len(), 3);
         assert!(contains(&lines, "Flows: 1 of 30"));
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         // Key 3 has no chart to zoom
@@ -890,8 +926,11 @@ mod tests {
         assert!(areas.slots.is_empty());
         assert_eq!(areas.charts, 0);
         assert!(!contains(&lines, "1 Events"));
-        assert_eq!(row(&lines, "headers")[3], "agg");
+        // Every group gets a sparkline of the last 30 s
+        assert!(contains(&lines, " rec/s  drops last 30 s \u{2510}"));
+        assert!(row(&lines, "headers")[3].ends_with('\u{2588}'));
         assert!(row(&lines, "cc")[3].ends_with('\u{2588}'));
+        assert!(contains(&lines, "GSO/GRO"));
         assert!(contains(&lines, "Flows: 1 of 30"));
         // A zoom from a larger terminal is not in the way
         let ui = UiState {
@@ -903,7 +942,7 @@ mod tests {
         // Too narrow for the flows next to the column
         let (lines, areas) = screen(60, 20, &model, &view, &UiState::default(), &flows);
         assert_eq!(areas.flow_rows, Rect::default());
-        assert!(contains(&lines, "TCBee 00:00:19"));
+        assert!(contains(&lines, "TCBee  00:00:19"));
     }
 
     #[test]
@@ -946,6 +985,13 @@ mod tests {
         assert!(!ui.on_key(KeyCode::Esc, &charts(model.charts.len()), 0));
         assert_eq!(ui.zoom, None);
         assert!(ui.on_key(KeyCode::Char('q'), &charts(model.charts.len()), 0));
+        // The zoomed events chart keeps the drop line in its border
+        ui.on_key(KeyCode::Char('1'), &charts(model.charts.len()), 0);
+        let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
+        assert!(contains(
+            &lines,
+            " drop 1.00% \u{2581}\u{2588} 0\u{2013}1% \u{2518}"
+        ));
     }
 
     #[test]

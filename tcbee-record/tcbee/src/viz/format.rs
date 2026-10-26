@@ -52,12 +52,13 @@ pub fn axis_time(secs: f64) -> String {
     }
 }
 
+/// Bars of a text sparkline, from the lowest to the highest
+const BARS: [char; 8] = [
+    '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
+];
+
 /// The last `width` values as a text sparkline, scaled to their maximum
 pub fn spark(values: &[f64], width: usize) -> String {
-    const BARS: [char; 8] = [
-        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
-        '\u{2588}',
-    ];
     let shown = &values[values.len().saturating_sub(width)..];
     let max = shown.iter().copied().fold(0.0, f64::max);
     shown
@@ -65,6 +66,18 @@ pub fn spark(values: &[f64], width: usize) -> String {
         .map(|value| {
             let level = if max > 0.0 { value / max * 7.0 } else { 0.0 };
             BARS[(level as usize).min(7)]
+        })
+        .collect()
+}
+
+/// The last `width` values as a text sparkline on a fixed scale up to `max`: the lowest bar
+/// for nothing, any more at least the second, `max` and more the highest
+pub fn spark_fixed(values: &[u64], max: u64, width: usize) -> String {
+    let shown = values.iter().skip(values.len().saturating_sub(width));
+    shown
+        .map(|value| match value {
+            0 => BARS[0],
+            value => BARS[(1 + value * 6 / max.max(1)).min(7) as usize],
         })
         .collect()
 }
@@ -122,5 +135,9 @@ mod tests {
         );
         assert_eq!(spark(&[0.0, 0.0], 8), "\u{2581}\u{2581}");
         assert_eq!(spark(&[], 8), "");
+        assert_eq!(
+            spark_fixed(&[9, 0, 1, 50, 100, 300], 100, 5),
+            "\u{2581}\u{2582}\u{2585}\u{2588}\u{2588}"
+        );
     }
 }
