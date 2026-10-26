@@ -688,6 +688,99 @@ mod tests {
         assert_eq!(got, [(1, 5, 42, "connect"), (2, 100, 42, "connection")]);
     }
 
+    /// The first subflow's tuple is reused by a later connection of another process: each
+    /// connection's joined subflow takes the owner of its own connection
+    #[test]
+    fn reused_first_subflow_tuple_gives_each_connection_its_owner() {
+        let first = tuple("10.0.0.1", "10.0.0.2", 40000, 5201);
+        let joined_a = tuple("10.0.1.1", "10.0.0.2", 40100, 5201);
+        let joined_b = tuple("10.0.1.1", "10.0.0.2", 40101, 5201);
+        let all = flows(&[first, joined_a, joined_b]);
+        let owned = decode_records(
+            &encode(&[
+                record(5, 42, TCBEE_OWNER_CONNECT, 40000, 5201),
+                record(1000, 77, TCBEE_OWNER_CONNECT, 40000, 5201),
+            ]),
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let (mut rows, _) = join(&owned, &all);
+        let connection = |id, start_ts, end_ts| ConnectionInfo {
+            id,
+            kind: ConnectionInfo::KIND_MPTCP.into(),
+            key: 7,
+            flow_id: None,
+            start_ts,
+            end_ts,
+        };
+        let member = |connection_id, flow_id, first_ts, last_ts| ConnectionFlow {
+            connection_id,
+            flow_id,
+            subflow_id: None,
+            first_ts,
+            last_ts,
+        };
+        inherit(
+            &mut rows,
+            &[connection(1, 10, 500), connection(2, 1010, 1500)],
+            &[
+                member(1, 1, 10, 500),
+                member(1, 2, 100, 400),
+                member(2, 1, 1010, 1500),
+                member(2, 3, 1100, 1400),
+            ],
+        );
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.flow_id, r.ts, r.pid, r.source.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (1, 5, 42, "connect"),
+                (1, 1000, 77, "connect"),
+                (2, 100, 42, "connection"),
+                (3, 1100, 77, "connection")
+            ]
+        );
+    }
+
+    /// Both ends of a connection on one host, over loopback: the client's connect and the
+    /// server's accept name the two directions, and each flow gets both processes
+    #[test]
+    fn loopback_flows_name_client_and_server() {
+        let loopback = |time, pid, kind, local: u16, remote: u16| flow_owner_entry {
+            addr_v4: addr_v4([127, 0, 0, 1], [127, 0, 0, 1]),
+            ..record(time, pid, kind, local, remote)
+        };
+        let owned = decode_records(
+            &encode(&[
+                loopback(5, 42, TCBEE_OWNER_CONNECT, 40000, 5201),
+                loopback(6, 77, TCBEE_OWNER_ACCEPT, 5201, 40000),
+            ]),
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let out = tuple("127.0.0.1", "127.0.0.1", 40000, 5201);
+        let back = reversed(&out);
+        let (rows, _) = join(&owned, &flows(&[out, back]));
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.flow_id, r.pid, r.source.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (1, 42, "connect"),
+                (1, 77, "accept"),
+                (2, 42, "connect"),
+                (2, 77, "accept")
+            ]
+        );
+    }
+
     #[test]
     fn a_trace_without_owners_has_none() {
         let dir = tempfile::tempdir().unwrap();

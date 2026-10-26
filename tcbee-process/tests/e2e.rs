@@ -821,6 +821,73 @@ fn owners_are_joined_to_their_flows() {
     }
 }
 
+/// An MPTCP connection of two subflows: the process opened the first, the path manager added
+/// the second, which takes the owner of the connection
+#[test]
+fn joined_mptcp_subflow_takes_the_owner_of_its_connection() {
+    use tcbee_common::records::{flow_owner_entry, sock_trace_entry, TCBEE_OWNER_CONNECT};
+    const AF_INET: u16 = 2;
+    let addr_v4 = |local: [u8; 4], remote: [u8; 4]| {
+        ((u32::from_le_bytes(local) as u64) << 32) | u32::from_le_bytes(remote) as u64
+    };
+    let server = [10, 0, 0, 2];
+    let sock = |i: u64, local, sport| sock_trace_entry {
+        time: 1_000 + i,
+        hook_seq: i + 1,
+        addr_v4: addr_v4(local, server),
+        sport,
+        dport: 5201,
+        family: AF_INET,
+        conn_id: 7,
+        ..Default::default()
+    };
+    let mut comm = [0u8; 16];
+    comm[..6].copy_from_slice(b"iperf3");
+    let owner = flow_owner_entry {
+        time: 900,
+        hook_seq: 1,
+        addr_v4: addr_v4([10, 0, 0, 1], server),
+        sport: 40000,
+        dport: 5201,
+        family: AF_INET,
+        kind: TCBEE_OWNER_CONNECT as u8,
+        pid: 42,
+        comm,
+        ..Default::default()
+    };
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace = tmp.path().join("tcbee_mptcp_owner");
+        fs::create_dir_all(&trace).unwrap();
+        write_records(
+            &trace,
+            "send_sock.tcp",
+            &[sock(0, [10, 0, 0, 1], 40000), sock(1, [10, 0, 1, 1], 40100)],
+        );
+        write_records(&trace, "flow_owners.tcp", &[owner]);
+        let (out, summary) = process(engine, ext, tmp.path(), &trace, None);
+        assert_eq!(summary.connections, 1, "{engine:?}");
+        let store = ts_storage::open(&out).unwrap();
+        let flows = store.flows().unwrap();
+        let port = |id: i64| flows.iter().find(|f| f.id == id).unwrap().tuple.sport;
+        let mut got: Vec<_> = store
+            .flow_owners()
+            .unwrap()
+            .into_iter()
+            .map(|o| (port(o.flow_id), o.pid, o.source))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                (40000, 42, "connect".to_string()),
+                (40100, 42, "connection".to_string())
+            ],
+            "{engine:?}"
+        );
+    }
+}
+
 /// Writes a `tcp4_send.tcp` of `total` records of one flow into a new trace directory. Record `i`
 /// has `seq = i` and a timestamp that repeats three times (so ordering needs the record index),
 /// built from the first fixture record in the current layout. `corrupt` lists records whose
