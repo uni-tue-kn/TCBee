@@ -112,6 +112,16 @@ impl EBPFWatcher {
         }
     }
 
+    /// Draws the current model, returns where the frame put the clickable parts
+    fn draw(&mut self, ui: &UiState) -> Areas {
+        let mut areas = Areas::default();
+        let flows = &self.flow_tracker.flows;
+        let _ = self.terminal.as_mut().unwrap().draw(|frame| {
+            areas = render(frame, &self.model, &self.context, ui, flows);
+        });
+        areas
+    }
+
     fn run_tui(&mut self) {
         let application_start = Instant::now();
         let mut ui = UiState::new(
@@ -130,12 +140,7 @@ impl EBPFWatcher {
             if let Some(owners) = self.owners.as_ref().and_then(|owners| owners.lock().ok()) {
                 self.flow_tracker.flows.find_owners(&owners);
             }
-            let flows = &self.flow_tracker.flows;
-
-            let mut areas = Areas::default();
-            let _ = self.terminal.as_mut().unwrap().draw(|frame| {
-                areas = render(frame, &self.model, &self.context, &ui, flows);
-            });
+            let mut areas = self.draw(&ui);
 
             // Wait for key events until the next update
             let start = Instant::now();
@@ -149,15 +154,20 @@ impl EBPFWatcher {
                 if !ready {
                     continue;
                 }
+                let flows = self.flow_tracker.flows.len();
                 match event::read() {
                     Ok(event::Event::Key(key)) => {
-                        if ui.on_key(key.code, &areas, flows.len()) {
+                        if ui.on_key(key.code, &areas, flows) {
                             self.token.cancel();
                         }
                     }
-                    Ok(event::Event::Mouse(mouse)) => ui.on_mouse(mouse, &areas, flows.len()),
-                    _ => {}
+                    Ok(event::Event::Mouse(mouse)) => ui.on_mouse(mouse, &areas, flows),
+                    // A resize draws below
+                    Ok(event::Event::Resize(..)) => {}
+                    _ => continue,
                 }
+                // Shows the input right away, from the counters of the last update
+                areas = self.draw(&ui);
             }
         }
 
