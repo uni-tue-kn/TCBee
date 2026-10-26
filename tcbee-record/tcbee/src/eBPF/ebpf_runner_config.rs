@@ -7,6 +7,7 @@ use crate::{
         headers::HeadersAt,
         tracepoints::{Tracepoint, TracepointSet},
     },
+    viz::flow_owners::SharedOwners,
     writer::PollMode,
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
@@ -510,6 +511,8 @@ pub struct EbpfWatcherConfig {
     /// The sock and cwnd probes record on change only
     pub on_change: bool,
     pub observation_window: Option<f64>,
+    /// The owners of the flows, filled while recording, with the TUI and the owner programs
+    pub owners: Option<SharedOwners>,
 }
 
 impl EbpfRunnerConfig {
@@ -677,6 +680,7 @@ impl EbpfRunnerConfig {
             skipped: skipped.to_vec(),
             on_change: self.on_change.is_some(),
             observation_window: (self.observation_window > 0.0).then_some(self.observation_window),
+            owners: None,
         }
     }
 }

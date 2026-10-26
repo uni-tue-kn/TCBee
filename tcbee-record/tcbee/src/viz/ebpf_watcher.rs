@@ -23,6 +23,7 @@ use crate::{
     eBPF::ebpf_runner_config::EbpfWatcherConfig,
     stats::Stats,
     viz::{
+        flow_owners::SharedOwners,
         flow_tracker::FlowTracker,
         model::Model,
         view::{render, Areas, UiState, View},
@@ -33,6 +34,8 @@ pub struct EBPFWatcher {
     stats: Arc<Stats>,
     bytes_written: Arc<AtomicU64>,
     flow_tracker: FlowTracker,
+    /// The owners of the flows, with the owner programs
+    owners: Option<SharedOwners>,
     update_period: u128,
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
@@ -64,6 +67,7 @@ impl EBPFWatcher {
             stats,
             bytes_written,
             flow_tracker: FlowTracker::new(flows),
+            owners: config.owners.clone(),
             update_period,
             token,
             terminal,
@@ -114,6 +118,9 @@ impl EBPFWatcher {
 
             // Update tracker of all flows internal list and then show it
             self.flow_tracker.read_flows();
+            if let Some(owners) = self.owners.as_ref().and_then(|owners| owners.lock().ok()) {
+                self.flow_tracker.flows.find_owners(&owners);
+            }
             let flows = &self.flow_tracker.flows;
 
             let mut areas = Areas::default();

@@ -316,7 +316,11 @@ fn render_flows(frame: &mut Frame, ui: &UiState, flows: &Flows, area: Rect) -> R
     let mut state = TableState::new()
         .with_offset(offset)
         .with_selected((len > 0).then_some(selected));
-    frame.render_stateful_widget(flow_table(flows.list()).block(block), area, &mut state);
+    frame.render_stateful_widget(
+        flow_table(flows, inner.width).block(block),
+        area,
+        &mut state,
+    );
 
     // On the right border, when not all rows fit
     if len > rows.height as usize {
@@ -351,7 +355,17 @@ pub(crate) mod tests {
     };
 
     use super::*;
-    use crate::{stats::Snapshot, viz::flow_tracker::tests::flow};
+    use crate::{
+        stats::Snapshot,
+        viz::{
+            flow_owners::{
+                observer,
+                tests::{ep, record},
+                SharedOwners,
+            },
+            flow_tracker::tests::flow,
+        },
+    };
 
     /// A snapshot with `values` in the given slots, zero elsewhere
     pub fn snapshot(values: &[(u32, u64)]) -> Snapshot {
@@ -415,6 +429,7 @@ pub(crate) mod tests {
             skipped: vec!["BBR: tcp_bbr is not loaded".to_string()],
             on_change: false,
             observation_window: None,
+            owners: None,
         }
     }
 
@@ -474,7 +489,8 @@ pub(crate) mod tests {
         assert!(contains(&lines, " q quit  1-4 zoom  e rings"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Flows: 1 of 1"));
-        assert!(contains(&lines, "Endpoint A"));
+        assert!(contains(&lines, "Local"));
+        assert!(contains(&lines, "Process"));
         assert!(contains(&lines, "10.0.0.2"));
         assert!(contains(&lines, "tcp_bbr is not loaded"));
         assert_eq!(areas.slots.len(), 2);
@@ -702,7 +718,7 @@ pub(crate) mod tests {
             .filter_map(|y| {
                 let row: String = lines[y as usize].chars().skip(rows.x as usize).collect();
                 row.split_whitespace()
-                    .nth(3)
+                    .nth(4)
                     .and_then(|port| port.parse().ok())
             })
             .collect()
@@ -807,6 +823,49 @@ pub(crate) mod tests {
             "Flows: 2 of 7 (map full, newer flows not listed)"
         ));
         assert_eq!(follow(0, 0, 10, 0), 0);
+    }
+
+    #[test]
+    fn flow_table_shows_the_local_side_and_the_process() {
+        let model = busy_model(&TC_RINGS);
+        let view = View::new(context(&TC_RINGS));
+        let mut flows = Flows::default();
+        flows.add(flow(40000));
+        flows.add(flow(22));
+        let owners = SharedOwners::default();
+        let mut observe = observer(owners.clone());
+        observe(&record(
+            ep("10.0.0.2:40000"),
+            ep("10.0.0.1:5201"),
+            "iperf3",
+            812,
+            1,
+        ));
+        observe(&record(
+            ep("10.0.0.1:5201"),
+            ep("10.0.0.2:22"),
+            "sshd",
+            90,
+            2,
+        ));
+        flows.find_owners(&owners.lock().unwrap());
+        flows.add(flow(9));
+        let (lines, areas) = screen(160, 45, &model, &view, &UiState::default(), &flows);
+        let rows: Vec<String> = (0..3)
+            .map(|i| {
+                let row = &lines[(areas.flow_rows.y + i) as usize];
+                let rows = areas.flow_rows;
+                row.chars()
+                    .skip(rows.x as usize)
+                    .take(rows.width as usize)
+                    .collect::<String>()
+            })
+            .map(|row| row.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(rows[0], "10.0.0.2 40000 iperf3[812] 10.0.0.1 5201");
+        assert_eq!(rows[1], "10.0.0.1 5201 svc sshd[90] 10.0.0.2 22");
+        // Without an owner, the map's order and no process
+        assert_eq!(rows[2], "10.0.0.1 5201 ? 10.0.0.2 9");
     }
 
     #[test]

@@ -12,6 +12,8 @@ use ratatui::{
 };
 use tcbee_common::records::IpTuple;
 
+use crate::viz::flow_owners::{Owner, OwnerTable};
+
 /// A flow as the FLOWS map keys it: the endpoints in canonical order, not by direction
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub struct Flow {
@@ -27,6 +29,8 @@ pub struct Flow {
 pub struct Flows {
     list: Vec<Flow>,
     index: HashMap<Flow, usize>,
+    /// The owner of each flow, once known
+    owners: Vec<Option<Owner>>,
     /// The FLOWS map is full, newer flows are missing
     pub full: bool,
 }
@@ -37,9 +41,22 @@ impl Flows {
         if !self.index.contains_key(&flow) {
             self.index.insert(flow.clone(), self.list.len());
             self.list.push(flow);
+            self.owners.push(None);
         }
     }
 
+    /// Looks up the owners of the flows that have none yet
+    pub fn find_owners(&mut self, table: &OwnerTable) {
+        for (flow, owner) in self.list.iter().zip(self.owners.iter_mut()) {
+            if owner.is_none() {
+                *owner = table
+                    .find((flow.src, flow.sport), (flow.dst, flow.dport))
+                    .cloned();
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub fn list(&self) -> &[Flow] {
         &self.list
     }
@@ -132,30 +149,63 @@ impl FlowTracker {
     }
 }
 
-/// Widths of the flow table columns: room for any IPv6 address and port
-pub const FLOW_COLUMNS: [Constraint; 4] = [
-    Constraint::Length(39),
-    Constraint::Length(10),
-    Constraint::Length(39),
-    Constraint::Length(10),
-];
+/// Width of the process column
+const PROCESS_WIDTH: u16 = 20;
+/// Width of the port columns: a port and the service mark
+const PORT_WIDTH: u16 = 9;
 
-/// The table of the flows, the selected row highlighted
-pub fn flow_table(flows: &[Flow]) -> Table<'_> {
-    let header = ["Endpoint A", "port", "Endpoint B", "port"]
+/// Widths of the flow table columns in `width` cells: the addresses share what the ports and
+/// the process leave, up to a full IPv6 address. They depend on the width only, not on the
+/// rows, so columns do not move while flows come in.
+pub fn flow_columns(width: u16) -> [Constraint; 5] {
+    let fixed = 2 * PORT_WIDTH + PROCESS_WIDTH + 4;
+    let address = (width.saturating_sub(fixed) / 2).clamp(15, 39);
+    [
+        Constraint::Length(address),
+        Constraint::Length(PORT_WIDTH),
+        Constraint::Length(PROCESS_WIDTH),
+        Constraint::Length(address),
+        Constraint::Length(PORT_WIDTH),
+    ]
+}
+
+/// The table of the flows in `width` cells, the selected row highlighted. A flow with a known
+/// owner shows its local side first and the process; one without keeps the map's order, its
+/// sides are just two endpoints.
+pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
+    let header = ["Local", "port", "Process", "Remote", "port"]
         .into_iter()
         .map(Cell::from)
         .collect::<Row>()
         .style(Style::new().add_modifier(Modifier::BOLD));
-    let rows = flows.iter().map(|flow| {
-        Row::new([
-            flow.src.to_string(),
-            flow.sport.to_string(),
-            flow.dst.to_string(),
-            flow.dport.to_string(),
-        ])
-    });
-    Table::new(rows, FLOW_COLUMNS)
+    let rows = flows
+        .list
+        .iter()
+        .zip(&flows.owners)
+        .map(|(flow, owner)| match owner {
+            Some(owner) => {
+                let mut local_port = owner.local.1.to_string();
+                if owner.service {
+                    local_port.push_str(" svc");
+                }
+                Row::new([
+                    owner.local.0.to_string(),
+                    local_port,
+                    owner.process.clone(),
+                    owner.remote.0.to_string(),
+                    owner.remote.1.to_string(),
+                ])
+            }
+            None => Row::new([
+                flow.src.to_string(),
+                flow.sport.to_string(),
+                "?".to_string(),
+                flow.dst.to_string(),
+                flow.dport.to_string(),
+            ])
+            .style(Style::new().add_modifier(Modifier::DIM)),
+        });
+    Table::new(rows, flow_columns(width))
         .header(header)
         .column_spacing(1)
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
@@ -164,6 +214,7 @@ pub fn flow_table(flows: &[Flow]) -> Table<'_> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::viz::flow_owners::tests::ep;
 
     pub fn flow(port: u16) -> Flow {
         Flow {
@@ -182,5 +233,33 @@ pub(crate) mod tests {
         }
         let ports: Vec<u16> = flows.list().iter().map(|f| f.dport).collect();
         assert_eq!(ports, [3, 1, 2, 4]);
+    }
+
+    #[test]
+    fn flows_take_the_owners_once_known() {
+        let mut flows = Flows::default();
+        flows.add(flow(40000));
+        flows.add(flow(40001));
+        let mut table = OwnerTable::default();
+        flows.find_owners(&table);
+        assert!(flows.owners.iter().all(Option::is_none));
+        // The map orders 10.0.0.1 first, the owner has it as the remote side
+        table.insert(Owner {
+            local: ep("10.0.0.2:40001"),
+            remote: ep("10.0.0.1:5201"),
+            process: "iperf3[812]".to_string(),
+            service: false,
+        });
+        flows.find_owners(&table);
+        assert!(flows.owners[0].is_none());
+        assert_eq!(
+            flows.owners[1].as_ref().unwrap().local,
+            ep("10.0.0.2:40001")
+        );
+        for port in 0..20 {
+            assert_eq!(flow_columns(120 + port * 10)[1], Constraint::Length(9));
+        }
+        assert_eq!(flow_columns(200)[0], Constraint::Length(39));
+        assert_eq!(flow_columns(60)[0], Constraint::Length(15));
     }
 }

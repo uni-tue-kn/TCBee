@@ -453,6 +453,19 @@ type JobResult = (u64, Result<(), JobError>);
 /// Sees every record a writer wrote, see `Writer::register_observed`
 pub type Observer = Box<dyn FnMut(&[u8]) + Send>;
 
+/// One observer that hands each record to all of `observers`, None without any
+pub fn observe_all(mut observers: Vec<Observer>) -> Option<Observer> {
+    match observers.len() {
+        0 => None,
+        1 => observers.pop(),
+        _ => Some(Box::new(move |entry: &[u8]| {
+            for observer in observers.iter_mut() {
+                observer(entry);
+            }
+        })),
+    }
+}
+
 /// Turns the return value of `ring_buffer__consume`/`ring_buffer__poll` into the number
 /// of records read or the error that stopped the callback
 fn check<T>(job: &RefCell<MapWriterJob<T>>, ret: i32) -> Result<i32, JobError>

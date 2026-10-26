@@ -54,8 +54,11 @@ use crate::{
     metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
     owners,
     stats::Stats,
-    viz::ebpf_watcher::EBPFWatcher,
-    writer::{Writer, WriterReport},
+    viz::{
+        ebpf_watcher::EBPFWatcher,
+        flow_owners::{self, SharedOwners},
+    },
+    writer::{observe_all, Writer, WriterReport},
 };
 use tcbee_trace::{owners::FlowOwners, sock_hooks::Hook};
 
@@ -1029,16 +1032,20 @@ impl EbpfRunner {
             );
         }
 
+        // The owners of the flows the TUI lists, from the owner records and the snapshot
+        let tui_owners = (self.config.do_tui && self.config.owners).then(SharedOwners::default);
         // After the timer: one record per connection is rarer still
         if optional.iter().any(|group| group.is_owner()) {
-            let observer = if host_pids {
+            let mut observers = Vec::new();
+            if host_pids {
                 let resolver = owners::Resolver::start(PathBuf::from("/proc"));
-                let observer = resolver.observer();
+                observers.push(resolver.observer());
                 self.owner_resolver = Some(resolver);
-                Some(observer)
-            } else {
-                None
-            };
+            }
+            if let Some(owners) = &tui_owners {
+                observers.push(flow_owners::observer(owners.clone()));
+            }
+            let observer = observe_all(observers);
             for (hook, message) in OwnerTracer::spawn(skel, dir, writer, links, observer)? {
                 optional.remove(&OptionalGroup::Owner(hook));
                 self.skipped.push(message);
@@ -1053,6 +1060,7 @@ impl EbpfRunner {
         if host_pids {
             let dir = PathBuf::from(&self.config.dir);
             let filter = self.config.filter.clone();
+            let tui_owners = tui_owners.clone();
             self.owner_snapshot = Some(thread::spawn(move || {
                 let keep = |local, remote| filter.matches(local, remote);
                 let snapshot = owners::snapshot(Path::new("/proc"), &keep);
@@ -1064,6 +1072,9 @@ impl EbpfRunner {
                 // Written now too, in case the recorder does not stop cleanly
                 if let Err(err) = snapshot.write(&dir) {
                     error!("Could not write the existing connections: {}", err);
+                }
+                if let Some(owners) = &tui_owners {
+                    flow_owners::add_snapshot(owners, &snapshot);
                 }
                 snapshot
             }));
@@ -1081,9 +1092,10 @@ impl EbpfRunner {
         }
 
         // Start watcher thread
-        let watcher_config =
+        let mut watcher_config =
             self.config
                 .watcher_config(&self.ringbuf_sizes, &self.skipped, self.ring_cpus);
+        watcher_config.owners = tui_owners;
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(handle(&skel.maps.STATS)?));
         self.hook_seq = Some(handle(&skel.maps.HOOK_SEQ)?);
