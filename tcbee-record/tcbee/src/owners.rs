@@ -83,15 +83,19 @@ fn cgroup(process: &Process) -> Option<String> {
 }
 
 /// The process `pid` below `proc_root`, None if it exited. Its uid is the real one, as in the
-/// owner records.
-pub fn process_info(proc_root: &Path, pid: u32) -> Option<ProcessInfo> {
+/// owner records. The command line is left empty without `cmdline` (--owners-no-cmdline).
+pub fn process_info(proc_root: &Path, pid: u32, cmdline: bool) -> Option<ProcessInfo> {
     let process = Process::new_with_root(proc_root.join(pid.to_string())).ok()?;
     let stat = process.stat().ok()?;
     Some(ProcessInfo {
         pid,
         start_ticks: stat.starttime,
         comm: stat.comm,
-        cmdline: process.cmdline().unwrap_or_default(),
+        cmdline: if cmdline {
+            process.cmdline().unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         uid: process.status().ok().map(|status| status.ruid),
         cgroup: cgroup(&process),
     })
@@ -101,8 +105,12 @@ pub fn process_info(proc_root: &Path, pid: u32) -> Option<ProcessInfo> {
 /// filter, and the processes that hold them. Listeners and sockets without an inode (TIME_WAIT,
 /// a connection still in an accept queue, which the accept program sees) are left out.
 /// Processes that exit or deny access while it runs are skipped; the result is as complete as
-/// procfs allows.
-pub fn snapshot(proc_root: &Path, keep: &dyn Fn(SocketAddr, SocketAddr) -> bool) -> FlowOwners {
+/// procfs allows. `cmdlines` says whether their command lines are read.
+pub fn snapshot(
+    proc_root: &Path,
+    keep: &dyn Fn(SocketAddr, SocketAddr) -> bool,
+    cmdlines: bool,
+) -> FlowOwners {
     let mut owners = FlowOwners::new(clock_ns(libc::CLOCK_MONOTONIC) as u64, clock_ticks());
     let all = match all_processes_with_root(proc_root) {
         Ok(all) => all,
@@ -184,7 +192,9 @@ pub fn snapshot(proc_root: &Path, keep: &dyn Fn(SocketAddr, SocketAddr) -> bool)
         .collect();
     owners.processes = holders
         .into_iter()
-        .filter_map(|h| process_info(proc_root, h.pid).filter(|p| p.start_ticks == h.start_ticks))
+        .filter_map(|h| {
+            process_info(proc_root, h.pid, cmdlines).filter(|p| p.start_ticks == h.start_ticks)
+        })
         .collect();
     owners.snapshot_end_ns = clock_ns(libc::CLOCK_MONOTONIC) as u64;
     owners
@@ -240,7 +250,7 @@ fn resolve(proc_root: &Path, processes: mpsc::Receiver<(u32, u64)>) -> Vec<Proce
         if !seen.insert((pid, start_ns)) {
             continue;
         }
-        match process_info(proc_root, pid) {
+        match process_info(proc_root, pid, true) {
             Some(info) if same_start(start_ns, info.start_ticks, clock_ticks) => found.push(info),
             Some(_) => debug!("Process {pid} is another process by now, no command line"),
             None => debug!("Process {pid} exited before its command line was read"),
@@ -390,7 +400,7 @@ pub(crate) mod tests {
         proc.tables(101, &[V4, LISTEN, TIME_WAIT], &[MAPPED]);
         proc.tables(102, &[V4, LISTEN, TIME_WAIT], &[MAPPED]);
 
-        let owners = snapshot(&proc.root, &|_, _| true);
+        let owners = snapshot(&proc.root, &|_, _| true, true);
         let ns = proc.netns(7);
         let connections: Vec<_> = owners
             .connections
@@ -438,6 +448,10 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(owners.processes[1].cmdline, ["curl", "https://10.0.0.3"]);
+        // --owners-no-cmdline: the same processes, without their command lines
+        let without = snapshot(&proc.root, &|_, _| true, false);
+        assert_eq!(without.processes.len(), owners.processes.len());
+        assert!(without.processes.iter().all(|p| p.cmdline.is_empty()));
         assert_eq!(
             owners.processes[0].cgroup.as_deref(),
             Some("/user.slice/test.scope")
@@ -456,7 +470,7 @@ pub(crate) mod tests {
         proc.tables(100, &[V4], &[MAPPED]);
         proc.tables(101, &[V4], &[MAPPED]);
         let https = |_local: SocketAddr, remote: SocketAddr| remote.port() == 443;
-        let owners = snapshot(&proc.root, &https);
+        let owners = snapshot(&proc.root, &https, true);
         let inodes: Vec<u64> = owners.connections.iter().map(|c| c.inode).collect();
         assert_eq!(inodes, [1003]);
         let pids: Vec<u32> = owners.processes.iter().map(|p| p.pid).collect();
@@ -470,7 +484,7 @@ pub(crate) mod tests {
         proc.process(201, "b", &["b"], 1, &[1003], 8);
         proc.tables(200, &[V4], &[]);
         proc.tables(201, &[], &[MAPPED]);
-        let owners = snapshot(&proc.root, &|_, _| true);
+        let owners = snapshot(&proc.root, &|_, _| true, true);
         let found: Vec<_> = owners
             .connections
             .iter()
@@ -493,7 +507,7 @@ pub(crate) mod tests {
     /// Whatever this host runs: every process of a connection is listed, at most once
     #[test]
     fn snapshot_of_this_host() {
-        let owners = snapshot(Path::new("/proc"), &|_, _| true);
+        let owners = snapshot(Path::new("/proc"), &|_, _| true, true);
         let listed: BTreeSet<u32> = owners.processes.iter().map(|p| p.pid).collect();
         assert_eq!(listed.len(), owners.processes.len());
         for c in &owners.connections {
@@ -554,8 +568,8 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_proc_gives_an_empty_snapshot() {
-        let owners = snapshot(Path::new("/nonexistent/proc"), &|_, _| true);
+        let owners = snapshot(Path::new("/nonexistent/proc"), &|_, _| true, true);
         assert!(owners.connections.is_empty() && owners.processes.is_empty());
-        assert!(process_info(Path::new("/nonexistent/proc"), 1).is_none());
+        assert!(process_info(Path::new("/nonexistent/proc"), 1, true).is_none());
     }
 }

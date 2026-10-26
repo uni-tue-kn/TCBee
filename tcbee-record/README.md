@@ -92,6 +92,7 @@ At least one metric source is required.
 | `--sock-hooks LIST` | `timer,state,ca-state,retransmit,restart,rcvbuf` | With `-k`: the kernel hooks to record the socket at. Per packet: `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`) and `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). Not per packet: `timer` (`timer_sock.tcp`) and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). The list works as described below the table, e.g. `+ingress` on a sender. With `--on-change` and `-k` the same as `--on-change-hooks` |
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 | `--no-owners` | | Do not record the processes of the connections (`flow_owners.tcp`, `flow_owners.json`), see [Flow owners](#flow-owners) |
+| `--owners-no-cmdline` | | Record the owners without the command lines of their processes |
 
 `--tp`, `--sock-hooks` and `--on-change-hooks` take the same kind of list: comma-separated
 names form the set; `+name` and `-name` items add to or remove from the plain names of the
@@ -370,8 +371,9 @@ needed. Nothing runs per packet.
   filter flags apply to the snapshot as to the records: it holds the connections they keep and
   only the processes of those.
 - The recording holds the names and the command lines of these processes. Command lines can
-  carry secrets (a token in an argument, a password in a URL); `--no-owners` leaves all of it
-  out.
+  carry secrets (a token in an argument, a password in a URL). `--owners-no-cmdline` keeps
+  the owners (pid, uid, name, cgroup) but reads no command line, so the `cmd:` filter of
+  tcbee-viz finds nothing in such a recording; `--no-owners` leaves all of it out.
 - An MPTCP connection that existed before the start has no owner: the process holds the
   MPTCP socket, which `/proc/net/tcp` does not list, and its subflows are sockets of the
   kernel without a file descriptor.

@@ -495,6 +495,9 @@ pub struct EbpfRunnerConfig {
     /// Record the process that opens each connection (`flow_owners.tcp`), along with
     /// whatever else records; never a reason to record on its own
     pub owners: bool,
+    /// Whether the owners carry the command lines of their processes (not with
+    /// --owners-no-cmdline)
+    pub owner_cmdlines: bool,
 }
 
 /// What the watcher shows about the run besides the counters
@@ -540,6 +543,7 @@ impl EbpfRunnerConfig {
             on_change: None,
             sock_hooks: None,
             owners: false,
+            owner_cmdlines: true,
         }
     }
 
@@ -600,6 +604,11 @@ impl EbpfRunnerConfig {
 
     pub fn owners(mut self, set: bool) -> EbpfRunnerConfig {
         self.owners = set;
+        self
+    }
+
+    pub fn owner_cmdlines(mut self, set: bool) -> EbpfRunnerConfig {
+        self.owner_cmdlines = set;
         self
     }
 
