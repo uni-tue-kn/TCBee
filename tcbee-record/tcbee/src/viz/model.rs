@@ -179,7 +179,7 @@ impl Model {
                 rings: active_rings
                     .iter()
                     .copied()
-                    .filter(|rb| display_group(*rb) == group)
+                    .filter(|rb| display_group(*rb) == Some(group))
                     .collect(),
                 // The events chart comes first
                 chart: charted.iter().position(|g| *g == group).map(|i| i + 1),
