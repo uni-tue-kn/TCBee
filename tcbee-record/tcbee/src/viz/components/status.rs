@@ -9,27 +9,30 @@ use ratatui::{
 };
 
 use crate::viz::{
+    context::RunContext,
     format,
     groups::{ring_label, Group},
+    layout::Fit,
     model::{Model, RingStats},
-    view::{Fit, View},
 };
 
-/// Width of the column on wide terminals
-pub const LEFT_WIDTH: u16 = 42;
-/// Width of the column on small terminals
-pub const COMPACT_WIDTH: u16 = 30;
-
 /// The column for a terminal of `fit`, narrower than full without the rec/s columns
-pub fn render(frame: &mut Frame, model: &Model, view: &View, expanded: bool, fit: Fit, area: Rect) {
-    let compact = area.width < LEFT_WIDTH;
-    let context = context_lines(view);
+pub fn render(
+    frame: &mut Frame,
+    model: &Model,
+    run: &RunContext,
+    expanded: bool,
+    fit: Fit,
+    area: Rect,
+) {
+    let compact = fit.narrow_column();
+    let context = context_lines(run);
     let health = health_lines(model, compact);
     // What the name, rate and drop columns leave
     let fixed = if compact { 23 } else { 33 };
     let spark = (area.width as usize).saturating_sub(fixed).clamp(1, 16);
-    let rows = group_rows(model, view, expanded, fit.charts(), compact, spark);
-    let skipped = &view.context.skipped;
+    let rows = group_rows(model, run, expanded, fit.charts(), compact, spark);
+    let skipped = &run.skipped;
     let [context_area, health_area, groups_area, skipped_area] = Layout::vertical([
         Constraint::Length(context.len() as u16 + 1),
         Constraint::Length(health.len() as u16 + 1),
@@ -100,8 +103,7 @@ pub fn render(frame: &mut Frame, model: &Model, view: &View, expanded: bool, fit
 }
 
 /// Where and how the run records
-fn context_lines(view: &View) -> Vec<Line<'static>> {
-    let context = &view.context;
+fn context_lines(context: &RunContext) -> Vec<Line<'static>> {
     let mut setup = Vec::new();
     if let Some(iface) = &context.iface {
         setup.push(iface.clone());
@@ -178,7 +180,7 @@ fn health_lines(model: &Model, compact: bool) -> Vec<Line<'static>> {
 /// among the first `charts` get a sparkline.
 fn group_rows(
     model: &Model,
-    view: &View,
+    run: &RunContext,
     expanded: bool,
     charts: usize,
     compact: bool,
@@ -187,7 +189,7 @@ fn group_rows(
     let mut rows = Vec::new();
     for row in &model.groups {
         let stats = model.ring_stats(&row.rings);
-        let note = match share_note(row.group, &stats, view.context.on_change) {
+        let note = match share_note(row.group, &stats, run.on_change) {
             Some(note) => note,
             // Groups without a chart get a sparkline instead
             None if !row.chart.is_some_and(|chart| chart < charts) => {
@@ -204,8 +206,7 @@ fn group_rows(
         if expanded {
             for rb in &row.rings {
                 let stats = model.ring_stats(&[*rb]);
-                let note =
-                    share_note(row.group, &stats, view.context.on_change).unwrap_or_default();
+                let note = share_note(row.group, &stats, run.on_change).unwrap_or_default();
                 let row = stats_row(format!(" {}", ring_label(*rb)), &stats, note, compact);
                 rows.push(row.style(Style::default().add_modifier(Modifier::DIM)));
             }

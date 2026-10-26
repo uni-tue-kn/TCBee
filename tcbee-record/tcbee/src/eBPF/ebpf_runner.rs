@@ -55,6 +55,7 @@ use crate::{
     owners,
     stats::Stats,
     viz::{
+        context::RunContext,
         ebpf_watcher::EBPFWatcher,
         flow_owners::{self, SharedOwners},
     },
@@ -1097,10 +1098,20 @@ impl EbpfRunner {
         }
 
         // Start watcher thread
-        let mut watcher_config =
-            self.config
-                .watcher_config(&self.ringbuf_sizes, &self.skipped, self.ring_cpus);
-        watcher_config.owners = tui_owners;
+        let config = &self.config;
+        let context = RunContext {
+            dir: config.dir.clone(),
+            iface: config.headers.then(|| config.iface.clone()),
+            cpus: self.ring_cpus,
+            active_rings: (0..RINGBUFS.len() as u32)
+                .filter(|rb| self.ringbuf_sizes[*rb as usize].is_some())
+                .collect(),
+            skipped: self.skipped.clone(),
+            on_change: config.on_change.is_some(),
+            observation_window: (config.observation_window > 0.0)
+                .then_some(config.observation_window),
+            owners: tui_owners,
+        };
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(handle(&skel.maps.STATS)?));
         self.hook_seq = Some(handle(&skel.maps.HOOK_SEQ)?);
@@ -1112,7 +1123,7 @@ impl EbpfRunner {
             bytes_written,
             self.config.update_period,
             self.stop_token.clone(),
-            watcher_config,
+            context,
             self.config.do_tui,
         )?;
 

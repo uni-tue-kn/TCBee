@@ -11,65 +11,14 @@ use ratatui::{
     Frame,
 };
 
-use crate::{
-    eBPF::ebpf_runner_config::EbpfWatcherConfig,
-    viz::{
-        components::{
-            graph,
-            status::{self, COMPACT_WIDTH, LEFT_WIDTH},
-        },
-        flow_tracker::{flow_table, Flows},
-        history::{window_name, window_step, Span, WINDOWS},
-        model::{Model, CHARTS},
-    },
+use crate::viz::{
+    components::{graph, status},
+    context::RunContext,
+    flow_tracker::{flow_table, Flows},
+    history::{window_name, window_step, Span, WINDOWS},
+    layout::{grid, Fit, MIN_HEIGHT, MIN_WIDTH},
+    model::Model,
 };
-
-/// Below this size the UI shows only a hint
-pub const MIN_WIDTH: u16 = 40;
-pub const MIN_HEIGHT: u16 = 12;
-
-/// What the terminal has room for
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Fit {
-    /// The full left column and four charts
-    Full,
-    /// A narrower left column and two charts
-    Compact,
-    /// No charts, sparklines in the group table instead
-    Minimal,
-}
-
-impl Fit {
-    pub fn of(area: Rect) -> Fit {
-        if area.width >= 120 && area.height >= 30 {
-            Fit::Full
-        } else if area.width >= 80 && area.height >= 24 {
-            Fit::Compact
-        } else {
-            Fit::Minimal
-        }
-    }
-
-    /// Chart slots it shows
-    pub fn charts(self) -> usize {
-        match self {
-            Fit::Full => CHARTS,
-            Fit::Compact => 2,
-            Fit::Minimal => 0,
-        }
-    }
-}
-
-/// What the UI shows that does not change while recording
-pub struct View {
-    pub context: EbpfWatcherConfig,
-}
-
-impl View {
-    pub fn new(context: EbpfWatcherConfig) -> View {
-        View { context }
-    }
-}
 
 /// What the user selected
 pub struct UiState {
@@ -212,26 +161,13 @@ impl UiState {
     }
 }
 
-/// Areas of `count` charts: one fills the area, two side by side, more in two rows
-pub fn grid(area: Rect, count: usize) -> Vec<Rect> {
-    let columns = |area: Rect, count: usize| {
-        Layout::horizontal(vec![Constraint::Ratio(1, count as u32); count])
-            .split(area)
-            .to_vec()
-    };
-    match count {
-        0 => Vec::new(),
-        1 | 2 => columns(area, count),
-        _ => {
-            let [top, bottom] = Layout::vertical([Constraint::Ratio(1, 2); 2]).areas(area);
-            let mut areas = columns(top, 2);
-            areas.extend(columns(bottom, count - 2));
-            areas
-        }
-    }
-}
-
-pub fn render(frame: &mut Frame, model: &Model, view: &View, ui: &UiState, flows: &Flows) -> Areas {
+pub fn render(
+    frame: &mut Frame,
+    model: &Model,
+    context: &RunContext,
+    ui: &UiState,
+    flows: &Flows,
+) -> Areas {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         let hint = format!(
@@ -244,13 +180,7 @@ pub fn render(frame: &mut Frame, model: &Model, view: &View, ui: &UiState, flows
     let fit = Fit::of(area);
     let charts = model.charts.len().min(fit.charts());
     let [main, footer] = Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).areas(area);
-    let left_width = match fit {
-        Fit::Full => LEFT_WIDTH.min(area.width / 3),
-        Fit::Compact => COMPACT_WIDTH,
-        // The flows only if they get some room
-        Fit::Minimal if area.width >= COMPACT_WIDTH + 40 => COMPACT_WIDTH,
-        Fit::Minimal => area.width,
-    };
+    let left_width = fit.left_width(area.width);
     let [left, right] = Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
         .spacing(1)
         .areas(main);
@@ -289,7 +219,7 @@ pub fn render(frame: &mut Frame, model: &Model, view: &View, ui: &UiState, flows
         graph::render(frame, &model.charts[*slot], slot + 1, span, rect);
     }
 
-    status::render(frame, model, view, ui.expanded, fit, left);
+    status::render(frame, model, context, ui.expanded, fit, left);
 
     let span = match span {
         Span::Whole => "whole run".to_string(),
@@ -442,7 +372,7 @@ pub(crate) mod tests {
         width: u16,
         height: u16,
         model: &Model,
-        view: &View,
+        view: &RunContext,
         ui: &UiState,
         flows: &Flows,
     ) -> (Vec<String>, Areas) {
@@ -481,8 +411,8 @@ pub(crate) mod tests {
     ];
 
     /// A run with the given rings
-    pub fn context(rings: &[u32]) -> EbpfWatcherConfig {
-        EbpfWatcherConfig {
+    pub fn context(rings: &[u32]) -> RunContext {
+        RunContext {
             dir: "/data/run1".to_string(),
             iface: Some("eth0".to_string()),
             cpus: 8,
@@ -533,7 +463,7 @@ pub(crate) mod tests {
     #[test]
     fn screen_shows_context_health_charts_and_flows() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let mut flows = Flows::default();
         flows.add(flow(40000));
         let (lines, areas) = screen(160, 45, &model, &view, &UiState::default(), &flows);
@@ -610,7 +540,7 @@ pub(crate) mod tests {
             model.update(snapshot(&values), 0, Duration::from_secs(tick));
             model.record_history();
         }
-        let view = View::new(context(&[]));
+        let view = context(&[]);
         let mut ui = UiState::default();
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
         assert!(contains(&lines, "headers        200    200      0 agg 50%"));
@@ -643,7 +573,7 @@ pub(crate) mod tests {
             160,
             45,
             &model,
-            &View::new(context),
+            &context,
             &UiState::default(),
             &Flows::default(),
         );
@@ -688,7 +618,7 @@ pub(crate) mod tests {
             );
             model.record_history();
         }
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let mut ui = UiState::new(Some(60.0));
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
         assert!(contains(&lines, "charts: window 1 min"));
@@ -721,7 +651,7 @@ pub(crate) mod tests {
             model.record_history();
         }
         assert_eq!(model.drop_history, [0, 50, 300]);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let (lines, _) = screen(
             160,
             45,
@@ -737,7 +667,7 @@ pub(crate) mod tests {
     #[test]
     fn legends_fit_narrow_charts() {
         let model = Model::new(&(0..RB_COUNT).collect::<Vec<_>>());
-        let view = View::new(context(&[]));
+        let view = context(&[]);
         for width in [160, 140, 125] {
             let (lines, areas) = screen(
                 width,
@@ -788,7 +718,7 @@ pub(crate) mod tests {
     #[test]
     fn keys_move_the_flow_selection_and_the_view_follows() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let flows = many_flows(60);
         let mut ui = UiState::default();
         let (lines, areas) = screen(160, 45, &model, &view, &ui, &flows);
@@ -826,7 +756,7 @@ pub(crate) mod tests {
     #[test]
     fn wheel_scrolls_rows_and_never_past_the_end() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let flows = many_flows(30);
         let mut ui = UiState::default();
         let (_, areas) = screen(160, 45, &model, &view, &ui, &flows);
@@ -864,7 +794,7 @@ pub(crate) mod tests {
     #[test]
     fn new_flows_do_not_move_the_rows() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let mut flows = many_flows(5);
         let mut ui = UiState::default();
         let (_, areas) = screen(160, 45, &model, &view, &ui, &flows);
@@ -889,7 +819,7 @@ pub(crate) mod tests {
     #[test]
     fn flow_table_shows_the_local_side_and_the_process() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let mut flows = Flows::default();
         flows.add(flow(40000));
         flows.add(flow(22));
@@ -930,7 +860,7 @@ pub(crate) mod tests {
     }
 
     /// A busy run with every group, its flows and their owners
-    fn every_group() -> (Model, View, Flows) {
+    fn every_group() -> (Model, RunContext, Flows) {
         let rings: Vec<u32> = (0..RB_COUNT).collect();
         let mut model = Model::new(&rings);
         for t in 0..20u64 {
@@ -945,7 +875,7 @@ pub(crate) mod tests {
         for port in 1..=30 {
             flows.add(flow(port));
         }
-        (model, View::new(context(&rings)), flows)
+        (model, context(&rings), flows)
     }
 
     #[test]
@@ -1001,21 +931,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn grid_fills_the_chart_area() {
-        let area = Rect::new(0, 0, 100, 40);
-        assert_eq!(grid(area, 1), [area]);
-        assert_eq!(
-            grid(area, 2),
-            [Rect::new(0, 0, 50, 40), Rect::new(50, 0, 50, 40)]
-        );
-        assert_eq!(grid(area, 3)[2], Rect::new(0, 20, 100, 20));
-        assert_eq!(grid(area, 4)[3], Rect::new(50, 20, 50, 20));
-    }
-
-    #[test]
     fn small_terminals_get_a_hint() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         // No panic on a tiny terminal
         screen(1, 1, &model, &view, &UiState::default(), &Flows::default());
         for (width, height) in [(39, 45), (160, 11), (40, 12)] {
@@ -1037,7 +955,7 @@ pub(crate) mod tests {
     #[test]
     fn zoom_shows_one_chart() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let mut ui = UiState::default();
         ui.on_key(KeyCode::Char('2'), &charts(model.charts.len()), 0);
         assert_eq!(ui.zoom, Some(1));
@@ -1056,7 +974,7 @@ pub(crate) mod tests {
     #[test]
     fn clicks_zoom_the_chart_under_the_mouse() {
         let model = busy_model(&TC_RINGS);
-        let view = View::new(context(&TC_RINGS));
+        let view = context(&TC_RINGS);
         let mut ui = UiState::default();
         let (_, areas) = screen(160, 45, &model, &view, &ui, &Flows::default());
         let (slot, area) = areas.slots[1];

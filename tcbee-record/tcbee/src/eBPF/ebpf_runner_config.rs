@@ -7,7 +7,6 @@ use crate::{
         headers::HeadersAt,
         tracepoints::{Tracepoint, TracepointSet},
     },
-    viz::flow_owners::SharedOwners,
     writer::PollMode,
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
@@ -500,24 +499,6 @@ pub struct EbpfRunnerConfig {
     pub owner_cmdlines: bool,
 }
 
-/// What the watcher shows about the run besides the counters
-pub struct EbpfWatcherConfig {
-    pub dir: String,
-    /// Interface of the header hooks, None without -h
-    pub iface: Option<String>,
-    /// CPUs with a ring buffer per probe output
-    pub cpus: u32,
-    /// Ring buffers that record, as `RB_*` ids
-    pub active_rings: Vec<u32>,
-    /// Requested hooks that are not recorded, with the reason
-    pub skipped: Vec<String>,
-    /// The sock and cwnd probes record on change only
-    pub on_change: bool,
-    pub observation_window: Option<f64>,
-    /// The owners of the flows, filled while recording, with the TUI and the owner programs
-    pub owners: Option<SharedOwners>,
-}
-
 impl EbpfRunnerConfig {
     /// Records nothing until a probe is switched on
     pub fn new() -> EbpfRunnerConfig {
@@ -669,28 +650,6 @@ impl EbpfRunnerConfig {
             .iter()
             .find(|(name, _)| *name == ringbuf.map)
             .map_or(ringbuf.size_per_cpu, |(_, size)| *size)
-    }
-
-    /// The watcher's view of a started run: the rings that got a ring buffer and the
-    /// hooks that were skipped
-    pub fn watcher_config(
-        &self,
-        ringbuf_sizes: &[Option<u32>],
-        skipped: &[String],
-        cpus: u32,
-    ) -> EbpfWatcherConfig {
-        EbpfWatcherConfig {
-            dir: self.dir.clone(),
-            iface: self.headers.then(|| self.iface.clone()),
-            cpus,
-            active_rings: (0..ringbuf_sizes.len() as u32)
-                .filter(|rb| ringbuf_sizes[*rb as usize].is_some())
-                .collect(),
-            skipped: skipped.to_vec(),
-            on_change: self.on_change.is_some(),
-            observation_window: (self.observation_window > 0.0).then_some(self.observation_window),
-            owners: None,
-        }
     }
 }
 

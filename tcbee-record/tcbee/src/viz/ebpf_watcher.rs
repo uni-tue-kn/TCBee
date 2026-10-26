@@ -20,13 +20,13 @@ use ratatui::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    eBPF::ebpf_runner_config::EbpfWatcherConfig,
     stats::Stats,
     viz::{
+        context::RunContext,
         flow_owners::SharedOwners,
         flow_tracker::FlowTracker,
         model::Model,
-        view::{render, Areas, UiState, View},
+        view::{render, Areas, UiState},
     },
 };
 
@@ -40,7 +40,7 @@ pub struct EBPFWatcher {
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
     model: Model,
-    view: View,
+    context: RunContext,
 }
 
 //TODO: Monitor packet rate vs TCP packet rate?
@@ -51,7 +51,7 @@ impl EBPFWatcher {
         bytes_written: Arc<AtomicU64>,
         update_period: u128,
         token: CancellationToken,
-        config: EbpfWatcherConfig,
+        context: RunContext,
         do_tui: bool,
     ) -> anyhow::Result<EBPFWatcher> {
         let terminal: Option<DefaultTerminal> = match do_tui {
@@ -67,12 +67,12 @@ impl EBPFWatcher {
             stats,
             bytes_written,
             flow_tracker: FlowTracker::new(flows),
-            owners: config.owners.clone(),
+            owners: context.owners.clone(),
             update_period,
             token,
             terminal,
-            model: Model::new(&config.active_rings),
-            view: View::new(config),
+            model: Model::new(&context.active_rings),
+            context,
         })
     }
 
@@ -110,7 +110,7 @@ impl EBPFWatcher {
 
     fn run_tui(&mut self) {
         let application_start = Instant::now();
-        let mut ui = UiState::new(self.view.context.observation_window);
+        let mut ui = UiState::new(self.context.observation_window);
 
         while !self.token.is_cancelled() {
             self.update_model(application_start.elapsed());
@@ -125,7 +125,7 @@ impl EBPFWatcher {
 
             let mut areas = Areas::default();
             let _ = self.terminal.as_mut().unwrap().draw(|frame| {
-                areas = render(frame, &self.model, &self.view, &ui, flows);
+                areas = render(frame, &self.model, &self.context, &ui, flows);
             });
 
             // Wait for key events until the next update
