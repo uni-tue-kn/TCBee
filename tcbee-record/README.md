@@ -121,29 +121,31 @@ Raw data is written as `*.tcp` files to the recording directory. Filter flags ar
 
 Without `-q`, tcbee-record shows what it records while it runs.
 
-- **Left column**: the elapsed time, the recording directory, the interface and the CPUs
-  with a ring buffer; *Health* with records written per second (`rec/s`), probe runs per
-  second (`runs/s`: written, dropped, failed and, in on-change mode, suppressed runs),
-  dropped records per second and in total, the dropped share of all records (`drop %`,
-  dropped / (written + dropped), since the start and in the last update), disk write rate
-  and size, and a red line for state errors (on-change runs without socket storage) and
-  failed kernel reads. Below, *Probe groups*: one row per group of ring buffers that records
-  (`headers`, `sock`, `cc`, `tracept`, `tcp_ev`, `mptcp`, `owners`) with runs/s, rec/s and
-  drops; `agg` is the share of header hook packets that stand for several segments (GSO,
-  GRO, LRO), `supp` the share of runs suppressed in on-change mode; both count since the
-  start. Any other group without a chart on screen shows a sparkline of its runs/s in that
-  place. `e` adds a row per ring buffer. *Skipped* lists the requested hooks that do not
-  record, with the reason.
+- **Left column**: bordered blocks that change once per second, their rates averaged over
+  that second. The first block holds the elapsed time, the recording directory, the
+  interface and the CPUs with a ring buffer. *Health* has a `now` and a `total` column:
+  records written (`records/s`), dropped records (`drops/s`), the dropped share of all
+  records (`drop %`, dropped / (written + dropped)) and the disk write rate and size; in
+  on-change mode also the probe runs (`runs/s`: written, dropped, failed and suppressed
+  runs), which then differ from the records. Red lines below count state errors (on-change
+  runs without socket storage) and failed kernel reads. *Probe groups* has one row per
+  group of ring buffers that records (`headers`, `sock`, `cc`, `tracepoints`, `tcp events`,
+  `mptcp`, `owners`) with records per second and drops; a dim `·` is zero. Below `headers`,
+  the share of header hook packets that stand for several segments (GSO, GRO, LRO,
+  `aggregated`), and in on-change mode below `sock` the share of suppressed runs
+  (`suppressed`), both since the start. `e` adds a row per ring buffer. *Skipped* lists the
+  requested hooks that do not record, with the reason.
 - **Charts**: up to four, in a fixed order: the events (records and drops per second, with
-  a red sparkline of the dropped share from 0 to 1 % below), then headers (packets per
-  second in and out, per hook), socket hooks, congestion control internals and the
-  remaining groups. Each series is named in its colour in the chart title. The charts show
-  the whole recording, which keeps the peak of each interval, or a window of the last 10 s
-  to 30 min at full resolution. The window keeps 36 000 updates: with
-  `--tui-update-ms` below 50 the longest window is shorter, and the footer says when the
-  window is at that limit.
+  the dropped share and a red sparkline of it per update, from 0 to 1 %, in the bottom
+  border), then headers (packets per second in and out, per hook), socket hooks,
+  congestion control internals and the remaining groups. Each series is named in its
+  colour in the chart title. The charts update at `--tui-update-ms` and show the whole
+  recording, which keeps the peak of each interval, or a window of the last 10 s to 30 min
+  at full resolution. The window keeps 36 000 updates: with `--tui-update-ms` below 50 the
+  longest window is shorter, and the footer says when the window is at that limit.
 - **Flows**: the flows the probes saw (at most 100, the title says when the map is full),
-  in the order they were first seen. With the owner programs (see [Flow owners](#flow-owners))
+  in the order they were first seen. The columns are as wide as their content, the process
+  gets the rest. With the owner programs (see [Flow owners](#flow-owners))
   a flow shows its local side first (`Local/A`) and the process that opened it
   (`comm[pid]`, `[kernel]` for a kernel thread); `svc` marks the local port of a connection
   the process accepted. The owner comes from the owner records, a newer one for a reused
@@ -151,9 +153,9 @@ Without `-q`, tcbee-record shows what it records while it runs.
   which has no listeners and so never marks `svc`. Flows without a known owner are dimmed,
   show `?` as process and their endpoints as A and B in address order: neither is known to
   be local.
-- **Small terminals**: below 120x30 the left column leaves out the rec/s column and two
-  charts are shown, below 80x24 no charts, so every group without an `agg` or `supp` share
-  shows a sparkline; below 40x12 only a hint.
+- **Small terminals**: below 120x30 the left column is narrower and two charts are shown,
+  below 80x24 no charts, and every probe group shows a sparkline of its records per second
+  in the last 30 s instead; below 40x12 only a hint.
 
 | Key | Action |
 |---|---|
