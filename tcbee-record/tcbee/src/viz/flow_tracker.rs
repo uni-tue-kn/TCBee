@@ -45,16 +45,18 @@ impl Flows {
         }
     }
 
-    /// Looks up the owners of the flows that have none yet: in the records, then in the
-    /// snapshot
+    /// Looks up the owners of the flows: a record names the owner, and a newer one for the
+    /// same tuple (a reused port pair) replaces it; the snapshot names those without a record
     pub fn find_owners(&mut self, live: &OwnerTable, snapshot: Option<&SnapshotOwners>) {
         for (flow, owner) in self.list.iter().zip(self.owners.iter_mut()) {
-            if owner.is_none() {
-                let (a, b) = ((flow.src, flow.sport), (flow.dst, flow.dport));
-                *owner = live
-                    .find(a, b)
-                    .or_else(|| snapshot.and_then(|s| s.find(a, b)))
-                    .cloned();
+            let (a, b) = ((flow.src, flow.sport), (flow.dst, flow.dport));
+            match live.find(a, b) {
+                Some(found) if owner.as_ref() != Some(found) => *owner = Some(found.clone()),
+                Some(_) => {}
+                None if owner.is_none() => {
+                    *owner = snapshot.and_then(|s| s.find(a, b)).cloned();
+                }
+                None => {}
             }
         }
     }
@@ -254,6 +256,28 @@ mod tests {
             flows.owners[1].as_ref().unwrap().local,
             ep("10.0.0.2:40001")
         );
+    }
+
+    #[test]
+    fn a_newer_record_replaces_the_owner_of_a_flow() {
+        let mut flows = Flows::default();
+        flows.add(flow(40000));
+        let mut table = OwnerTable::default();
+        let owner = |process: &str| Owner {
+            local: ep("10.0.0.2:40000"),
+            remote: ep("10.0.0.1:5201"),
+            process: process.to_string(),
+            service: false,
+        };
+        table.insert(owner("iperf3[812]"));
+        flows.find_owners(&table, None);
+        // The port pair is reused by another process
+        table.insert(owner("curl[900]"));
+        flows.find_owners(&table, None);
+        assert_eq!(flows.owners[0].as_ref().unwrap().process, "curl[900]");
+        // Pushed out of the table, the flow keeps the owner it had
+        flows.find_owners(&OwnerTable::default(), None);
+        assert_eq!(flows.owners[0].as_ref().unwrap().process, "curl[900]");
     }
 
     #[test]

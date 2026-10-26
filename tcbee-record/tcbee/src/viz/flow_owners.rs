@@ -38,20 +38,25 @@ type Connection = (Endpoint, Endpoint);
 #[derive(Default)]
 pub struct OwnerTable {
     owners: HashMap<Connection, Owner>,
-    /// Connections in the order they came in
+    /// Connections from the least to the most recently named
     order: VecDeque<Connection>,
 }
 
 impl OwnerTable {
-    /// Adds `owner`, a newer record of a connection replaces the older one
+    /// Adds `owner`, a newer record of a connection replaces the older one and counts as recent
     pub fn insert(&mut self, owner: Owner) {
         let key = (owner.local, owner.remote);
-        if self.owners.insert(key, owner).is_none() {
-            self.order.push_back(key);
-            if self.order.len() > OWNERS_KEPT {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.owners.remove(&oldest);
-                }
+        if self.owners.insert(key, owner).is_some() {
+            // Rare: a connection is named once at connect or accept, again only when its tuple
+            // is reused
+            if let Some(index) = self.order.iter().position(|k| *k == key) {
+                self.order.remove(index);
+            }
+        }
+        self.order.push_back(key);
+        if self.order.len() > OWNERS_KEPT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.owners.remove(&oldest);
             }
         }
     }
@@ -241,6 +246,28 @@ mod tests {
         assert_eq!(owners.len(), OWNERS_KEPT);
         assert!(owners.find(ep("10.0.0.1:1"), ep("10.0.0.2:5")).is_none());
         assert!(owners.find(ep("10.0.0.1:1"), ep("10.0.0.2:4000")).is_some());
+    }
+
+    #[test]
+    fn a_newer_record_replaces_the_owner_and_counts_as_recent() {
+        let mut owners = OwnerTable::default();
+        let owner = |remote: &str, process: &str| Owner {
+            local: ep("10.0.0.1:1"),
+            remote: ep(remote),
+            process: process.to_string(),
+            service: false,
+        };
+        owners.insert(owner("10.0.0.2:1", "old[1]"));
+        for port in 2..OWNERS_KEPT as u16 + 1 {
+            owners.insert(owner(&format!("10.0.0.2:{port}"), "a[1]"));
+        }
+        // The tuple is reused by another process: its record is now the newest
+        owners.insert(owner("10.0.0.2:1", "new[2]"));
+        owners.insert(owner("10.0.0.3:1", "b[1]"));
+        assert_eq!(owners.len(), OWNERS_KEPT);
+        let found = owners.find(ep("10.0.0.1:1"), ep("10.0.0.2:1")).unwrap();
+        assert_eq!(found.process, "new[2]");
+        assert!(owners.find(ep("10.0.0.1:1"), ep("10.0.0.2:2")).is_none());
     }
 
     #[test]
