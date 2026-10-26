@@ -12,12 +12,10 @@ use std::{
 use tcbee_common::records::{flow_owner_entry, TCBEE_OWNER_ACCEPT, TCBEE_OWNER_KTHREAD};
 use tcbee_trace::owners::FlowOwners;
 
-use crate::writer::Observer;
+use crate::{config::AF_INET, writer::Observer};
 
 /// Connections whose owner the table keeps, the oldest go first. The FLOWS map lists 100.
 pub const OWNERS_KEPT: usize = 4096;
-
-const AF_INET: u16 = 2;
 
 /// An address and port
 pub type Endpoint = (IpAddr, u16);
@@ -155,6 +153,7 @@ pub(crate) mod tests {
     use tcbee_trace::owners::{Holder, ProcessInfo, SnapshotConnection};
 
     use super::*;
+    use crate::config::AF_INET6;
 
     /// An owner record of `local` -> `remote`
     pub fn record(local: Endpoint, remote: Endpoint, comm: &str, pid: u32, kind: u32) -> Vec<u8> {
@@ -166,7 +165,7 @@ pub(crate) mod tests {
                     | u32::from_le_bytes(r.octets()) as u64;
             }
             (l, r) => {
-                rec.family = 10;
+                rec.family = AF_INET6;
                 let v6 = |ip: IpAddr| match ip {
                     IpAddr::V4(ip) => ip.to_ipv6_mapped().octets(),
                     IpAddr::V6(ip) => ip.octets(),
