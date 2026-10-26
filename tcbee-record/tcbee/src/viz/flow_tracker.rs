@@ -158,14 +158,18 @@ const PORT_WIDTH: u16 = 9;
 /// the process leave, up to a full IPv6 address. They depend on the width only, not on the
 /// rows, so columns do not move while flows come in.
 pub fn flow_columns(width: u16) -> [Constraint; 5] {
-    let fixed = 2 * PORT_WIDTH + PROCESS_WIDTH + 4;
-    let address = (width.saturating_sub(fixed) / 2).clamp(15, 39);
+    // A narrow table drops the service mark and shortens the process
+    let (port, process) = match width < 2 * 15 + 2 * PORT_WIDTH + PROCESS_WIDTH + 4 {
+        true => (5, 12),
+        false => (PORT_WIDTH, PROCESS_WIDTH),
+    };
+    let address = (width.saturating_sub(2 * port + process + 4) / 2).clamp(8, 39);
     [
         Constraint::Length(address),
-        Constraint::Length(PORT_WIDTH),
-        Constraint::Length(PROCESS_WIDTH),
+        Constraint::Length(port),
+        Constraint::Length(process),
         Constraint::Length(address),
-        Constraint::Length(PORT_WIDTH),
+        Constraint::Length(port),
     ]
 }
 
@@ -260,6 +264,8 @@ pub(crate) mod tests {
             assert_eq!(flow_columns(120 + port * 10)[1], Constraint::Length(9));
         }
         assert_eq!(flow_columns(200)[0], Constraint::Length(39));
-        assert_eq!(flow_columns(60)[0], Constraint::Length(15));
+        assert_eq!(flow_columns(72)[0], Constraint::Length(15));
+        assert_eq!(flow_columns(46)[0], Constraint::Length(10));
+        assert_eq!(flow_columns(46)[2], Constraint::Length(12));
     }
 }

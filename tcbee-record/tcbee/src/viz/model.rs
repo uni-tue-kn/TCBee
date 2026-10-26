@@ -122,8 +122,8 @@ pub struct GroupRow {
     pub group: Group,
     /// Its rings that record
     pub rings: Vec<u32>,
-    /// The group has a chart
-    pub charted: bool,
+    /// Index of its chart in `Model::charts`
+    pub chart: Option<usize>,
     /// Runs per second of the last ticks
     pub history: Vec<f64>,
 }
@@ -181,7 +181,8 @@ impl Model {
                     .copied()
                     .filter(|rb| display_group(*rb) == group)
                     .collect(),
-                charted: charted.contains(&group),
+                // The events chart comes first
+                chart: charted.iter().position(|g| *g == group).map(|i| i + 1),
                 history: Vec::new(),
             })
             .filter(|row| !row.rings.is_empty())

@@ -16,17 +16,49 @@ use crate::{
     viz::{
         components::{
             graph,
-            status::{self, LEFT_WIDTH},
+            status::{self, COMPACT_WIDTH, LEFT_WIDTH},
         },
         flow_tracker::{flow_table, Flows},
         history::{window_name, window_step, Span, WINDOWS},
-        model::Model,
+        model::{Model, CHARTS},
     },
 };
 
 /// Below this size the UI shows only a hint
-pub const MIN_WIDTH: u16 = 60;
-pub const MIN_HEIGHT: u16 = 16;
+pub const MIN_WIDTH: u16 = 40;
+pub const MIN_HEIGHT: u16 = 12;
+
+/// What the terminal has room for
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fit {
+    /// The full left column and four charts
+    Full,
+    /// A narrower left column and two charts
+    Compact,
+    /// No charts, sparklines in the group table instead
+    Minimal,
+}
+
+impl Fit {
+    pub fn of(area: Rect) -> Fit {
+        if area.width >= 120 && area.height >= 30 {
+            Fit::Full
+        } else if area.width >= 80 && area.height >= 24 {
+            Fit::Compact
+        } else {
+            Fit::Minimal
+        }
+    }
+
+    /// Chart slots it shows
+    pub fn charts(self) -> usize {
+        match self {
+            Fit::Full => CHARTS,
+            Fit::Compact => 2,
+            Fit::Minimal => 0,
+        }
+    }
+}
 
 /// What the UI shows that does not change while recording
 pub struct View {
@@ -209,22 +241,34 @@ pub fn render(frame: &mut Frame, model: &Model, view: &View, ui: &UiState, flows
         return Areas::default();
     }
 
+    let fit = Fit::of(area);
+    let charts = model.charts.len().min(fit.charts());
     let [main, footer] = Layout::vertical([Constraint::Min(8), Constraint::Length(1)]).areas(area);
-    let [left, right] = Layout::horizontal([
-        Constraint::Length(LEFT_WIDTH.min(area.width / 3)),
-        Constraint::Min(0),
-    ])
-    .spacing(1)
-    .areas(main);
+    let left_width = match fit {
+        Fit::Full => LEFT_WIDTH.min(area.width / 3),
+        Fit::Compact => COMPACT_WIDTH,
+        // The flows only if they get some room
+        Fit::Minimal if area.width >= COMPACT_WIDTH + 40 => COMPACT_WIDTH,
+        Fit::Minimal => area.width,
+    };
+    let [left, right] = Layout::horizontal([Constraint::Length(left_width), Constraint::Min(0)])
+        .spacing(1)
+        .areas(main);
 
     // A zoomed chart takes the place of the flows as well
-    let shown: Vec<usize> = match ui.zoom {
+    let zoom = ui.zoom.filter(|slot| *slot < charts);
+    let shown: Vec<usize> = match zoom {
         Some(slot) => vec![slot],
-        None => (0..model.charts.len()).collect(),
+        None => (0..charts).collect(),
     };
     let mut flow_rows = Rect::default();
-    let chart_area = if ui.zoom.is_some() {
+    let chart_area = if zoom.is_some() {
         right
+    } else if charts == 0 {
+        if right.width > 0 {
+            flow_rows = render_flows(frame, ui, flows, right);
+        }
+        Rect::default()
     } else {
         let [charts, flow_area] = Layout::vertical([Constraint::Percentage(50); 2]).areas(right);
         flow_rows = render_flows(frame, ui, flows, flow_area);
@@ -245,19 +289,36 @@ pub fn render(frame: &mut Frame, model: &Model, view: &View, ui: &UiState, flows
         graph::render(frame, &model.charts[*slot], slot + 1, span, rect);
     }
 
-    status::render(frame, model, view, ui.expanded, left);
+    status::render(frame, model, view, ui.expanded, fit, left);
 
     let span = match span {
         Span::Whole => "whole run".to_string(),
         Span::Last(window) => format!("window {}", window_name(window)),
     };
-    let zoom = match ui.zoom {
-        Some(_) => "Esc back",
-        None => "1-4 zoom",
-    };
-    let keys = format!(
-        " q quit  {zoom}  e rings  \u{2191}\u{2193} PgUp PgDn flows   charts: {span}  w whole/window  +/- length"
-    );
+    let mut keys = vec!["q quit".to_string()];
+    match (zoom, charts) {
+        (Some(_), _) => keys.push("Esc back".to_string()),
+        (None, 0) => {}
+        (None, 1) => keys.push("1 zoom".to_string()),
+        (None, charts) => keys.push(format!("1-{charts} zoom")),
+    }
+    keys.push("e rings".to_string());
+    keys.push("\u{2191}\u{2193} PgUp PgDn flows".to_string());
+    if charts > 0 {
+        keys.push(format!("charts: {span}"));
+        keys.push("w whole/window".to_string());
+        keys.push("+/- length".to_string());
+    }
+    // As many as fit
+    let mut line = String::new();
+    for key in keys {
+        if line.chars().count() + key.chars().count() + 2 > footer.width as usize {
+            break;
+        }
+        line.push_str("  ");
+        line.push_str(&key);
+    }
+    let keys = line;
     frame.render_widget(
         Paragraph::new(keys).style(Style::default().add_modifier(Modifier::DIM)),
         footer,
@@ -265,7 +326,7 @@ pub fn render(frame: &mut Frame, model: &Model, view: &View, ui: &UiState, flows
 
     Areas {
         slots,
-        charts: model.charts.len(),
+        charts,
         flow_rows,
     }
 }
@@ -486,7 +547,7 @@ pub(crate) mod tests {
         assert!(contains(&lines, "disk       2.00 MB/s  2.00 MB"));
         assert!(contains(&lines, "headers      1.00K    990     10 agg 0%"));
         assert!(contains(&lines, "- BBR: tcp_bbr is not loaded"));
-        assert!(contains(&lines, " q quit  1-4 zoom  e rings"));
+        assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Flows: 1 of 1"));
         assert!(contains(&lines, "Local"));
@@ -868,6 +929,77 @@ pub(crate) mod tests {
         assert_eq!(rows[2], "10.0.0.1 5201 ? 10.0.0.2 9");
     }
 
+    /// A busy run with every group, its flows and their owners
+    fn every_group() -> (Model, View, Flows) {
+        let rings: Vec<u32> = (0..RB_COUNT).collect();
+        let mut model = Model::new(&rings);
+        for t in 0..20u64 {
+            let values: Vec<(u32, u64)> = rings
+                .iter()
+                .map(|rb| (slot(*rb, STAT_HANDLED), t * t * 100 * (*rb as u64 + 1)))
+                .collect();
+            model.update(snapshot(&values), t * 1_000_000, Duration::from_secs(t));
+            model.record_history();
+        }
+        let mut flows = Flows::default();
+        for port in 1..=30 {
+            flows.add(flow(port));
+        }
+        (model, View::new(context(&rings)), flows)
+    }
+
+    #[test]
+    fn compact_terminals_show_two_charts_and_a_narrow_column() {
+        let (model, view, flows) = every_group();
+        let mut ui = UiState::default();
+        let (lines, areas) = screen(100, 30, &model, &view, &ui, &flows);
+        assert_eq!(Fit::of(Rect::new(0, 0, 100, 30)), Fit::Compact);
+        assert_eq!(areas.charts, 2);
+        assert_eq!(areas.slots.len(), 2);
+        assert!(contains(&lines, "1 Events"));
+        assert!(contains(&lines, "2 Headers"));
+        assert!(!contains(&lines, "3 Socket"));
+        // No rec/s column, the groups without a shown chart get a sparkline
+        assert!(contains(&lines, "group    runs/s  drops"));
+        assert!(contains(&lines, "headers  "));
+        let sock = lines.iter().find(|line| line.starts_with("sock ")).unwrap();
+        assert!(sock.contains('\u{2588}'), "{sock}");
+        assert!(contains(&lines, "Flows: 1 of 30"));
+        assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
+        // Key 3 has no chart to zoom
+        ui.on_key(KeyCode::Char('3'), &areas, 30);
+        assert_eq!(ui.zoom, None);
+        ui.on_key(KeyCode::Char('2'), &areas, 30);
+        let (_, areas) = screen(100, 30, &model, &view, &ui, &flows);
+        assert_eq!(areas.slots.len(), 1);
+    }
+
+    #[test]
+    fn minimal_terminals_show_sparklines_instead_of_charts() {
+        let (model, view, flows) = every_group();
+        let (lines, areas) = screen(79, 23, &model, &view, &UiState::default(), &flows);
+        assert!(areas.slots.is_empty());
+        assert_eq!(areas.charts, 0);
+        assert!(!contains(&lines, "1 Events"));
+        let headers = lines
+            .iter()
+            .find(|line| line.starts_with("headers "))
+            .unwrap();
+        assert!(headers.contains("agg"), "{headers}");
+        let cc = lines.iter().find(|line| line.starts_with("cc ")).unwrap();
+        assert!(cc.contains('\u{2588}'), "{cc}");
+        assert!(contains(&lines, "Flows: 1 of 30"));
+        // A zoom from a larger terminal is not in the way
+        let mut ui = UiState::default();
+        ui.zoom = Some(1);
+        let (lines, _) = screen(79, 23, &model, &view, &ui, &flows);
+        assert!(contains(&lines, "Flows: 1 of 30"));
+        // Too narrow for the flows next to the column
+        let (lines, areas) = screen(60, 20, &model, &view, &UiState::default(), &flows);
+        assert_eq!(areas.flow_rows, Rect::default());
+        assert!(contains(&lines, "TCBee 00:00:19"));
+    }
+
     #[test]
     fn grid_fills_the_chart_area() {
         let area = Rect::new(0, 0, 100, 40);
@@ -886,7 +1018,7 @@ pub(crate) mod tests {
         let view = View::new(context(&TC_RINGS));
         // No panic on a tiny terminal
         screen(1, 1, &model, &view, &UiState::default(), &Flows::default());
-        for (width, height) in [(59, 45), (160, 15), (60, 16)] {
+        for (width, height) in [(39, 45), (160, 11), (40, 12)] {
             let (lines, areas) = screen(
                 width,
                 height,
@@ -897,7 +1029,8 @@ pub(crate) mod tests {
             );
             let small = width < MIN_WIDTH || height < MIN_HEIGHT;
             assert_eq!(contains(&lines, "Terminal too small"), small);
-            assert_eq!(areas.slots.is_empty(), small);
+            // Too small for charts in any case
+            assert!(areas.slots.is_empty());
         }
     }
 
