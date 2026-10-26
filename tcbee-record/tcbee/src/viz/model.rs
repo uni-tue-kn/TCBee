@@ -138,16 +138,12 @@ pub struct GroupRow {
     pub group: Group,
     /// Its rings that record
     pub rings: Vec<u32>,
-    /// Index of its chart in `Model::charts`
-    pub chart: Option<usize>,
     /// Records per second of the last summaries, the newest last
     pub history: Vec<f64>,
 }
 
 /// Counters and rates of some rings
 pub struct RingStats {
-    /// Probe runs per second
-    pub runs: f64,
     /// Records per second
     pub records: f64,
     pub drops: u64,
@@ -222,7 +218,6 @@ impl Counters {
         let suppressed: u64 = rings.iter().map(|rb| snap.suppressed(*rb)).sum();
         let aggregated: u64 = rings.iter().map(|rb| snap.aggregated(*rb)).sum();
         RingStats {
-            runs: self.rate(&run_slots(rings)),
             records: self.rate(&handled_slots(rings)),
             drops: rings.iter().map(|rb| snap.rb(*rb, STAT_DROPPED)).sum(),
             suppressed: percent(suppressed as f64, runs as f64),
@@ -286,8 +281,6 @@ impl Model {
                     .copied()
                     .filter(|rb| display_group(*rb) == Some(group))
                     .collect(),
-                // The events chart comes first
-                chart: charted.iter().position(|g| *g == group).map(|i| i + 1),
                 history: Vec::new(),
             })
             .filter(|row| !row.rings.is_empty())

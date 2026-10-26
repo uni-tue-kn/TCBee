@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Cell, Padding, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Padding, Paragraph, Wrap},
     Frame,
 };
 
@@ -13,10 +13,10 @@ use crate::viz::{
     format,
     groups::{ring_label, Group},
     layout::Fit,
-    model::{Counters, Model, RingStats},
+    model::{Counters, Model, RingStats, ROW_HISTORY},
 };
 
-/// The column for a terminal of `fit`, narrower than full without the rec/s columns
+/// The column for a terminal of `fit`. The groups get sparklines when no chart is shown.
 pub fn render(
     frame: &mut Frame,
     model: &Model,
@@ -25,23 +25,26 @@ pub fn render(
     fit: Fit,
     area: Rect,
 ) {
-    let compact = fit.narrow_column();
     // Inside the borders and the padding
     let inner = (area.width as usize).saturating_sub(4);
     let context = context_lines(run);
     let health = health_lines(&model.second, run, inner);
-    // What the borders, the padding and the name, rate and drop columns leave
-    let fixed = if compact { 27 } else { 37 };
-    let spark = (area.width as usize).saturating_sub(fixed).clamp(1, 16);
-    let rows = group_rows(model, run, expanded, fit.charts(), compact, spark);
+    let groups = GroupTable::new(fit, inner);
+    let rows = groups.lines(model, run, expanded);
     let skipped = &run.skipped;
-    // Each block has a border above and below
+    // Each block has a border above and below. On a short terminal the blocks below get
+    // what the ones above leave.
+    let mut room = area.height;
+    let mut take = |lines: usize| {
+        let height = (lines as u16).min(room);
+        room -= height;
+        Constraint::Length(height)
+    };
     let [context_area, health_area, groups_area, skipped_area] = Layout::vertical([
-        Constraint::Length(context.len() as u16 + 2),
-        Constraint::Length(health.len() as u16 + 2),
-        // And a header
-        Constraint::Length(rows.len() as u16 + 3),
-        Constraint::Length(skipped_height(&run.skipped, area.width)),
+        take(context.len() + 2),
+        take(health.len() + 2),
+        take(rows.len() + 2),
+        take(skipped_height(&run.skipped, area.width)),
     ])
     .areas(area);
 
@@ -53,39 +56,11 @@ pub fn render(
     let title = column_title("Health", &HEALTH_LABELS, &HEALTH_WIDTHS, inner);
     frame.render_widget(Paragraph::new(health).block(block(title)), health_area);
 
-    let (header, widths) = if compact {
-        (
-            vec!["group", "runs/s", " drops", ""],
-            vec![
-                Constraint::Length(8),
-                Constraint::Length(6),
-                Constraint::Length(6),
-                Constraint::Min(0),
-            ],
-        )
-    } else {
-        (
-            vec!["group", "runs/s", " rec/s", " drops", ""],
-            vec![
-                Constraint::Length(11),
-                Constraint::Length(6),
-                Constraint::Length(6),
-                Constraint::Length(6),
-                Constraint::Min(0),
-            ],
-        )
-    };
-    let header = header
-        .into_iter()
-        .map(Cell::from)
-        .collect::<Row>()
-        .style(Style::default().add_modifier(Modifier::BOLD));
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block(bold_title("Probe groups (e: rings)").into()));
-    frame.render_widget(table, groups_area);
+    let title = column_title("Probe groups", &groups.labels(), &groups.widths(), inner);
+    frame.render_widget(Paragraph::new(rows).block(block(title)), groups_area);
 
-    if !skipped.is_empty() {
+    // Not just the borders
+    if !skipped.is_empty() && skipped_area.height > 2 {
         let lines: Vec<Line> = skipped
             .iter()
             .map(|reason| Line::from(reason.clone()))
@@ -129,7 +104,8 @@ pub fn column_title(name: &str, labels: &[&str], widths: &[usize], inner: usize)
         let Some(start) = (end + 1).checked_sub(length) else {
             break;
         };
-        if start < name.width() || end >= cells.len() {
+        // A label may take the space after the name
+        if start + 1 < name.width() || end >= cells.len() {
             break;
         }
         for (cell, char) in cells[start..=end].iter_mut().zip(label.chars()) {
@@ -142,7 +118,7 @@ pub fn column_title(name: &str, labels: &[&str], widths: &[usize], inner: usize)
 }
 
 /// Lines of the skipped block in a column `width` cells wide, its reasons wrapped
-fn skipped_height(skipped: &[String], width: u16) -> u16 {
+fn skipped_height(skipped: &[String], width: u16) -> usize {
     if skipped.is_empty() {
         return 0;
     }
@@ -152,7 +128,7 @@ fn skipped_height(skipped: &[String], width: u16) -> u16 {
         .iter()
         .map(|reason| reason.chars().count().div_ceil(inner).max(1))
         .sum();
-    lines as u16 + 2
+    lines + 2
 }
 
 /// Where and how the run records
@@ -177,12 +153,29 @@ const HEALTH_WIDTHS: [usize; 2] = [9, 7];
 
 /// A row of `name` and values right-aligned in `widths`, in a content area `inner` cells wide
 fn columns(name: &str, values: &[String], widths: &[usize], inner: usize) -> String {
+    let values = values
+        .iter()
+        .map(|value| Span::raw(value.clone()))
+        .collect();
+    styled_columns(Span::raw(name.to_string()), values, widths, inner).to_string()
+}
+
+/// `columns` with styled values
+fn styled_columns(
+    name: Span<'static>,
+    values: Vec<Span<'static>>,
+    widths: &[usize],
+    inner: usize,
+) -> Line<'static> {
     let taken: usize = widths.iter().map(|width| width + 1).sum();
-    let mut row = format!("{name:<0$}", inner.saturating_sub(taken));
-    for (value, width) in values.iter().zip(widths) {
-        row.push_str(&format!(" {value:>width$}"));
+    let pad = inner.saturating_sub(taken).saturating_sub(name.width());
+    let mut spans = vec![name, Span::raw(" ".repeat(pad))];
+    for (value, width) in values.into_iter().zip(widths) {
+        let pad = (width + 1).saturating_sub(value.width());
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(value);
     }
-    row
+    Line::from(spans)
 }
 
 /// Whether the recording keeps up: each row now and since the start, in a content area
@@ -245,70 +238,119 @@ fn health_lines(counters: &Counters, run: &RunContext, inner: usize) -> Vec<Line
     lines
 }
 
-/// One row per active group, and with `expanded` one per ring below. Groups whose chart is not
-/// among the first `charts` get a sparkline.
-fn group_rows(
-    model: &Model,
-    run: &RunContext,
-    expanded: bool,
-    charts: usize,
-    compact: bool,
-    spark: usize,
-) -> Vec<Row<'static>> {
-    let mut rows = Vec::new();
-    for row in &model.groups {
-        let stats = model.second.ring_stats(&row.rings);
-        let note = match share_note(row.group, &stats, run.on_change) {
-            Some(note) => note,
-            // Groups without a chart get a sparkline instead
-            None if !row.chart.is_some_and(|chart| chart < charts) => {
-                format::spark(&row.history, spark)
-            }
-            None => String::new(),
-        };
-        rows.push(stats_row(
-            row.group.name().to_string(),
-            &stats,
-            note,
-            compact,
-        ));
-        if expanded {
-            for rb in &row.rings {
-                let stats = model.second.ring_stats(&[*rb]);
-                let note = share_note(row.group, &stats, run.on_change).unwrap_or_default();
-                let row = stats_row(format!(" {}", ring_label(*rb)), &stats, note, compact);
-                rows.push(row.style(Style::default().add_modifier(Modifier::DIM)));
-            }
-        }
-    }
-    rows
+/// Value columns of the probe group table
+const GROUP_LABELS: [&str; 2] = ["rec/s", "drops"];
+const GROUP_WIDTHS: [usize; 2] = [6, 6];
+/// Width of the group names, the longest is "tracepoints"
+const GROUP_NAME_WIDTH: usize = 11;
+/// Fewest cells a sparkline gets, and the cells it needs for its full header
+const MIN_SPARK: usize = 4;
+const FULL_SPARK_HEADER: usize = 9;
+
+/// The probe group table of a column `inner` cells wide inside its padding
+struct GroupTable {
+    inner: usize,
+    /// Cells of the sparkline column, None while charts are shown
+    spark: Option<usize>,
 }
 
-/// The share of aggregated packets of a header group, or of suppressed runs on change
-fn share_note(group: Group, stats: &RingStats, on_change: bool) -> Option<String> {
+impl GroupTable {
+    /// Sparklines only replace the charts: on a terminal without them, if they fit
+    fn new(fit: Fit, inner: usize) -> GroupTable {
+        let taken = GROUP_NAME_WIDTH + GROUP_WIDTHS.iter().map(|width| width + 1).sum::<usize>();
+        let room = inner.saturating_sub(taken + 1).min(ROW_HISTORY);
+        GroupTable {
+            inner,
+            spark: (fit.charts() == 0 && room >= MIN_SPARK).then_some(room),
+        }
+    }
+
+    fn labels(&self) -> Vec<&'static str> {
+        let mut labels = GROUP_LABELS.to_vec();
+        match self.spark {
+            Some(width) if width >= FULL_SPARK_HEADER => labels.push("last 30 s"),
+            Some(_) => labels.push("30 s"),
+            None => {}
+        }
+        labels
+    }
+
+    fn widths(&self) -> Vec<usize> {
+        let mut widths = GROUP_WIDTHS.to_vec();
+        widths.extend(self.spark);
+        widths
+    }
+
+    /// A line per active group, below the shares it has; with `expanded` a dimmed line per
+    /// ring; and the key that shows or hides them
+    fn lines(&self, model: &Model, run: &RunContext, expanded: bool) -> Vec<Line<'static>> {
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let mut lines = Vec::new();
+        for row in &model.groups {
+            let stats = model.second.ring_stats(&row.rings);
+            let mut values = stat_spans(&stats);
+            if let Some(width) = self.spark {
+                values.push(Span::raw(spark(&row.history, width)));
+            }
+            let name = Span::raw(row.group.name());
+            lines.push(styled_columns(name, values, &self.widths(), self.inner));
+            if let Some(share) = share(row.group, &stats, run.on_change) {
+                lines.push(Line::styled(format!("  {share}"), dim));
+            }
+            if expanded {
+                for rb in &row.rings {
+                    let stats = model.second.ring_stats(&[*rb]);
+                    let name = Span::raw(format!("  {}", ring_label(*rb)));
+                    let mut values = stat_spans(&stats);
+                    // The sparkline column stays empty
+                    if self.spark.is_some() {
+                        values.push(Span::raw(""));
+                    }
+                    let line = styled_columns(name, values, &self.widths(), self.inner);
+                    lines.push(line.style(dim));
+                }
+            }
+        }
+        let key = if expanded {
+            "e: hide rings"
+        } else {
+            "e: show rings"
+        };
+        lines.push(Line::styled(key, dim));
+        lines
+    }
+}
+
+/// The rate of records and the drops of some rings, a dim dot for nothing
+fn stat_spans(stats: &RingStats) -> Vec<Span<'static>> {
+    let dot = || Span::styled("\u{b7}", Style::default().add_modifier(Modifier::DIM));
+    let records = match stats.records {
+        0.0 => dot(),
+        records => Span::raw(format::si(records)),
+    };
+    let drops = match stats.drops {
+        0 => dot(),
+        drops => Span::styled(format::si(drops as f64), Style::default().fg(Color::Red)),
+    };
+    vec![records, drops]
+}
+
+/// The share of header packets that stand for several segments, or of the socket hook runs
+/// suppressed on change, both since the start
+fn share(group: Group, stats: &RingStats, on_change: bool) -> Option<String> {
     match group {
-        Group::Headers => Some(format!("agg {:.0}%", stats.aggregated)),
-        Group::Sock if on_change => Some(format!("supp {:.0}%", stats.suppressed)),
+        Group::Headers => Some(format!("{:.0}% aggregated", stats.aggregated)),
+        Group::Sock if on_change => Some(format!("{:.0}% suppressed", stats.suppressed)),
         _ => None,
     }
 }
 
-fn stats_row(name: String, stats: &RingStats, note: String, compact: bool) -> Row<'static> {
-    let drops = Cell::from(format!("{:>6}", format::si(stats.drops as f64)));
-    let drops = if stats.drops > 0 {
-        drops.style(Style::default().fg(Color::Red))
-    } else {
-        drops
-    };
-    let runs = Cell::from(format!("{:>6}", format::si(stats.runs)));
-    match compact {
-        true => Row::new([Cell::from(name), runs, drops, Cell::from(note)]),
-        false => Row::new([
-            Cell::from(name),
-            runs,
-            Cell::from(format!("{:>6}", format::si(stats.records))),
-            drops,
-            Cell::from(note),
-        ]),
-    }
+/// A sparkline of the last seconds in `width` cells: each cell the maximum of its seconds
+fn spark(history: &[f64], width: usize) -> String {
+    let seconds = history.len().div_ceil(width.max(1)).max(1);
+    let cells: Vec<f64> = history
+        .chunks(seconds)
+        .map(|chunk| chunk.iter().copied().fold(0.0, f64::max))
+        .collect();
+    format::spark(&cells, width)
 }

@@ -54,18 +54,16 @@ impl Fit {
         }
     }
 
-    /// The left column leaves out the rec/s columns
-    pub fn narrow_column(self) -> bool {
-        self != Fit::Full
-    }
-
     /// Width of the left column in a terminal `width` cells wide. On a minimal terminal the
-    /// column takes all of it unless the flows get some room next to it.
+    /// column takes all of it unless the flows get some room next to it, and up to the full
+    /// width what the flows leave, for the sparklines.
     pub fn left_width(self, width: u16) -> u16 {
         match self {
             Fit::Full => LEFT_WIDTH,
             Fit::Compact => NARROW_LEFT_WIDTH,
-            Fit::Minimal if width >= NARROW_LEFT_WIDTH + MIN_FLOWS_WIDTH => NARROW_LEFT_WIDTH,
+            Fit::Minimal if width >= NARROW_LEFT_WIDTH + MIN_FLOWS_WIDTH => {
+                (width - MIN_FLOWS_WIDTH).min(LEFT_WIDTH)
+            }
             Fit::Minimal => width,
         }
     }
@@ -103,6 +101,8 @@ mod tests {
         assert_eq!(fit(79, 45), Fit::Minimal);
         assert_eq!(Fit::Full.left_width(120), LEFT_WIDTH);
         assert_eq!(Fit::Minimal.left_width(72), NARROW_LEFT_WIDTH);
+        assert_eq!(Fit::Minimal.left_width(79), 39);
+        assert_eq!(Fit::Minimal.left_width(160), LEFT_WIDTH);
         assert_eq!(Fit::Minimal.left_width(71), 71);
     }
 

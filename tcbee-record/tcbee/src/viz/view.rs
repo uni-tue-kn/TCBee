@@ -423,10 +423,12 @@ mod tests {
         assert_eq!(end("Health", "total"), end("disk", "MB \u{2502}") - 2);
         // The runs only differ from the records on change
         assert!(!contains(&lines, "\u{2502} runs/s"));
-        assert_eq!(
-            row(&lines, "headers"),
-            ["headers", "1.00K", "990", "10", "agg", "0%"]
-        );
+        // The groups with their records and drops, the headers with their aggregated share
+        assert!(contains(&lines, "\u{250c} Probe groups "));
+        assert!(contains(&lines, " rec/s  drops \u{2510}"));
+        assert_eq!(row(&lines, "headers"), ["headers", "990", "10"]);
+        assert!(contains(&lines, "\u{2502}   0% aggregated "));
+        assert!(contains(&lines, "e: show rings"));
         assert_eq!(
             row(&lines, "BBR:"),
             ["BBR:", "tcp_bbr", "is", "not", "loaded"]
@@ -471,25 +473,27 @@ mod tests {
         let view = context(&[]);
         let mut ui = UiState::default();
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
-        assert_eq!(
-            row(&lines, "headers"),
-            ["headers", "200", "200", "0", "agg", "50%"]
-        );
-        // TCP events have no chart, so a sparkline
-        assert_eq!(
-            row(&lines, "tcp_ev"),
-            ["tcp_ev", "200", "200", "0", "\u{2581}\u{2584}\u{2588}"]
-        );
+        assert_eq!(row(&lines, "headers"), ["headers", "200", "\u{b7}"]);
+        assert!(contains(&lines, "50% aggregated"));
+        // Nothing is a dot, no sparklines next to the charts
+        assert_eq!(row(&lines, "sock"), ["sock", "\u{b7}", "\u{b7}"]);
+        assert_eq!(row(&lines, "tcp"), ["tcp", "events", "200", "\u{b7}"]);
         assert!(contains(&lines, "! 3 state errors"));
         assert!(!contains(&lines, "tc v4 in"));
         ui.on_key(KeyCode::Char('e'), &charts(model.charts.len()), 0);
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
+        assert_eq!(row(&lines, "tc"), ["tc", "v4", "in", "200", "\u{b7}"]);
+        assert!(contains(&lines, "   tc v4 out "));
+        assert_eq!(row(&lines, "tcp_events"), ["tcp_events", "200", "\u{b7}"]);
+        assert!(contains(&lines, "e: hide rings"));
+        // The share is the group's only
         assert_eq!(
-            row(&lines, "tc"),
-            ["tc", "v4", "in", "200", "200", "0", "agg", "50%"]
+            lines
+                .iter()
+                .filter(|line| line.contains("aggregated"))
+                .count(),
+            1
         );
-        assert!(contains(&lines, " tc v4 out "));
-        assert_eq!(row(&lines, "tcp_events")[1], "200");
     }
 
     #[test]
@@ -511,7 +515,8 @@ mod tests {
             &UiState::default(),
             &Flows::default(),
         );
-        assert_eq!(row(&lines, "sock")[..5], ["sock", "40", "10", "0", "supp"]);
+        assert_eq!(row(&lines, "sock"), ["sock", "10", "\u{b7}"]);
+        assert!(contains(&lines, "\u{2502}   75% suppressed "));
         assert!(contains(&lines, "on change"));
         assert_eq!(row(&lines, "runs/s"), ["runs/s", "40", "40"]);
         assert_eq!(row(&lines, "records/s"), ["records/s", "10", "10"]);
@@ -881,11 +886,13 @@ mod tests {
         assert!(contains(&lines, "1 Events"));
         assert!(contains(&lines, "2 Headers"));
         assert!(!contains(&lines, "3 Socket"));
-        // No rec/s column, the groups without a shown chart get a sparkline
-        assert_eq!(row(&lines, "group"), ["group", "runs/s", "drops"]);
-        let sock = row(&lines, "sock");
-        assert_eq!(sock.len(), 4);
-        assert!(sock[3].ends_with('\u{2588}'), "{sock:?}");
+        // The same columns in a narrow column, no sparklines next to the charts
+        assert!(contains(
+            &lines,
+            "\u{250c} Probe groups \u{2500}\u{2500} rec/s  drops \u{2510}"
+        ));
+        assert_eq!(row(&lines, "sock").len(), 3);
+        assert_eq!(row(&lines, "owners").len(), 3);
         assert!(contains(&lines, "Flows: 1 of 30"));
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         // Key 3 has no chart to zoom
@@ -903,8 +910,11 @@ mod tests {
         assert!(areas.slots.is_empty());
         assert_eq!(areas.charts, 0);
         assert!(!contains(&lines, "1 Events"));
-        assert_eq!(row(&lines, "headers")[3], "agg");
+        // Every group gets a sparkline of the last 30 s
+        assert!(contains(&lines, " rec/s  drops last 30 s \u{2510}"));
+        assert!(row(&lines, "headers")[3].ends_with('\u{2588}'));
         assert!(row(&lines, "cc")[3].ends_with('\u{2588}'));
+        assert!(contains(&lines, "aggregated"));
         assert!(contains(&lines, "Flows: 1 of 30"));
         // A zoom from a larger terminal is not in the way
         let ui = UiState {

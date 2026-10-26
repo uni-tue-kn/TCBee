@@ -46,8 +46,8 @@ impl Group {
             Group::Headers => "headers",
             Group::Sock => "sock",
             Group::Cc => "cc",
-            Group::Tracepoints => "tracept",
-            Group::TcpEvents => "tcp_ev",
+            Group::Tracepoints => "tracepoints",
+            Group::TcpEvents => "tcp events",
             Group::Mptcp => "mptcp",
             Group::Owners => "owners",
         }
