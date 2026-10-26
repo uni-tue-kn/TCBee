@@ -274,8 +274,9 @@ fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
     frame.render_widget(Paragraph::new(label).style(red), label_area);
     let history = &model.drop_history;
     // A fixed scale, so the bars compare between ticks; more than 1 % fills a bar
-    let shown: Vec<u64> = history[history.len().saturating_sub(spark_area.width as usize)..]
+    let shown: Vec<u64> = history
         .iter()
+        .skip(history.len().saturating_sub(spark_area.width as usize))
         .map(|value| (*value).min(DROP_SCALE))
         .collect();
     frame.render_widget(

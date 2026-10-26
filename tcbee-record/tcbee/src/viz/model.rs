@@ -1,6 +1,6 @@
 //! What the watcher shows, computed once per tick from a counter snapshot
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use ratatui::style::Color;
 use tcbee_common::stats::{
@@ -16,6 +16,9 @@ use crate::{
         history::{History, Recent, Span, HISTORY_POINTS},
     },
 };
+
+/// Ticks the drop sparkline keeps, more than the widest terminal shows
+pub const DROP_TICKS: usize = 512;
 
 /// Charts of the grid, the events chart first
 pub const CHARTS: usize = 4;
@@ -159,8 +162,8 @@ pub struct Model {
     egress: Vec<u32>,
     /// The events chart and those of the first groups
     pub charts: Vec<ChartModel>,
-    /// Dropped share of the events per tick, in hundredths of a percent
-    pub drop_history: Vec<u64>,
+    /// Dropped share of the events of the last `DROP_TICKS` ticks, in hundredths of a percent
+    pub drop_history: VecDeque<u64>,
     /// Active groups in chart priority
     pub groups: Vec<GroupRow>,
 }
@@ -204,7 +207,7 @@ impl Model {
             ingress: run_slots(&ingress),
             egress: run_slots(&egress),
             charts,
-            drop_history: Vec::new(),
+            drop_history: VecDeque::new(),
             groups,
         }
     }
@@ -313,11 +316,11 @@ impl Model {
             }
             history.push(runs);
         }
-        if self.drop_history.len() == HISTORY_POINTS {
-            self.drop_history.remove(0);
+        if self.drop_history.len() == DROP_TICKS {
+            self.drop_history.pop_front();
         }
         self.drop_history
-            .push((self.drop_percent() * 100.0).round() as u64);
+            .push_back((self.drop_percent() * 100.0).round() as u64);
     }
 
     /// The status line of -q, overwriting the line before
