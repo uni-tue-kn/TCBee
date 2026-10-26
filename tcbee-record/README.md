@@ -389,7 +389,9 @@ For more flexible filtering, use the map-backed filter options:
 --dst-ips 10.0.0.20
 ```
 
-Ports and IPs are exact matches. `--ports` and `--ips` match either source or destination;
+Ports and IPs are exact matches. An IPv4 address also matches its v4-mapped form
+(`::ffff:10.0.0.1`), the address a dual-stack socket uses for an IPv4 peer, so it takes two of
+the 1024 entries of a filter map. `--ports` and `--ips` match either source or destination;
 the `src`/`dst` variants require that direction. Values inside the same option are ORed.
 Different dimensions are ANDed, so `--ports 80,443 --ips 10.0.0.1` records traffic where
 either endpoint port is 80 or 443 and either endpoint IP is `10.0.0.1`.

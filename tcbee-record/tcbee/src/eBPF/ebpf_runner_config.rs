@@ -83,6 +83,17 @@ pub fn ip_to_filter_addr(ip: IpAddr) -> [u8; 16] {
     addr
 }
 
+/// The filter map keys of an address. A dual-stack socket (AF_INET6) talks to an IPv4 peer with
+/// v4-mapped addresses, which the socket programs take as they are, so an IPv4 address also
+/// matches in its v4-mapped form (`::ffff:a.b.c.d`). Only the keys change, the programs and their
+/// code stay the same.
+pub fn ip_filter_keys(ip: IpAddr) -> Vec<[u8; 16]> {
+    match ip {
+        IpAddr::V4(v4) => vec![ip_to_filter_addr(ip), v4.to_ipv6_mapped().octets()],
+        IpAddr::V6(_) => vec![ip_to_filter_addr(ip)],
+    }
+}
+
 /// max_entries is a u32 and has to be a power of two, so 2 GiB is the largest size
 const MAX_RINGBUF_SIZE: u64 = 1 << 31;
 const PAGE_SIZE: u64 = 4096;
@@ -706,6 +717,18 @@ mod tests {
             TracepointSet::of(&[Tracepoint::Probe])
         );
         assert!(tracepoint_set(false, "", false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ipv4_filter_addresses_also_match_v4_mapped() {
+        let v4: IpAddr = "10.0.0.1".parse().unwrap();
+        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert_eq!(
+            ip_filter_keys(v4),
+            [ip_to_filter_addr(v4), ip_to_filter_addr(mapped)]
+        );
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(ip_filter_keys(v6), [ip_to_filter_addr(v6)]);
     }
 
     #[test]

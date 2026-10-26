@@ -15,7 +15,7 @@ use std::{
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_to_filter_addr, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
+    ip_filter_keys, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
     FilterConfig, HookFlags, MptcpModes,
 };
 use eBPF::probes::headers::{check_offloads, HeadersAt};
@@ -58,7 +58,7 @@ where
 }
 
 fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
-    parse_csv::<IpAddr>(arg, name).map(|ips| ips.into_iter().map(ip_to_filter_addr).collect())
+    parse_csv::<IpAddr>(arg, name).map(|ips| ips.into_iter().flat_map(ip_filter_keys).collect())
 }
 
 fn main() -> anyhow::Result<()> {
