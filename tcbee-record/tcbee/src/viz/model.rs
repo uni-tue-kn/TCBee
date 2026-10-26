@@ -107,12 +107,12 @@ impl ChartModel {
         }
     }
 
-    /// Time of the newest point
+    /// Time of the newest sample. The last point of the whole-run history is older once it
+    /// merges samples: it holds the time of its first.
     pub fn end(&self) -> f64 {
         self.series
             .iter()
-            .filter_map(|series| series.whole.points().last())
-            .map(|(x, _)| *x)
+            .filter_map(|series| series.recent.end())
             .fold(0.0, f64::max)
     }
 }
@@ -356,8 +356,34 @@ mod tests {
         slot, RB_COUNT, RB_TCP4_DRIVER_INGRESS, RB_TCP4_INGRESS, STAT_HANDLED,
     };
 
+    use std::time::Duration;
+
     use super::*;
     use crate::viz::test_support::{busy_model, snapshot, TC_RINGS};
+
+    #[test]
+    fn charts_end_at_the_newest_sample_after_the_history_merged() {
+        let mut model = Model::new(&TC_RINGS);
+        // More ticks than the whole-run history keeps
+        for t in 0..3000u64 {
+            let count = 600 * t + if t == 2990 { 6000 } else { 0 };
+            model.update(
+                snapshot(&[(slot(RB_TCP4_INGRESS, STAT_HANDLED), count)]),
+                0,
+                Duration::from_secs(t),
+            );
+            model.record_history();
+        }
+        let headers = &model.charts[1];
+        let whole_end = headers.series[0].whole.points().last().unwrap().0;
+        assert!(whole_end < 2999.0, "{whole_end}");
+        assert_eq!(headers.end(), 2999.0);
+        // The window ends now and holds the spike of 10 s ago
+        let window = headers.series[0].points(Span::Last(60.0), headers.end());
+        assert_eq!(window.len(), 61);
+        assert_eq!(window.last().unwrap().0, 2999.0);
+        assert!(window.iter().any(|(_, y)| *y == 6600.0));
+    }
 
     #[test]
     fn quiet_line_keeps_its_format() {

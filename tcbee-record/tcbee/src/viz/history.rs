@@ -133,6 +133,11 @@ impl Recent {
         &live[live.partition_point(|(x, _)| *x < from)..]
     }
 
+    /// Time of the newest point
+    pub fn end(&self) -> Option<f64> {
+        self.points[self.start..].last().map(|(x, _)| *x)
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.points.len() - self.start
