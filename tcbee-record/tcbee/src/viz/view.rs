@@ -302,7 +302,7 @@ const DROP_SCALE: u64 = 100;
 /// The dropped share of the events per tick as a red sparkline from 0 to 1 %
 fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
     let red = Style::default().fg(Color::Red);
-    let label = format!(" drop {:.2}%  0-1%: ", model.drop_percent());
+    let label = format!(" drop {:.2}%  0-1%: ", model.tick.drop_percent());
     let [label_area, spark_area] =
         Layout::horizontal([Constraint::Length(label.len() as u16), Constraint::Min(0)])
             .areas(area);

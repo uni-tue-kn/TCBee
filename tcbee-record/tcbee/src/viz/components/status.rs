@@ -13,7 +13,7 @@ use crate::viz::{
     format,
     groups::{ring_label, Group},
     layout::Fit,
-    model::{Model, RingStats},
+    model::{Counters, Model, RingStats},
 };
 
 /// The column for a terminal of `fit`, narrower than full without the rec/s columns
@@ -29,7 +29,7 @@ pub fn render(
     // Inside the borders and the padding
     let inner = (area.width as usize).saturating_sub(4);
     let context = context_lines(run);
-    let health = health_lines(model, run, inner);
+    let health = health_lines(&model.second, run, inner);
     // What the borders, the padding and the name, rate and drop columns leave
     let fixed = if compact { 27 } else { 37 };
     let spark = (area.width as usize).saturating_sub(fixed).clamp(1, 16);
@@ -45,7 +45,7 @@ pub fn render(
     ])
     .areas(area);
 
-    let title = format!("TCBee  {}", format::clock(model.elapsed));
+    let title = format!("TCBee  {}", format::clock(model.elapsed()));
     frame.render_widget(
         Paragraph::new(context).block(block(bold_title(title).into())),
         context_area,
@@ -187,8 +187,8 @@ fn columns(name: &str, values: &[String], widths: &[usize], inner: usize) -> Str
 
 /// Whether the recording keeps up: each row now and since the start, in a content area
 /// `inner` cells wide
-fn health_lines(model: &Model, run: &RunContext, inner: usize) -> Vec<Line<'static>> {
-    let snap = &model.snapshot;
+fn health_lines(counters: &Counters, run: &RunContext, inner: usize) -> Vec<Line<'static>> {
+    let snap = &counters.snapshot;
     let red = Style::default().fg(Color::Red);
     let drop_style = if snap.dropped() > 0 {
         red
@@ -200,22 +200,22 @@ fn health_lines(model: &Model, run: &RunContext, inner: usize) -> Vec<Line<'stat
     };
     let mut lines = vec![Line::from(row(
         "records/s",
-        format::si(model.handled_rate()),
+        format::si(counters.handled_rate()),
         format::si(snap.handled() as f64),
     ))];
     // Runs that write no record are only the dropped ones, but for suppressed runs on change
     if run.on_change {
         lines.push(Line::from(row(
             "runs/s",
-            format::si(model.runs_rate()),
-            format::si(model.runs_total() as f64),
+            format::si(counters.runs_rate()),
+            format::si(counters.runs_total() as f64),
         )));
     }
     lines.extend([
         Line::styled(
             row(
                 "drops/s",
-                format::si(model.dropped_rate()),
+                format::si(counters.dropped_rate()),
                 format::si(snap.dropped() as f64),
             ),
             drop_style,
@@ -223,15 +223,15 @@ fn health_lines(model: &Model, run: &RunContext, inner: usize) -> Vec<Line<'stat
         Line::styled(
             row(
                 "drop %",
-                format!("{:.2}%", model.drop_percent()),
-                format!("{:.2}%", model.drop_percent_total()),
+                format!("{:.2}%", counters.drop_percent()),
+                format!("{:.2}%", counters.drop_percent_total()),
             ),
             drop_style,
         ),
         Line::from(row(
             "disk",
-            format!("{}/s", format::bytes(model.disk_rate())),
-            format::bytes(model.bytes_written as f64),
+            format!("{}/s", format::bytes(counters.disk_rate())),
+            format::bytes(counters.bytes_written as f64),
         )),
     ]);
     if snap.state_errors() > 0 {
@@ -257,7 +257,7 @@ fn group_rows(
 ) -> Vec<Row<'static>> {
     let mut rows = Vec::new();
     for row in &model.groups {
-        let stats = model.ring_stats(&row.rings);
+        let stats = model.second.ring_stats(&row.rings);
         let note = match share_note(row.group, &stats, run.on_change) {
             Some(note) => note,
             // Groups without a chart get a sparkline instead
@@ -274,7 +274,7 @@ fn group_rows(
         ));
         if expanded {
             for rb in &row.rings {
-                let stats = model.ring_stats(&[*rb]);
+                let stats = model.second.ring_stats(&[*rb]);
                 let note = share_note(row.group, &stats, run.on_change).unwrap_or_default();
                 let row = stats_row(format!(" {}", ring_label(*rb)), &stats, note, compact);
                 rows.push(row.style(Style::default().add_modifier(Modifier::DIM)));
