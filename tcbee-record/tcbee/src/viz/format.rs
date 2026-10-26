@@ -69,13 +69,14 @@ pub fn spark(values: &[f64], width: usize) -> String {
         .collect()
 }
 
-/// A rate in the status line of -q: "1.50 KEvents/s"
+/// A rate in the status line of -q: "1.50 KEvents/s". Unchanged from earlier releases for
+/// scripts that read it, so a prefix starts above 1000, not at it.
 pub fn quiet_rate(val: f64, suffix: &str) -> String {
-    if val >= 1_000_000_000.0 {
+    if val > 1_000_000_000.0 {
         format!("{:.2} G{}", val / 1_000_000_000.0, suffix)
-    } else if val >= 1_000_000.0 {
+    } else if val > 1_000_000.0 {
         format!("{:.2} M{}", val / 1_000_000.0, suffix)
-    } else if val >= 1_000.0 {
+    } else if val > 1_000.0 {
         format!("{:.2} K{}", val / 1_000.0, suffix)
     } else {
         format!("{:.2} {}", val, suffix)
@@ -99,7 +100,8 @@ mod tests {
         assert_eq!(si(-3.0), "0");
         assert_eq!(bytes(1_900_000_000.0), "1.90 GB");
         assert_eq!(bytes(512.0), "512 B");
-        assert_eq!(quiet_rate(1000.0, "pps"), "1.00 Kpps");
+        assert_eq!(quiet_rate(1000.0, "pps"), "1000.00 pps");
+        assert_eq!(quiet_rate(1500.0, "pps"), "1.50 Kpps");
         assert_eq!(quiet_rate(999.0, "pps"), "999.00 pps");
     }
 

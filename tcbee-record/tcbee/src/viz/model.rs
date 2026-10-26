@@ -360,6 +360,15 @@ mod tests {
     use crate::viz::test_support::{busy_model, snapshot, TC_RINGS};
 
     #[test]
+    fn quiet_line_keeps_its_format() {
+        assert_eq!(
+            busy_model(&TC_RINGS).quiet_line(),
+            "\r| 1s 500ms time elapsed | 990 handled | 10 dropped | 990.00 Events/s events/s | \
+             10.00 Events/s drops/s | 600.00 pps ingress packets/s | 400.00 pps egress packets/s | "
+        );
+    }
+
+    #[test]
     fn rates_follow_the_counters() {
         let model = busy_model(&TC_RINGS);
         assert_eq!(model.handled_rate(), 990.0);
