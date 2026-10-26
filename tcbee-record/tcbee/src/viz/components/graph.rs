@@ -53,8 +53,16 @@ pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The Braille line chart of a chart's histories in `span`, the legend is in the title
-pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::Span, area: Rect) {
+/// The Braille line chart of a chart's histories in `span`, the legend is in the title and
+/// `bottom` at the right of the bottom border
+pub fn render(
+    frame: &mut Frame,
+    chart: &ChartModel,
+    key: usize,
+    span: history::Span,
+    bottom: Option<Line<'static>>,
+    area: Rect,
+) {
     let end = chart.end();
     let (xmin, xmax) = match span {
         history::Span::Whole => (0.0, end.max(1.0)),
@@ -101,12 +109,14 @@ pub fn render(frame: &mut Frame, chart: &ChartModel, key: usize, span: history::
         })
         .collect();
 
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(title(chart, key, area.width));
+    if let Some(bottom) = bottom {
+        block = block.title_bottom(bottom.right_aligned());
+    }
     let widget = Chart::new(datasets)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title(chart, key, area.width)),
-        )
+        .block(block)
         .x_axis(Axis::default().bounds([xmin, xmax]).labels(x_labels))
         .y_axis(Axis::default().bounds([0.0, ymax]).labels(y_labels))
         .legend_position(None);

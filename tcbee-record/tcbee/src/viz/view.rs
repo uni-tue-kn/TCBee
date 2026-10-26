@@ -6,9 +6,9 @@ use ratatui::{
     crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind},
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
+    text::{self, Line},
     widgets::{
-        Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline, TableState,
-        Wrap,
+        Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, TableState, Wrap,
     },
     Frame,
 };
@@ -17,6 +17,7 @@ use crate::viz::{
     components::{graph, status},
     context::RunContext,
     flow_tracker::{flow_table, Flows},
+    format,
     history::{window_name, window_step, window_steps, Span, WINDOWS},
     layout::{grid, Fit, MIN_HEIGHT, MIN_WIDTH},
     model::Model,
@@ -235,15 +236,9 @@ pub fn render(
     let slots: Vec<(usize, Rect)> = shown.into_iter().zip(areas).collect();
     let span = ui.span();
     for (slot, rect) in &slots {
-        let mut rect = *rect;
-        // The events chart shows the dropped share below
-        if *slot == 0 && rect.height >= 10 {
-            let [above, drops] =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(rect);
-            render_drops(frame, model, drops);
-            rect = above;
-        }
-        graph::render(frame, &model.charts[*slot], slot + 1, span, rect);
+        // The events chart shows the dropped share in its bottom border
+        let bottom = (*slot == 0).then(|| drop_line(model, rect.width));
+        graph::render(frame, &model.charts[*slot], slot + 1, span, bottom, *rect);
     }
 
     status::render(frame, model, context, ui.expanded, fit, left);
@@ -299,25 +294,24 @@ pub fn render(
 /// Dropped share of the events that fills the drop sparkline, in hundredths of a percent
 const DROP_SCALE: u64 = 100;
 
-/// The dropped share of the events per tick as a red sparkline from 0 to 1 %
-fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
-    let red = Style::default().fg(Color::Red);
-    let label = format!(" drop {:.2}%  0-1%: ", model.tick.drop_percent());
-    let [label_area, spark_area] =
-        Layout::horizontal([Constraint::Length(label.len() as u16), Constraint::Min(0)])
-            .areas(area);
-    frame.render_widget(Paragraph::new(label).style(red), label_area);
-    let history = &model.drop_history;
+/// Cells a drop line leaves of the bottom border of a chart: the corners and some border
+const DROP_LINE_MARGIN: usize = 6;
+
+/// The dropped share of the events now and per tick as a red sparkline from 0 to 1 %, for the
+/// bottom border of a chart `width` cells wide
+fn drop_line(model: &Model, width: u16) -> Line<'static> {
+    let label = format!(" drop {:.2}% ", model.tick.drop_percent());
+    let scale = " 0\u{2013}1% ";
+    let room = (width as usize).saturating_sub(DROP_LINE_MARGIN + label.len() + scale.len());
+    let history: Vec<u64> = model.drop_history.iter().copied().collect();
     // A fixed scale, so the bars compare between ticks; more than 1 % fills a bar
-    let shown: Vec<u64> = history
-        .iter()
-        .skip(history.len().saturating_sub(spark_area.width as usize))
-        .map(|value| (*value).min(DROP_SCALE))
-        .collect();
-    frame.render_widget(
-        Sparkline::default().data(&shown).max(DROP_SCALE).style(red),
-        spark_area,
-    );
+    let spark = format::spark_fixed(&history, DROP_SCALE, room);
+    let mut spans = vec![text::Span::raw(label)];
+    if !spark.is_empty() {
+        spans.push(text::Span::raw(spark));
+        spans.push(text::Span::raw(scale));
+    }
+    Line::from(spans).style(Style::default().fg(Color::Red))
 }
 
 /// The flow table with the selected row highlighted, returns the area of its rows and the
@@ -447,7 +441,15 @@ mod tests {
             "1 Events (rec/s) \u{25a0} rec \u{25a0} drop"
         ));
         assert!(contains(&lines, "2 Headers (pps) \u{25a0} in \u{25a0} out"));
-        assert!(contains(&lines, " drop 1.00%  0-1%: "));
+        // The drop line sits in the bottom border of the events chart, so both charts of a row
+        // are as high
+        assert!(contains(
+            &lines,
+            " drop 1.00% \u{2581}\u{2588} 0\u{2013}1% \u{2518}"
+        ));
+        let (_, events) = areas.slots[0];
+        let (_, headers) = areas.slots[1];
+        assert_eq!(events.height, headers.height);
     }
 
     #[test]
@@ -619,7 +621,10 @@ mod tests {
             &Flows::default(),
         );
         // Half a bar, then a full one for more than 1 %
-        assert!(contains(&lines, " drop 3.00%  0-1%:  \u{2584}\u{2588}"));
+        assert!(contains(
+            &lines,
+            " drop 3.00% \u{2581}\u{2585}\u{2588} 0\u{2013}1% \u{2518}"
+        ));
     }
 
     #[test]
@@ -974,6 +979,13 @@ mod tests {
         assert!(!ui.on_key(KeyCode::Esc, &charts(model.charts.len()), 0));
         assert_eq!(ui.zoom, None);
         assert!(ui.on_key(KeyCode::Char('q'), &charts(model.charts.len()), 0));
+        // The zoomed events chart keeps the drop line in its border
+        ui.on_key(KeyCode::Char('1'), &charts(model.charts.len()), 0);
+        let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
+        assert!(contains(
+            &lines,
+            " drop 1.00% \u{2581}\u{2588} 0\u{2013}1% \u{2518}"
+        ));
     }
 
     #[test]
