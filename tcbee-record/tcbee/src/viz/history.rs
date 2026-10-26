@@ -1,7 +1,7 @@
 //! The values of one chart series in bounded memory: the whole run at falling resolution
 //! and the last minutes at full resolution
 
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Duration};
 
 /// Points the whole-run history keeps at most: two per Braille dot of a chart 256 cells wide
 pub const HISTORY_POINTS: usize = 1024;
@@ -16,12 +16,23 @@ pub const RECENT_POINTS: usize = 36_000;
 /// Window lengths in seconds that `+` and `-` step through, up to `RECENT_SECONDS`
 pub const WINDOWS: [f64; 7] = [10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0];
 
-/// The step of the shortest window of at least `seconds`, the longest for longer ones
-pub fn window_step(seconds: f64) -> usize {
+/// The window steps the full-resolution history covers at one point per `tick`: all of them
+/// down to 50 ms ticks, fewer at faster ones, at least the shortest
+pub fn window_steps(tick: Duration) -> usize {
+    let covered = RECENT_POINTS as f64 * tick.as_secs_f64();
     WINDOWS
         .iter()
+        .filter(|window| **window <= covered)
+        .count()
+        .max(1)
+}
+
+/// The step of the shortest window of at least `seconds`, the longest of `steps` for longer ones
+pub fn window_step(seconds: f64, steps: usize) -> usize {
+    WINDOWS[..steps]
+        .iter()
         .position(|window| *window >= seconds)
-        .unwrap_or(WINDOWS.len() - 1)
+        .unwrap_or(steps - 1)
 }
 
 /// A window length as people say it: "30 s", "2 min"
@@ -212,14 +223,25 @@ mod tests {
 
     #[test]
     fn windows_round_up_to_a_step() {
-        assert_eq!(window_step(0.5), 0);
-        assert_eq!(window_step(10.0), 0);
-        assert_eq!(window_step(11.0), 1);
-        assert_eq!(window_step(90.0), 3);
-        assert_eq!(window_step(7200.0), WINDOWS.len() - 1);
+        let all = WINDOWS.len();
+        assert_eq!(window_step(0.5, all), 0);
+        assert_eq!(window_step(10.0, all), 0);
+        assert_eq!(window_step(11.0, all), 1);
+        assert_eq!(window_step(90.0, all), 3);
+        assert_eq!(window_step(7200.0, all), all - 1);
+        assert_eq!(window_step(7200.0, 3), 2);
         assert_eq!(window_name(WINDOWS[1]), "30 s");
         assert_eq!(window_name(WINDOWS[3]), "2 min");
         assert_eq!(*WINDOWS.last().unwrap(), RECENT_SECONDS);
+    }
+
+    #[test]
+    fn fast_ticks_shorten_the_longest_window() {
+        assert_eq!(window_steps(Duration::from_millis(100)), WINDOWS.len());
+        assert_eq!(window_steps(Duration::from_millis(50)), WINDOWS.len());
+        // 36 000 points of 10 ms are 6 min
+        assert_eq!(window_steps(Duration::from_millis(10)), 5);
+        assert_eq!(window_steps(Duration::from_micros(1)), 1);
     }
 
     #[test]

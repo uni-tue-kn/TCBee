@@ -1,5 +1,7 @@
 //! The terminal UI: renders a model into a frame and reacts to keys and the mouse
 
+use std::time::Duration;
+
 use ratatui::{
     crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind},
     layout::{Constraint, Layout, Position, Rect},
@@ -15,7 +17,7 @@ use crate::viz::{
     components::{graph, status},
     context::RunContext,
     flow_tracker::{flow_table, Flows},
-    history::{window_name, window_step, Span, WINDOWS},
+    history::{window_name, window_step, window_steps, Span, WINDOWS},
     layout::{grid, Fit, MIN_HEIGHT, MIN_WIDTH},
     model::Model,
 };
@@ -28,6 +30,8 @@ pub struct UiState {
     pub whole: bool,
     /// Step of the window length in `WINDOWS`
     pub window: usize,
+    /// Window steps the full-resolution history covers at the update period
+    pub steps: usize,
     /// The flow the table highlights
     pub selected: usize,
     /// First flow row shown
@@ -47,6 +51,9 @@ pub struct Areas {
     pub flow_rows: Rect,
 }
 
+/// Update period the UI state assumes unless told
+pub const DEFAULT_TICK: Duration = Duration::from_millis(100);
+
 /// Flow rows the mouse wheel scrolls
 const WHEEL_ROWS: usize = 3;
 
@@ -61,18 +68,21 @@ pub fn follow(offset: usize, selected: usize, rows: usize, len: usize) -> usize 
 
 impl Default for UiState {
     fn default() -> UiState {
-        UiState::new(None)
+        UiState::new(None, DEFAULT_TICK)
     }
 }
 
 impl UiState {
-    /// Charts of the whole run, or with `window` seconds of the window step at least as long
-    pub fn new(window: Option<f64>) -> UiState {
+    /// Charts of the whole run, or with `window` seconds of the window step at least as long,
+    /// updated every `tick`
+    pub fn new(window: Option<f64>, tick: Duration) -> UiState {
+        let steps = window_steps(tick);
         UiState {
             zoom: None,
             whole: window.is_none(),
             // One minute until chosen
-            window: window_step(window.unwrap_or(60.0)),
+            window: window_step(window.unwrap_or(60.0), steps),
+            steps,
             selected: 0,
             offset: 0,
             expanded: false,
@@ -98,7 +108,7 @@ impl UiState {
             KeyCode::Char('w') => self.whole = !self.whole,
             // Changing the length shows the window
             KeyCode::Char('+' | '=') => {
-                self.window = (self.window + 1).min(WINDOWS.len() - 1);
+                self.window = (self.window + 1).min(self.steps - 1);
                 self.whole = false;
             }
             KeyCode::Char('-') => {
@@ -223,6 +233,13 @@ pub fn render(
 
     let span = match span {
         Span::Whole => "whole run".to_string(),
+        // Faster updates make the full-resolution history cover less
+        Span::Last(window) if ui.steps < WINDOWS.len() && ui.window == ui.steps - 1 => {
+            format!(
+                "window {} (longest at this update rate)",
+                window_name(window)
+            )
+        }
         Span::Last(window) => format!("window {}", window_name(window)),
     };
     let mut keys = vec!["q quit".to_string()];
@@ -469,7 +486,7 @@ mod tests {
 
     #[test]
     fn keys_switch_between_the_whole_run_and_a_window() {
-        let mut ui = UiState::new(None);
+        let mut ui = UiState::new(None, DEFAULT_TICK);
         assert_eq!(ui.span(), Span::Whole);
         ui.on_key(KeyCode::Char('w'), &charts(1), 0);
         assert_eq!(ui.span(), Span::Last(60.0));
@@ -485,7 +502,27 @@ mod tests {
         // - shows the window again, one step shorter
         ui.on_key(KeyCode::Char('-'), &charts(1), 0);
         assert_eq!(ui.span(), Span::Last(600.0));
-        assert_eq!(UiState::new(Some(45.0)).span(), Span::Last(60.0));
+        assert_eq!(
+            UiState::new(Some(45.0), DEFAULT_TICK).span(),
+            Span::Last(60.0)
+        );
+        // At 10 ms updates the window stops at 5 min and says so
+        let mut fast = UiState::new(Some(3600.0), Duration::from_millis(10));
+        assert_eq!(fast.span(), Span::Last(300.0));
+        fast.on_key(KeyCode::Char('+'), &charts(1), 0);
+        assert_eq!(fast.span(), Span::Last(300.0));
+        let (lines, _) = screen(
+            160,
+            45,
+            &busy_model(&TC_RINGS),
+            &context(&TC_RINGS),
+            &fast,
+            &Flows::default(),
+        );
+        assert!(contains(
+            &lines,
+            "window 5 min (longest at this update rate)"
+        ));
     }
 
     #[test]
@@ -502,7 +539,7 @@ mod tests {
             model.record_history();
         }
         let view = context(&TC_RINGS);
-        let mut ui = UiState::new(Some(60.0));
+        let mut ui = UiState::new(Some(60.0), DEFAULT_TICK);
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
         assert!(contains(&lines, "charts: window 1 min"));
         // The x axis counts back from now, the spike is outside

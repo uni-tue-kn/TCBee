@@ -114,7 +114,10 @@ impl EBPFWatcher {
 
     fn run_tui(&mut self) {
         let application_start = Instant::now();
-        let mut ui = UiState::new(self.context.observation_window);
+        let mut ui = UiState::new(
+            self.context.observation_window,
+            Duration::from_millis(self.update_period as u64),
+        );
 
         while !self.token.is_cancelled() {
             // A failed read leaves the rates of the tick before, which are no new point
