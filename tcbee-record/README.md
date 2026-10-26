@@ -144,7 +144,7 @@ Without `-q`, tcbee-record shows what it records while it runs.
   window is at that limit.
 - **Flows**: the flows the probes saw (at most 100, the title says when the map is full),
   in the order they were first seen. With the owner programs (see [Flow owners](#flow-owners))
-  a flow shows its local side first (`Local / A`) and the process that opened it
+  a flow shows its local side first (`Local/A`) and the process that opened it
   (`comm[pid]`, `[kernel]` for a kernel thread); `svc` marks the local port of a connection
   the process accepted. The owner comes from the owner records, a newer one for a reused
   port pair replaces it; connections that existed at the start take it from the snapshot,

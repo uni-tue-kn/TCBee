@@ -147,6 +147,10 @@ impl UiState {
 
     /// Scrolls the flow rows by `rows`, the selection stays on a visible row
     fn scroll(&mut self, rows: isize, areas: &Areas, flows: usize) {
+        // Nothing to scroll while the table is hidden (a zoomed chart, a narrow terminal)
+        if areas.flow_rows.height == 0 {
+            return;
+        }
         let page = (areas.flow_rows.height as usize).max(1);
         self.offset = self
             .offset
@@ -416,8 +420,8 @@ mod tests {
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Flows: 1 of 1"));
-        assert!(contains(&lines, "Local / A"));
-        assert!(contains(&lines, "Remote / B"));
+        assert!(contains(&lines, "Local/A"));
+        assert!(contains(&lines, "Remote/B"));
         assert!(contains(&lines, "Process"));
         assert!(contains(&lines, "10.0.0.2"));
         assert!(contains(&lines, "tcp_bbr is not loaded"));

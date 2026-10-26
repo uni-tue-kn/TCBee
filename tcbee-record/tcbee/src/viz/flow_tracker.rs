@@ -112,47 +112,7 @@ impl FlowTracker {
             };
             // CPUs that never saw the flow hold an all-zero value
             for tuple in tuples.iter().filter(|t| **t != IpTuple::default()) {
-                let ipv4_mapped = tuple.src_ip[0..10].iter().all(|&b| b == 0)
-                    && tuple.src_ip[10] == 0xFF
-                    && tuple.src_ip[11] == 0xFF;
-                // The map holds IPv4 addresses in the first 4 bytes. An IPv6 address can end
-                // in 12 zero bytes too (2001:db8::), both rarely do.
-                let ipv4_compat = [tuple.src_ip, tuple.dst_ip]
-                    .iter()
-                    .all(|ip| ip[4..16].iter().all(|&b| b == 0));
-
-                let (src, dst) = if ipv4_mapped {
-                    let src = IpAddr::V4(Ipv4Addr::from([
-                        tuple.src_ip[12],
-                        tuple.src_ip[13],
-                        tuple.src_ip[14],
-                        tuple.src_ip[15],
-                    ]));
-                    let dst = IpAddr::V4(Ipv4Addr::from([
-                        tuple.dst_ip[12],
-                        tuple.dst_ip[13],
-                        tuple.dst_ip[14],
-                        tuple.dst_ip[15],
-                    ]));
-                    (src, dst)
-                } else if ipv4_compat {
-                    let src = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(tuple.src_ip)));
-                    let dst = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(tuple.dst_ip)));
-                    (src, dst)
-                } else {
-                    let src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));
-                    let dst = IpAddr::V6(Ipv6Addr::from(tuple.dst_ip));
-                    (src, dst)
-                };
-
-                let flow = Flow {
-                    src,
-                    dst,
-                    sport: tuple.sport,
-                    dport: tuple.dport,
-                };
-
-                self.flows.add(flow);
+                self.flows.add(flow_of(tuple));
             }
         }
     }
@@ -187,7 +147,7 @@ pub fn flow_columns(width: u16) -> [Constraint; 5] {
 /// process; its sides are endpoints A and B in the map's address order, so neither is known to
 /// be local, which the headers say.
 pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
-    let header = ["Local / A", "port", "Process", "Remote / B", "port"]
+    let header = ["Local/A", "port", "Process", "Remote/B", "port"]
         .into_iter()
         .map(Cell::from)
         .collect::<Row>()
@@ -225,9 +185,84 @@ pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
 }
 
+/// The flow of a FLOWS map tuple. The map holds IPv4 addresses in the first 4 bytes and has no
+/// address family, so a tuple whose both addresses end in 12 zero bytes is read as IPv4.
+fn flow_of(tuple: &IpTuple) -> Flow {
+    let ipv4_mapped = tuple.src_ip[0..10].iter().all(|&b| b == 0)
+        && tuple.src_ip[10] == 0xFF
+        && tuple.src_ip[11] == 0xFF;
+    let ipv4_compat = [tuple.src_ip, tuple.dst_ip]
+        .iter()
+        .all(|ip| ip[4..16].iter().all(|&b| b == 0));
+
+    let (src, dst) = if ipv4_mapped {
+        let src = IpAddr::V4(Ipv4Addr::from([
+            tuple.src_ip[12],
+            tuple.src_ip[13],
+            tuple.src_ip[14],
+            tuple.src_ip[15],
+        ]));
+        let dst = IpAddr::V4(Ipv4Addr::from([
+            tuple.dst_ip[12],
+            tuple.dst_ip[13],
+            tuple.dst_ip[14],
+            tuple.dst_ip[15],
+        ]));
+        (src, dst)
+    } else if ipv4_compat {
+        let src = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(tuple.src_ip)));
+        let dst = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(tuple.dst_ip)));
+        (src, dst)
+    } else {
+        let src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));
+        let dst = IpAddr::V6(Ipv6Addr::from(tuple.dst_ip));
+        (src, dst)
+    };
+
+    Flow {
+        src,
+        dst,
+        sport: tuple.sport,
+        dport: tuple.dport,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// IPv4, v4-mapped and IPv6 tuples of the FLOWS map; an IPv6 address that ends in zero
+    /// bytes next to an IPv4 one stays IPv6
+    #[test]
+    fn flows_of_map_tuples() {
+        let tuple = |src: [u8; 16], dst: [u8; 16]| IpTuple {
+            src_ip: src,
+            dst_ip: dst,
+            sport: 1,
+            dport: 2,
+            ..Default::default()
+        };
+        let v4 = |a: [u8; 4]| {
+            let mut ip = [0u8; 16];
+            ip[..4].copy_from_slice(&a);
+            ip
+        };
+        let mapped = |a: Ipv4Addr| a.to_ipv6_mapped().octets();
+        let v6 = |s: &str| s.parse::<Ipv6Addr>().unwrap().octets();
+        let addrs = |f: Flow| (f.src.to_string(), f.dst.to_string());
+
+        let f = flow_of(&tuple(v4([10, 0, 0, 1]), v4([10, 0, 0, 2])));
+        assert_eq!(addrs(f), ("10.0.0.1".into(), "10.0.0.2".into()));
+        let f = flow_of(&tuple(
+            mapped(Ipv4Addr::new(10, 0, 0, 1)),
+            mapped(Ipv4Addr::new(10, 0, 0, 2)),
+        ));
+        assert_eq!(addrs(f), ("10.0.0.1".into(), "10.0.0.2".into()));
+        let f = flow_of(&tuple(v6("2001:db8::"), v6("2001:db8::7")));
+        assert_eq!(addrs(f), ("2001:db8::".into(), "2001:db8::7".into()));
+        let f = flow_of(&tuple(v6("fe80::1"), v6("fe80::2")));
+        assert_eq!(addrs(f), ("fe80::1".into(), "fe80::2".into()));
+    }
     use crate::viz::test_support::{ep, flow};
 
     #[test]

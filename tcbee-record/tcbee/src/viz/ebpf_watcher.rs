@@ -12,7 +12,7 @@ use libbpf_rs::MapHandle;
 use log::error;
 use ratatui::{
     crossterm::{
-        event::{self, DisableMouseCapture, EnableMouseCapture},
+        event::{self, DisableMouseCapture, EnableMouseCapture, MouseEventKind},
         execute,
     },
     DefaultTerminal,
@@ -164,6 +164,15 @@ impl EBPFWatcher {
                         if ui.on_key(key.code, &areas, flows) {
                             self.token.cancel();
                         }
+                    }
+                    // The terminal reports every move of the pointer, which changes nothing
+                    Ok(event::Event::Mouse(mouse))
+                        if matches!(
+                            mouse.kind,
+                            MouseEventKind::Moved | MouseEventKind::Drag(_)
+                        ) =>
+                    {
+                        continue
                     }
                     Ok(event::Event::Mouse(mouse)) => ui.on_mouse(mouse, &areas, flows),
                     // A resize draws below
