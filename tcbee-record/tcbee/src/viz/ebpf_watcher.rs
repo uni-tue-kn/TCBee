@@ -76,14 +76,18 @@ impl EBPFWatcher {
         })
     }
 
-    /// Reads the counters into the model
-    fn update_model(&mut self, elapsed: Duration) {
+    /// Reads the counters into the model, returns whether they could be read
+    fn update_model(&mut self, elapsed: Duration) -> bool {
         match self.stats.snapshot() {
             Ok(snapshot) => {
                 let bytes_written = self.bytes_written.load(Ordering::Relaxed);
                 self.model.update(snapshot, bytes_written, elapsed);
+                true
             }
-            Err(err) => error!("Failed to read event counters: {}", err),
+            Err(err) => {
+                error!("Failed to read event counters: {}", err);
+                false
+            }
         }
     }
 
@@ -113,8 +117,10 @@ impl EBPFWatcher {
         let mut ui = UiState::new(self.context.observation_window);
 
         while !self.token.is_cancelled() {
-            self.update_model(application_start.elapsed());
-            self.model.record_history();
+            // A failed read leaves the rates of the tick before, which are no new point
+            if self.update_model(application_start.elapsed()) {
+                self.model.record_history();
+            }
 
             // Update tracker of all flows internal list and then show it
             self.flow_tracker.read_flows();
