@@ -421,7 +421,7 @@ mod tests {
         assert!(contains(&lines, "\u{250c} Probe groups "));
         assert!(contains(&lines, " rec/s  drops \u{2510}"));
         assert_eq!(row(&lines, "headers"), ["headers", "990", "10"]);
-        assert!(contains(&lines, "\u{2502}   0% aggregated "));
+        assert!(contains(&lines, "\u{2502}   0% of pkts GSO/GRO "));
         assert!(contains(&lines, "e: show rings"));
         assert_eq!(
             row(&lines, "BBR:"),
@@ -476,7 +476,7 @@ mod tests {
         let mut ui = UiState::default();
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
         assert_eq!(row(&lines, "headers"), ["headers", "200", "\u{b7}"]);
-        assert!(contains(&lines, "50% aggregated"));
+        assert!(contains(&lines, "50% of pkts GSO/GRO"));
         // Nothing is a dot, no sparklines next to the charts
         assert_eq!(row(&lines, "sock"), ["sock", "\u{b7}", "\u{b7}"]);
         assert_eq!(row(&lines, "tcp"), ["tcp", "events", "200", "\u{b7}"]);
@@ -490,10 +490,7 @@ mod tests {
         assert!(contains(&lines, "e: hide rings"));
         // The share is the group's only
         assert_eq!(
-            lines
-                .iter()
-                .filter(|line| line.contains("aggregated"))
-                .count(),
+            lines.iter().filter(|line| line.contains("GSO/GRO")).count(),
             1
         );
     }
@@ -518,7 +515,7 @@ mod tests {
             &Flows::default(),
         );
         assert_eq!(row(&lines, "sock"), ["sock", "10", "\u{b7}"]);
-        assert!(contains(&lines, "\u{2502}   75% suppressed "));
+        assert!(contains(&lines, "\u{2502}   75% runs unchanged "));
         assert!(contains(&lines, "on change"));
         assert_eq!(row(&lines, "runs/s"), ["runs/s", "40", "40"]);
         assert_eq!(row(&lines, "records/s"), ["records/s", "10", "10"]);
@@ -929,7 +926,7 @@ mod tests {
         assert!(contains(&lines, " rec/s  drops last 30 s \u{2510}"));
         assert!(row(&lines, "headers")[3].ends_with('\u{2588}'));
         assert!(row(&lines, "cc")[3].ends_with('\u{2588}'));
-        assert!(contains(&lines, "aggregated"));
+        assert!(contains(&lines, "GSO/GRO"));
         assert!(contains(&lines, "Flows: 1 of 30"));
         // A zoom from a larger terminal is not in the way
         let ui = UiState {

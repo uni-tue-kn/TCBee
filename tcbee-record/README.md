@@ -131,9 +131,10 @@ Without `-q`, tcbee-record shows what it records while it runs.
   runs without socket storage) and failed kernel reads. *Probe groups* has one row per
   group of ring buffers that records (`headers`, `sock`, `cc`, `tracepoints`, `tcp events`,
   `mptcp`, `owners`) with records per second and drops; a dim `·` is zero. Below `headers`,
-  the share of header hook packets that stand for several segments (GSO, GRO, LRO,
-  `aggregated`), and in on-change mode below `sock` the share of suppressed runs
-  (`suppressed`), both since the start. `e` adds a row per ring buffer. *Skipped* lists the
+  the share of header hook packets that stand for several segments and so give one record
+  for all of them (`of pkts GSO/GRO`, frames longer than the MTU at XDP), and in on-change
+  mode below `sock` the share of runs that wrote no record because nothing changed
+  (`runs unchanged`), both since the start. `e` adds a row per ring buffer. *Skipped* lists the
   requested hooks that do not record, with the reason.
 - **Charts**: up to four, in a fixed order: the events (records and drops per second, with
   the dropped share and a red sparkline of it per update, from 0 to 1 %, in the bottom

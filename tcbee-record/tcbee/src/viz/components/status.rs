@@ -339,8 +339,8 @@ fn stat_spans(stats: &RingStats) -> Vec<Span<'static>> {
 /// suppressed on change, both since the start
 fn share(group: Group, stats: &RingStats, on_change: bool) -> Option<String> {
     match group {
-        Group::Headers => Some(format!("{:.0}% aggregated", stats.aggregated)),
-        Group::Sock if on_change => Some(format!("{:.0}% suppressed", stats.suppressed)),
+        Group::Headers => Some(format!("{:.0}% of pkts GSO/GRO", stats.aggregated)),
+        Group::Sock if on_change => Some(format!("{:.0}% runs unchanged", stats.suppressed)),
         _ => None,
     }
 }
