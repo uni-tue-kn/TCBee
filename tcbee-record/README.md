@@ -323,7 +323,12 @@ needed. Nothing runs per packet.
   recording, the writer of the owner ring hands each record to a thread that reads the
   command line of its process once, and keeps it only if the start time in
   `/proc/<pid>/stat` still matches the record's (pids are reused). At stop these processes are
-  added to the file. A process that exits before it is looked at keeps its name only.
+  added to the file. A process that exits before it is looked at keeps its name only. The
+  filter flags apply to the snapshot as to the records: it holds the connections they keep and
+  only the processes of those.
+- The recording holds the names and the command lines of these processes. Command lines can
+  carry secrets (a token in an argument, a password in a URL); `--no-owners` leaves all of it
+  out.
 - The owner is the process that connected or accepted. A socket passed to another process,
   or inherited by a child, still names that one; for the connections of the snapshot every
   holder is listed. Names are cut to 15 characters by the kernel.

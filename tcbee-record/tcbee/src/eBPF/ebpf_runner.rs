@@ -1046,8 +1046,10 @@ impl EbpfRunner {
         // It reads all of /proc, so it runs on a thread of its own and writes its file when done.
         if self.config.owners {
             let dir = PathBuf::from(&self.config.dir);
+            let filter = self.config.filter.clone();
             self.owner_snapshot = Some(thread::spawn(move || {
-                let snapshot = owners::snapshot(Path::new("/proc"));
+                let keep = |local, remote| filter.matches(local, remote);
+                let snapshot = owners::snapshot(Path::new("/proc"), &keep);
                 info!(
                     "Found {} existing connections of {} processes",
                     snapshot.connections.len(),

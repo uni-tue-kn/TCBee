@@ -9,6 +9,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs, mem,
+    net::SocketAddr,
     path::{Path, PathBuf},
     ptr,
     sync::mpsc,
@@ -82,11 +83,12 @@ pub fn process_info(proc_root: &Path, pid: u32) -> Option<ProcessInfo> {
     })
 }
 
-/// The TCP connections below `proc_root` (`/proc`) and the processes that hold them. Listeners
-/// and sockets without an inode (TIME_WAIT, a connection still in an accept queue, which the
-/// accept program sees) are left out. Processes that exit or deny access while it runs are
-/// skipped; the result is as complete as procfs allows.
-pub fn snapshot(proc_root: &Path) -> FlowOwners {
+/// The TCP connections below `proc_root` (`/proc`) that `keep` (local, remote) takes, the flow
+/// filter, and the processes that hold them. Listeners and sockets without an inode (TIME_WAIT,
+/// a connection still in an accept queue, which the accept program sees) are left out.
+/// Processes that exit or deny access while it runs are skipped; the result is as complete as
+/// procfs allows.
+pub fn snapshot(proc_root: &Path, keep: &dyn Fn(SocketAddr, SocketAddr) -> bool) -> FlowOwners {
     let mut owners = FlowOwners::new(clock_ns(libc::CLOCK_MONOTONIC) as u64, clock_ticks());
     let all = match all_processes_with_root(proc_root) {
         Ok(all) => all,
@@ -127,7 +129,10 @@ pub fn snapshot(proc_root: &Path) -> FlowOwners {
             .flatten()
             .flatten();
         for entry in entries {
-            if entry.inode == 0 || entry.state == TcpState::Listen {
+            if entry.inode == 0
+                || entry.state == TcpState::Listen
+                || !keep(entry.local_address, entry.remote_address)
+            {
                 continue;
             }
             owners.connections.push(SnapshotConnection {
@@ -314,7 +319,7 @@ pub(crate) mod tests {
         proc.tables(101, &[V4, LISTEN, TIME_WAIT], &[MAPPED]);
         proc.tables(102, &[V4, LISTEN, TIME_WAIT], &[MAPPED]);
 
-        let owners = snapshot(&proc.root);
+        let owners = snapshot(&proc.root, &|_, _| true);
         let connections: Vec<_> = owners
             .connections
             .iter()
@@ -368,6 +373,22 @@ pub(crate) mod tests {
         assert_eq!(owners.clock_ticks, clock_ticks());
     }
 
+    /// Only the connections the filter takes, and only their processes
+    #[test]
+    fn snapshot_keeps_the_filtered_connections() {
+        let proc = FakeProc::new("filter");
+        proc.process(100, "iperf3", &["iperf3"], 1, &[1001], 7);
+        proc.process(101, "curl", &["curl"], 1, &[1003], 7);
+        proc.tables(100, &[V4], &[MAPPED]);
+        proc.tables(101, &[V4], &[MAPPED]);
+        let https = |_local: SocketAddr, remote: SocketAddr| remote.port() == 443;
+        let owners = snapshot(&proc.root, &https);
+        let inodes: Vec<u64> = owners.connections.iter().map(|c| c.inode).collect();
+        assert_eq!(inodes, [1003]);
+        let pids: Vec<u32> = owners.processes.iter().map(|p| p.pid).collect();
+        assert_eq!(pids, [101]);
+    }
+
     #[test]
     fn each_namespace_is_read_once() {
         let proc = FakeProc::new("netns");
@@ -375,7 +396,7 @@ pub(crate) mod tests {
         proc.process(201, "b", &["b"], 1, &[1003], 8);
         proc.tables(200, &[V4], &[]);
         proc.tables(201, &[], &[MAPPED]);
-        let owners = snapshot(&proc.root);
+        let owners = snapshot(&proc.root, &|_, _| true);
         let found: Vec<_> = owners
             .connections
             .iter()
@@ -387,7 +408,7 @@ pub(crate) mod tests {
     /// Whatever this host runs: every process of a connection is listed, at most once
     #[test]
     fn snapshot_of_this_host() {
-        let owners = snapshot(Path::new("/proc"));
+        let owners = snapshot(Path::new("/proc"), &|_, _| true);
         let listed: BTreeSet<u32> = owners.processes.iter().map(|p| p.pid).collect();
         assert_eq!(listed.len(), owners.processes.len());
         for c in &owners.connections {
@@ -437,7 +458,7 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_proc_gives_an_empty_snapshot() {
-        let owners = snapshot(Path::new("/nonexistent/proc"));
+        let owners = snapshot(Path::new("/nonexistent/proc"), &|_, _| true);
         assert!(owners.connections.is_empty() && owners.processes.is_empty());
         assert!(process_info(Path::new("/nonexistent/proc"), 1).is_none());
     }
