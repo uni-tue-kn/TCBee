@@ -103,7 +103,7 @@ Every probe output has one ring buffer per online CPU, so a probe never waits fo
 CPU to reserve space. The default sizes per CPU are 16 MiB for tcp4 and sock (which also
 sizes the ring of the `ingress` sock hook), 8 MiB for cwnd, cubic, bbr and reno, 4 MiB for
 tcp6, tcp_probe and tcp_events, 128 KiB for owners, and 1 MiB for the rest. `-h` needs about 40 MiB per CPU, as
-much again for the driver hooks, and all rings together 181 MiB; the log at startup prints the
+much again for the driver hooks, and all rings together 181.1 MiB with the 128 KiB of the owners; the log at startup prints the
 total. Records of one flow come from several CPUs, so their file order is not their order at
 the hook: every record carries `hook_seq`, its position among the events of its flow
 direction at its hook.
@@ -329,6 +329,9 @@ needed. Nothing runs per packet.
 - The recording holds the names and the command lines of these processes. Command lines can
   carry secrets (a token in an argument, a password in a URL); `--no-owners` leaves all of it
   out.
+- An MPTCP connection that existed before the start has no owner: the process holds the
+  MPTCP socket, which `/proc/net/tcp` does not list, and its subflows are sockets of the
+  kernel without a file descriptor.
 - The owner is the process that connected or accepted. A socket passed to another process,
   or inherited by a child, still names that one; for the connections of the snapshot every
   holder is listed. Names are cut to 15 characters by the kernel.

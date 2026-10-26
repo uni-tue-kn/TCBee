@@ -76,7 +76,8 @@ pub struct FlowOwner {
     pub comm: String,
     /// Command line, the arguments joined by spaces; None if it is not known
     pub cmdline: Option<String>,
-    /// Start of the process, ns since boot; with the pid it names the process
+    /// Start of the process, ns since boot; with the pid it names the process. Exact for the
+    /// owner records, rounded down to a clock tick for `SOURCE_SNAPSHOT` rows, as /proc shows it
     pub start_time: Option<i64>,
     pub cgroup_id: Option<i64>,
     /// cgroup v2 path
