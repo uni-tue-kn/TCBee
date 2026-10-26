@@ -118,28 +118,74 @@ impl FlowTracker {
     }
 }
 
-/// Width of the process column
-const PROCESS_WIDTH: u16 = 20;
-/// Width of the port columns: a port and the service mark
-const PORT_WIDTH: u16 = 9;
+/// Headers of the flow table columns
+const HEADERS: [&str; 5] = ["Local/A", "port", "Process", "Remote/B", "port"];
+/// Widest address column, a full IPv6 address
+const MAX_ADDRESS: usize = 39;
+/// Narrowest address column the process takes room from
+const MIN_ADDRESS: usize = 8;
+/// Port columns: a port, and the service mark on the local one
+const MIN_PORT: usize = 5;
+const MAX_PORT: usize = 9;
+/// Narrowest process column the addresses give room to
+const MIN_PROCESS: usize = 8;
 
-/// Widths of the flow table columns in `width` cells: the addresses share what the ports and
-/// the process leave, up to a full IPv6 address. They depend on the width only, not on the
-/// rows, so columns do not move while flows come in.
-pub fn flow_columns(width: u16) -> [Constraint; 5] {
-    // A narrow table drops the service mark and shortens the process
-    let (port, process) = match width < 2 * 15 + 2 * PORT_WIDTH + PROCESS_WIDTH + 4 {
-        true => (5, 12),
-        false => (PORT_WIDTH, PROCESS_WIDTH),
+/// The cells of a flow row and whether its owner is known
+fn cells(flow: &Flow, owner: Option<&Owner>) -> ([String; 5], bool) {
+    match owner {
+        Some(owner) => {
+            let mut local_port = owner.local.1.to_string();
+            if owner.service {
+                local_port.push_str(" svc");
+            }
+            let cells = [
+                owner.local.0.to_string(),
+                local_port,
+                owner.process.clone(),
+                owner.remote.0.to_string(),
+                owner.remote.1.to_string(),
+            ];
+            (cells, true)
+        }
+        None => {
+            let cells = [
+                flow.src.to_string(),
+                flow.sport.to_string(),
+                "?".to_string(),
+                flow.dst.to_string(),
+                flow.dport.to_string(),
+            ];
+            (cells, false)
+        }
+    }
+}
+
+/// Widths of the flow table columns for `rows` in `width` cells: each as wide as its cells,
+/// an address up to a full IPv6 address, a port 5 to 9 cells; the process gets the rest. A
+/// narrow table shortens the longer address first, down to 8 cells, for a process of 8.
+pub fn flow_columns(rows: &[[String; 5]], width: u16) -> [Constraint; 5] {
+    let content = |column: usize| {
+        rows.iter()
+            .map(|cells| cells[column].chars().count())
+            .chain([HEADERS[column].len()])
+            .max()
+            .unwrap_or_default()
     };
-    let address = (width.saturating_sub(2 * port + process + 4) / 2).clamp(8, 39);
-    [
-        Constraint::Length(address),
-        Constraint::Length(port),
-        Constraint::Length(process),
-        Constraint::Length(address),
-        Constraint::Length(port),
-    ]
+    let mut local = content(0).min(MAX_ADDRESS);
+    let mut remote = content(3).min(MAX_ADDRESS);
+    let local_port = content(1).clamp(MIN_PORT, MAX_PORT);
+    let remote_port = content(4).clamp(MIN_PORT, MAX_PORT);
+    // Four spaces between the columns
+    let room = (width as usize).saturating_sub(local_port + remote_port + 4);
+    while local + remote + MIN_PROCESS > room && local.max(remote) > MIN_ADDRESS {
+        if local >= remote {
+            local -= 1;
+        } else {
+            remote -= 1;
+        }
+    }
+    let process = room.saturating_sub(local + remote);
+    [local, local_port, process, remote, remote_port].map(|width| Constraint::Length(width as u16))
 }
 
 /// The table of the flows in `width` cells, the selected row highlighted. A flow with a known
@@ -147,39 +193,26 @@ pub fn flow_columns(width: u16) -> [Constraint; 5] {
 /// process; its sides are endpoints A and B in the map's address order, so neither is known to
 /// be local, which the headers say.
 pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
-    let header = ["Local/A", "port", "Process", "Remote/B", "port"]
+    let header = HEADERS
         .into_iter()
         .map(Cell::from)
         .collect::<Row>()
         .style(Style::new().add_modifier(Modifier::BOLD));
-    let rows = flows
+    let (cells, known): (Vec<_>, Vec<_>) = flows
         .list
         .iter()
         .zip(&flows.owners)
-        .map(|(flow, owner)| match owner {
-            Some(owner) => {
-                let mut local_port = owner.local.1.to_string();
-                if owner.service {
-                    local_port.push_str(" svc");
-                }
-                Row::new([
-                    owner.local.0.to_string(),
-                    local_port,
-                    owner.process.clone(),
-                    owner.remote.0.to_string(),
-                    owner.remote.1.to_string(),
-                ])
-            }
-            None => Row::new([
-                flow.src.to_string(),
-                flow.sport.to_string(),
-                "?".to_string(),
-                flow.dst.to_string(),
-                flow.dport.to_string(),
-            ])
-            .style(Style::new().add_modifier(Modifier::DIM)),
-        });
-    Table::new(rows, flow_columns(width))
+        .map(|(flow, owner)| cells(flow, owner.as_ref()))
+        .unzip();
+    let widths = flow_columns(&cells, width);
+    let rows = cells.into_iter().zip(known).map(|(cells, known)| {
+        let row = Row::new(cells);
+        match known {
+            true => row,
+            false => row.style(Style::new().add_modifier(Modifier::DIM)),
+        }
+    });
+    Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
@@ -321,14 +354,28 @@ mod tests {
     }
 
     #[test]
-    fn columns_depend_on_the_width_only() {
-        for width in (120..320).step_by(10) {
-            assert_eq!(flow_columns(width)[1], Constraint::Length(PORT_WIDTH));
-            assert_eq!(flow_columns(width)[2], Constraint::Length(PROCESS_WIDTH));
-        }
-        assert_eq!(flow_columns(200)[0], Constraint::Length(39));
-        assert_eq!(flow_columns(72)[0], Constraint::Length(15));
-        assert_eq!(flow_columns(46)[0], Constraint::Length(10));
-        assert_eq!(flow_columns(46)[2], Constraint::Length(12));
+    fn columns_fit_the_content_and_the_process_gets_the_rest() {
+        let row = |local: &str, port: &str, remote: &str| {
+            [local, port, "iperf3[812]", remote, "5201"].map(str::to_string)
+        };
+        let lengths = |widths: [Constraint; 5]| {
+            widths.map(|width| match width {
+                Constraint::Length(length) => length,
+                _ => panic!("{width:?}"),
+            })
+        };
+        let v4 = [row("10.0.0.2", "40000", "10.0.0.1")];
+        assert_eq!(lengths(flow_columns(&v4, 100)), [8, 5, 70, 8, 5]);
+        // The headers are wider than a short address, a service mark widens the port
+        let short = [row("::1", "22 svc", "::1")];
+        assert_eq!(lengths(flow_columns(&short, 60)), [7, 6, 30, 8, 5]);
+        // A full IPv6 address fits, a longer one is cut
+        let v6 = "2001:db8:85a3:8d3:1319:8a2e:370:7348";
+        let long = [row(v6, "40000", &"f".repeat(50))];
+        assert_eq!(lengths(flow_columns(&long, 200)), [36, 5, 111, 39, 5]);
+        // A narrow table shortens the longer address first, the process keeps 8 cells
+        assert_eq!(lengths(flow_columns(&long, 80)), [29, 5, 8, 29, 5]);
+        assert_eq!(lengths(flow_columns(&long, 30)), [8, 5, 0, 8, 5]);
+        assert_eq!(lengths(flow_columns(&[], 50)), [7, 5, 21, 8, 5]);
     }
 }
