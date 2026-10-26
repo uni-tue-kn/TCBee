@@ -336,94 +336,22 @@ fn render_flows(frame: &mut Frame, ui: &UiState, flows: &Flows, area: Rect) -> R
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::time::Duration;
 
-    use ratatui::{backend::TestBackend, Terminal};
     use tcbee_common::stats::{
-        aggregated_slot, slot, suppressed_slot, RB_COUNT, RB_CUBIC, RB_SOCK_SEND,
-        RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS,
-        RB_TCP_EVENTS, STATS_LEN, STATS_STATE_ERR, STAT_DROPPED, STAT_HANDLED,
+        aggregated_slot, slot, suppressed_slot, RB_COUNT, RB_CUBIC, RB_SOCK_SEND, RB_TCP4_EGRESS,
+        RB_TCP4_INGRESS, RB_TCP_EVENTS, STATS_STATE_ERR, STAT_DROPPED, STAT_HANDLED,
     };
 
     use super::*;
-    use crate::{
-        stats::Snapshot,
-        viz::{
-            flow_owners::{
-                observer,
-                tests::{ep, record},
-                SharedOwners,
-            },
-            flow_tracker::tests::flow,
+    use crate::viz::{
+        flow_owners::{observer, SharedOwners},
+        test_support::{
+            busy_model, contains, context, ep, flow, many_flows, record, row, screen, snapshot,
+            TC_RINGS,
         },
     };
-
-    /// A snapshot with `values` in the given slots, zero elsewhere
-    pub fn snapshot(values: &[(u32, u64)]) -> Snapshot {
-        let mut all = vec![0; STATS_LEN as usize];
-        for (slot, value) in values {
-            all[*slot as usize] = *value;
-        }
-        Snapshot::from_values(all)
-    }
-
-    /// The screen as lines of text
-    pub fn screen(
-        width: u16,
-        height: u16,
-        model: &Model,
-        view: &RunContext,
-        ui: &UiState,
-        flows: &Flows,
-    ) -> (Vec<String>, Areas) {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let mut areas = Areas::default();
-        terminal
-            .draw(|frame| areas = render(frame, model, view, ui, flows))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let lines = (0..height)
-            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
-            .collect();
-        (lines, areas)
-    }
-
-    /// Two ticks one second apart: 1000 records and 10 drops, 600 packets in, 400 out
-    pub fn busy_model(rings: &[u32]) -> Model {
-        let mut model = Model::new(rings);
-        model.update(snapshot(&[]), 0, Duration::from_millis(500));
-        model.record_history();
-        let values = [
-            (slot(RB_TCP4_INGRESS, STAT_HANDLED), 600),
-            (slot(RB_TCP4_EGRESS, STAT_HANDLED), 390),
-            (slot(RB_TCP4_EGRESS, STAT_DROPPED), 10),
-        ];
-        model.update(snapshot(&values), 2_000_000, Duration::from_millis(1500));
-        model.record_history();
-        model
-    }
-
-    pub const TC_RINGS: [u32; 4] = [
-        RB_TCP4_EGRESS,
-        RB_TCP4_INGRESS,
-        RB_TCP6_EGRESS,
-        RB_TCP6_INGRESS,
-    ];
-
-    /// A run with the given rings
-    pub fn context(rings: &[u32]) -> RunContext {
-        RunContext {
-            dir: "/data/run1".to_string(),
-            iface: Some("eth0".to_string()),
-            cpus: 8,
-            active_rings: rings.to_vec(),
-            skipped: vec!["BBR: tcp_bbr is not loaded".to_string()],
-            on_change: false,
-            observation_window: None,
-            owners: None,
-        }
-    }
 
     /// Areas with `count` charts
     fn charts(count: usize) -> Areas {
@@ -431,34 +359,6 @@ pub(crate) mod tests {
             charts: count,
             ..Areas::default()
         }
-    }
-
-    fn contains(lines: &[String], text: &str) -> bool {
-        lines.iter().any(|line| line.contains(text))
-    }
-
-    #[test]
-    fn rates_follow_the_counters() {
-        let model = busy_model(&TC_RINGS);
-        assert_eq!(model.handled_rate(), 990.0);
-        assert_eq!(model.dropped_rate(), 10.0);
-        assert_eq!(model.ingress_rate(), 600.0);
-        assert_eq!(model.egress_rate(), 400.0);
-        assert_eq!(model.disk_rate(), 2_000_000.0);
-        // The driver rings saw nothing
-        assert_eq!(busy_model(&[RB_TCP4_DRIVER_INGRESS]).ingress_rate(), 0.0);
-    }
-
-    #[test]
-    fn first_tick_has_no_rates() {
-        let mut model = Model::new(&TC_RINGS);
-        model.update(
-            snapshot(&[(slot(RB_TCP4_INGRESS, STAT_HANDLED), 5)]),
-            10,
-            Duration::from_secs(1),
-        );
-        assert_eq!(model.ingress_rate(), 0.0);
-        assert_eq!(model.disk_rate(), 0.0);
     }
 
     #[test]
@@ -471,12 +371,15 @@ pub(crate) mod tests {
         assert!(contains(&lines, "TCBee 00:00:01"));
         assert!(contains(&lines, "/data/run1"));
         assert!(contains(&lines, "eth0  8 CPUs"));
-        assert!(contains(&lines, "rec/s            990  total 990"));
-        assert!(contains(&lines, "runs/s         1.00K"));
-        assert!(contains(&lines, "drops/s           10  total 10"));
-        assert!(contains(&lines, "drop %         1.00%  now 1.00%"));
-        assert!(contains(&lines, "disk       2.00 MB/s  2.00 MB"));
-        assert!(contains(&lines, "headers      1.00K    990     10 agg 0%"));
+        assert_eq!(row(&lines, "rec/s"), ["rec/s", "990", "total", "990"]);
+        assert_eq!(row(&lines, "runs/s"), ["runs/s", "1.00K"]);
+        assert_eq!(row(&lines, "drops/s"), ["drops/s", "10", "total", "10"]);
+        assert_eq!(row(&lines, "drop"), ["drop", "%", "1.00%", "now", "1.00%"]);
+        assert_eq!(row(&lines, "disk"), ["disk", "2.00", "MB/s", "2.00", "MB"]);
+        assert_eq!(
+            row(&lines, "headers"),
+            ["headers", "1.00K", "990", "10", "agg", "0%"]
+        );
         assert!(contains(&lines, "- BBR: tcp_bbr is not loaded"));
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         assert!(contains(&lines, "Events"));
@@ -492,33 +395,6 @@ pub(crate) mod tests {
         ));
         assert!(contains(&lines, "2 Headers (pps) \u{25a0} in \u{25a0} out"));
         assert!(contains(&lines, " drop 1.00%  0-1%: "));
-    }
-
-    #[test]
-    fn charts_follow_the_active_rings() {
-        let all = Model::new(&(0..RB_COUNT).collect::<Vec<_>>());
-        let titles: Vec<&str> = all.charts.iter().map(|chart| chart.title).collect();
-        assert_eq!(
-            titles,
-            ["Events", "Headers", "Socket hooks", "CC internals"]
-        );
-        let labels: Vec<&str> = all.charts[1].series.iter().map(|s| s.label).collect();
-        assert_eq!(labels, ["in", "out", "drv in", "drv out"]);
-        let tc = Model::new(&TC_RINGS);
-        assert_eq!(tc.charts.len(), 2);
-        assert_eq!(tc.charts[1].series.len(), 2);
-        assert_eq!(Model::new(&[]).charts.len(), 1);
-    }
-
-    #[test]
-    fn group_charts_show_runs_per_series() {
-        let model = busy_model(&TC_RINGS);
-        let headers = &model.charts[1];
-        let last = |s: usize| *headers.series[s].whole.points().last().unwrap();
-        assert_eq!(last(0), (1.5, 600.0));
-        assert_eq!(last(1), (1.5, 400.0));
-        assert_eq!(model.drop_history, [0, 100]);
-        assert_eq!(model.drop_percent(), 1.0);
     }
 
     #[test]
@@ -544,19 +420,25 @@ pub(crate) mod tests {
         let view = context(&[]);
         let mut ui = UiState::default();
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
-        assert!(contains(&lines, "headers        200    200      0 agg 50%"));
+        assert_eq!(
+            row(&lines, "headers"),
+            ["headers", "200", "200", "0", "agg", "50%"]
+        );
         // TCP events have no chart, so a sparkline
-        assert!(contains(
-            &lines,
-            "tcp_ev         200    200      0 \u{2581}\u{2584}\u{2588}"
-        ));
+        assert_eq!(
+            row(&lines, "tcp_ev"),
+            ["tcp_ev", "200", "200", "0", "\u{2581}\u{2584}\u{2588}"]
+        );
         assert!(contains(&lines, "! 3 state_err"));
         assert!(!contains(&lines, "tc v4 in"));
         ui.on_key(KeyCode::Char('e'), &charts(model.charts.len()), 0);
         let (lines, _) = screen(160, 45, &model, &view, &ui, &Flows::default());
-        assert!(contains(&lines, " tc v4 in      200    200      0 agg 50%"));
-        assert!(contains(&lines, " tc v4 out       0      0      0 agg 0%"));
-        assert!(contains(&lines, " tcp_events    200"));
+        assert_eq!(
+            row(&lines, "tc"),
+            ["tc", "v4", "in", "200", "200", "0", "agg", "50%"]
+        );
+        assert!(contains(&lines, " tc v4 out "));
+        assert_eq!(row(&lines, "tcp_events")[1], "200");
     }
 
     #[test]
@@ -578,10 +460,10 @@ pub(crate) mod tests {
             &UiState::default(),
             &Flows::default(),
         );
-        assert!(contains(
-            &lines,
-            "sock            40     10      0 supp 75%"
-        ));
+        assert_eq!(
+            row(&lines, "sock"),
+            ["sock", "40", "10", "0", "supp", "75%"]
+        );
         assert!(contains(&lines, "on change"));
     }
 
@@ -692,15 +574,6 @@ pub(crate) mod tests {
             assert_eq!(title.matches('\u{25a0}').count(), 4, "{title}");
             assert!(title.ends_with("\u{2500}\u{2510}"), "{title}");
         }
-    }
-
-    /// `count` flows with ports from 1
-    fn many_flows(count: u16) -> Flows {
-        let mut flows = Flows::default();
-        for port in 1..=count {
-            flows.add(flow(port));
-        }
-        flows
     }
 
     /// The ports of the flow rows on screen
@@ -891,10 +764,10 @@ pub(crate) mod tests {
         assert!(contains(&lines, "2 Headers"));
         assert!(!contains(&lines, "3 Socket"));
         // No rec/s column, the groups without a shown chart get a sparkline
-        assert!(contains(&lines, "group    runs/s  drops"));
-        assert!(contains(&lines, "headers  "));
-        let sock = lines.iter().find(|line| line.starts_with("sock ")).unwrap();
-        assert!(sock.contains('\u{2588}'), "{sock}");
+        assert_eq!(row(&lines, "group"), ["group", "runs/s", "drops"]);
+        let sock = row(&lines, "sock");
+        assert_eq!(sock.len(), 4);
+        assert!(sock[3].ends_with('\u{2588}'), "{sock:?}");
         assert!(contains(&lines, "Flows: 1 of 30"));
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         // Key 3 has no chart to zoom
@@ -912,17 +785,14 @@ pub(crate) mod tests {
         assert!(areas.slots.is_empty());
         assert_eq!(areas.charts, 0);
         assert!(!contains(&lines, "1 Events"));
-        let headers = lines
-            .iter()
-            .find(|line| line.starts_with("headers "))
-            .unwrap();
-        assert!(headers.contains("agg"), "{headers}");
-        let cc = lines.iter().find(|line| line.starts_with("cc ")).unwrap();
-        assert!(cc.contains('\u{2588}'), "{cc}");
+        assert_eq!(row(&lines, "headers")[3], "agg");
+        assert!(row(&lines, "cc")[3].ends_with('\u{2588}'));
         assert!(contains(&lines, "Flows: 1 of 30"));
         // A zoom from a larger terminal is not in the way
-        let mut ui = UiState::default();
-        ui.zoom = Some(1);
+        let ui = UiState {
+            zoom: Some(1),
+            ..UiState::default()
+        };
         let (lines, _) = screen(79, 23, &model, &view, &ui, &flows);
         assert!(contains(&lines, "Flows: 1 of 30"));
         // Too narrow for the flows next to the column
@@ -963,7 +833,8 @@ pub(crate) mod tests {
         let (lines, areas) = screen(160, 45, &model, &view, &ui, &Flows::default());
         assert_eq!(areas.slots.len(), 1);
         assert_eq!(areas.slots[0].0, 1);
-        assert!(!contains(&lines, "Tracking"));
+        // The zoomed chart covers the flows
+        assert!(!contains(&lines, "Flows:"));
         // No third slot to zoom, Esc returns, q quits
         ui.on_key(KeyCode::Char('3'), &charts(model.charts.len()), 0);
         assert_eq!(ui.zoom, Some(1));

@@ -216,18 +216,9 @@ pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    use crate::viz::flow_owners::tests::ep;
-
-    pub fn flow(port: u16) -> Flow {
-        Flow {
-            src: "10.0.0.1".parse().unwrap(),
-            dst: "10.0.0.2".parse().unwrap(),
-            sport: 5201,
-            dport: port,
-        }
-    }
+    use crate::viz::test_support::{ep, flow};
 
     #[test]
     fn flows_keep_the_order_they_came_in() {
@@ -260,8 +251,13 @@ pub(crate) mod tests {
             flows.owners[1].as_ref().unwrap().local,
             ep("10.0.0.2:40001")
         );
-        for port in 0..20 {
-            assert_eq!(flow_columns(120 + port * 10)[1], Constraint::Length(9));
+    }
+
+    #[test]
+    fn columns_depend_on_the_width_only() {
+        for width in (120..320).step_by(10) {
+            assert_eq!(flow_columns(width)[1], Constraint::Length(PORT_WIDTH));
+            assert_eq!(flow_columns(width)[2], Constraint::Length(PROCESS_WIDTH));
         }
         assert_eq!(flow_columns(200)[0], Constraint::Length(39));
         assert_eq!(flow_columns(72)[0], Constraint::Length(15));

@@ -349,3 +349,64 @@ pub fn percent(part: f64, whole: f64) -> f64 {
         0.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tcbee_common::stats::{
+        slot, RB_COUNT, RB_TCP4_DRIVER_INGRESS, RB_TCP4_INGRESS, STAT_HANDLED,
+    };
+
+    use super::*;
+    use crate::viz::test_support::{busy_model, snapshot, TC_RINGS};
+
+    #[test]
+    fn rates_follow_the_counters() {
+        let model = busy_model(&TC_RINGS);
+        assert_eq!(model.handled_rate(), 990.0);
+        assert_eq!(model.dropped_rate(), 10.0);
+        assert_eq!(model.ingress_rate(), 600.0);
+        assert_eq!(model.egress_rate(), 400.0);
+        assert_eq!(model.disk_rate(), 2_000_000.0);
+        // The driver rings saw nothing
+        assert_eq!(busy_model(&[RB_TCP4_DRIVER_INGRESS]).ingress_rate(), 0.0);
+    }
+
+    #[test]
+    fn first_tick_has_no_rates() {
+        let mut model = Model::new(&TC_RINGS);
+        model.update(
+            snapshot(&[(slot(RB_TCP4_INGRESS, STAT_HANDLED), 5)]),
+            10,
+            Duration::from_secs(1),
+        );
+        assert_eq!(model.ingress_rate(), 0.0);
+        assert_eq!(model.disk_rate(), 0.0);
+    }
+
+    #[test]
+    fn charts_follow_the_active_rings() {
+        let all = Model::new(&(0..RB_COUNT).collect::<Vec<_>>());
+        let titles: Vec<&str> = all.charts.iter().map(|chart| chart.title).collect();
+        assert_eq!(
+            titles,
+            ["Events", "Headers", "Socket hooks", "CC internals"]
+        );
+        let labels: Vec<&str> = all.charts[1].series.iter().map(|s| s.label).collect();
+        assert_eq!(labels, ["in", "out", "drv in", "drv out"]);
+        let tc = Model::new(&TC_RINGS);
+        assert_eq!(tc.charts.len(), 2);
+        assert_eq!(tc.charts[1].series.len(), 2);
+        assert_eq!(Model::new(&[]).charts.len(), 1);
+    }
+
+    #[test]
+    fn group_charts_show_runs_per_series() {
+        let model = busy_model(&TC_RINGS);
+        let headers = &model.charts[1];
+        let last = |s: usize| *headers.series[s].whole.points().last().unwrap();
+        assert_eq!(last(0), (1.5, 600.0));
+        assert_eq!(last(1), (1.5, 400.0));
+        assert_eq!(model.drop_history, [0, 100]);
+        assert_eq!(model.drop_percent(), 1.0);
+    }
+}

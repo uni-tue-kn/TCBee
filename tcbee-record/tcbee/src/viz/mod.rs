@@ -8,4 +8,6 @@ pub mod groups;
 pub mod history;
 pub mod layout;
 pub mod model;
+#[cfg(test)]
+mod test_support;
 pub mod view;

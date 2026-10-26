@@ -149,50 +149,11 @@ pub fn add_snapshot(owners: &SharedOwners, snapshot: &FlowOwners) {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use tcbee_trace::owners::{Holder, ProcessInfo, SnapshotConnection};
 
     use super::*;
-    use crate::config::AF_INET6;
-
-    /// An owner record of `local` -> `remote`
-    pub fn record(local: Endpoint, remote: Endpoint, comm: &str, pid: u32, kind: u32) -> Vec<u8> {
-        let mut rec: flow_owner_entry = unsafe { mem::zeroed() };
-        match (local.0, remote.0) {
-            (IpAddr::V4(l), IpAddr::V4(r)) => {
-                rec.family = AF_INET;
-                rec.addr_v4 = ((u32::from_le_bytes(l.octets()) as u64) << 32)
-                    | u32::from_le_bytes(r.octets()) as u64;
-            }
-            (l, r) => {
-                rec.family = AF_INET6;
-                let v6 = |ip: IpAddr| match ip {
-                    IpAddr::V4(ip) => ip.to_ipv6_mapped().octets(),
-                    IpAddr::V6(ip) => ip.octets(),
-                };
-                rec.src_v6 = v6(l);
-                rec.dst_v6 = v6(r);
-            }
-        }
-        rec.sport = local.1;
-        rec.dport = remote.1;
-        rec.kind = kind as u8;
-        rec.pid = pid;
-        rec.comm[..comm.len()].copy_from_slice(comm.as_bytes());
-        // SAFETY: rec is a plain old data struct that lives for the whole borrow
-        unsafe {
-            std::slice::from_raw_parts(
-                &rec as *const flow_owner_entry as *const u8,
-                mem::size_of::<flow_owner_entry>(),
-            )
-        }
-        .to_vec()
-    }
-
-    pub fn ep(text: &str) -> Endpoint {
-        let addr: std::net::SocketAddr = text.parse().unwrap();
-        (addr.ip(), addr.port())
-    }
+    use crate::viz::test_support::{ep, record};
 
     #[test]
     fn records_name_the_local_side_and_the_process() {
