@@ -9,7 +9,8 @@
  * Every record starts with time and hook_seq. hook_seq numbers the events of one flow
  * direction at one hook (output file) from 1, see hook_seq.h. A file's records come from the ring
  * buffers of several CPUs, so their order in the file is not their order at the hook;
- * sorting one flow's records of one file by hook_seq restores it exactly.
+ * sorting one flow's records of one file by hook_seq restores it exactly. Owner records
+ * (flow_owner_entry) are the exception, they have no hook_seq.
  */
 #ifndef __TCBEE_RECORDS_H
 #define __TCBEE_RECORDS_H
@@ -459,6 +460,50 @@ struct tcp_bad_csum_entry {
 	uint8_t daddr[4];
 };
 
+/* Kind of a flow_owner_entry */
+enum tcbee_owner_kind {
+	/* The process connected the socket: fexit tcp_v4_connect, tcp_v6_connect */
+	TCBEE_OWNER_CONNECT = 1,
+	/* The process accepted the connection from a listener: fexit inet_csk_accept */
+	TCBEE_OWNER_ACCEPT = 2,
+};
+
+/* Bits of the flags of a flow_owner_entry */
+enum tcbee_owner_flag {
+	/* A kernel thread opened the connection (PF_KTHREAD): pid and comm are the thread's */
+	TCBEE_OWNER_KTHREAD = 1,
+};
+
+/*
+ * The process that opened a connection, FLOW_OWNERS: one record per connect and per accept,
+ * written in the context of the calling process. The header holds the tuple local -> remote.
+ * hook_seq is always 1: owner records take no hook_seq counter. The ring is this rare that
+ * the drop counters account for its losses, and a reused tuple gets one record per
+ * connection, which time orders.
+ */
+struct flow_owner_entry {
+	TCBEE_SOCK_HEADER
+	/* enum tcbee_owner_kind */
+	uint8_t kind;
+	/* enum tcbee_owner_flag bits */
+	uint8_t flags;
+	/* Process id (tgid) and real uid of the caller, as the initial namespaces see them */
+	uint32_t pid;
+	uint32_t uid;
+	/* Inode number of the socket's network namespace, as in /proc/<pid>/ns/net */
+	uint32_t netns;
+	/* cgroup v2 id of the caller (the inode number of its cgroup directory) */
+	uint64_t cgroup_id;
+	/*
+	 * Start of the process (its thread group leader) in ns since boot, suspend included
+	 * (start_boottime); /proc/<pid>/stat shows it in clock ticks. With pid it names the
+	 * process across pid reuse.
+	 */
+	uint64_t start_time;
+	/* Name of the process (its thread group leader), NUL terminated */
+	uint8_t comm[16];
+};
+
 /*
  * Key and value of the FLOWS map. IPv4 addresses use the first 4 bytes. The padding
  * byte at the end is zeroed by the eBPF side so equal flows hash equally.
@@ -502,6 +547,7 @@ _Static_assert(sizeof(struct tcp_retransmit_synack_entry) == 64,
 _Static_assert(sizeof(struct tcp_bad_csum_entry) == 24, "tcp_bad_csum_entry size");
 _Static_assert(sizeof(struct tcp_event_entry) == 96, "tcp_event_entry size");
 _Static_assert(sizeof(struct mptcp_pm_entry) == 136, "mptcp_pm_entry size");
+_Static_assert(sizeof(struct flow_owner_entry) == 112, "flow_owner_entry size");
 /* The address is read into addr_0 to addr_3 at once */
 _Static_assert(__builtin_offsetof(struct mptcp_pm_entry, addr_3) ==
 		       __builtin_offsetof(struct mptcp_pm_entry, addr_0) + 12,

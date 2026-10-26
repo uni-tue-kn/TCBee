@@ -214,6 +214,7 @@ mod generate {
             "tcp6_driver_receive",
             "tcp4_driver_send",
             "tcp6_driver_send",
+            "flow_owners",
             "recv_sock_oc",
             "recv_cwnd_oc",
         ] {
@@ -297,7 +298,11 @@ mod checks {
         check::<Tcp4Packet43Entry>("tcp4_receive.tcp", 2000);
         check::<Tcp4Packet43Entry>("tcp4_send.tcp", 2000);
         check::<Tcp6Packet67Entry>("tcp6_receive.tcp", 500);
-        for empty in ["tcp_retransmit_synack.tcp", "tcp_bad_csum.tcp"] {
+        for empty in [
+            "tcp_retransmit_synack.tcp",
+            "tcp_bad_csum.tcp",
+            "flow_owners.tcp",
+        ] {
             assert_eq!(
                 fs::metadata(dir("tcbee_small").join(empty)).unwrap().len(),
                 0

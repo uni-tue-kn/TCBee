@@ -37,7 +37,8 @@
 #define RB_TCP6_DRIVER_INGRESS 20
 #define RB_TCP4_DRIVER_EGRESS 21
 #define RB_TCP6_DRIVER_EGRESS 22
-#define RB_COUNT 23
+#define RB_OWNERS 23
+#define RB_COUNT 24
 
 #define STAT_HANDLED 0
 #define STAT_DROPPED 1
@@ -45,16 +46,34 @@
 #define STATS_PER_RB 3
 
 /*
- * Appended after the per-ring slots: the runs an on-change probe suppressed, one slot per
- * ring, then the runs that found no socket storage and wrote a full record. Both stay 0 in
- * the default mode. Last, per ring, the packets a header hook saw that stand for several
- * segments (GSO, GRO or LRO); they are counted on top of the outcome of the run.
+ * The rings before this one have their per-ring slots first, then the blocks below; the rings
+ * added later have theirs after the last block, so that no slot of an older ring moves.
  */
-#define STATS_SUPPRESSED_BASE (RB_COUNT * STATS_PER_RB)
-#define STATS_STATE_ERR (STATS_SUPPRESSED_BASE + RB_COUNT)
-#define STATS_AGGREGATED_BASE (STATS_STATE_ERR + 1)
+#define STATS_EARLY_RINGS 23
 
-_Static_assert(STATS_AGGREGATED_BASE + RB_COUNT == TCBEE_STATS_LEN, "STATS length");
+/*
+ * Appended after the per-ring slots of the early rings: the runs an on-change probe
+ * suppressed, one slot per early ring, then the runs that found no socket storage and wrote a
+ * full record. Both stay 0 in the default mode. Then, per early ring, the packets a header hook
+ * saw that stand for several segments (GSO, GRO or LRO); they are counted on top of the outcome
+ * of the run. Last, the per-ring slots of the later rings, which have neither.
+ */
+#define STATS_SUPPRESSED_BASE (STATS_EARLY_RINGS * STATS_PER_RB)
+#define STATS_STATE_ERR (STATS_SUPPRESSED_BASE + STATS_EARLY_RINGS)
+#define STATS_AGGREGATED_BASE (STATS_STATE_ERR + 1)
+#define STATS_LATE_BASE (STATS_AGGREGATED_BASE + STATS_EARLY_RINGS)
+
+_Static_assert(STATS_LATE_BASE + (RB_COUNT - STATS_EARLY_RINGS) * STATS_PER_RB ==
+		       TCBEE_STATS_LEN,
+	       "STATS length");
+
+/* The slot of a per-ring counter; rb is a constant in every caller, so this folds */
+static __always_inline __u32 stat_slot(__u32 rb, __u32 stat)
+{
+	if (rb < STATS_EARLY_RINGS)
+		return rb * STATS_PER_RB + stat;
+	return STATS_LATE_BASE + (rb - STATS_EARLY_RINGS) * STATS_PER_RB + stat;
+}
 
 /*
  * fentry and tracepoint programs only run with migration disabled, so a softirq can
@@ -103,7 +122,7 @@ static __always_inline bool rb_owned(__u32 rb)
 /* rb is a constant in every caller, so this folds to one of the two adds */
 static __always_inline void count(__u32 rb, __u32 stat)
 {
-	__u32 slot = rb * STATS_PER_RB + stat;
+	__u32 slot = stat_slot(rb, stat);
 
 	if (rb_owned(rb))
 		add_stat_owned(slot, 1);
@@ -125,7 +144,7 @@ static __always_inline void count_error(__u32 rb)
  */
 static __always_inline void count_shared(__u32 rb, __u32 stat)
 {
-	add_stat(rb * STATS_PER_RB + stat, 1);
+	add_stat(stat_slot(rb, stat), 1);
 }
 
 static __always_inline void count_error_shared(__u32 rb)

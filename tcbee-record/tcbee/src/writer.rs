@@ -114,7 +114,7 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
-        self.register_as::<T>(rb, maps, RINGBUFS[rb as usize].file, trace_dir)
+        self.spawn::<T>(rb, maps, RINGBUFS[rb as usize].file, trace_dir, None)
     }
 
     /// As `register`, but into `file` instead of the ring buffer's own file (on-change mode
@@ -129,9 +129,45 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
+        self.spawn::<T>(rb, maps, file, trace_dir, None)
+    }
+
+    /// As `register`, and hands every written record (its ring buffer bytes) to `observer`
+    /// on the writer thread. For rings with few records: the observer delays the writer.
+    pub fn register_observed<T>(
+        &mut self,
+        rb: u32,
+        maps: Vec<(u32, MapHandle)>,
+        trace_dir: impl AsRef<Path>,
+        observer: Observer,
+    ) -> Result<(), WriterError>
+    where
+        T: Serialize + Copy + Send + 'static,
+    {
+        self.spawn::<T>(
+            rb,
+            maps,
+            RINGBUFS[rb as usize].file,
+            trace_dir,
+            Some(observer),
+        )
+    }
+
+    fn spawn<T>(
+        &mut self,
+        rb: u32,
+        maps: Vec<(u32, MapHandle)>,
+        file: TraceFile,
+        trace_dir: impl AsRef<Path>,
+        observer: Option<Observer>,
+    ) -> Result<(), WriterError>
+    where
+        T: Serialize + Copy + Send + 'static,
+    {
         let file_path = trace_dir.as_ref().join(file.filename());
-        let job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?
+        let mut job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?
             .with_helper_cpus(self.helper_cpus.clone());
+        job.observer = observer;
         let running = self.running.clone();
 
         let cpu = if self.cpu_pool.is_empty() {
@@ -413,6 +449,9 @@ fn remove_if_empty(path: &Path) {
 
 /// Records a writer thread wrote, and the error that stopped it, if any
 type JobResult = (u64, Result<(), JobError>);
+
+/// Sees every record a writer wrote, see `Writer::register_observed`
+pub type Observer = Box<dyn FnMut(&[u8]) + Send>;
 
 /// Turns the return value of `ring_buffer__consume`/`ring_buffer__poll` into the number
 /// of records read or the error that stopped the callback
@@ -743,6 +782,8 @@ where
     error: Option<JobError>,
     /// The CPU of every written record, `<file>.cpu`
     cpus: CpuRuns,
+    /// Sees each written record
+    observer: Option<Observer>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -789,6 +830,7 @@ where
             records: 0,
             counted: 0,
             error: None,
+            observer: None,
             _marker: std::marker::PhantomData,
         })
     }
@@ -821,6 +863,9 @@ where
         match self.try_write(entry) {
             Ok(()) => {
                 self.records += 1;
+                if let Some(observer) = &mut self.observer {
+                    observer(entry);
+                }
                 0
             }
             Err(err) => {
@@ -1091,6 +1136,7 @@ mod tests {
         assert_packed_matches_bincode::<tcp_bad_csum_entry>();
         assert_packed_matches_bincode::<mptcp_pm_entry>();
         assert_packed_matches_bincode::<tcp_event_entry>();
+        assert_packed_matches_bincode::<flow_owner_entry>();
     }
 
     /// Records written across several remaps all end up in the file
@@ -1268,6 +1314,30 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_file(job.cpus.path).unwrap();
         assert_eq!(runs, [(0, 0), (2, 2), (3, 5), (5, 0), (6, CPU_SIDE_END)]);
+    }
+
+    #[test]
+    fn observer_sees_the_written_records() {
+        let path = env::temp_dir().join(format!("tcbee-observer-{}", std::process::id()));
+        let mut job =
+            MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
+                .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        job.observer = Some(Box::new(move |entry: &[u8]| {
+            sink.lock().unwrap().push(entry[0]);
+        }));
+        let size = mem::size_of::<tcp4_packet_trace>();
+        for first in [1u8, 2] {
+            let mut entry = vec![0u8; size];
+            entry[0] = first;
+            assert_eq!(job.write(&entry), 0);
+        }
+        assert_ne!(job.write(&[3]), 0);
+        job.flush().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&job.cpus.path);
+        assert_eq!(*seen.lock().unwrap(), [1, 2]);
     }
 
     /// Without records there is no side file

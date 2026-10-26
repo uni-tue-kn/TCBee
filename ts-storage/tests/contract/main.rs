@@ -55,6 +55,8 @@ macro_rules! all_cases {
             two_writers_append_to_one_table_and_flow
             catalog_flows_by_tuple
             catalog_connections_round_trip
+            catalog_owners_round_trip
+            file_without_owner_table_has_no_owners
             catalog_series_per_flow
             catalog_same_name_differs_by_dir
             catalog_stats_match_brute_force

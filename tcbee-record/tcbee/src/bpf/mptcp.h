@@ -33,4 +33,21 @@ static __always_inline __u32 mptcp_conn_id(struct tcp_sock *tp)
 	return BPF_CORE_READ(msk, token);
 }
 
+/*
+ * Whether sk is an MPTCP subflow that this host adds to an existing connection (MP_JOIN): the
+ * path manager opens it, from a worker or a netlink request, for a connection that a process
+ * opened before. The subflow context marks it before the connect. Read like mptcp_conn_id(),
+ * without MPTCP_TAG.
+ */
+static __always_inline bool mptcp_join_subflow(struct sock *sk)
+{
+	struct mptcp_subflow_context___join *subflow;
+	struct tcp_sock *tp = (struct tcp_sock *)sk;
+
+	if (!bpf_core_field_exists(tp->is_mptcp) || !BPF_CORE_READ(tp, is_mptcp))
+		return false;
+	subflow = BPF_CORE_READ(tp, inet_conn.icsk_ulp_data);
+	return subflow && BPF_CORE_READ_BITFIELD_PROBED(subflow, request_join);
+}
+
 #endif /* __TCBEE_MPTCP_H */

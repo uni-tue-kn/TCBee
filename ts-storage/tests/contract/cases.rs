@@ -2,7 +2,8 @@
 
 use ts_storage::{
     detect_engine, Catalog, ColType, ConnectionFlow, ConnectionInfo, CreateOptions, DataValue, Dir,
-    Engine, IpTuple, SeriesInfo, SeriesKind, StatsAccumulator, Store, StoreError, ValueKind,
+    Engine, FlowOwner, IpTuple, SeriesInfo, SeriesKind, StatsAccumulator, Store, StoreError,
+    ValueKind,
 };
 
 use crate::fixture::*;
@@ -399,6 +400,72 @@ pub fn catalog_connections_round_trip(engine: Engine) {
     let (_env, plain) = catalog_db(engine);
     assert!(plain.connections().unwrap().is_empty());
     assert!(plain.connection_flows().unwrap().is_empty());
+}
+
+pub fn catalog_owners_round_trip(engine: Engine) {
+    let owner = |flow_id, ts, pid, source: &str| FlowOwner {
+        flow_id,
+        ts,
+        source: source.into(),
+        pid,
+        comm: format!("p{pid}"),
+        ..FlowOwner::default()
+    };
+    let curl = FlowOwner {
+        uid: Some(1000),
+        cmdline: Some("curl -O https://example.org/x".into()),
+        start_time: Some(i64::MAX),
+        cgroup_id: Some(7),
+        cgroup: Some("/user.slice".into()),
+        netns: Some(4026531840),
+        ..owner(2, 20, 42, FlowOwner::SOURCE_CONNECT)
+    };
+    let kthread = FlowOwner {
+        kthread: true,
+        ..owner(1, 10, 9, FlowOwner::SOURCE_ACCEPT)
+    };
+    // Two processes share the socket of flow 1 at the start
+    let owners = vec![
+        curl.clone(),
+        owner(1, 5, 101, FlowOwner::SOURCE_SNAPSHOT),
+        kthread.clone(),
+        owner(1, 5, 100, FlowOwner::SOURCE_SNAPSHOT),
+    ];
+    let env = Env::new();
+    let s = ts_storage::create(engine, &env.path, CreateOptions::default()).unwrap();
+    s.finish(Catalog {
+        flows: vec![flow(1, 1000), flow(2, 2000)],
+        owners: owners.clone(),
+        ..Catalog::default()
+    })
+    .unwrap();
+    let st = ts_storage::open(&env.path).unwrap();
+    let want = vec![owners[3].clone(), owners[1].clone(), kthread, curl];
+    assert_eq!(st.flow_owners().unwrap(), want);
+
+    let (_env, plain) = catalog_db(engine);
+    assert!(plain.flow_owners().unwrap().is_empty());
+}
+
+/// A database written before owners were recorded has no flow_owners table; it is still
+/// schema 3 and reads as one without owners
+pub fn file_without_owner_table_has_no_owners(engine: Engine) {
+    let env = Env::new();
+    let s = ts_storage::create(engine, &env.path, CreateOptions::default()).unwrap();
+    s.finish(Catalog {
+        flows: vec![flow(1, 1000)],
+        owners: vec![FlowOwner {
+            flow_id: 1,
+            comm: "x".into(),
+            ..FlowOwner::default()
+        }],
+        ..Catalog::default()
+    })
+    .unwrap();
+    drop_table(engine, &env.path, "flow_owners");
+    let st = ts_storage::open(&env.path).unwrap();
+    assert!(st.flow_owners().unwrap().is_empty());
+    assert_eq!(st.flows().unwrap().len(), 1);
 }
 
 pub fn catalog_series_per_flow(engine: Engine) {

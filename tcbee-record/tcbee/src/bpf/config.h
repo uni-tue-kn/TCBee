@@ -55,5 +55,6 @@ const volatile __u32 HEADERS_MTU = 0;
 #define TCP_CLOSE 7
 #define TCP_LISTEN 10
 #define TCP_NEW_SYN_RECV 12
+#define PF_KTHREAD 0x00200000
 
 #endif /* __TCBEE_CONFIG_H */
