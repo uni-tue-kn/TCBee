@@ -49,6 +49,8 @@ pub struct Areas {
     pub charts: usize,
     /// The rows of the flow table below its header
     pub flow_rows: Rect,
+    /// The first flow row the frame showed
+    pub flow_offset: usize,
 }
 
 /// Update period the UI state assumes unless told
@@ -99,6 +101,7 @@ impl UiState {
 
     /// Handles a key, returns whether to quit
     pub fn on_key(&mut self, code: KeyCode, areas: &Areas, flows: usize) -> bool {
+        self.sync(areas, flows);
         let page = (areas.flow_rows.height as usize).max(1);
         let last = flows.saturating_sub(1);
         match code {
@@ -133,6 +136,15 @@ impl UiState {
         false
     }
 
+    /// Starts from the rows the last frame showed, if it showed the flows: a resize or a zoom
+    /// moved them
+    fn sync(&mut self, areas: &Areas, flows: usize) {
+        if areas.flow_rows.height > 0 {
+            self.offset = areas.flow_offset;
+        }
+        self.selected = self.selected.min(flows.saturating_sub(1));
+    }
+
     /// Scrolls the flow rows by `rows`, the selection stays on a visible row
     fn scroll(&mut self, rows: isize, areas: &Areas, flows: usize) {
         let page = (areas.flow_rows.height as usize).max(1);
@@ -147,6 +159,7 @@ impl UiState {
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent, areas: &Areas, flows: usize) {
+        self.sync(areas, flows);
         match mouse.kind {
             MouseEventKind::ScrollDown => self.scroll(WHEEL_ROWS as isize, areas, flows),
             MouseEventKind::ScrollUp => self.scroll(-(WHEEL_ROWS as isize), areas, flows),
@@ -201,17 +214,17 @@ pub fn render(
         Some(slot) => vec![slot],
         None => (0..charts).collect(),
     };
-    let mut flow_rows = Rect::default();
+    let (mut flow_rows, mut flow_offset) = (Rect::default(), 0);
     let chart_area = if zoom.is_some() {
         right
     } else if charts == 0 {
         if right.width > 0 {
-            flow_rows = render_flows(frame, ui, flows, right);
+            (flow_rows, flow_offset) = render_flows(frame, ui, flows, right);
         }
         Rect::default()
     } else {
         let [charts, flow_area] = Layout::vertical([Constraint::Percentage(50); 2]).areas(right);
-        flow_rows = render_flows(frame, ui, flows, flow_area);
+        (flow_rows, flow_offset) = render_flows(frame, ui, flows, flow_area);
         charts
     };
     let areas = grid(chart_area, shown.len());
@@ -275,6 +288,7 @@ pub fn render(
         slots,
         charts,
         flow_rows,
+        flow_offset,
     }
 }
 
@@ -302,8 +316,9 @@ fn render_drops(frame: &mut Frame, model: &Model, area: Rect) {
     );
 }
 
-/// The flow table with the selected row highlighted, returns the area of its rows
-fn render_flows(frame: &mut Frame, ui: &UiState, flows: &Flows, area: Rect) -> Rect {
+/// The flow table with the selected row highlighted, returns the area of its rows and the
+/// first row shown
+fn render_flows(frame: &mut Frame, ui: &UiState, flows: &Flows, area: Rect) -> (Rect, usize) {
     let len = flows.len();
     let mut title = match len {
         0 => "Flows: none yet".to_string(),
@@ -349,7 +364,7 @@ fn render_flows(frame: &mut Frame, ui: &UiState, flows: &Flows, area: Rect) -> R
             &mut scrollbar,
         );
     }
-    rows
+    (rows, offset)
 }
 
 #[cfg(test)]
@@ -626,80 +641,128 @@ mod tests {
             .collect()
     }
 
+    /// Draws the screen and hands `key` over, as the TUI does
+    fn press(ui: &mut UiState, key: KeyCode, model: &Model, context: &RunContext, flows: &Flows) {
+        let (_, areas) = screen(160, 45, model, context, ui, flows);
+        ui.on_key(key, &areas, flows.len());
+    }
+
+    /// Draws the screen and scrolls the flows by the wheel, as the TUI does
+    fn wheel(ui: &mut UiState, kind: MouseEventKind, model: &Model, flows: &Flows) -> Areas {
+        let context = context(&TC_RINGS);
+        let (_, areas) = screen(160, 45, model, &context, ui, flows);
+        let event = MouseEvent {
+            kind,
+            column: areas.flow_rows.x + 2,
+            row: areas.flow_rows.y,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        };
+        ui.on_mouse(event, &areas, flows.len());
+        areas
+    }
+
     #[test]
     fn keys_move_the_flow_selection_and_the_view_follows() {
         let model = busy_model(&TC_RINGS);
-        let view = context(&TC_RINGS);
+        let context = context(&TC_RINGS);
         let flows = many_flows(60);
         let mut ui = UiState::default();
-        let (lines, areas) = screen(160, 45, &model, &view, &ui, &flows);
+        let (lines, areas) = screen(160, 45, &model, &context, &ui, &flows);
         let page = areas.flow_rows.height as usize;
         assert!(page > 5 && page < 60);
         let ports = flow_rows(&lines, &areas);
         assert_eq!(ports, (1..=page as u16).collect::<Vec<_>>());
         assert!(contains(&lines, "Flows: 1 of 60"));
 
-        ui.on_key(KeyCode::Down, &areas, 60);
-        ui.on_key(KeyCode::Down, &areas, 60);
-        assert_eq!((ui.selected, ui.offset), (2, 0));
-        ui.on_key(KeyCode::PageDown, &areas, 60);
-        assert_eq!(ui.selected, 2 + page);
+        let mut press = |key| {
+            press(&mut ui, key, &model, &context, &flows);
+            (ui.selected, ui.offset)
+        };
+        press(KeyCode::Down);
+        assert_eq!(press(KeyCode::Down), (2, 0));
         // The selection is the last visible row
-        assert_eq!(ui.offset, 3);
-        let (lines, _) = screen(160, 45, &model, &view, &ui, &flows);
-        assert!(contains(&lines, &format!("Flows: {} of 60", 3 + page)));
-        ui.on_key(KeyCode::End, &areas, 60);
-        assert_eq!((ui.selected, ui.offset), (59, 60 - page));
+        assert_eq!(press(KeyCode::PageDown), (2 + page, 3));
+        assert_eq!(press(KeyCode::End), (59, 60 - page));
         // Down at the end stays there
-        ui.on_key(KeyCode::Down, &areas, 60);
-        assert_eq!((ui.selected, ui.offset), (59, 60 - page));
-        let (lines, _) = screen(160, 45, &model, &view, &ui, &flows);
-        let ports = flow_rows(&lines, &areas);
-        assert_eq!(*ports.last().unwrap(), 60);
-        ui.on_key(KeyCode::PageUp, &areas, 60);
-        assert_eq!((ui.selected, ui.offset), (59 - page, 59 - page));
-        ui.on_key(KeyCode::Home, &areas, 60);
-        assert_eq!((ui.selected, ui.offset), (0, 0));
-        ui.on_key(KeyCode::Up, &areas, 60);
-        assert_eq!((ui.selected, ui.offset), (0, 0));
+        assert_eq!(press(KeyCode::Down), (59, 60 - page));
+        assert_eq!(press(KeyCode::PageUp), (59 - page, 59 - page));
+        assert_eq!(press(KeyCode::Home), (0, 0));
+        assert_eq!(press(KeyCode::Up), (0, 0));
+        ui.selected = 2 + page;
+        let (lines, areas) = screen(160, 45, &model, &context, &ui, &flows);
+        assert!(contains(&lines, &format!("Flows: {} of 60", 3 + page)));
+        assert_eq!(*flow_rows(&lines, &areas).last().unwrap(), 3 + page as u16);
     }
 
     #[test]
     fn wheel_scrolls_rows_and_never_past_the_end() {
         let model = busy_model(&TC_RINGS);
-        let view = context(&TC_RINGS);
+        let context = context(&TC_RINGS);
         let flows = many_flows(30);
         let mut ui = UiState::default();
-        let (_, areas) = screen(160, 45, &model, &view, &ui, &flows);
+        let areas = wheel(&mut ui, MouseEventKind::ScrollDown, &model, &flows);
         let page = areas.flow_rows.height as usize;
-        let wheel = |kind| MouseEvent {
-            kind,
-            column: areas.flow_rows.x + 2,
-            row: areas.flow_rows.y,
-            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
-        };
-        ui.on_mouse(wheel(MouseEventKind::ScrollDown), &areas, 30);
         assert_eq!(ui.offset, 3);
         // The selection moves along to stay visible
         assert_eq!(ui.selected, 3);
         for _ in 0..20 {
-            ui.on_mouse(wheel(MouseEventKind::ScrollDown), &areas, 30);
+            wheel(&mut ui, MouseEventKind::ScrollDown, &model, &flows);
         }
         assert_eq!(ui.offset, 30 - page);
-        let (lines, _) = screen(160, 45, &model, &view, &ui, &flows);
+        let (lines, areas) = screen(160, 45, &model, &context, &ui, &flows);
         let ports = flow_rows(&lines, &areas);
         assert_eq!(ports.len(), page);
         assert_eq!(*ports.last().unwrap(), 30);
         // A click selects the row under the mouse
-        let mut click = wheel(MouseEventKind::Down(MouseButton::Left));
-        click.row += 2;
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: areas.flow_rows.x + 2,
+            row: areas.flow_rows.y + 2,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        };
         ui.on_mouse(click, &areas, 30);
         assert_eq!(ui.selected, 30 - page + 2);
         // Fewer flows than rows never scroll
+        let few = many_flows(3);
         let mut ui = UiState::default();
-        ui.on_mouse(wheel(MouseEventKind::ScrollDown), &areas, 3);
-        ui.on_key(KeyCode::End, &areas, 3);
+        wheel(&mut ui, MouseEventKind::ScrollDown, &model, &few);
+        press(&mut ui, KeyCode::End, &model, &context, &few);
         assert_eq!((ui.selected, ui.offset), (2, 0));
+    }
+
+    #[test]
+    fn clicks_and_the_wheel_follow_the_rows_on_screen_after_a_resize() {
+        let model = busy_model(&TC_RINGS);
+        let context = context(&TC_RINGS);
+        let flows = many_flows(60);
+        let mut ui = UiState::default();
+        let (_, areas) = screen(160, 45, &model, &context, &ui, &flows);
+        ui.on_key(KeyCode::End, &areas, 60);
+        // A smaller terminal shows fewer rows, the last ones
+        let (lines, areas) = screen(160, 32, &model, &context, &ui, &flows);
+        let shown = flow_rows(&lines, &areas);
+        assert_eq!(*shown.last().unwrap(), 60);
+        assert_eq!(areas.flow_offset, 60 - shown.len());
+        let click = |row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: areas.flow_rows.x + 2,
+            row,
+            modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+        };
+        ui.on_mouse(click(areas.flow_rows.y), &areas, 60);
+        assert_eq!(ui.selected + 1, shown[0] as usize);
+        // The wheel scrolls from what is shown
+        let mut wheel = click(areas.flow_rows.y);
+        wheel.kind = MouseEventKind::ScrollUp;
+        ui.on_mouse(wheel, &areas, 60);
+        assert_eq!(ui.offset, areas.flow_offset - 3);
+        // After a zoom the flows come back where they were
+        ui.on_key(KeyCode::Char('1'), &areas, 60);
+        let (_, zoomed) = screen(160, 32, &model, &context, &ui, &flows);
+        ui.on_key(KeyCode::Esc, &zoomed, 60);
+        let (lines, areas) = screen(160, 32, &model, &context, &ui, &flows);
+        ui.on_mouse(click(areas.flow_rows.y), &areas, 60);
+        assert_eq!(ui.selected + 1, flow_rows(&lines, &areas)[0] as usize);
     }
 
     #[test]
