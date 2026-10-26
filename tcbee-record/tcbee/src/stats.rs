@@ -77,7 +77,7 @@ impl Snapshot {
 
     /// Runs of one ring buffer that an on-change probe suppressed
     pub fn suppressed(&self, rb: u32) -> u64 {
-        self.get(suppressed_slot(rb))
+        suppressed_slot(rb).map_or(0, |slot| self.get(slot))
     }
 
     pub fn suppressed_total(&self) -> u64 {
@@ -91,7 +91,7 @@ impl Snapshot {
 
     /// Packets of one ring buffer's header hook that stand for several segments
     pub fn aggregated(&self, rb: u32) -> u64 {
-        self.get(aggregated_slot(rb))
+        aggregated_slot(rb).map_or(0, |slot| self.get(slot))
     }
 
     pub fn aggregated_total(&self) -> u64 {

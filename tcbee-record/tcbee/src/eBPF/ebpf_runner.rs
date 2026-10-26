@@ -3,8 +3,9 @@ use std::{
     error::Error,
     fmt, fs,
     mem::MaybeUninit,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,7 @@ use libbpf_rs::{
 };
 use log::{debug, error, info, log, warn};
 use tcbee_common::stats::{
-    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RENO,
+    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_OWNERS, RB_RENO,
     RB_RETRANSMIT_SYNACK, RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
     RB_SOCK_TIMER, RB_TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
     RB_TCP6_DRIVER_EGRESS, RB_TCP6_DRIVER_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS,
@@ -40,6 +41,7 @@ use crate::{
             },
             kernel::KernelTracer,
             mptcp::MptcpPmTracer,
+            owners::OwnerTracer,
             reno::RenoTracer,
             sock_events::SockEventTracer,
             tcp_events::TcpEventTracer,
@@ -50,11 +52,12 @@ use crate::{
     },
     metadata::{NamedRingCounters, Offloads, Recorder, RunMetadata},
     metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
+    owners,
     stats::Stats,
     viz::ebpf_watcher::EBPFWatcher,
     writer::{Writer, WriterReport},
 };
-use tcbee_trace::sock_hooks::Hook;
+use tcbee_trace::{owners::FlowOwners, sock_hooks::Hook};
 
 use super::ebpf_runner_config::{EbpfRunnerConfig, FilterConfig, MptcpModes};
 
@@ -82,6 +85,11 @@ pub struct EbpfRunner {
     skipped: Vec<String>,
     /// Written at start and completed at stop with `--metadata`
     metadata: Option<RunMetadata>,
+    /// The snapshot of the connections that existed at the start, which writes
+    /// `flow_owners.json`
+    owner_snapshot: Option<thread::JoinHandle<FlowOwners>>,
+    /// Looks up the processes of the owner records, added to `flow_owners.json` at stop
+    owner_resolver: Option<owners::Resolver>,
 }
 
 /// Last libbpf warnings, shown when loading fails. They name the program, map or the
@@ -246,6 +254,7 @@ fn algorithms_left(
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
     let sock_events = optional.iter().any(|group| group.is_sock_event());
+    let owners = optional.iter().any(|group| group.is_owner());
     // In on-change mode, the hooks decide which of the send and receive rings are written;
     // without, the sock probe's hooks and every cwnd hook
     let (send, receive) = config
@@ -258,7 +267,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
             config.sock_hooked(Hook::IngressEntry),
         ),
     };
-    let groups: [(bool, &[u32]); 17] = [
+    let groups: [(bool, &[u32]); 18] = [
         (
             config.headers && config.headers_at.tc,
             &[
@@ -304,6 +313,7 @@ fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup
         (tcp_events, &[RB_TCP_EVENTS]),
         (sock_events, &[RB_SOCK_EVENT]),
         (optional.contains(&OptionalGroup::Reno), &[RB_RENO]),
+        (owners, &[RB_OWNERS]),
     ];
     groups
         .into_iter()
@@ -332,6 +342,8 @@ impl EbpfRunner {
             started: None,
             skipped: Vec::new(),
             metadata: None,
+            owner_snapshot: None,
+            owner_resolver: None,
         }
     }
 
@@ -397,6 +409,9 @@ impl EbpfRunner {
             }
         }
 
+        // After the writers, whose last owner records reach the resolver
+        self.finish_owners().await;
+
         if self.config.headers {
             self.warn_aggregated();
         }
@@ -405,6 +420,30 @@ impl EbpfRunner {
             metadata.finish(self.ring_counters());
             self.write_metadata(&metadata);
         }
+    }
+
+    /// Adds the processes of the owner records to the snapshot of the connections that existed
+    /// at the start, and writes `flow_owners.json` again
+    async fn finish_owners(&mut self) {
+        let Some(snapshot) = self.owner_snapshot.take() else {
+            return;
+        };
+        let resolver = self.owner_resolver.take();
+        let dir = PathBuf::from(&self.config.dir);
+        let finished = spawn_blocking(move || {
+            // Without the snapshot, the command lines of the owner records are still worth a file
+            let mut owners = snapshot.join().unwrap_or_else(|_| {
+                error!("The snapshot of the existing connections failed");
+                FlowOwners::new(0, owners::clock_ticks())
+            });
+            if let Some(resolver) = resolver {
+                owners.add_processes(resolver.finish());
+            }
+            if let Err(err) = owners.write(&dir) {
+                error!("Could not write the processes of the connections: {}", err);
+            }
+        });
+        let _ = finished.await;
     }
 
     /// Tells at the end of the run how many packets the header hooks saw as one that stand for
@@ -504,13 +543,17 @@ impl EbpfRunner {
         .filter(|(enabled, _)| *enabled)
         .map(|(_, name)| name.to_string())
         .collect();
-        // CUBIC keeps the name it had before it became optional
+        // CUBIC keeps the name it had before it became optional; the owner hooks are one
+        // group, a hook left out is in the skipped ones
         groups.extend(
             optional
                 .iter()
-                .filter(|group| **group != OptionalGroup::Cubic)
+                .filter(|group| **group != OptionalGroup::Cubic && !group.is_owner())
                 .map(|group| group.name().to_string()),
         );
+        if optional.iter().any(|group| group.is_owner()) {
+            groups.push("owners".to_string());
+        }
         if c.headers {
             let at = c.headers_at;
             let hooks = [(at.tc, "tc"), (at.driver, "driver")]
@@ -711,6 +754,10 @@ impl EbpfRunner {
         );
         optional.extend(hooks.into_iter().map(OptionalGroup::SockEvent));
         missing.extend(missing_sock_events);
+        let (hooks, missing_owners) =
+            OwnerTracer::configure(open.open_object_mut(), self.config.owners, disabled, btf);
+        optional.extend(hooks.into_iter().map(OptionalGroup::Owner));
+        missing.extend(missing_owners);
         Ok((open, optional, missing))
     }
 
@@ -803,6 +850,9 @@ impl EbpfRunner {
         {
             self.skipped
                 .push("write timer hook: off (--sock-hooks, --no-timer-hook)".to_string());
+        }
+        if !self.config.owners {
+            self.skipped.push("owners: off (--no-owners)".to_string());
         }
         if self.config.algorithms
             && !optional.contains(&OptionalGroup::Bbr)
@@ -964,6 +1014,61 @@ impl EbpfRunner {
             }
         }
 
+        // The pids of the owner records are those of the initial pid namespace, /proc shows those
+        // of the recorder's: in a namespace of its own, the snapshot and the command lines would
+        // name other processes
+        let host_pids = self.config.owners
+            && owners::in_initial_pid_namespace(Path::new("/proc")).unwrap_or(false);
+        if self.config.owners && !host_pids {
+            warn!(
+                "tcbee-record runs in a pid namespace of its own (or /proc does not tell), the owners \
+                 are recorded without the existing connections and the command lines"
+            );
+            self.skipped.push(
+                "owner snapshot and command lines: not in the host's pid namespace".to_string(),
+            );
+        }
+
+        // After the timer: one record per connection is rarer still
+        if optional.iter().any(|group| group.is_owner()) {
+            let observer = if host_pids {
+                let resolver = owners::Resolver::start(PathBuf::from("/proc"));
+                let observer = resolver.observer();
+                self.owner_resolver = Some(resolver);
+                Some(observer)
+            } else {
+                None
+            };
+            for (hook, message) in OwnerTracer::spawn(skel, dir, writer, links, observer)? {
+                optional.remove(&OptionalGroup::Owner(hook));
+                self.skipped.push(message);
+            }
+            if !optional.iter().any(|group| group.is_owner()) {
+                // Its ring exists but holds nothing, like the socket events' above
+                self.ringbuf_sizes[RB_OWNERS as usize] = None;
+            }
+        }
+        // The connections that exist already, now that the owner programs see the new ones.
+        // It reads all of /proc, so it runs on a thread of its own and writes its file when done.
+        if host_pids {
+            let dir = PathBuf::from(&self.config.dir);
+            let filter = self.config.filter.clone();
+            self.owner_snapshot = Some(thread::spawn(move || {
+                let keep = |local, remote| filter.matches(local, remote);
+                let snapshot = owners::snapshot(Path::new("/proc"), &keep);
+                info!(
+                    "Found {} existing connections of {} processes",
+                    snapshot.connections.len(),
+                    snapshot.processes.len()
+                );
+                // Written now too, in case the recorder does not stop cleanly
+                if let Err(err) = snapshot.write(&dir) {
+                    error!("Could not write the existing connections: {}", err);
+                }
+                snapshot
+            }));
+        }
+
         if !sock_hooks_left(&self.config, &optional)? {
             warn!("-k has no hook left in this kernel and records nothing");
             self.skipped
@@ -1064,6 +1169,28 @@ mod tests {
         assert!(!sock_hooks_left(&with_headers, &none).unwrap());
         let ingress = config.sock_hooks(Some(HookSet::of(&[Hook::Ingress])));
         assert!(sock_hooks_left(&ingress, &none).unwrap());
+    }
+
+    #[test]
+    fn owner_ring_follows_the_owner_groups() {
+        let config = EbpfRunnerConfig::new().kernel(true).owners(true);
+        let none = BTreeSet::new();
+        assert!(!enabled_ringbufs(&config, &none).contains(&RB_OWNERS));
+        let accept = BTreeSet::from([OptionalGroup::Owner(2)]);
+        assert!(enabled_ringbufs(&config, &accept).contains(&RB_OWNERS));
+    }
+
+    /// Owners record along with the probes, never alone: -k without a hook left stays an error
+    #[test]
+    fn owners_are_not_something_else_to_record() {
+        let config = EbpfRunnerConfig::new()
+            .kernel(true)
+            .owners(true)
+            .sock_hooks(Some(HookSet::FULL_DEFAULT));
+        let owners = BTreeSet::from([OptionalGroup::Owner(0)]);
+        assert!(sock_hooks_left(&config, &owners).is_err());
+        let config = EbpfRunnerConfig::new().algorithms(true).owners(true);
+        assert!(algorithms_left(&config, &owners).is_err());
     }
 
     #[test]

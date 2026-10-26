@@ -2124,3 +2124,107 @@ int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk, __u64 fail_seq)
 	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL,
 			      &(struct mptcp_pm_extra){ .data_seq = fail_seq });
 }
+
+/* ---- Flow owners -------------------------------------------------------------------- */
+
+/*
+ * The process that opens a connection, one record per connect and per accept, written in the
+ * context of the calling process; nothing runs per packet. The process fields are the ones of
+ * the thread group leader, so a connection that a worker thread opens (a thread pool, io_uring)
+ * names the process. The task is no hook argument, its fields are read with BPF_CORE_READ.
+ */
+static __always_inline void trace_owner(struct sock *sk, __u16 sport, __u16 dport, __u8 kind)
+{
+	struct sock_common___owner *skc = (struct sock_common___owner *)sk;
+	struct flow_owner_entry *rec;
+	struct task_struct *task;
+
+	if (!filter_sock(sk, sport, dport))
+		return;
+	/* A subflow the path manager adds has the owner of its connection (tcbee-process) */
+	if (mptcp_join_subflow(sk))
+		return;
+	rec = reserve(&FLOW_OWNERS, RB_OWNERS, rec);
+	if (!rec)
+		return;
+	fill_header(rec, sk, sport, dport, 1);
+	rec->kind = kind;
+	task = (struct task_struct *)bpf_get_current_task();
+	if (BPF_CORE_READ(task, flags) & PF_KTHREAD)
+		rec->flags |= TCBEE_OWNER_KTHREAD;
+	rec->pid = bpf_get_current_pid_tgid() >> 32;
+	rec->uid = (__u32)bpf_get_current_uid_gid();
+	/* possible_net_t has its member only with CONFIG_NET_NS */
+	if (bpf_core_field_exists(skc->skc_net.net))
+		rec->netns = BPF_CORE_READ(skc, skc_net.net, ns.inum);
+	rec->cgroup_id = bpf_get_current_cgroup_id();
+	rec->start_time = BPF_CORE_READ(task, group_leader, start_boottime);
+	BPF_CORE_READ_STR_INTO(&rec->comm, task, group_leader, comm);
+	commit(rec, RB_OWNERS);
+}
+
+/*
+ * A connect that started: ret is 0 and the local port is bound, also for a non-blocking
+ * connect, which completes later. A socket without both ports is left out like a filtered one.
+ */
+static __always_inline int owner_connect(struct sock *sk, int ret)
+{
+	__u16 sport, dport;
+
+	if (ret || !sk)
+		return 0;
+	sk_ports(sk, &sport, &dport);
+	if (!sport || !dport)
+		return 0;
+	trace_owner(sk, sport, dport, TCBEE_OWNER_CONNECT);
+	return 0;
+}
+
+/*
+ * tcp_v6_connect hands an IPv4 destination of a dual-stack socket (v4-mapped address) to
+ * tcp_v4_connect, so this program leaves AF_INET6 sockets to the IPv6 one, which records them
+ * once with the mapped addresses.
+ */
+SEC("?fexit/tcp_v4_connect")
+int BPF_PROG(owner_connect_v4, struct sock *sk, void *uaddr, int addr_len, int ret)
+{
+	if (sk->__sk_common.skc_family == AF_INET6)
+		return 0;
+	return owner_connect(sk, ret);
+}
+
+/* In the ipv6 module if IPv6 is not built in */
+SEC("?fexit/tcp_v6_connect")
+int BPF_PROG(owner_connect_v6, struct sock *sk, void *uaddr, int addr_len, int ret)
+{
+	return owner_connect(sk, ret);
+}
+
+/*
+ * A connection that accept() took from a listener's queue, NULL if there was none. From 6.10
+ * on the function takes (sk, struct proto_accept_arg *), before (sk, flags, err, kern); the
+ * return value follows the arguments. The verifier only takes context loads at a constant
+ * offset: the volatile loads are not moved out of their branch, and barrier_var() keeps the
+ * compiler from merging them into one load at a computed offset. Besides TCP, DCCP accepts
+ * here.
+ */
+SEC("?fexit/inet_csk_accept")
+int owner_accept(unsigned long long *ctx)
+{
+	__u16 sport, dport;
+	struct sock *sk;
+
+	if (bpf_core_type_exists(struct proto_accept_arg)) {
+		sk = (struct sock *)((volatile __u64 *)ctx)[2];
+		barrier_var(sk);
+	} else {
+		sk = (struct sock *)((volatile __u64 *)ctx)[4];
+	}
+	if (!sk || sk->sk_protocol != IPPROTO_TCP)
+		return 0;
+	sk_ports(sk, &sport, &dport);
+	if (!sport || !dport)
+		return 0;
+	trace_owner(sk, sport, dport, TCBEE_OWNER_ACCEPT);
+	return 0;
+}

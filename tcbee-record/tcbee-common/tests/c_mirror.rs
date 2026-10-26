@@ -65,6 +65,7 @@ fn ring_buffer_ids_match_counters_h() {
         RB_TCP6_DRIVER_INGRESS,
         RB_TCP4_DRIVER_EGRESS,
         RB_TCP6_DRIVER_EGRESS,
+        RB_OWNERS,
     );
     assert_eq!(c, rust);
     let mut ids: Vec<u32> = rust.into_values().collect();
@@ -76,6 +77,8 @@ fn ring_buffer_ids_match_counters_h() {
 fn stats_length_matches_maps_h() {
     let len = defines(&bpf_source("maps.h"), "TCBEE_STATS_LEN");
     assert_eq!(len.get(""), Some(&STATS_LEN));
+    let early = defines(&bpf_source("counters.h"), "STATS_EARLY_RINGS");
+    assert_eq!(early.get(""), Some(&STATS_EARLY_RINGS));
 }
 
 #[test]

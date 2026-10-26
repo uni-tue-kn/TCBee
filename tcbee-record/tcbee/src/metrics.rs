@@ -14,8 +14,9 @@ use serde::Serialize;
 use tcbee_common::{
     records::hook_seq_key,
     stats::{
-        packet_rings, RB_COUNT, RB_CWND_RECV, RB_CWND_SEND, RB_SOCK_INGRESS, RB_SOCK_RECV,
-        RB_SOCK_SEND, RB_TCP4_INGRESS, RINGBUFS, STAT_DROPPED, STAT_ERROR, STAT_HANDLED,
+        packet_rings, RB_COUNT, RB_CWND_RECV, RB_CWND_SEND, RB_OWNERS, RB_SOCK_INGRESS,
+        RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_INGRESS, RINGBUFS, STAT_DROPPED, STAT_ERROR,
+        STAT_HANDLED,
     },
 };
 
@@ -74,7 +75,8 @@ pub struct RingBufMetrics {
     /// Sum of the last hook_seq of every flow direction at this ring buffer's hook. Equals
     /// handled + dropped + the errors after hook_seq was taken (after the filter in the
     /// default mode), so it also covers drops at the end of a flow, which leave no gap.
-    /// Suppressed runs take no number. None if the counters could not be read.
+    /// Suppressed runs take no number. None if the counters could not be read, and for the
+    /// owner records, which take no hook_seq.
     pub hook_seq_issued: Option<u64>,
 }
 
@@ -166,7 +168,9 @@ impl Metrics {
                     counters: RingCounters::of(snapshot, rb),
                     records_written: report.map(|r| r.records),
                     writer_error: report.and_then(|r| r.error.clone()),
-                    hook_seq_issued: hook_seq.map(|totals| totals.issued[rb as usize]),
+                    hook_seq_issued: hook_seq
+                        .filter(|_| rb != RB_OWNERS)
+                        .map(|totals| totals.issued[rb as usize]),
                 }
             })
             .collect();

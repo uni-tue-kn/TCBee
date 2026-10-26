@@ -29,7 +29,7 @@ use super::schema::{
 };
 use super::time::now_iso8601;
 use super::{sql, BatchWriter, CreateOptions, Engine, IngestSession, Store};
-use crate::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow};
+use crate::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow, FlowOwner};
 
 mod arrow;
 #[cfg(test)]
@@ -179,6 +179,7 @@ fn write_catalog(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError>
     let tx = conn.unchecked_transaction()?;
     insert_flows(conn, catalog)?;
     insert_connections(conn, catalog)?;
+    insert_owners(conn, catalog)?;
     insert_series(conn, catalog)?;
     insert_meta(conn, catalog)?;
     tx.commit()?;
@@ -218,6 +219,28 @@ fn insert_connections(conn: &Connection, catalog: &Catalog) -> Result<(), StoreE
             cf.subflow_id,
             cf.first_ts,
             cf.last_ts
+        ])?;
+    }
+    app.flush()?;
+    Ok(())
+}
+
+fn insert_owners(conn: &Connection, catalog: &Catalog) -> Result<(), StoreError> {
+    let mut app = conn.appender("flow_owners")?;
+    for o in &catalog.owners {
+        app.append_row(params![
+            o.flow_id,
+            o.ts,
+            o.source,
+            o.pid,
+            o.uid,
+            o.comm,
+            o.cmdline,
+            o.start_time,
+            o.cgroup_id,
+            o.cgroup,
+            o.netns,
+            o.kthread
         ])?;
     }
     app.flush()?;
@@ -455,6 +478,23 @@ fn row_to_connection_flow(r: &Row) -> Result<ConnectionFlow, ::duckdb::Error> {
     })
 }
 
+fn row_to_flow_owner(r: &Row) -> Result<FlowOwner, ::duckdb::Error> {
+    Ok(FlowOwner {
+        flow_id: r.get(0)?,
+        ts: r.get(1)?,
+        source: r.get(2)?,
+        pid: r.get(3)?,
+        uid: r.get(4)?,
+        comm: r.get(5)?,
+        cmdline: r.get(6)?,
+        start_time: r.get(7)?,
+        cgroup_id: r.get(8)?,
+        cgroup: r.get(9)?,
+        netns: r.get(10)?,
+        kthread: r.get(11)?,
+    })
+}
+
 fn row_to_flow(r: &Row) -> Result<Flow, StoreError> {
     flow_from_parts(
         r.get(0)?,
@@ -620,6 +660,18 @@ impl Store for DuckStore {
     fn connection_flows(&self) -> Result<Vec<ConnectionFlow>, StoreError> {
         let mut st = self.conn.prepare(sql::SELECT_CONNECTION_FLOWS)?;
         let rows = st.query_map([], row_to_connection_flow)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn flow_owners(&self) -> Result<Vec<FlowOwner>, StoreError> {
+        let has_table: bool = self
+            .conn
+            .query_row(sql::DUCKDB_HAS_FLOW_OWNERS, [], |r| r.get(0))?;
+        if !has_table {
+            return Ok(Vec::new());
+        }
+        let mut st = self.conn.prepare(sql::SELECT_FLOW_OWNERS)?;
+        let rows = st.query_map([], row_to_flow_owner)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 

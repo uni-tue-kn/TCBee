@@ -3,6 +3,7 @@ mod config;
 mod eBPF;
 mod metadata;
 mod metrics;
+mod owners;
 mod stats;
 mod viz;
 mod writer;
@@ -14,8 +15,8 @@ use std::{
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_to_filter_addr, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
-    FilterConfig, HookFlags, MptcpModes,
+    ip_filter_keys, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
+    FilterConfig, HookFlags, MptcpModes, FILTER_MAX_ENTRIES,
 };
 use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
@@ -57,7 +58,19 @@ where
 }
 
 fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
-    parse_csv::<IpAddr>(arg, name).map(|ips| ips.into_iter().map(ip_to_filter_addr).collect())
+    let mut keys: Vec<[u8; 16]> = parse_csv::<IpAddr>(arg, name)?
+        .into_iter()
+        .flat_map(ip_filter_keys)
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.len() > FILTER_MAX_ENTRIES {
+        return Err(anyhow!(
+            "Too many {name}es: an IPv4 address takes two of the {FILTER_MAX_ENTRIES} filter \
+             entries (also as v4-mapped IPv6), an IPv6 address one"
+        ));
+    }
+    Ok(keys)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -97,6 +110,7 @@ fn main() -> anyhow::Result<()> {
     let mut on_change_shadow: bool = false;
     let mut no_timer_hook: bool = false;
     let mut sock_hooks: String = String::new();
+    let mut no_owners: bool = false;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -227,7 +241,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
-            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, sock_timer, sock_event, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, reno, mptcp_pm, tcp_events.",
+            "Size of each CPU's ring buffer in bytes (K, M, G suffixes), rounded up to a power of two. Every probe output has one ring buffer per CPU. Either one size for all buffers, per group as tcp4=64M,sock=32M, or both. Groups: tcp4, tcp6, sock, sock_timer, sock_event, cwnd, tcp_probe, synack, bad_csum, cubic, bbr, reno, mptcp_pm, tcp_events, owners.",
         );
         argparser.refer(&mut on_change).add_option(
             &["--on-change"],
@@ -253,6 +267,11 @@ fn main() -> anyhow::Result<()> {
             &["--sock-hooks"],
             Store,
             "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. The list works as in --tp (all, default, +name, -name), e.g. +ingress on a sender. With --on-change and -k it is the same as --on-change-hooks (with -w alone, use --on-change-hooks).",
+        );
+        argparser.refer(&mut no_owners).add_option(
+            &["--no-owners"],
+            StoreTrue,
+            "Do not record the process that opens each connection. By default every recording writes flow_owners.tcp, one record per connect and accept with the process id, uid, name and cgroup, and flow_owners.json with the connections that existed at the start and their processes (as netstat -p finds them), and the command lines of the processes. The filter flags apply to both. Process names and command lines end up in the recording, and command lines may hold secrets (tokens, passwords in URLs). The pids are those of the host's pid namespace.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -407,6 +426,7 @@ fn main() -> anyhow::Result<()> {
         .writer_cpus(writer_cpus.clone())
         .on_change(on_change)
         .sock_hooks(sock_hooks)
+        .owners(!no_owners)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints

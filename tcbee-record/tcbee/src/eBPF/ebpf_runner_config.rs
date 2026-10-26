@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::anyhow;
 
@@ -72,6 +72,35 @@ impl FilterConfig {
         }
         flags
     }
+
+    /// Whether the filter records a socket of the connection local -> remote, as filter_sock()
+    /// in flow.h decides it: the local port and address are the source. An IPv4 address of
+    /// an AF_INET6 socket is v4-mapped, which the keys of an IPv4 filter address include.
+    pub fn matches(&self, local: SocketAddr, remote: SocketAddr) -> bool {
+        let (sport, dport) = (local.port(), remote.port());
+        match self.mode() {
+            FILTER_MODE_NONE => true,
+            FILTER_MODE_SINGLE_PORT => sport == self.single_port || dport == self.single_port,
+            _ => {
+                let has = |list: &[u16], port| list.contains(&port);
+                let ports = self.rule_flags() & FILTER_PORT_BITS == 0
+                    || has(&self.any_ports, sport)
+                    || has(&self.any_ports, dport)
+                    || has(&self.src_ports, sport)
+                    || has(&self.dst_ports, dport);
+                let (src, dst) = (
+                    ip_to_filter_addr(local.ip()),
+                    ip_to_filter_addr(remote.ip()),
+                );
+                let ips = self.rule_flags() & FILTER_IP_BITS == 0
+                    || self.any_ips.contains(&src)
+                    || self.any_ips.contains(&dst)
+                    || self.src_ips.contains(&src)
+                    || self.dst_ips.contains(&dst);
+                ports && ips
+            }
+        }
+    }
 }
 
 pub fn ip_to_filter_addr(ip: IpAddr) -> [u8; 16] {
@@ -81,6 +110,27 @@ pub fn ip_to_filter_addr(ip: IpAddr) -> [u8; 16] {
         IpAddr::V6(ip) => addr = ip.octets(),
     }
     addr
+}
+
+/// Entries of each IP filter map, TCBEE_FILTER_MAX_ENTRIES in bpf/maps.h
+pub const FILTER_MAX_ENTRIES: usize = 1024;
+
+/// The filter map keys of an address. A dual-stack socket (AF_INET6) talks to an IPv4 peer with
+/// v4-mapped addresses, which the socket programs take as they are, so an IPv4 address also
+/// matches in its v4-mapped form (`::ffff:a.b.c.d`), and a v4-mapped address given as such also
+/// in its IPv4 form. Only the keys change, the programs and their code stay the same.
+pub fn ip_filter_keys(ip: IpAddr) -> Vec<[u8; 16]> {
+    let v4 = match ip {
+        IpAddr::V4(v4) => v4,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4,
+            None => return vec![ip_to_filter_addr(ip)],
+        },
+    };
+    vec![
+        ip_to_filter_addr(IpAddr::V4(v4)),
+        v4.to_ipv6_mapped().octets(),
+    ]
 }
 
 /// max_entries is a u32 and has to be a power of two, so 2 GiB is the largest size
@@ -441,6 +491,9 @@ pub struct EbpfRunnerConfig {
     pub on_change: Option<OnChange>,
     /// The hooks of -k in full mode, None without -k or in on-change mode (`HookFlags`)
     pub sock_hooks: Option<HookSet>,
+    /// Record the process that opens each connection (`flow_owners.tcp`), along with
+    /// whatever else records; never a reason to record on its own
+    pub owners: bool,
 }
 
 /// What the watcher shows about the run besides the counters
@@ -483,6 +536,7 @@ impl EbpfRunnerConfig {
             writer_cpus: Vec::new(),
             on_change: None,
             sock_hooks: None,
+            owners: false,
         }
     }
 
@@ -539,6 +593,11 @@ impl EbpfRunnerConfig {
     /// Whether -k records at `hook` in full mode
     pub fn sock_hooked(&self, hook: Hook) -> bool {
         self.sock_hooks.is_some_and(|hooks| hooks.contains(hook))
+    }
+
+    pub fn owners(mut self, set: bool) -> EbpfRunnerConfig {
+        self.owners = set;
+        self
     }
 
     pub fn cwnd(mut self, set: bool) -> EbpfRunnerConfig {
@@ -626,6 +685,17 @@ impl EbpfRunnerConfig {
 mod tests {
     use super::*;
 
+    /// An IPv4 address and its v4-mapped form select the same keys, whichever is given
+    #[test]
+    fn v4_mapped_filter_addresses_take_both_keys() {
+        let v4: IpAddr = "10.0.0.1".parse().unwrap();
+        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert_eq!(ip_filter_keys(v4), ip_filter_keys(mapped));
+        assert_eq!(ip_filter_keys(v4).len(), 2);
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(ip_filter_keys(v6).len(), 1);
+    }
+
     /// `all` in an on-change list names the hooks on-change mode can use
     #[test]
     fn on_change_lists_know_only_their_hooks() {
@@ -693,6 +763,57 @@ mod tests {
             TracepointSet::of(&[Tracepoint::Probe])
         );
         assert!(tracepoint_set(false, "", false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ipv4_filter_addresses_also_match_v4_mapped() {
+        let v4: IpAddr = "10.0.0.1".parse().unwrap();
+        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert_eq!(
+            ip_filter_keys(v4),
+            [ip_to_filter_addr(v4), ip_to_filter_addr(mapped)]
+        );
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(ip_filter_keys(v6), [ip_to_filter_addr(v6)]);
+    }
+
+    #[test]
+    fn filter_decides_on_a_connection_like_the_programs() {
+        let conn = |local: &str, remote: &str| -> (SocketAddr, SocketAddr) {
+            (local.parse().unwrap(), remote.parse().unwrap())
+        };
+        let v4 = conn("10.0.0.1:40000", "10.0.0.2:443");
+        let mapped = conn("[::ffff:10.0.0.1]:40000", "[::ffff:10.0.0.2]:443");
+        let other = conn("10.0.0.1:40001", "10.0.0.3:22");
+        let keys = |ip: &str| ip_filter_keys(ip.parse().unwrap());
+        let all = |f: &FilterConfig| {
+            [v4, mapped, other]
+                .iter()
+                .map(|(l, r)| f.matches(*l, *r))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(all(&FilterConfig::default()), [true, true, true]);
+        let single = FilterConfig {
+            single_port: 443,
+            ..FilterConfig::default()
+        };
+        assert_eq!(all(&single), [true, true, false]);
+        let ips = FilterConfig {
+            any_ips: keys("10.0.0.2"),
+            ..FilterConfig::default()
+        };
+        assert_eq!(all(&ips), [true, true, false]);
+        let src = FilterConfig {
+            src_ips: keys("10.0.0.2"),
+            ..FilterConfig::default()
+        };
+        assert_eq!(all(&src), [false, false, false]);
+        let ports_and_ips = FilterConfig {
+            dst_ports: vec![22],
+            any_ips: keys("10.0.0.1"),
+            ..FilterConfig::default()
+        };
+        assert_eq!(all(&ports_and_ips), [false, false, true]);
     }
 
     #[test]

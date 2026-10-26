@@ -1,7 +1,7 @@
 //! Tables of programs that are optional one by one (`OptionalGroup::TcpEvent`,
-//! `OptionalGroup::SockEvent`, `OptionalGroup::CubicHook`, `OptionalGroup::Reno`): each one
-//! loads if it is requested and the kernel has its target, and is left out with a message if
-//! not, or if it does not attach.
+//! `OptionalGroup::SockEvent`, `OptionalGroup::CubicHook`, `OptionalGroup::Reno`,
+//! `OptionalGroup::Owner`): each one loads if it is requested and the kernel has its target,
+//! and is left out with a message if not, or if it does not attach.
 
 use std::collections::BTreeSet;
 

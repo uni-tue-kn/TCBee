@@ -33,9 +33,13 @@ The build script compiles `tcbee/src/bpf/tcbee.bpf.c` with clang against the ven
 declarations this program uses, based on a `bpftool btf dump` of the BTF from
 `7.2.6-arch2-1` on x86_64. The full generated snapshot is retained in git history at
 `62d6a14` (SHA-256: `a6f878f35ad62431d24155959ec44570b7d8c3faab90f5ea796f2b75d5e28dbf`).
-Builds do not need `bpftool` or the build host's kernel BTF. Kernel struct offsets are
-relocated against the running kernel's BTF at load time (CO-RE), so one binary runs on
-different kernels. Update the compact header when the BPF program reads new kernel fields.
+The declarations of the flow owner programs (`task_struct`, `proto_accept_arg` and the
+flavours `sock_common___owner` and `mptcp_subflow_context___join`) come from the BTF of
+`7.2.9-arch1-1`. A flavour (libbpf matches a struct by its name up to `___`) holds fields
+of a struct that exists already, so that struct, and the code of the other programs, stays
+as it was. Builds do not need `bpftool` or the build host's kernel BTF. Kernel struct
+offsets are relocated against the running kernel's BTF at load time (CO-RE), so one binary
+runs on different kernels. Update the compact header when the BPF program reads new kernel fields.
 
 By default libbpf is linked statically and libelf and zlib dynamically. Release builds use
 
@@ -87,6 +91,7 @@ At least one metric source is required.
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
 | `--sock-hooks LIST` | `timer,state,ca-state,retransmit,restart,rcvbuf` | With `-k`: the kernel hooks to record the socket at. Per packet: `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`) and `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). Not per packet: `timer` (`timer_sock.tcp`) and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). The list works as described below the table, e.g. `+ingress` on a sender. With `--on-change` and `-k` the same as `--on-change-hooks` |
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
+| `--no-owners` | | Do not record the processes of the connections (`flow_owners.tcp`, `flow_owners.json`), see [Flow owners](#flow-owners) |
 
 `--tp`, `--sock-hooks` and `--on-change-hooks` take the same kind of list: comma-separated
 names form the set; `+name` and `-name` items add to or remove from the plain names of the
@@ -97,8 +102,8 @@ are the same in names. A list that selects nothing is an error.
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU are 16 MiB for tcp4 and sock (which also
 sizes the ring of the `ingress` sock hook), 8 MiB for cwnd, cubic, bbr and reno, 4 MiB for
-tcp6, tcp_probe and tcp_events, and 1 MiB for the rest. `-h` needs about 40 MiB per CPU, as
-much again for the driver hooks, and all rings together 181 MiB; the log at startup prints the
+tcp6, tcp_probe and tcp_events, 128 KiB for owners, and 1 MiB for the rest. `-h` needs about 40 MiB per CPU, as
+much again for the driver hooks, and all rings together 181.1 MiB with the 128 KiB of the owners; the log at startup prints the
 total. Records of one flow come from several CPUs, so their file order is not their order at
 the hook: every record carries `hook_seq`, its position among the events of its flow
 direction at its hook.
@@ -289,6 +294,57 @@ Reno keeps no private state. `-a` writes the socket's `snd_cwnd`, `snd_ssthresh`
 - Both hooks are optional together: if the kernel lacks or rejects one, `-a` records without
   Reno and lists it as skipped in the metadata.
 
+## Flow owners
+
+Every recording notes the process that opened each connection, unless `--no-owners` is given.
+It never counts as something to record on its own: at least one of the flags above is still
+needed. Nothing runs per packet.
+
+- `flow_owners.tcp` (`struct flow_owner_entry`): one record per connect (fexit on
+  `tcp_v4_connect` and `tcp_v6_connect`, when the connect started) and per accepted
+  connection (fexit on `inet_csk_accept`), written in the context of the calling process. It
+  holds the tuple local -> remote, `kind` (1 connect, 2 accept), the pid (tgid), the uid, the
+  name and start time (ns since boot, as `/proc/<pid>/stat` shows it in ticks) of the
+  process's thread group leader, the network namespace inode of the socket and the cgroup v2
+  id. A worker thread (a thread pool, io_uring) names its process. The filter applies as to
+  every other record. `hook_seq` is always 1: owner records take no `hook_seq` counter, the
+  ring's drop counters account for losses, and a reused tuple has one record per connection,
+  which time orders. Their counters follow the aggregated ones in `STATS`, so the slots of the
+  other rings are the same as before; `metrics.json` lists the ring `FLOW_OWNERS` without
+  `hook_seq_issued`.
+- The IPv4 program leaves dual-stack sockets to the IPv6 one, which records a connect to an
+  IPv4 peer once, with v4-mapped addresses. MPTCP subflows that the path manager adds are left
+  out, tcbee-process gives them the owner of their connection. A connection that a kernel thread
+  opens (NFS, an in-kernel server) keeps the thread, with `flags` 1 (`TCBEE_OWNER_KTHREAD`).
+- `flow_owners.json`: once the programs run, a thread reads `/proc` as `netstat -p` does,
+  the TCP tables of each network namespace once and the socket inodes of every process's file
+  descriptors, and writes the connections that existed then (listeners and sockets without an
+  inode left out) with every process that held them, at the start and again at stop. While
+  recording, the writer of the owner ring hands each record to a thread that reads the
+  command line of its process once, and keeps it only if the start time in
+  `/proc/<pid>/stat` still matches the record's (pids are reused). At stop these processes are
+  added to the file. A process that exits before it is looked at keeps its name only. The
+  filter flags apply to the snapshot as to the records: it holds the connections they keep and
+  only the processes of those.
+- The recording holds the names and the command lines of these processes. Command lines can
+  carry secrets (a token in an argument, a password in a URL); `--no-owners` leaves all of it
+  out.
+- An MPTCP connection that existed before the start has no owner: the process holds the
+  MPTCP socket, which `/proc/net/tcp` does not list, and its subflows are sockets of the
+  kernel without a file descriptor.
+- The owner is the process that connected or accepted. A socket passed to another process,
+  or inherited by a child, still names that one; for the connections of the snapshot every
+  holder is listed. Names are cut to 15 characters by the kernel.
+- The pids are those of the pid namespace tcbee-record sees in `/proc`, the owner records
+  those of the initial one. Run tcbee-record in the pid namespace of the host (not in a
+  container with a pid namespace of its own). Elsewhere it records the owners without the
+  snapshot and the command lines, which would name other processes, and says so in a warning
+  and in the skipped hooks of `metadata.json`.
+- Each of the three programs is optional: one the kernel lacks or rejects is left out with a
+  warning and listed as skipped in `metadata.json`, whose groups name `owners` when they
+  record. `inet_csk_accept` takes its arguments differently from 6.10 on, the program reads
+  the return value for both. `tcp_v6_connect` is in the module BTF when IPv6 is a module.
+
 ## Kernel requirements
 
 - BTF of the running kernel (`/sys/kernel/btf/vmlinux`, `CONFIG_DEBUG_INFO_BTF=y`)
@@ -342,7 +398,9 @@ For more flexible filtering, use the map-backed filter options:
 --dst-ips 10.0.0.20
 ```
 
-Ports and IPs are exact matches. `--ports` and `--ips` match either source or destination;
+Ports and IPs are exact matches. An IPv4 address also matches its v4-mapped form
+(`::ffff:10.0.0.1`), the address a dual-stack socket uses for an IPv4 peer, so it takes two of
+the 1024 entries of a filter map. `--ports` and `--ips` match either source or destination;
 the `src`/`dst` variants require that direction. Values inside the same option are ORed.
 Different dimensions are ANDed, so `--ports 80,443 --ips 10.0.0.1` records traffic where
 either endpoint port is 80 or 443 and either endpoint IP is `10.0.0.1`.

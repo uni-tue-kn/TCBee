@@ -526,7 +526,7 @@ pub(crate) mod tests {
         for (tick, count) in [(1, 0), (2, 100), (3, 300)] {
             let values = [
                 (slot(RB_TCP4_INGRESS, STAT_HANDLED), count),
-                (aggregated_slot(RB_TCP4_INGRESS), count / 2),
+                (aggregated_slot(RB_TCP4_INGRESS).unwrap(), count / 2),
                 (slot(RB_TCP_EVENTS, STAT_HANDLED), count),
                 (STATS_STATE_ERR, 3),
             ];
@@ -557,7 +557,7 @@ pub(crate) mod tests {
         model.update(snapshot(&[]), 0, Duration::from_secs(1));
         let values = [
             (slot(RB_SOCK_SEND, STAT_HANDLED), 10),
-            (suppressed_slot(RB_SOCK_SEND), 30),
+            (suppressed_slot(RB_SOCK_SEND).unwrap(), 30),
         ];
         model.update(snapshot(&values), 0, Duration::from_secs(2));
         let mut context = context(&[]);

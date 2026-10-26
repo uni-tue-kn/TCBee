@@ -287,6 +287,27 @@ pub static CONNECTION_FLOWS: Table = Table {
     constraints: &["PRIMARY KEY (\"connection_id\", \"flow_id\")"],
 };
 
+/// Optional: databases written before owners were recorded do not have it, see
+/// `Store::flow_owners`
+pub static FLOW_OWNERS: Table = Table {
+    name: "flow_owners",
+    columns: &[
+        col("flow_id", SqlType::BigInt, true),
+        col("ts", SqlType::BigInt, true),
+        col("source", SqlType::Text, true),
+        col("pid", SqlType::BigInt, true),
+        col("uid", SqlType::BigInt, false),
+        col("comm", SqlType::Text, true),
+        col("cmdline", SqlType::Text, false),
+        col("start_time", SqlType::BigInt, false),
+        col("cgroup_id", SqlType::BigInt, false),
+        col("cgroup", SqlType::Text, false),
+        col("netns", SqlType::BigInt, false),
+        col("kthread", SqlType::Boolean, true),
+    ],
+    constraints: &["PRIMARY KEY (\"flow_id\", \"ts\", \"pid\")"],
+};
+
 pub static SERIES: Table = Table {
     name: "series",
     columns: &[
@@ -325,12 +346,14 @@ pub static DERIVED_SAMPLES: Table = Table {
     constraints: &[],
 };
 
-/// The tables every database has besides the event tables, in creation order
-pub(crate) static FIXED_TABLES: [&Table; 6] = [
+/// The tables every new database has besides the event tables, in creation order. Older ones
+/// lack `FLOW_OWNERS`, which readers take as optional (`Store::flow_owners`).
+pub(crate) static FIXED_TABLES: [&Table; 7] = [
     &META,
     &FLOWS,
     &CONNECTIONS,
     &CONNECTION_FLOWS,
+    &FLOW_OWNERS,
     &SERIES,
     &DERIVED_SAMPLES,
 ];
@@ -540,6 +563,26 @@ mod tests {
                 "    \"first_ts\" INTEGER NOT NULL,\n",
                 "    \"last_ts\" INTEGER NOT NULL,\n",
                 "    PRIMARY KEY (\"connection_id\", \"flow_id\")\n",
+                ")"
+            )
+        );
+        assert_eq!(
+            create_fixed_table_sql(Dialect::Sqlite, &FLOW_OWNERS),
+            concat!(
+                "CREATE TABLE \"flow_owners\" (\n",
+                "    \"flow_id\" INTEGER NOT NULL,\n",
+                "    \"ts\" INTEGER NOT NULL,\n",
+                "    \"source\" TEXT NOT NULL,\n",
+                "    \"pid\" INTEGER NOT NULL,\n",
+                "    \"uid\" INTEGER,\n",
+                "    \"comm\" TEXT NOT NULL,\n",
+                "    \"cmdline\" TEXT,\n",
+                "    \"start_time\" INTEGER,\n",
+                "    \"cgroup_id\" INTEGER,\n",
+                "    \"cgroup\" TEXT,\n",
+                "    \"netns\" INTEGER,\n",
+                "    \"kthread\" INTEGER NOT NULL,\n",
+                "    PRIMARY KEY (\"flow_id\", \"ts\", \"pid\")\n",
                 ")"
             )
         );

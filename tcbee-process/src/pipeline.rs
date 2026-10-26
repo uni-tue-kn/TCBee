@@ -32,7 +32,7 @@ use crate::{
     bindings::{binding, binding_for, event_tables, tcp_event, Binding},
     connections::{self, TaggedFlows},
     decode::{RangeError, RowError},
-    metadata,
+    metadata, owners,
     registry::FlowRegistry,
     Args,
 };
@@ -58,6 +58,13 @@ pub struct Summary {
     pub flows: usize,
     /// Connections that group flows (MPTCP).
     pub connections: usize,
+    /// Rows of the `flow_owners` table: the process of a flow, per connection.
+    pub owners: usize,
+    /// Owner records whose connection has no flow: it has no other record.
+    pub unmatched_owners: usize,
+    /// Processes of the snapshot whose connection has no flow, mostly connections that sent
+    /// nothing while recording.
+    pub unmatched_snapshot: usize,
     /// Rows of the `series` catalog table.
     pub series: usize,
     /// One entry per trace file that has a decoder and at least one record.
@@ -89,12 +96,15 @@ impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} records, {} rows, {} flows, {} connections, {} series in {:.2} s (finish {:.2} s), \
-             output {}",
+            "{} records, {} rows, {} flows, {} connections, {} owners ({} owner records and {} \
+             snapshot holders without a flow), {} series in {:.2} s (finish {:.2} s), output {}",
             self.records,
             self.rows,
             self.flows,
             self.connections,
+            self.owners,
+            self.unmatched_owners,
+            self.unmatched_snapshot,
             self.series,
             self.elapsed.as_secs_f64(),
             self.finish.as_secs_f64(),
@@ -175,6 +185,10 @@ fn plan(
     let mut files = Vec::new();
     let mut units = Vec::new();
     for file in trace.available_traces() {
+        // Not an event table, read after the workers (owners.rs)
+        if file == TraceFile::FlowOwners {
+            continue;
+        }
         let path = trace.path_for(file);
         let name = file.filename().to_string();
         let len = std::fs::metadata(&path)
@@ -542,6 +556,7 @@ fn build_catalog(
         .into_iter()
         .chain(run_meta)
         .collect(),
+        ..Catalog::default()
     }
 }
 
@@ -630,12 +645,17 @@ pub fn run(args: &Args) -> Result<Summary> {
         Vec::new()
     });
     let on_change_meta = manifest_meta(&trace, &mut summary);
+    let owners = owners::read(trace.dir());
+    for msg in owners.warnings {
+        warn!("{msg}");
+        summary.warnings.push(msg);
+    }
     let run_meta = run_meta
         .into_iter()
         .chain(drop_reason_rows)
         .chain(on_change_meta)
         .collect();
-    let catalog = build_catalog(
+    let mut catalog = build_catalog(
         registry,
         output.stats,
         output.tagged,
@@ -644,7 +664,11 @@ pub fn run(args: &Args) -> Result<Summary> {
         run_meta,
         &files,
     );
+    let unmatched = owners::add_to(&mut catalog, &owners.owned);
     summary.connections = catalog.connections.len();
+    summary.owners = catalog.owners.len();
+    summary.unmatched_owners = unmatched.records;
+    summary.unmatched_snapshot = unmatched.snapshot;
     summary.flows = catalog.flows.len();
     summary.series = catalog.series.len();
     session

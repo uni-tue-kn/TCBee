@@ -2,7 +2,7 @@
 
 use ratatui::style::Color;
 use tcbee_common::stats::{
-    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_RENO,
+    RB_BAD_CSUM, RB_BBR, RB_CUBIC, RB_CWND_RECV, RB_CWND_SEND, RB_MPTCP_PM, RB_OWNERS, RB_RENO,
     RB_RETRANSMIT_SYNACK, RB_SOCK_EVENT, RB_SOCK_INGRESS, RB_SOCK_RECV, RB_SOCK_SEND,
     RB_SOCK_TIMER, RB_TCP4_DRIVER_EGRESS, RB_TCP4_DRIVER_INGRESS, RB_TCP4_EGRESS, RB_TCP4_INGRESS,
     RB_TCP6_DRIVER_EGRESS, RB_TCP6_DRIVER_INGRESS, RB_TCP6_EGRESS, RB_TCP6_INGRESS, RB_TCP_EVENTS,
@@ -24,17 +24,20 @@ pub enum Group {
     TcpEvents,
     /// MPTCP path manager events
     Mptcp,
+    /// The processes that own sockets, at connect and accept
+    Owners,
 }
 
 impl Group {
     /// In the order their charts get a slot
-    pub const ALL: [Group; 6] = [
+    pub const ALL: [Group; 7] = [
         Group::Headers,
         Group::Sock,
         Group::Cc,
         Group::Tracepoints,
         Group::TcpEvents,
         Group::Mptcp,
+        Group::Owners,
     ];
 
     /// Name in the probe group table
@@ -46,6 +49,7 @@ impl Group {
             Group::Tracepoints => "tracept",
             Group::TcpEvents => "tcp_ev",
             Group::Mptcp => "mptcp",
+            Group::Owners => "owners",
         }
     }
 
@@ -58,6 +62,7 @@ impl Group {
             Group::Tracepoints => "Tracepoints",
             Group::TcpEvents => "TCP events",
             Group::Mptcp => "MPTCP PM",
+            Group::Owners => "Flow owners",
         }
     }
 
@@ -144,6 +149,10 @@ impl Group {
                 label: "pm",
                 rings: &[RB_MPTCP_PM],
             }],
+            Group::Owners => &[Series {
+                label: "owners",
+                rings: &[RB_OWNERS],
+            }],
         }
     }
 
@@ -194,6 +203,7 @@ pub fn display_group(rb: u32) -> Group {
         RB_TCP_PROBE | RB_RETRANSMIT_SYNACK | RB_BAD_CSUM => Group::Tracepoints,
         RB_TCP_EVENTS => Group::TcpEvents,
         RB_MPTCP_PM => Group::Mptcp,
+        RB_OWNERS => Group::Owners,
         _ => panic!("ring buffer {rb} has no display group"),
     }
 }
@@ -224,6 +234,7 @@ pub fn ring_label(rb: u32) -> &'static str {
         RB_BAD_CSUM => "bad_csum",
         RB_TCP_EVENTS => "tcp_events",
         RB_MPTCP_PM => "mptcp_pm",
+        RB_OWNERS => "owners",
         _ => panic!("ring buffer {rb} has no label"),
     }
 }
@@ -240,7 +251,7 @@ mod tests {
     fn every_ring_has_a_group_and_a_label() {
         let groups: HashSet<Group> = (0..RB_COUNT).map(display_group).collect();
         // And every group has a ring
-        assert_eq!(groups.len(), 6);
+        assert_eq!(groups.len(), Group::ALL.len());
         let labels: HashSet<&str> = (0..RB_COUNT).map(ring_label).collect();
         assert_eq!(labels.len(), RB_COUNT as usize, "two rings share a label");
     }

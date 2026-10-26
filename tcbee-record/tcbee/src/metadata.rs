@@ -286,7 +286,7 @@ impl Sample {
     }
 }
 
-fn clock_ns(clock: libc::clockid_t) -> i64 {
+pub(crate) fn clock_ns(clock: libc::clockid_t) -> i64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
