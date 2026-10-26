@@ -54,8 +54,12 @@ use crate::{
     metrics::{program_stats, HookSeqTotals, Metrics, ProgramStats, RingCounters},
     owners,
     stats::Stats,
-    viz::ebpf_watcher::EBPFWatcher,
-    writer::{Writer, WriterReport},
+    viz::{
+        context::RunContext,
+        ebpf_watcher::EBPFWatcher,
+        flow_owners::{self, SharedOwners},
+    },
+    writer::{observe_all, Writer, WriterReport},
 };
 use tcbee_trace::{owners::FlowOwners, sock_hooks::Hook};
 
@@ -890,7 +894,6 @@ impl EbpfRunner {
             Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone()),
         );
         self.started = Some(Instant::now());
-        let mut watcher_config = self.config.watcher_config();
         let dir = self.config.dir.as_str();
         let links = &mut self.links;
 
@@ -900,9 +903,6 @@ impl EbpfRunner {
         }
         if self.config.headers && self.config.headers_at.driver {
             DriverTracer::spawn(skel, &self.config.iface, dir, writer, links, &mut self.xdp)?;
-        }
-        if self.config.headers {
-            watcher_config.graphs.packets = true;
         }
 
         // Tracing kernel metrics via FEntry probe
@@ -915,8 +915,6 @@ impl EbpfRunner {
                 self.config.on_change.map(|o| o.hooks),
                 self.config.sock_hooks,
             )?;
-
-            watcher_config.graphs.kernel = true;
         }
         // Performance variant of above hook
         if self.config.cwnd {
@@ -927,16 +925,12 @@ impl EbpfRunner {
                 links,
                 self.config.on_change.map(|o| o.hooks),
             )?;
-
-            watcher_config.graphs.kernel = true;
         }
 
         // Tracing kernel tracepoints
         let tracepoints = self.config.tracepoints;
         if tracepoints.intersects(TracepointTracer::TRACEPOINTS) {
             TracepointTracer::spawn(skel, tracepoints, dir, writer, links)?;
-
-            watcher_config.graphs.tracepoints = true;
         }
 
         if optional.contains(&OptionalGroup::Cubic) {
@@ -948,7 +942,6 @@ impl EbpfRunner {
                         optional.remove(&OptionalGroup::CubicHook(hook));
                         self.skipped.push(message);
                     }
-                    watcher_config.graphs.cubic = true;
                 }
                 Err(err) => {
                     links.truncate(attached);
@@ -966,19 +959,16 @@ impl EbpfRunner {
             // BBR fails softly, so a program that was attached before the error has
             // to be detached here. Other groups fail the start, stop() detaches them.
             let attached = links.len();
-            match BBRTracer::spawn(skel, dir, writer, links) {
-                Ok(()) => watcher_config.graphs.bbr = true,
-                Err(err) => {
-                    links.truncate(attached);
-                    optional.remove(&OptionalGroup::Bbr);
-                    // Its ring exists but holds nothing, like the timer's below
-                    self.ringbuf_sizes[RB_BBR as usize] = None;
-                    self.skipped.push(format!("BBR: attaching failed: {}", err));
-                    error!(
-                        "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
-                        err
-                    );
-                }
+            if let Err(err) = BBRTracer::spawn(skel, dir, writer, links) {
+                links.truncate(attached);
+                optional.remove(&OptionalGroup::Bbr);
+                // Its ring exists but holds nothing, like the timer's below
+                self.ringbuf_sizes[RB_BBR as usize] = None;
+                self.skipped.push(format!("BBR: attaching failed: {}", err));
+                error!(
+                    "Failed to initialize BBR Tracer. Is the kernel module loaded? ({})",
+                    err
+                );
             }
         }
 
@@ -1046,17 +1036,21 @@ impl EbpfRunner {
             );
         }
 
+        // The owners of the flows the TUI lists, from the owner records and the snapshot
+        let tui_owners = (self.config.do_tui && self.config.owners).then(SharedOwners::default);
         // After the timer: one record per connection is rarer still
         if optional.iter().any(|group| group.is_owner()) {
+            let mut observers = Vec::new();
             // The resolver only adds the command lines; the records hold the rest
-            let observer = if host_pids && self.config.owner_cmdlines {
+            if host_pids && self.config.owner_cmdlines {
                 let resolver = owners::Resolver::start(PathBuf::from("/proc"));
-                let observer = resolver.observer();
+                observers.push(resolver.observer());
                 self.owner_resolver = Some(resolver);
-                Some(observer)
-            } else {
-                None
-            };
+            }
+            if let Some(owners) = &tui_owners {
+                observers.push(flow_owners::observer(owners.clone()));
+            }
+            let observer = observe_all(observers);
             for (hook, message) in OwnerTracer::spawn(skel, dir, writer, links, observer)? {
                 optional.remove(&OptionalGroup::Owner(hook));
                 self.skipped.push(message);
@@ -1071,6 +1065,7 @@ impl EbpfRunner {
         if host_pids {
             let dir = PathBuf::from(&self.config.dir);
             let filter = self.config.filter.clone();
+            let tui_owners = tui_owners.clone();
             let cmdlines = self.config.owner_cmdlines;
             self.owner_snapshot = Some(thread::spawn(move || {
                 let keep = |local, remote| filter.matches(local, remote);
@@ -1083,6 +1078,9 @@ impl EbpfRunner {
                 // Written now too, in case the recorder does not stop cleanly
                 if let Err(err) = snapshot.write(&dir) {
                     error!("Could not write the existing connections: {}", err);
+                }
+                if let Some(owners) = &tui_owners {
+                    flow_owners::add_snapshot(owners, &snapshot);
                 }
                 snapshot
             }));
@@ -1099,10 +1097,21 @@ impl EbpfRunner {
                 .push("-a: no algorithm left in this kernel".to_string());
         }
 
-        // TODO: should be true by default in get_watcher_config()
-        watcher_config.graphs.events = true;
-
         // Start watcher thread
+        let config = &self.config;
+        let context = RunContext {
+            dir: config.dir.clone(),
+            iface: config.headers.then(|| config.iface.clone()),
+            cpus: self.ring_cpus,
+            active_rings: (0..RINGBUFS.len() as u32)
+                .filter(|rb| self.ringbuf_sizes[*rb as usize].is_some())
+                .collect(),
+            skipped: self.skipped.clone(),
+            on_change: config.on_change.is_some(),
+            observation_window: (config.observation_window > 0.0)
+                .then_some(config.observation_window),
+            owners: tui_owners,
+        };
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(handle(&skel.maps.STATS)?));
         self.hook_seq = Some(handle(&skel.maps.HOOK_SEQ)?);
@@ -1114,7 +1123,7 @@ impl EbpfRunner {
             bytes_written,
             self.config.update_period,
             self.stop_token.clone(),
-            watcher_config,
+            context,
             self.config.do_tui,
         )?;
 

@@ -499,31 +499,6 @@ pub struct EbpfRunnerConfig {
     pub owner_cmdlines: bool,
 }
 
-#[derive(Default)]
-pub struct GraphConfig {
-    pub events: bool,
-    pub packets: bool,
-    pub kernel: bool,
-    pub cubic: bool,
-    pub bbr: bool,
-    pub tracepoints: bool,
-}
-
-pub struct EbpfWatcherConfig {
-    pub graphs: GraphConfig,
-    pub packets: bool,
-    /// The packet rates come from the driver hooks (only they record)
-    pub driver_packets: bool,
-    pub stats: bool,
-    pub calls: bool,
-    pub flows: bool,
-    pub cwnd: bool,
-    pub algorithms: bool,
-    pub metrics: bool,
-    pub observation_window: Option<f64>,
-    pub dir: String,
-}
-
 impl EbpfRunnerConfig {
     /// Records nothing until a probe is switched on
     pub fn new() -> EbpfRunnerConfig {
@@ -675,22 +650,6 @@ impl EbpfRunnerConfig {
             .iter()
             .find(|(name, _)| *name == ringbuf.map)
             .map_or(ringbuf.size_per_cpu, |(_, size)| *size)
-    }
-
-    pub fn watcher_config(&self) -> EbpfWatcherConfig {
-        EbpfWatcherConfig {
-            graphs: GraphConfig::default(),
-            packets: self.headers,
-            driver_packets: self.headers && self.headers_at.driver && !self.headers_at.tc,
-            stats: true,
-            calls: self.kernel,
-            flows: true,
-            cwnd: self.cwnd,
-            algorithms: self.algorithms,
-            metrics: self.metrics,
-            observation_window: (self.observation_window > 0.0).then_some(self.observation_window),
-            dir: self.dir.clone(),
-        }
     }
 }
 

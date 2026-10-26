@@ -7,94 +7,85 @@ use libbpf_rs::{MapCore, MapFlags, MapHandle};
 use log::warn;
 use ratatui::{
     layout::Constraint,
-    style::{Color, Modifier, Style, Stylize},
-    widgets::{Cell, Row, ScrollbarState, Table},
+    style::{Modifier, Style},
+    widgets::{Cell, Row, Table},
 };
 use tcbee_common::records::IpTuple;
 
+use crate::viz::flow_owners::{Owner, OwnerTable, SnapshotOwners};
+
+/// A flow as the FLOWS map keys it: the endpoints in canonical order, not by direction
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub struct Flow {
-    src: IpAddr,
-    dst: IpAddr,
-    sport: u16,
-    dport: u16,
+    pub src: IpAddr,
+    pub dst: IpAddr,
+    pub sport: u16,
+    pub dport: u16,
 }
+
+/// The flows in the order they were first seen. Rows keep their place, so the table does
+/// not jump while flows come in.
+#[derive(Default)]
+pub struct Flows {
+    list: Vec<Flow>,
+    index: HashMap<Flow, usize>,
+    /// The owner of each flow, once known
+    owners: Vec<Option<Owner>>,
+    /// The FLOWS map is full, newer flows are missing
+    pub full: bool,
+}
+
+impl Flows {
+    /// Appends `flow` if it is new
+    pub fn add(&mut self, flow: Flow) {
+        if !self.index.contains_key(&flow) {
+            self.index.insert(flow.clone(), self.list.len());
+            self.list.push(flow);
+            self.owners.push(None);
+        }
+    }
+
+    /// Looks up the owners of the flows: a record names the owner, and a newer one for the
+    /// same tuple (a reused port pair) replaces it; the snapshot names those without a record
+    pub fn find_owners(&mut self, live: &OwnerTable, snapshot: Option<&SnapshotOwners>) {
+        for (flow, owner) in self.list.iter().zip(self.owners.iter_mut()) {
+            let (a, b) = ((flow.src, flow.sport), (flow.dst, flow.dport));
+            match live.find(a, b) {
+                Some(found) if owner.as_ref() != Some(found) => *owner = Some(found.clone()),
+                Some(_) => {}
+                None if owner.is_none() => {
+                    *owner = snapshot.and_then(|s| s.find(a, b)).cloned();
+                }
+                None => {}
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn list(&self) -> &[Flow] {
+        &self.list
+    }
+
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+}
+
 pub struct FlowTracker {
     map: MapHandle,
-    // TODO: other metrics to track in hash map?
-    flows: HashMap<Flow, bool>,
-    pub num_flows: usize,
+    pub flows: Flows,
+}
+
+fn shorten_to_ipv4(arg: [u8; 16]) -> [u8; 4] {
+    std::array::from_fn(|i| arg[i])
 }
 
 impl FlowTracker {
     pub fn new(map: MapHandle) -> FlowTracker {
-        let flows: HashMap<Flow, bool> = HashMap::new();
         FlowTracker {
             map,
-            flows,
-            num_flows: 0,
+            flows: Flows::default(),
         }
-    }
-
-    fn shorten_to_ipv4(arg: [u8; 16]) -> [u8; 4] {
-        std::array::from_fn(|i| arg[i])
-    }
-
-    pub fn update_scrollbar_state(&self, state: ScrollbarState) -> ScrollbarState {
-        state.content_length(self.num_flows)
-    }
-
-    pub fn get_flows(&mut self) -> Table<'_> {
-        let header = [
-            "#",
-            "Source",
-            "Source Port",
-            "Destination",
-            "Destination Port",
-        ]
-        .into_iter()
-        .map(Cell::from)
-        .collect::<Row>()
-        .height(1)
-        .style(Style::new().fg(Color::Reset).bold());
-
-        let rows = self.flows.iter().enumerate().map(|(i, (flow, _is_ipv6))| {
-            let src = flow.src.to_string();
-            let dst = flow.dst.to_string();
-            let sport = flow.sport.to_string();
-            let dport = flow.dport.to_string();
-
-            let style = if i % 2 == 0 {
-                Style::new().fg(Color::Reset)
-            } else {
-                Style::new().fg(Color::Reset).add_modifier(Modifier::DIM)
-            };
-
-            [(i + 1).to_string(), src, sport, dst, dport]
-                .into_iter()
-                .collect::<Row>()
-                .height(1)
-                .style(style)
-        });
-
-        // Update number of entries that can be scrolled
-        self.num_flows = rows.len();
-
-        let tab = Table::new(
-            rows,
-            [
-                Constraint::Length(5),
-                Constraint::Percentage(32),
-                Constraint::Length(13),
-                Constraint::Percentage(32),
-                Constraint::Length(18),
-            ],
-        )
-        .header(header)
-        .column_spacing(1)
-        .style(Style::new().fg(Color::Reset));
-
-        tab
     }
 
     /// Values of one FLOWS entry on all CPUs
@@ -110,6 +101,7 @@ impl FlowTracker {
 
     pub fn read_flows(&mut self) {
         let keys: Vec<Vec<u8>> = self.map.keys().collect();
+        self.flows.full = keys.len() >= self.map.max_entries() as usize;
         for key in keys {
             let tuples = match self.lookup(&key) {
                 Ok(tuples) => tuples,
@@ -120,46 +112,223 @@ impl FlowTracker {
             };
             // CPUs that never saw the flow hold an all-zero value
             for tuple in tuples.iter().filter(|t| **t != IpTuple::default()) {
-                let ipv4_mapped = tuple.src_ip[0..10].iter().all(|&b| b == 0)
-                    && tuple.src_ip[10] == 0xFF
-                    && tuple.src_ip[11] == 0xFF;
-                let ipv4_compat = tuple.src_ip[4..16].iter().all(|&b| b == 0);
-
-                let (src, dst, is_ipv6) = if ipv4_mapped {
-                    let src = IpAddr::V4(Ipv4Addr::from([
-                        tuple.src_ip[12],
-                        tuple.src_ip[13],
-                        tuple.src_ip[14],
-                        tuple.src_ip[15],
-                    ]));
-                    let dst = IpAddr::V4(Ipv4Addr::from([
-                        tuple.dst_ip[12],
-                        tuple.dst_ip[13],
-                        tuple.dst_ip[14],
-                        tuple.dst_ip[15],
-                    ]));
-                    (src, dst, false)
-                } else if ipv4_compat {
-                    let src =
-                        IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.src_ip)));
-                    let dst =
-                        IpAddr::V4(Ipv4Addr::from(FlowTracker::shorten_to_ipv4(tuple.dst_ip)));
-                    (src, dst, false)
-                } else {
-                    let src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));
-                    let dst = IpAddr::V6(Ipv6Addr::from(tuple.dst_ip));
-                    (src, dst, true)
-                };
-
-                let flow = Flow {
-                    src,
-                    dst,
-                    sport: tuple.sport,
-                    dport: tuple.dport,
-                };
-
-                self.flows.insert(flow, is_ipv6);
+                self.flows.add(flow_of(tuple));
             }
         }
+    }
+}
+
+/// Width of the process column
+const PROCESS_WIDTH: u16 = 20;
+/// Width of the port columns: a port and the service mark
+const PORT_WIDTH: u16 = 9;
+
+/// Widths of the flow table columns in `width` cells: the addresses share what the ports and
+/// the process leave, up to a full IPv6 address. They depend on the width only, not on the
+/// rows, so columns do not move while flows come in.
+pub fn flow_columns(width: u16) -> [Constraint; 5] {
+    // A narrow table drops the service mark and shortens the process
+    let (port, process) = match width < 2 * 15 + 2 * PORT_WIDTH + PROCESS_WIDTH + 4 {
+        true => (5, 12),
+        false => (PORT_WIDTH, PROCESS_WIDTH),
+    };
+    let address = (width.saturating_sub(2 * port + process + 4) / 2).clamp(8, 39);
+    [
+        Constraint::Length(address),
+        Constraint::Length(port),
+        Constraint::Length(process),
+        Constraint::Length(address),
+        Constraint::Length(port),
+    ]
+}
+
+/// The table of the flows in `width` cells, the selected row highlighted. A flow with a known
+/// owner shows its local side first and the process. One without is dimmed with "?" as
+/// process; its sides are endpoints A and B in the map's address order, so neither is known to
+/// be local, which the headers say.
+pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
+    let header = ["Local/A", "port", "Process", "Remote/B", "port"]
+        .into_iter()
+        .map(Cell::from)
+        .collect::<Row>()
+        .style(Style::new().add_modifier(Modifier::BOLD));
+    let rows = flows
+        .list
+        .iter()
+        .zip(&flows.owners)
+        .map(|(flow, owner)| match owner {
+            Some(owner) => {
+                let mut local_port = owner.local.1.to_string();
+                if owner.service {
+                    local_port.push_str(" svc");
+                }
+                Row::new([
+                    owner.local.0.to_string(),
+                    local_port,
+                    owner.process.clone(),
+                    owner.remote.0.to_string(),
+                    owner.remote.1.to_string(),
+                ])
+            }
+            None => Row::new([
+                flow.src.to_string(),
+                flow.sport.to_string(),
+                "?".to_string(),
+                flow.dst.to_string(),
+                flow.dport.to_string(),
+            ])
+            .style(Style::new().add_modifier(Modifier::DIM)),
+        });
+    Table::new(rows, flow_columns(width))
+        .header(header)
+        .column_spacing(1)
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+}
+
+/// The flow of a FLOWS map tuple. The map holds IPv4 addresses in the first 4 bytes and has no
+/// address family, so a tuple whose both addresses end in 12 zero bytes is read as IPv4.
+fn flow_of(tuple: &IpTuple) -> Flow {
+    let ipv4_mapped = tuple.src_ip[0..10].iter().all(|&b| b == 0)
+        && tuple.src_ip[10] == 0xFF
+        && tuple.src_ip[11] == 0xFF;
+    let ipv4_compat = [tuple.src_ip, tuple.dst_ip]
+        .iter()
+        .all(|ip| ip[4..16].iter().all(|&b| b == 0));
+
+    let (src, dst) = if ipv4_mapped {
+        let src = IpAddr::V4(Ipv4Addr::from([
+            tuple.src_ip[12],
+            tuple.src_ip[13],
+            tuple.src_ip[14],
+            tuple.src_ip[15],
+        ]));
+        let dst = IpAddr::V4(Ipv4Addr::from([
+            tuple.dst_ip[12],
+            tuple.dst_ip[13],
+            tuple.dst_ip[14],
+            tuple.dst_ip[15],
+        ]));
+        (src, dst)
+    } else if ipv4_compat {
+        let src = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(tuple.src_ip)));
+        let dst = IpAddr::V4(Ipv4Addr::from(shorten_to_ipv4(tuple.dst_ip)));
+        (src, dst)
+    } else {
+        let src = IpAddr::V6(Ipv6Addr::from(tuple.src_ip));
+        let dst = IpAddr::V6(Ipv6Addr::from(tuple.dst_ip));
+        (src, dst)
+    };
+
+    Flow {
+        src,
+        dst,
+        sport: tuple.sport,
+        dport: tuple.dport,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// IPv4, v4-mapped and IPv6 tuples of the FLOWS map; an IPv6 address that ends in zero
+    /// bytes next to an IPv4 one stays IPv6
+    #[test]
+    fn flows_of_map_tuples() {
+        let tuple = |src: [u8; 16], dst: [u8; 16]| IpTuple {
+            src_ip: src,
+            dst_ip: dst,
+            sport: 1,
+            dport: 2,
+            ..Default::default()
+        };
+        let v4 = |a: [u8; 4]| {
+            let mut ip = [0u8; 16];
+            ip[..4].copy_from_slice(&a);
+            ip
+        };
+        let mapped = |a: Ipv4Addr| a.to_ipv6_mapped().octets();
+        let v6 = |s: &str| s.parse::<Ipv6Addr>().unwrap().octets();
+        let addrs = |f: Flow| (f.src.to_string(), f.dst.to_string());
+
+        let f = flow_of(&tuple(v4([10, 0, 0, 1]), v4([10, 0, 0, 2])));
+        assert_eq!(addrs(f), ("10.0.0.1".into(), "10.0.0.2".into()));
+        let f = flow_of(&tuple(
+            mapped(Ipv4Addr::new(10, 0, 0, 1)),
+            mapped(Ipv4Addr::new(10, 0, 0, 2)),
+        ));
+        assert_eq!(addrs(f), ("10.0.0.1".into(), "10.0.0.2".into()));
+        let f = flow_of(&tuple(v6("2001:db8::"), v6("2001:db8::7")));
+        assert_eq!(addrs(f), ("2001:db8::".into(), "2001:db8::7".into()));
+        let f = flow_of(&tuple(v6("fe80::1"), v6("fe80::2")));
+        assert_eq!(addrs(f), ("fe80::1".into(), "fe80::2".into()));
+    }
+    use crate::viz::test_support::{ep, flow};
+
+    #[test]
+    fn flows_keep_the_order_they_came_in() {
+        let mut flows = Flows::default();
+        for port in [3, 1, 2, 1, 3, 4] {
+            flows.add(flow(port));
+        }
+        let ports: Vec<u16> = flows.list().iter().map(|f| f.dport).collect();
+        assert_eq!(ports, [3, 1, 2, 4]);
+    }
+
+    #[test]
+    fn flows_take_the_owners_once_known() {
+        let mut flows = Flows::default();
+        flows.add(flow(40000));
+        flows.add(flow(40001));
+        let mut table = OwnerTable::default();
+        flows.find_owners(&table, None);
+        assert!(flows.owners.iter().all(Option::is_none));
+        // The map orders 10.0.0.1 first, the owner has it as the remote side
+        table.insert(Owner {
+            local: ep("10.0.0.2:40001"),
+            remote: ep("10.0.0.1:5201"),
+            process: "iperf3[812]".to_string(),
+            service: false,
+        });
+        flows.find_owners(&table, None);
+        assert!(flows.owners[0].is_none());
+        assert_eq!(
+            flows.owners[1].as_ref().unwrap().local,
+            ep("10.0.0.2:40001")
+        );
+    }
+
+    #[test]
+    fn a_newer_record_replaces_the_owner_of_a_flow() {
+        let mut flows = Flows::default();
+        flows.add(flow(40000));
+        let mut table = OwnerTable::default();
+        let owner = |process: &str| Owner {
+            local: ep("10.0.0.2:40000"),
+            remote: ep("10.0.0.1:5201"),
+            process: process.to_string(),
+            service: false,
+        };
+        table.insert(owner("iperf3[812]"));
+        flows.find_owners(&table, None);
+        // The port pair is reused by another process
+        table.insert(owner("curl[900]"));
+        flows.find_owners(&table, None);
+        assert_eq!(flows.owners[0].as_ref().unwrap().process, "curl[900]");
+        // Pushed out of the table, the flow keeps the owner it had
+        flows.find_owners(&OwnerTable::default(), None);
+        assert_eq!(flows.owners[0].as_ref().unwrap().process, "curl[900]");
+    }
+
+    #[test]
+    fn columns_depend_on_the_width_only() {
+        for width in (120..320).step_by(10) {
+            assert_eq!(flow_columns(width)[1], Constraint::Length(PORT_WIDTH));
+            assert_eq!(flow_columns(width)[2], Constraint::Length(PROCESS_WIDTH));
+        }
+        assert_eq!(flow_columns(200)[0], Constraint::Length(39));
+        assert_eq!(flow_columns(72)[0], Constraint::Length(15));
+        assert_eq!(flow_columns(46)[0], Constraint::Length(10));
+        assert_eq!(flow_columns(46)[2], Constraint::Length(12));
     }
 }
