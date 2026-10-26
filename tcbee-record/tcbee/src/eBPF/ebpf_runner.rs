@@ -853,6 +853,9 @@ impl EbpfRunner {
         }
         if !self.config.owners {
             self.skipped.push("owners: off (--no-owners)".to_string());
+        } else if !self.config.owner_cmdlines {
+            self.skipped
+                .push("owner command lines: off (--owners-no-cmdline)".to_string());
         }
         if self.config.algorithms
             && !optional.contains(&OptionalGroup::Bbr)
@@ -1045,7 +1048,8 @@ impl EbpfRunner {
 
         // After the timer: one record per connection is rarer still
         if optional.iter().any(|group| group.is_owner()) {
-            let observer = if host_pids {
+            // The resolver only adds the command lines; the records hold the rest
+            let observer = if host_pids && self.config.owner_cmdlines {
                 let resolver = owners::Resolver::start(PathBuf::from("/proc"));
                 let observer = resolver.observer();
                 self.owner_resolver = Some(resolver);
@@ -1067,9 +1071,10 @@ impl EbpfRunner {
         if host_pids {
             let dir = PathBuf::from(&self.config.dir);
             let filter = self.config.filter.clone();
+            let cmdlines = self.config.owner_cmdlines;
             self.owner_snapshot = Some(thread::spawn(move || {
                 let keep = |local, remote| filter.matches(local, remote);
-                let snapshot = owners::snapshot(Path::new("/proc"), &keep);
+                let snapshot = owners::snapshot(Path::new("/proc"), &keep, cmdlines);
                 info!(
                     "Found {} existing connections of {} processes",
                     snapshot.connections.len(),

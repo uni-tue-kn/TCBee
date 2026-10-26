@@ -111,6 +111,7 @@ fn main() -> anyhow::Result<()> {
     let mut no_timer_hook: bool = false;
     let mut sock_hooks: String = String::new();
     let mut no_owners: bool = false;
+    let mut owners_no_cmdline: bool = false;
 
     {
         let mut argparser = ArgumentParser::new();
@@ -271,7 +272,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut no_owners).add_option(
             &["--no-owners"],
             StoreTrue,
-            "Do not record the process that opens each connection. By default every recording writes flow_owners.tcp, one record per connect and accept with the process id, uid, name and cgroup, and flow_owners.json with the connections that existed at the start and their processes (as netstat -p finds them), and the command lines of the processes. The filter flags apply to both. Process names and command lines end up in the recording, and command lines may hold secrets (tokens, passwords in URLs). The pids are those of the host's pid namespace.",
+            "Do not record the process that opens each connection. By default every recording writes flow_owners.tcp, one record per connect and accept with the process id, uid, name and cgroup, and flow_owners.json with the connections that existed at the start and their processes (as netstat -p finds them), and the command lines of the processes. The filter flags apply to both. Process names and command lines end up in the recording, and command lines may hold secrets (tokens, passwords in URLs); --owners-no-cmdline leaves them out. The pids are those of the host's pid namespace.",
+        );
+        argparser.refer(&mut owners_no_cmdline).add_option(
+            &["--owners-no-cmdline"],
+            StoreTrue,
+            "Record the owners without the command lines of their processes: process id, uid, name (15 characters) and cgroup only, nothing read from /proc/<pid>/cmdline. For recordings that are shared.",
         );
         argparser.refer(&mut trace_algorithms).add_option(
             &["-a", "--algorithms"],
@@ -427,6 +433,7 @@ fn main() -> anyhow::Result<()> {
         .on_change(on_change)
         .sock_hooks(sock_hooks)
         .owners(!no_owners)
+        .owner_cmdlines(!owners_no_cmdline)
         .dir(trace_dir);
 
     // Main thread that strats all probes/tracepoints
