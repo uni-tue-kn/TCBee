@@ -416,7 +416,8 @@ mod tests {
         assert!(contains(&lines, "  q quit  1-2 zoom  e rings"));
         assert!(contains(&lines, "Events"));
         assert!(contains(&lines, "Flows: 1 of 1"));
-        assert!(contains(&lines, "Local"));
+        assert!(contains(&lines, "Local / A"));
+        assert!(contains(&lines, "Remote / B"));
         assert!(contains(&lines, "Process"));
         assert!(contains(&lines, "10.0.0.2"));
         assert!(contains(&lines, "tcp_bbr is not loaded"));

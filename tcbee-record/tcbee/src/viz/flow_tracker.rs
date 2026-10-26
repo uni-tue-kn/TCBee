@@ -179,10 +179,11 @@ pub fn flow_columns(width: u16) -> [Constraint; 5] {
 }
 
 /// The table of the flows in `width` cells, the selected row highlighted. A flow with a known
-/// owner shows its local side first and the process; one without keeps the map's order, its
-/// sides are just two endpoints.
+/// owner shows its local side first and the process. One without is dimmed with "?" as
+/// process; its sides are endpoints A and B in the map's address order, so neither is known to
+/// be local, which the headers say.
 pub fn flow_table(flows: &Flows, width: u16) -> Table<'_> {
-    let header = ["Local", "port", "Process", "Remote", "port"]
+    let header = ["Local / A", "port", "Process", "Remote / B", "port"]
         .into_iter()
         .map(Cell::from)
         .collect::<Row>()
