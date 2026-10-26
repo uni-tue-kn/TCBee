@@ -16,7 +16,7 @@ use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
     ip_filter_keys, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
-    FilterConfig, HookFlags, MptcpModes,
+    FilterConfig, HookFlags, MptcpModes, FILTER_MAX_ENTRIES,
 };
 use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
@@ -58,7 +58,19 @@ where
 }
 
 fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
-    parse_csv::<IpAddr>(arg, name).map(|ips| ips.into_iter().flat_map(ip_filter_keys).collect())
+    let mut keys: Vec<[u8; 16]> = parse_csv::<IpAddr>(arg, name)?
+        .into_iter()
+        .flat_map(ip_filter_keys)
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    if keys.len() > FILTER_MAX_ENTRIES {
+        return Err(anyhow!(
+            "Too many {name}es: an IPv4 address takes two of the {FILTER_MAX_ENTRIES} filter \
+             entries (also as v4-mapped IPv6), an IPv6 address one"
+        ));
+    }
+    Ok(keys)
 }
 
 fn main() -> anyhow::Result<()> {

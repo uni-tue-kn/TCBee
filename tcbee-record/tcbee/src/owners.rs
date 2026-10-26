@@ -550,8 +550,6 @@ pub(crate) mod tests {
         proc.process(100, "tcbee-record", &["tcbee-record"], 1, &[], 7);
         proc.myself(100);
         assert_eq!(in_initial_pid_namespace(&proc.root), Some(false));
-        // This host's procfs tells, whichever namespace the test runs in
-        assert!(in_initial_pid_namespace(Path::new("/proc")).is_some());
     }
 
     #[test]

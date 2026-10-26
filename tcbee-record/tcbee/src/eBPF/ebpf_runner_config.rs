@@ -74,7 +74,7 @@ impl FilterConfig {
     }
 
     /// Whether the filter records a socket of the connection local -> remote, as filter_sock()
-    /// in filter.h decides it: the local port and address are the source. An IPv4 address of
+    /// in flow.h decides it: the local port and address are the source. An IPv4 address of
     /// an AF_INET6 socket is v4-mapped, which the keys of an IPv4 filter address include.
     pub fn matches(&self, local: SocketAddr, remote: SocketAddr) -> bool {
         let (sport, dport) = (local.port(), remote.port());
@@ -112,15 +112,25 @@ pub fn ip_to_filter_addr(ip: IpAddr) -> [u8; 16] {
     addr
 }
 
+/// Entries of each IP filter map, TCBEE_FILTER_MAX_ENTRIES in bpf/maps.h
+pub const FILTER_MAX_ENTRIES: usize = 1024;
+
 /// The filter map keys of an address. A dual-stack socket (AF_INET6) talks to an IPv4 peer with
 /// v4-mapped addresses, which the socket programs take as they are, so an IPv4 address also
-/// matches in its v4-mapped form (`::ffff:a.b.c.d`). Only the keys change, the programs and their
-/// code stay the same.
+/// matches in its v4-mapped form (`::ffff:a.b.c.d`), and a v4-mapped address given as such also
+/// in its IPv4 form. Only the keys change, the programs and their code stay the same.
 pub fn ip_filter_keys(ip: IpAddr) -> Vec<[u8; 16]> {
-    match ip {
-        IpAddr::V4(v4) => vec![ip_to_filter_addr(ip), v4.to_ipv6_mapped().octets()],
-        IpAddr::V6(_) => vec![ip_to_filter_addr(ip)],
-    }
+    let v4 = match ip {
+        IpAddr::V4(v4) => v4,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4,
+            None => return vec![ip_to_filter_addr(ip)],
+        },
+    };
+    vec![
+        ip_to_filter_addr(IpAddr::V4(v4)),
+        v4.to_ipv6_mapped().octets(),
+    ]
 }
 
 /// max_entries is a u32 and has to be a power of two, so 2 GiB is the largest size
@@ -678,6 +688,17 @@ impl EbpfRunnerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An IPv4 address and its v4-mapped form select the same keys, whichever is given
+    #[test]
+    fn v4_mapped_filter_addresses_take_both_keys() {
+        let v4: IpAddr = "10.0.0.1".parse().unwrap();
+        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert_eq!(ip_filter_keys(v4), ip_filter_keys(mapped));
+        assert_eq!(ip_filter_keys(v4).len(), 2);
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(ip_filter_keys(v6).len(), 1);
+    }
 
     /// `all` in an on-change list names the hooks on-change mode can use
     #[test]

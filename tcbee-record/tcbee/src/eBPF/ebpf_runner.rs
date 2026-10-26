@@ -1032,11 +1032,11 @@ impl EbpfRunner {
         // of the recorder's: in a namespace of its own, the snapshot and the command lines would
         // name other processes
         let host_pids = self.config.owners
-            && owners::in_initial_pid_namespace(Path::new("/proc")).unwrap_or(true);
+            && owners::in_initial_pid_namespace(Path::new("/proc")).unwrap_or(false);
         if self.config.owners && !host_pids {
             warn!(
-                "tcbee-record runs in a pid namespace of its own, the owners are recorded without \
-                 the existing connections and the command lines"
+                "tcbee-record runs in a pid namespace of its own (or /proc does not tell), the owners \
+                 are recorded without the existing connections and the command lines"
             );
             self.skipped.push(
                 "owner snapshot and command lines: not in the host's pid namespace".to_string(),
