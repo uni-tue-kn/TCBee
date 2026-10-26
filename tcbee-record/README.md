@@ -79,7 +79,7 @@ At least one metric source is required.
 | `--metrics` | | Write a `metrics.json` summary file |
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
-| `--tui-observation-window-s N` | `0` | Sliding window of the TUI graphs in seconds; 0 shows the whole recording |
+| `--tui-observation-window-s N` | `0` | Start the TUI charts with a window of N seconds, rounded up to 10 s, 30 s, 1, 2, 5, 10 or 30 min; 0 starts with the whole recording, see [Terminal UI](#terminal-ui) |
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
@@ -115,6 +115,49 @@ holds the number of records; without it the file was cut short. With the per-CPU
 of `metrics.json`, it places a gap in a flow's `hook_seq` on the CPU whose ring was full.
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
+
+## Terminal UI
+
+Without `-q`, tcbee-record shows what it records while it runs.
+
+- **Left column**: the elapsed time, the recording directory, the interface and the CPUs
+  with a ring buffer; *Health* with records written per second (`rec/s`), probe runs per
+  second (`runs/s`: written, dropped, failed and, in on-change mode, suppressed runs),
+  dropped records per second and in total, the dropped share of all records (`drop %`,
+  dropped / (written + dropped), since the start and in the last update), disk write rate
+  and size, and a red line for state errors (on-change runs without socket storage) and
+  failed kernel reads. Below, *Probe groups*: one row per group of ring buffers that records
+  (`headers`, `sock`, `cc`, `tracept`, `tcp_ev`, `mptcp`, `owners`) with runs/s, rec/s and
+  drops; `agg` is the share of header hook packets that stand for several segments (GSO,
+  GRO, LRO), `supp` the share of runs suppressed in on-change mode. A group without a
+  chart on screen shows a sparkline of its runs/s. *Skipped* lists the requested hooks
+  that do not record, with the reason.
+- **Charts**: up to four, in a fixed order: the events (records and drops per second, with
+  a red sparkline of the dropped share from 0 to 1 % below), then headers (packets per
+  second in and out, per hook), socket hooks, congestion control internals and the
+  remaining groups. Each series is named in its colour in the chart title. The charts show
+  the whole recording or a window of the last 10 s to 30 min at full resolution; the whole
+  recording keeps the peak of each interval.
+- **Flows**: the flows the probes saw (at most 100, the title says when the map is full),
+  in the order they were first seen. With the owner programs (see [Flow owners](#flow-owners))
+  a flow shows its local side first and the process that opened it (`comm[pid]`, `[kernel]`
+  for a kernel thread); `svc` marks the local port of a connection the process accepted.
+  Flows without a known owner are dimmed, show `?` as process and their endpoints in
+  address order.
+- **Small terminals**: below 120x30 the left column narrows and two charts are shown,
+  below 80x24 no charts and every group gets a sparkline; below 40x12 only a hint.
+
+| Key | Action |
+|---|---|
+| `q` | Stop recording and quit |
+| `1`-`4` | Show that chart alone; `Esc` returns to all charts |
+| `w` | Switch the charts between the whole recording and the window |
+| `+` / `=`, `-` | Lengthen or shorten the window (and show it) |
+| `e` | List the ring buffers of each probe group |
+| `↑` `↓`, `PgUp` `PgDn`, `Home` `End` | Select a flow |
+
+With the mouse, a click on a chart zooms it (a second click returns), the wheel scrolls the
+flows and a click selects one.
 
 ## Header records
 
@@ -228,7 +271,7 @@ retransmission timeouts, loss probes, RACK reordering timeouts and zero window p
   purpose, which the metadata lists too.
 - In on-change mode the `timer` hook writes into `recv_sock_oc.tcp` instead.
 - tcbee-process reads `timer_sock.tcp` into the table `sock_timer`, with the columns of
-  `sock`. The TUI counts the timer runs with the receive side.
+  `sock`. The TUI counts the timer runs with the socket events (`timer+ev`).
 
 ## Socket event records
 
