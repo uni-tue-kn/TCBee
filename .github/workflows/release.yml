@@ -65,7 +65,28 @@ jobs:
           cp LICENSE NOTICES "$NAME/"
           chmod 755 "$NAME"/tcbee* "$NAME/install.sh"
           tar czf "$NAME.tar.gz" "$NAME"
-          sha256sum "$NAME.tar.gz" > SHA256SUMS
+
+      - name: Install nfpm
+        run: |
+          curl -sSLO https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz
+          echo "0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783  nfpm_2.47.0_Linux_x86_64.tar.gz" | sha256sum -c
+          tar xzf nfpm_2.47.0_Linux_x86_64.tar.gz nfpm
+
+      - name: Build .deb and .rpm
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          export VERSION="${TAG#v}"
+          export PKG_DIR="$PWD/tcbee-$TAG-linux-x86_64"
+          GLIBC_MIN=$(objdump -T "$PKG_DIR"/tcbee-{record,process,viz,live} | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | cut -d_ -f2)
+          test -n "$GLIBC_MIN"
+          export GLIBC_MIN
+          envsubst '$VERSION $PKG_DIR $GLIBC_MIN' < packaging/nfpm.yaml > nfpm.yaml
+          mkdir -p dist
+          ./nfpm package -f nfpm.yaml -p deb -t dist/
+          ./nfpm package -f nfpm.yaml -p rpm -t dist/
+          mv dist/* .
+          sha256sum "tcbee-$TAG-linux-x86_64.tar.gz" tcbee_*.deb tcbee-*.rpm > SHA256SUMS
 
       - name: Create release
         env:
@@ -74,4 +95,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "TCBee ${{ github.ref_name }}" \
             --generate-notes \
-            "tcbee-${{ github.ref_name }}-linux-x86_64.tar.gz" SHA256SUMS
+            "tcbee-${{ github.ref_name }}-linux-x86_64.tar.gz" tcbee_*.deb tcbee-*.rpm SHA256SUMS

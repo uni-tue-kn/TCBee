@@ -1,0 +1,86 @@
+# nfpm config for the .deb and .rpm packages, used by .github/workflows/release.yml.
+# The release workflow fills in the variables with envsubst:
+#   VERSION    release tag without the leading v
+#   PKG_DIR    folder with the tools, the stamped tcbee script, LICENSE and NOTICES
+#   GLIBC_MIN  highest GLIBC_ symbol version the binaries need
+name: tcbee
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: Moritz Flüchter <moritz.fluechter@uni-tuebingen.de>
+description: |
+  TCP flow analysis with eBPF.
+  Records packet headers and kernel TCP state (tcbee-record), converts the
+  recordings into DuckDB or SQLite databases (tcbee-process), plots them
+  (tcbee-viz) and shows the congestion window live (tcbee-live).
+vendor: University of Tübingen
+homepage: https://github.com/uni-tue-kn/TCBee
+license: MIT
+
+contents:
+  - src: ${PKG_DIR}/tcbee
+    dst: /usr/bin/tcbee
+    file_info:
+      mode: 0755
+  - src: ${PKG_DIR}/tcbee-record
+    dst: /usr/bin/tcbee-record
+    file_info:
+      mode: 0755
+  - src: ${PKG_DIR}/tcbee-process
+    dst: /usr/bin/tcbee-process
+    file_info:
+      mode: 0755
+  - src: ${PKG_DIR}/tcbee-viz
+    dst: /usr/bin/tcbee-viz
+    file_info:
+      mode: 0755
+  - src: ${PKG_DIR}/tcbee-live
+    dst: /usr/bin/tcbee-live
+    file_info:
+      mode: 0755
+  - src: ${PKG_DIR}/LICENSE
+    dst: /usr/share/doc/tcbee/LICENSE
+    file_info:
+      mode: 0644
+  - src: ${PKG_DIR}/NOTICES
+    dst: /usr/share/doc/tcbee/NOTICES
+    file_info:
+      mode: 0644
+
+# All tools need glibc and libgcc (libbpf, libelf and zlib are linked in); tcbee-process and
+# tcbee-viz also need the C++ runtime of the bundled DuckDB. tcbee-viz and tcbee-live load their
+# display libraries at runtime, so they are only recommended: a server that only records can leave
+# them out.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= ${GLIBC_MIN})
+      - libstdc++6
+      - libgcc-s1
+    recommends:
+      - libgl1
+      - libegl1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libwayland-client0
+      - libx11-6
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+  rpm:
+    depends:
+      - glibc >= ${GLIBC_MIN}
+      - libstdc++
+      - libgcc
+    recommends:
+      - mesa-libGL
+      - mesa-libEGL
+      - libxkbcommon
+      - libxkbcommon-x11
+      - libwayland-client
+      - libX11
+      - libXcursor
+      - libXi
+      - libXrandr
