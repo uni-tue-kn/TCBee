@@ -97,7 +97,8 @@ jobs:
     - name: A SQLite-only build must not contain DuckDB
       if: matrix.name == 'sqlite-only'
       run: |
-        cargo tree $PACKAGES ${{ matrix.features }} -e all > tree.txt
+        # duckdb-cache is our helper crate without DuckDB, see duckdb-cache/Cargo.toml
+        cargo tree $PACKAGES ${{ matrix.features }} -e all | grep -v duckdb-cache > tree.txt
         if grep -i duckdb tree.txt; then echo "DuckDB is in the dependency tree"; exit 1; fi
 
   build:
