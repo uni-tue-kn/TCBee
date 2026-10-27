@@ -1,17 +1,49 @@
 #!/bin/bash
 
-# Check if at least one argument is provided
+# Runs `tcbee <command>` as the matching tcbee-* tool, looked up next to this script first, then in PATH
+
+# Replaced by `make` and the release build
+VERSION="@VERSION@"
+case "$VERSION" in
+    @*) VERSION=dev ;;
+esac
+
+NAME=${0##*/}
+
+usage() {
+    cat <<EOF
+Usage: $NAME <command> [args...]
+
+Commands:
+  record    Record TCP flows with eBPF (tcbee-record, needs root)
+  process   Convert a recording into a database (tcbee-process)
+  viz       Plot a database (tcbee-viz); also: visualize
+  live      Live congestion window monitor (tcbee-live, needs root)
+
+Options:
+  -h, --help     Print this help
+  -V, --version  Print the version
+
+'$NAME <command> --help' prints the options of a command.
+EOF
+}
+
+fail() {
+    echo "$NAME: $1" >&2
+    echo "Run '$NAME --help' for the commands." >&2
+    exit 2
+}
+
 if [ $# -lt 1 ]; then
-    echo "Error: Missing command argument"
-    echo "Usage: $0 [record|process|visualize|viz|live]"
-    exit 1
+    usage >&2
+    exit 2
 fi
 
 # Get command to call and remove from argument storage
 COMMAND=$1
 shift
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT_DIR=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
 
 run_tool() {
     local tool=$1
@@ -19,8 +51,11 @@ run_tool() {
 
     if [ -x "$SCRIPT_DIR/$tool" ]; then
         exec "$SCRIPT_DIR/$tool" "$@"
-    else
+    elif command -v "$tool" >/dev/null; then
         exec "$tool" "$@"
+    else
+        echo "$NAME: $tool not found in $SCRIPT_DIR or PATH" >&2
+        exit 127
     fi
 }
 
@@ -32,18 +67,19 @@ case "$COMMAND" in
     process)
         run_tool tcbee-process "$@"
         ;;
-    visualize)
-        run_tool tcbee-viz "$@"
-        ;;
-    viz)
+    viz|visualize)
         run_tool tcbee-viz "$@"
         ;;
     live)
         run_tool tcbee-live "$@"
         ;;
+    -h|--help|help)
+        usage
+        ;;
+    -V|--version)
+        echo "tcbee $VERSION"
+        ;;
     *)
-        echo "Error: Invalid command '$COMMAND'"
-        echo "Usage: $0 [record|process|visualize|viz|live]"
-        exit 1
+        fail "unknown command '$COMMAND'"
         ;;
 esac
