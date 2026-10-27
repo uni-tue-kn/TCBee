@@ -4,7 +4,7 @@
 
  ![License](https://img.shields.io/github/license/uni-tue-kn/TCBee) ![image](https://img.shields.io/badge/lang-rust-darkred) ![GitHub Release](https://img.shields.io/github/v/release/uni-tue-kn/TCBee) [![TCBee build](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml/badge.svg)](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml)
 
- <img alt="tcbee-record while recording" width="800" src="imgs/record.png"/>
+ <img alt="tcbee-record while recording" width="800" src="imgs/record-dark.png"/>
 </div>
 
 TCBee monitors TCP flows at up to 5M events/s. It captures packet headers with TC hooks, reads kernel TCP metrics with eBPF function hooks, and stores everything in a DuckDB or SQLite database for offline analysis and visualization. It runs on Linux only.
@@ -96,8 +96,14 @@ An optional live congestion window monitor with a GUI that writes no files. It n
 
 ## Screenshots
 
-<img alt="CWND, SSTHRESH and lost packets of one flow" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize.png"/>
-<img alt="Two flows compared in one plot" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_multiple_flows.png"/>
+<picture>
+ <source media="(prefers-color-scheme: dark)" srcset="imgs/visualize-single-dark.png"/>
+ <img alt="CWND, SSTHRESH and retransmissions of one Reno flow" src="imgs/visualize-single-light.png"/>
+</picture>
+<picture>
+ <source media="(prefers-color-scheme: dark)" srcset="imgs/visualize-multi-dark.png"/>
+ <img alt="Two Cubic flows sharing a bottleneck in one plot" src="imgs/visualize-multi-light.png"/>
+</picture>
 
 ## License and credits
 
