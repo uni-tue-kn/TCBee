@@ -11,10 +11,10 @@ env:
 
 jobs:
   record:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -39,7 +39,7 @@ jobs:
   # Every leg builds the engines it names and no others, and runs the tests of all three crates,
   # including the ones that only exist when an engine is disabled.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -66,7 +66,7 @@ jobs:
       DUCKDB_DOWNLOAD_LIB: ${{ matrix.download_duckdb }}
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -101,10 +101,10 @@ jobs:
         if grep -i duckdb tree.txt; then echo "DuckDB is in the dependency tree"; exit 1; fi
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
