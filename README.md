@@ -7,58 +7,82 @@
  <img alt="tcbee-record while recording" width="800" src="imgs/record-dark.png"/>
 </div>
 
-TCBee monitors TCP flows at up to 5M events/s. It captures packet headers with TC hooks, reads kernel TCP metrics with eBPF function hooks, and stores everything in a DuckDB or SQLite database for offline analysis and visualization. It runs on Linux only.
+TCBee monitors TCP flows at up to 5M events/s. It records packet headers and kernel TCP state with eBPF, stores them in a DuckDB or SQLite database and plots them. Linux only.
 
 ## Quick Start
 
-You record on a live system, convert the recording into a database, and open the database in a viewer. Three tools do this: `tcbee-record`, `tcbee-process` and `tcbee-viz`. Download `tcbee-<tag>-linux-x86_64.zip` from the [releases page](https://github.com/uni-tue-kn/TCBee/releases) and unzip it. The zip holds the binaries, the `tcbee` wrapper script, `LICENSE` and `NOTICES` in one folder.
+`tcbee-record` writes raw `*.tcp` files, `tcbee-process` turns them into a database, and `tcbee-viz` plots it. Download `tcbee-<tag>-linux-x86_64.zip` from the [releases page](https://github.com/uni-tue-kn/TCBee/releases) and unzip it.
 
-The binaries need:
+Requirements:
 
-- Linux on x86_64 with BTF (`/sys/kernel/btf/vmlinux`) and kernel 5.12 or newer. Root is needed for `tcbee-record`.
-- A glibc system. The release is built on Ubuntu (`ubuntu-latest`). On much older distributions, [build from source](#building-from-source).
-- For `tcbee-viz`, a display with OpenGL. It loads the GL, EGL, X11 or Wayland libraries at runtime. On Debian/Ubuntu these are the runtime counterparts of the build packages: `libgl1 libegl1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libx11-6 libxcursor1 libxi6 libxrandr2`. The Open dialog uses `xdg-desktop-portal` with a desktop backend, or `zenity` if no portal answers.
+- Linux on x86_64, kernel 5.12 or newer with BTF (`/sys/kernel/btf/vmlinux`). Root for `record` and `live`.
+- glibc. On much older distributions, [build from source](#building-from-source).
+- For `tcbee-viz`, a display with OpenGL (X11 or Wayland). If it does not start, see [its runtime requirements](tcbee-viz/README.md#runtime-requirements).
 
-Record a flow on interface `eth0`, stop with Ctrl+C, process the recording and open it, all from the unzipped folder:
+Record the packet headers on `eth0` and the socket state of the flows on port 5201 (e.g. an `iperf3` test), stop with Ctrl+C, then process and open the recording:
 
 ```bash
-sudo ./tcbee record -h eth0 -k
+sudo ./tcbee record -h eth0 -k -p 5201
 ./tcbee process -o /tmp/myflow.duck
 ./tcbee viz /tmp/myflow.duck
 ```
 
-The recording lands in `/tmp/tcbee_<timestamp>/`. `process` picks the newest one there. A bare `sudo tcbee` only works if `tcbee` is in root's `PATH`, so call the script by path. The script looks for the `tcbee-*` binaries next to itself.
-
-## How it works
-
-`tcbee-record` attaches eBPF programs and writes raw events to `*.tcp` files. `tcbee-process` decodes them with several threads into a database with one table per event type and nanosecond timestamps. `tcbee-viz` plots the flows and computes derived metrics with plugins. The `tcbee` script dispatches `record`, `process`, `viz` and `live` to the matching `tcbee-*` binary. It sits next to the binaries in the release zip and in `install/` after a source build.
+In the viewer, open *Single Flow*, pick a flow and tick `snd_cwnd`. The recording lands in `/tmp/tcbee_<timestamp>/`, and `process` picks the newest one. Call the `tcbee` script by path under `sudo`; it runs the `tcbee-*` binaries next to it.
 
 ## The tools
 
-The examples call the script as `./tcbee` from the unzipped release. After a source build it is `./install/tcbee`.
-
 ### tcbee-record
 
-Written in C with libbpf. Loads the eBPF programs and writes the raw events. A source flag picks what to record: `-h IFACE` for headers (at TC, or with `--headers-at driver` at XDP and `net_dev_start_xmit`, before GRO and after the qdisc), `-t` for the TCP tracepoints and events (`--tp` picks some), `-k` for the full socket at timers and TCP events (`--sock-hooks` adds per-packet hooks), `-w` for the congestion window only, `-a` for Cubic, BBR and Reno internals, `-m` for MPTCP (path manager events, and with `-k` or `-w` the connection of every subflow record). With `--on-change`, `-k` and `-w` write a record only when a watched field changes, compared after received segments and retransmission timers. Filters (`-p`, `--ports`, `--ips`) limit the recording to some flows. Every recording also notes the process that opened each connection, and which processes held the connections that existed at the start (`--no-owners` switches this off). Flags, kernel requirements and the static release build are in [tcbee-record/README.md](tcbee-record/README.md).
+Records what you select with one or more source flags:
+
+| Flag | Records |
+|---|---|
+| `-h IFACE` | Packet headers (TC; `--headers-at driver` for XDP) |
+| `-t` | TCP tracepoints: `tcp_probe`, retransmissions, resets, state changes |
+| `-k` | Full socket state at timers and TCP events |
+| `-w` | Congestion window only (lowest overhead) |
+| `-a` | Cubic, BBR and Reno internals |
+| `-m` | MPTCP path manager events and subflows |
 
 ```bash
-sudo ./tcbee record -h eth0 -k -p 5001 --duration 60
+sudo ./tcbee record -w -p 5201 --duration 30                  # cwnd of port 5201 for 30 s
+sudo ./tcbee record -k -a -p 5201                             # socket state and CC internals
+sudo ./tcbee record -k --on-change cc                         # write only when the CC state changes
+sudo ./tcbee record -k --ports 80,443 --ips 10.0.0.1          # several ports and hosts
+sudo ./tcbee record -h eth0 -k -q --duration 60 --metadata    # no terminal UI, with host metadata
+sudo ./tcbee record -k -d ~/rec                               # write to ~/rec instead of /tmp
 ```
+
+`./tcbee record --help` lists all flags. Filters, on-change mode, process owners and kernel requirements are in [tcbee-record/README.md](tcbee-record/README.md).
 
 ### tcbee-process
 
-Converts a recording into a database. The extension of `-o` picks the engine: `.duck` or `.duckdb` for DuckDB, `.sqlite` or `.db` for SQLite. Flags, exit codes and build options are in [tcbee-process/README.md](tcbee-process/README.md).
+Converts a recording into a database. The extension of `-o` picks the engine: `.duck`/`.duckdb` for DuckDB, `.sqlite`/`.db` for SQLite.
 
 ```bash
-./tcbee process -s /tmp -o /tmp/myflow.duck -f
+./tcbee process -o /tmp/myflow.duck                              # newest recording in /tmp
+./tcbee process -s ~/rec -o /tmp/myflow.sqlite -f                # newest in ~/rec, replace the output
+./tcbee process -s /tmp/tcbee_2026-10-05T18-16-22 -o /tmp/a.duck # one specific recording
 ```
+
+An existing output file is only replaced with `-f`. More in [tcbee-process/README.md](tcbee-process/README.md).
 
 ### tcbee-viz
 
-A desktop viewer built with egui. It plots single flows, compares two flows, and runs plugins that add derived series such as retransmissions. The Overview tab shows what wrote the database and, for recordings made with `--metadata`, the host, kernel, probes, clocks, TCP sysctls, interfaces and the counters that changed during the recording. For recordings made with `-m`, the MPTCP tab lists the connections with their side, plots chosen metrics of all subflows of one connection stacked on one time axis below a lane of its path manager events, coloured by what they mean, and below them shows a table of the subflows with their bytes and share and a filterable list of the events; the flow table shows the connection of each flow. The flow table also names the process of each flow as name[pid], with the command line on hover, and its filter takes `proc:`, `pid:`, `uid:` and `cmd:` terms besides the tuple ones (plain text matches process names too). It opens a database given as argument, or you load one from the Home tab.
+Plots one flow, compares two, and adds derived series such as retransmissions or bytes in flight through plugins. Recordings made with `-m` get an MPTCP tab, and the flow table filters by tuple or process (`dport:5201`, `proc:iperf3`).
 
 ```bash
-./tcbee viz /tmp/myflow.duck
+./tcbee viz /tmp/myflow.duck    # or start without an argument and open a file from Home
+```
+
+To try it without root, process the small recording in the repository: `./tcbee process -s tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`. Tabs and filter syntax are in [tcbee-viz/README.md](tcbee-viz/README.md).
+
+### tcbee-live
+
+A live congestion window monitor with a GUI that writes no files. It needs Linux 5.8 or newer with BTF. See [tcbee-live/README.md](tcbee-live/README.md).
+
+```bash
+sudo ./tcbee live --select-port 5201
 ```
 
 ## Building from source
@@ -70,25 +94,13 @@ sudo apt install -y clang libclang-dev libelf-dev zlib1g-dev pkg-config make \
     libsqlite3-dev fontconfig libfontconfig1-dev libgl-dev libegl-dev
 ```
 
-Build and install the tools into `install/`:
+`make` builds all tools and the script into `install/`; then use `./install/tcbee` instead of `./tcbee`. `make record process viz` leaves out `tcbee-live`.
 
-```bash
-make record process viz
-```
-
-`make` alone builds record, process, viz and live. The `install/` folder then holds the binaries and the script, so run `./install/tcbee` instead of `./tcbee`.
-
-DuckDB is compiled from source on the first build, which takes about ten minutes. To skip it, add `CARGO_FLAGS="--no-default-features --features sqlite"` to the command and use `.sqlite` output files. `CARGO_FLAGS` applies to process and viz only.
-
-`tcbee-process`, `tcbee-viz` and `ts-storage` are one cargo workspace in the repository root. `tcbee-record` and `tcbee-live` have their own. Cargo features, DuckDB linking options and build caching are in the [tcbee-process Building section](tcbee-process/README.md#building).
+DuckDB is compiled from source on the first build, which takes about ten minutes. To skip it, build with `make record process viz CARGO_FLAGS="--no-default-features --features sqlite"` and write `.sqlite` files. Cargo features and DuckDB linking options are in the [tcbee-process Building section](tcbee-process/README.md#building).
 
 ## Reading the data yourself
 
 The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-storage` library, see [ts-storage/README.md](ts-storage/README.md), which also lists the tables and columns. [examples/db/](examples/db/) has Python scripts that list flows and plot the congestion window, and [examples/raw/](examples/raw/) reads the raw `*.tcp` files.
-
-## tcbee-live
-
-An optional live congestion window monitor with a GUI that writes no files. It needs Linux 5.8 or newer with BTF. Build it with `make live` and run `sudo ./tcbee live --select-port 5001`. See [tcbee-live/README.md](tcbee-live/README.md).
 
 ## Testing
 
