@@ -1,0 +1,187 @@
+/* SPDX-License-Identifier: (MIT OR GPL-2.0) */
+/*
+ * All maps. The names are part of the interface: userspace and the evaluation scripts
+ * look them up by name (the kernel truncates them to 15 characters).
+ */
+#ifndef __TCBEE_MAPS_H
+#define __TCBEE_MAPS_H
+
+#include "records.h"
+
+/* Mirrors tcbee_common::stats::STATS_LEN, see counters.h */
+#define TCBEE_STATS_LEN 119
+#define TCBEE_MAX_FLOWS 100
+#define TCBEE_FILTER_MAX_ENTRIES 1024
+
+/*
+ * Ring buffers, one per CPU: a probe reserves its record in the ring buffer of the CPU it
+ * runs on, so producers on different CPUs never wait for each other on a ring buffer's
+ * lock. Each map below is an array indexed by CPU id. Userspace sets the number of slots
+ * to the number of possible CPUs before load and creates the rings with their real size
+ * after load (tcbee_common::stats::RINGBUF_SIZES); the inner definition is only the
+ * template, its size is not part of the type check.
+ */
+struct tcbee_ringbuf {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 4096);
+};
+
+#define RINGBUFS_PER_CPU(name)                                                             \
+	struct {                                                                           \
+		__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);                                  \
+		__uint(max_entries, 1);                                                    \
+		__type(key, __u32);                                                        \
+		__array(values, struct tcbee_ringbuf);                                     \
+	} name SEC(".maps")
+
+RINGBUFS_PER_CPU(TCP4_PACKETS_EGRESS);
+RINGBUFS_PER_CPU(TCP4_PACKETS_INGRESS);
+RINGBUFS_PER_CPU(TCP6_PACKETS_EGRESS);
+RINGBUFS_PER_CPU(TCP6_PACKETS_INGRESS);
+RINGBUFS_PER_CPU(TCP_SEND_SOCK_EVENTS);
+RINGBUFS_PER_CPU(TCP_RECV_SOCK_EVENTS);
+RINGBUFS_PER_CPU(TCP_SEND_CWND_EVENTS);
+RINGBUFS_PER_CPU(TCP_RECEIVE_CWND_EVENTS);
+RINGBUFS_PER_CPU(TCP_PROBE_QUEUE);
+RINGBUFS_PER_CPU(TCP_RETRANSMIT_SYNACK_QUEUE);
+RINGBUFS_PER_CPU(TCP_BAD_CSUM_QUEUE);
+RINGBUFS_PER_CPU(CUBIC_EVENTS);
+RINGBUFS_PER_CPU(BBR_EVENTS);
+RINGBUFS_PER_CPU(MPTCP_PM_EVENTS);
+RINGBUFS_PER_CPU(TCP_EVENTS);
+RINGBUFS_PER_CPU(TCP_TIMER_SOCK_EVENTS);
+RINGBUFS_PER_CPU(TCP_INGRESS_SOCK_EVENTS);
+RINGBUFS_PER_CPU(TCP_EVENT_SOCK_EVENTS);
+RINGBUFS_PER_CPU(RENO_EVENTS);
+RINGBUFS_PER_CPU(TCP4_DRIVER_INGRESS);
+RINGBUFS_PER_CPU(TCP6_DRIVER_INGRESS);
+RINGBUFS_PER_CPU(TCP4_DRIVER_EGRESS);
+RINGBUFS_PER_CPU(TCP6_DRIVER_EGRESS);
+RINGBUFS_PER_CPU(FLOW_OWNERS);
+
+/* Per ring buffer [handled, dropped, error] counters */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, TCBEE_STATS_LEN);
+	__type(key, __u32);
+	__type(value, __u64);
+} STATS SEC(".maps");
+
+/*
+ * hook_seq counters, see hook_seq.h. Shared by all CPUs: the counter of a flow direction at a
+ * hook has to be one. Entries are only ever inserted with BPF_NOEXIST and never updated or
+ * deleted while programs run, an update would replace the element under a concurrent
+ * fetch-add. Entries are never freed either, every flow direction a probe records takes
+ * one per hook for the whole recording.
+ */
+#define TCBEE_HOOK_SEQ_ENTRIES 262144
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, TCBEE_HOOK_SEQ_ENTRIES);
+	__type(key, struct hook_seq_key);
+	__type(value, __u64);
+} HOOK_SEQ SEC(".maps");
+
+/*
+ * Subflows that were not stale when the path manager started to check them
+ * (mptcp_pm_nl_subflow_chk_stale), key the subflow's struct sock. The check runs on every
+ * retransmission timeout of an MPTCP connection and returns early for a stale subflow, so only
+ * the state at its start tells a new transition from a repeated one.
+ *
+ * This and the other entry state maps below are plain hash maps, not LRU: the exit program
+ * deletes every entry, and an LRU map may evict an entry of another CPU between entry and exit.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u8);
+} MPTCP_STALE_CHECK SEC(".maps");
+
+/*
+ * Subflows that requested MPTCP and had not finished connecting when subflow_finish_connect
+ * started, key the subflow's struct sock. The function also runs for later packets, so only the
+ * state at its start tells the SYN-ACK apart.
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, __u8);
+} MPTCP_CONNECT_CHECK SEC(".maps");
+
+/* MPTCP connections in __mptcp_retrans, key the connection's struct sock */
+struct mptcp_retrans_start {
+	__u64 bytes_retrans;
+	__u64 snd_una;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u64);
+	__type(value, struct mptcp_retrans_start);
+} MPTCP_RETRANS_START SEC(".maps");
+
+/*
+ * Per-socket state of the on-change probes: the values of the last written record of the
+ * connection, one per probe (sock, cwnd), whichever hook wrote it. A change is written once,
+ * by the first hook that sees it. Only the on-change programs use the map, so in the default
+ * mode it stays empty; socket storage takes no memory until a program creates it and is
+ * freed with the socket.
+ */
+enum onchg_probe {
+	ONCHG_SOCK,
+	ONCHG_CWND,
+	ONCHG_PROBES,
+};
+
+struct onchg_state {
+	__u64 sock_last[SF_COUNT];
+	__u32 cwnd_last;
+	/* skc_state at the last write; a state change forces a write */
+	__u8 state_last[ONCHG_PROBES];
+	/* 0 before the first write and after a drop or error: the next run writes */
+	__u8 valid[ONCHG_PROBES];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_SK_STORAGE);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, int);
+	__type(value, struct onchg_state);
+} ONCHG SEC(".maps");
+
+/* Flows seen by any probe, key and value are the canonical tuple */
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+	__uint(max_entries, TCBEE_MAX_FLOWS);
+	__type(key, struct ip_tuple);
+	__type(value, struct ip_tuple);
+} FLOWS SEC(".maps");
+
+#define FILTER_PORT_MAP(name)                                                              \
+	struct {                                                                           \
+		__uint(type, BPF_MAP_TYPE_HASH);                                           \
+		__uint(max_entries, TCBEE_FILTER_MAX_ENTRIES);                             \
+		__type(key, __u16);                                                        \
+		__type(value, __u8);                                                       \
+	} name SEC(".maps")
+
+#define FILTER_IP_MAP(name)                                                                \
+	struct {                                                                           \
+		__uint(type, BPF_MAP_TYPE_HASH);                                           \
+		__uint(max_entries, TCBEE_FILTER_MAX_ENTRIES);                             \
+		__type(key, struct filter_ip);                                             \
+		__type(value, __u8);                                                       \
+	} name SEC(".maps")
+
+FILTER_PORT_MAP(FILTER_ANY_PORTS);
+FILTER_PORT_MAP(FILTER_SRC_PORTS);
+FILTER_PORT_MAP(FILTER_DST_PORTS);
+FILTER_IP_MAP(FILTER_ANY_IPS);
+FILTER_IP_MAP(FILTER_SRC_IPS);
+FILTER_IP_MAP(FILTER_DST_IPS);
+
+#endif /* __TCBEE_MAPS_H */

@@ -139,7 +139,7 @@ impl TabMultiFlow {
             &mut self.table_a,
             &mut self.series_table_a,
             &mut self.state_a,
-            &flows,
+            flows,
             db,
             settings,
             half_h,
@@ -161,7 +161,7 @@ impl TabMultiFlow {
             &mut self.table_b,
             &mut self.series_table_b,
             &mut self.state_b,
-            &flows,
+            flows,
             db,
             settings,
             half_h,
@@ -698,7 +698,10 @@ fn series_display(
         .iter()
         .filter(|s| !s.is_string_type() && !s.is_boolean_type())
         .map(|s| {
-            let pts = to_plot_points(points_after_outlier_removal(&s.points, remove_outliers));
+            let pts = to_plot_points(points_after_outlier_removal(
+                &s.points,
+                remove_outliers && !s.step,
+            ));
             let name = format!("{}{}", prefix, s.name);
             (pts, s.color, name)
         })
@@ -765,7 +768,7 @@ fn split_series_item(
 ) -> SplitSeriesDisplay {
     let points = to_plot_points(points_after_outlier_removal(
         &series.points,
-        remove_outliers,
+        remove_outliers && !series.step,
     ));
     let (_, (y_min, y_max)) = points_bounds(&points).unwrap_or((
         (series.global_t_min, series.global_t_max),

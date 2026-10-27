@@ -1,59 +1,85 @@
 use std::error::Error;
 
-use anyhow::Context;
-use aya::{maps::RingBuf, programs::FEntry, Btf, Ebpf};
-use tcbee_common::{bindings::tcp_sock::cwnd_trace_entry, prog_bindings::TraceInoutProbe};
+use libbpf_rs::Link;
+use tcbee_common::records::cwnd_trace_entry;
+use tcbee_trace::{
+    sock_hooks::{Hook, HookSet},
+    TraceFile,
+};
+
+use tcbee_common::stats::{RB_CWND_RECV, RB_CWND_SEND};
 
 use crate::{
-    eBPF::{ebpf_runner::prepend_string, errors::EBPFRunnerError},
+    eBPF::{
+        probes::{attach, attach_on_change},
+        rings,
+        skel::{OpenTcbeeProgs, TcbeeSkel},
+    },
     writer::Writer,
 };
 
 pub struct CwndTracer {}
 
 impl CwndTracer {
-    pub fn spawn(ebpf: &mut Ebpf, dir: String, writer: &mut Writer) -> Result<(), Box<dyn Error>> {
-        let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
+    /// The on-change programs of the hooks in `on_change` replace the default ones
+    pub fn configure(progs: &mut OpenTcbeeProgs<'_>, enabled: bool, on_change: Option<HookSet>) {
+        let hooked = |hook| enabled && on_change.is_some_and(|h| h.contains(hook));
+        progs
+            .cwnd_sock_sendmsg
+            .set_autoload(enabled && on_change.is_none());
+        progs
+            .cwnd_sock_recvmsg
+            .set_autoload(enabled && on_change.is_none());
+        progs.cwnd_oc_sendmsg.set_autoload(hooked(Hook::Egress));
+        progs.cwnd_oc_recvmsg.set_autoload(hooked(Hook::Ingress));
+        progs.cwnd_oc_rcv_state.set_autoload(hooked(Hook::Ingress));
+        progs.cwnd_oc_timer.set_autoload(hooked(Hook::Timer));
+    }
 
-        // Outgoing TCP
-        let sendmsg: &mut FEntry = ebpf.program_mut("cwnd_sock_sendmsg").unwrap().try_into()?;
-        sendmsg.load("__tcp_transmit_skb", &btf)?;
-        sendmsg.attach()?;
+    pub fn spawn(
+        skel: &TcbeeSkel<'_>,
+        dir: &str,
+        writer: &mut Writer,
+        links: &mut Vec<Link>,
+        on_change: Option<HookSet>,
+    ) -> Result<(), Box<dyn Error>> {
+        let (send, receive) = match on_change {
+            // Egress into the send file; ingress and timer into the receive file
+            Some(hooks) => attach_on_change(
+                hooks,
+                &[
+                    (Hook::Egress, &skel.progs.cwnd_oc_sendmsg),
+                    (Hook::Ingress, &skel.progs.cwnd_oc_recvmsg),
+                    (Hook::Ingress, &skel.progs.cwnd_oc_rcv_state),
+                    (Hook::Timer, &skel.progs.cwnd_oc_timer),
+                ],
+                links,
+                (TraceFile::SendCwndOc, TraceFile::RecvCwndOc),
+            )?,
+            None => {
+                // Outgoing TCP, fentry/__tcp_transmit_skb; incoming, fentry/tcp_rcv_established
+                attach(&skel.progs.cwnd_sock_sendmsg, links)?;
+                attach(&skel.progs.cwnd_sock_recvmsg, links)?;
+                (Some(TraceFile::SendCwnd), Some(TraceFile::RecvCwnd))
+            }
+        };
 
-        // Incoming TCP
-        let recvmsg: &mut FEntry = ebpf.program_mut("cwnd_sock_recvmsg").unwrap().try_into()?;
-        recvmsg.load("tcp_rcv_established", &btf)?;
-        recvmsg.attach()?;
-
-        // Start SOCK_SEND handling
-        // Get queue from
-        let map =
-            ebpf.take_map("TCP_SEND_CWND_EVENTS")
-                .ok_or(EBPFRunnerError::QueueNotFoundError {
-                    name: "TCP_SEND_CWND_EVENTS".to_string(),
-                    trace: "CWND Tracer tcp_sendmsg".to_string(),
-                })?;
-
-        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<cwnd_trace_entry>(
-            buff,
-            prepend_string(cwnd_trace_entry::OUT_FILE.to_string(), &dir),
-        )?;
-
-        // Start SOCK_RECV handling
-        // Get queue from
-        let map = ebpf.take_map("TCP_RECEIVE_CWND_EVENTS").ok_or(
-            EBPFRunnerError::QueueNotFoundError {
-                name: "TCP_RECEIVE_CWND_EVENTS".to_string(),
-                trace: "CWND Tracer tcp_recvmsg".to_string(),
-            },
-        )?;
-
-        let buff: RingBuf<aya::maps::MapData> = RingBuf::try_from(map)?;
-        writer.register::<cwnd_trace_entry>(
-            buff,
-            prepend_string(cwnd_trace_entry::IN_FILE.to_string(), &dir),
-        )?;
+        if let Some(file) = send {
+            writer.register_as::<cwnd_trace_entry>(
+                RB_CWND_SEND,
+                rings::of(&skel.maps.TCP_SEND_CWND_EVENTS)?,
+                file,
+                dir,
+            )?;
+        }
+        if let Some(file) = receive {
+            writer.register_as::<cwnd_trace_entry>(
+                RB_CWND_RECV,
+                rings::of(&skel.maps.TCP_RECEIVE_CWND_EVENTS)?,
+                file,
+                dir,
+            )?;
+        }
 
         Ok(())
     }

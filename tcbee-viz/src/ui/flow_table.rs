@@ -1,21 +1,25 @@
 use std::collections::HashMap;
 
-use egui::{Color32, RichText, Stroke, Ui, Vec2};
-use ts_storage::Flow;
+use egui::{RichText, Ui};
+use ts_storage::{Flow, FlowOwner};
 
-use crate::{backend::db::DbBackend, ui::theme};
+use crate::{
+    backend::db::DbBackend,
+    ui::{
+        table::{self, data_cell, header_cell, ROW_HEIGHT},
+        theme,
+    },
+};
 
 const COL_ID: f32 = 36.0;
 const COL_PORT: f32 = 54.0;
 const COL_SERIES: f32 = 54.0;
 const COL_POINTS: f32 = 72.0;
-const ROW_HEIGHT: f32 = 22.0;
-const SEARCH_ICON_W: f32 = 18.0;
-const CLEAR_BUTTON_W: f32 = 22.0;
-const HELP_BUTTON_W: f32 = 20.0;
+const COL_CONN: f32 = 54.0;
+const COL_PROC: f32 = 140.0;
 const FILTER_GAP: f32 = 20.0;
 const FILTER_HELP: &str = "Filter syntax:\n\
-Plain text searches all flow columns.\n\
+Plain text searches all flow columns and the process names.\n\
 Use column:value to limit a term:\n\
   id:52\n\
   src:10.0.0.1\n\
@@ -23,9 +27,15 @@ Use column:value to limit a term:\n\
   sport:443\n\
   dport:5201\n\
   port:443\n\
+  conn:3 (flows of MPTCP connection 3)\n\
+  proc:curl (process name)\n\
+  pid:4242\n\
+  uid:1000\n\
+  cmd:https (command line)\n\
 Combine terms with spaces, e.g. src:10.0.0.1 dport:443";
 
 /// A filterable table widget for selecting a TCP flow.
+#[derive(Default)]
 pub struct FlowTable {
     pub filter: String,
     pub selected_id: Option<i64>,
@@ -36,16 +46,6 @@ pub struct FlowTable {
 struct FlowStats {
     series_count: usize,
     point_count: i64,
-}
-
-impl Default for FlowTable {
-    fn default() -> Self {
-        Self {
-            filter: String::new(),
-            selected_id: None,
-            stats_cache: HashMap::new(),
-        }
-    }
 }
 
 impl FlowTable {
@@ -75,206 +75,161 @@ impl FlowTable {
         let mut new_selection: Option<i64> = None;
         let dark_mode = ui.visuals().dark_mode;
 
-        egui::Frame::new()
-            .fill(theme::panel_bg(dark_mode))
-            .stroke(Stroke::new(1.0, theme::border(dark_mode)))
-            .corner_radius(6.0)
-            .inner_margin(egui::Margin::ZERO)
-            .show(ui, |ui| {
-                // All width measurements are taken inside the frame so the
-                // 1 px stroke on each side is already excluded.
-                let content_w = ui.available_width().max(1.0);
-                ui.spacing_mut().item_spacing.x = 0.0;
+        table::frame(dark_mode).show(ui, |ui| {
+            // All width measurements are taken inside the frame so the
+            // 1 px stroke on each side is already excluded.
+            let content_w = ui.available_width().max(1.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
 
-                // ── Filter bar ──────────────────────────────────────────────────
-                // Use content_w - 2 so the framed clear button's 1px stroke never
-                // overflows the table frame boundary.
-                let filter_w = content_w * 0.9;
-                ui.allocate_ui_with_layout(
-                    Vec2::new(filter_w, ROW_HEIGHT),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = FILTER_GAP;
-                        ui.add_sized([SEARCH_ICON_W, ROW_HEIGHT], egui::Label::new("🔍"));
-                        let text_w = (filter_w
-                            - SEARCH_ICON_W
-                            - HELP_BUTTON_W
-                            - CLEAR_BUTTON_W
-                            - 3.0 * FILTER_GAP)
-                            .max(40.0);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.filter)
-                                .hint_text("Filter, e.g. id:52 src:10.0.0.1")
-                                .desired_width(text_w)
-                                .min_size(Vec2::new(text_w, ROW_HEIGHT)),
-                        );
-                        ui.add_sized(
-                            [HELP_BUTTON_W, ROW_HEIGHT],
-                            egui::Label::new(RichText::new("?").strong())
-                                .sense(egui::Sense::hover()),
-                        )
-                        .on_hover_text(FILTER_HELP);
-                        let clear = ui.add_sized(
-                            [CLEAR_BUTTON_W, ROW_HEIGHT],
-                            egui::Button::new("x").frame(!self.filter.is_empty()),
-                        );
-                        if !self.filter.is_empty() && clear.clicked() {
-                            self.filter.clear();
-                        }
-                    },
+            // ── Filter bar ──────────────────────────────────────────────────
+            table::filter_bar(
+                ui,
+                &mut self.filter,
+                "Filter, e.g. id:52 src:10.0.0.1",
+                Some(FILTER_HELP),
+                content_w * 0.9,
+                FILTER_GAP,
+            );
+
+            let filter_lower = self.filter.to_lowercase();
+            // The connection and process columns only appear for recordings that have them
+            let show_conn = !db.list_connections().is_empty();
+            let show_proc = db.has_owners();
+            let visible: Vec<(&Flow, &str)> = flows
+                .iter()
+                .map(|f| (f, db.connection_label(f.id)))
+                .filter(|(f, conn)| flow_matches(f, conn, db.flow_owners(f.id), &filter_lower))
+                .collect();
+
+            ui.separator();
+
+            if visible.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("No flows match the filter.")
+                        .color(theme::muted_text(dark_mode))
+                        .italics(),
                 );
+                ui.add_space(4.0);
+                return;
+            }
 
-                let filter_lower = self.filter.to_lowercase();
-                let visible: Vec<&Flow> = flows
-                    .iter()
-                    .filter(|f| flow_matches(f, &filter_lower))
-                    .collect();
+            // ── Header ────────────────────────────────────────────────────────
+            let conn_w = if show_conn { COL_CONN } else { 0.0 };
+            let proc_w = if show_proc { COL_PROC } else { 0.0 };
+            let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w + proc_w;
+            let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
 
-                ui.separator();
-
-                if visible.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("No flows match the filter.")
-                            .color(theme::muted_text(dark_mode))
-                            .italics(),
-                    );
-                    ui.add_space(4.0);
-                    return;
+            table::header_row(ui, content_w, |ui| {
+                header_cell(ui, "ID", COL_ID);
+                header_cell(ui, "Src IP", col_ip);
+                header_cell(ui, "Sport", COL_PORT);
+                header_cell(ui, "Dst IP", col_ip);
+                header_cell(ui, "Dport", COL_PORT);
+                if show_conn {
+                    header_cell(ui, "Conn", COL_CONN).on_hover_text("MPTCP connection/subflow");
                 }
-
-                // ── Header ────────────────────────────────────────────────────────
-                let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS;
-                let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
-
-                let header_rect = egui::Rect::from_min_size(
-                    ui.available_rect_before_wrap().min,
-                    Vec2::new(content_w, ROW_HEIGHT),
-                );
-                ui.painter()
-                    .rect_filled(header_rect, 0.0, theme::table_header_bg(dark_mode));
-
-                ui.horizontal(|ui| {
-                    ui.set_height(ROW_HEIGHT);
-                    header_cell(ui, "ID", COL_ID);
-                    header_cell(ui, "Src IP", col_ip);
-                    header_cell(ui, "Sport", COL_PORT);
-                    header_cell(ui, "Dst IP", col_ip);
-                    header_cell(ui, "Dport", COL_PORT);
-                    header_cell(ui, "Series", COL_SERIES);
-                    header_cell(ui, "Points", COL_POINTS);
-                });
-
-                ui.separator();
-
-                // ── Rows ──────────────────────────────────────────────────────────
-                let row_count = visible.len();
-                egui::ScrollArea::vertical()
-                    .id_salt((id_salt, "scroll"))
-                    .auto_shrink([false, false])
-                    .scroll_bar_visibility(
-                        egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
-                    )
-                    .show_rows(ui, ROW_HEIGHT, row_count, |ui, range| {
-                        ui.set_width(content_w);
-                        for i in range {
-                            let flow = visible[i];
-                            let fid = flow.id;
-                            let is_selected = self.selected_id == Some(fid);
-                            let stats = *self
-                                .stats_cache
-                                .entry(fid)
-                                .or_insert_with(|| flow_stats(db, flow));
-
-                            let base_color = if is_selected {
-                                theme::table_row_selected(dark_mode)
-                            } else if i % 2 == 0 {
-                                theme::table_row_even(dark_mode)
-                            } else {
-                                theme::table_row_odd(dark_mode)
-                            };
-
-                            let row_response = ui.horizontal(|ui| {
-                                ui.set_width(content_w);
-                                ui.set_height(ROW_HEIGHT);
-
-                                let rect = ui.max_rect();
-                                let hovered = ui.rect_contains_pointer(rect);
-                                let bg = if is_selected {
-                                    if hovered {
-                                        theme::table_row_selected_hover(dark_mode)
-                                    } else {
-                                        theme::table_row_selected(dark_mode)
-                                    }
-                                } else if hovered {
-                                    theme::table_row_hover(dark_mode)
-                                } else {
-                                    base_color
-                                };
-                                ui.painter().rect_filled(rect, 0.0, bg);
-
-                                data_cell(ui, &fid.to_string(), COL_ID, is_selected);
-                                data_cell(ui, &flow.tuple.src.to_string(), col_ip, is_selected);
-                                data_cell(ui, &flow.tuple.sport.to_string(), COL_PORT, is_selected);
-                                data_cell(ui, &flow.tuple.dst.to_string(), col_ip, is_selected);
-                                data_cell(ui, &flow.tuple.dport.to_string(), COL_PORT, is_selected);
-                                data_cell(
-                                    ui,
-                                    &stats.series_count.to_string(),
-                                    COL_SERIES,
-                                    is_selected,
-                                );
-                                data_cell(
-                                    ui,
-                                    &format_count(stats.point_count),
-                                    COL_POINTS,
-                                    is_selected,
-                                );
-                            });
-
-                            // Make the whole row clickable
-                            let row_rect = row_response.response.rect;
-                            let row_click = ui.interact(
-                                row_rect,
-                                ui.id().with((id_salt, "row", fid)),
-                                egui::Sense::click(),
-                            );
-                            if row_click.hovered() {
-                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
-                            }
-                            if row_click.clicked() && !is_selected {
-                                self.selected_id = Some(fid);
-                                new_selection = Some(fid);
-                            }
-
-                            // Row divider
-                            let rect = row_response.response.rect;
-                            ui.painter().hline(
-                                rect.x_range(),
-                                rect.bottom(),
-                                Stroke::new(0.5, theme::border(dark_mode)),
-                            );
-                        }
-                    });
+                if show_proc {
+                    header_cell(ui, "Process", COL_PROC)
+                        .on_hover_text("The process that opened the connection, name[pid]");
+                }
+                header_cell(ui, "Series", COL_SERIES);
+                header_cell(ui, "Points", COL_POINTS);
             });
+
+            ui.separator();
+
+            // ── Rows ──────────────────────────────────────────────────────────
+            let row_count = visible.len();
+            egui::ScrollArea::vertical()
+                .id_salt((id_salt, "scroll"))
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                .show_rows(ui, ROW_HEIGHT, row_count, |ui, range| {
+                    ui.set_width(content_w);
+                    for i in range {
+                        let (flow, conn) = &visible[i];
+                        let fid = flow.id;
+                        let is_selected = self.selected_id == Some(fid);
+                        let stats = *self
+                            .stats_cache
+                            .entry(fid)
+                            .or_insert_with(|| flow_stats(db, flow));
+
+                        let row_response = ui.horizontal(|ui| {
+                            ui.set_width(content_w);
+                            ui.set_height(ROW_HEIGHT);
+
+                            let rect = ui.max_rect();
+                            let hovered = ui.rect_contains_pointer(rect);
+                            let bg = table::row_fill(dark_mode, i, is_selected, hovered);
+                            ui.painter().rect_filled(rect, 0.0, bg);
+
+                            data_cell(ui, &fid.to_string(), COL_ID, is_selected);
+                            data_cell(ui, &flow.tuple.src.to_string(), col_ip, is_selected);
+                            data_cell(ui, &flow.tuple.sport.to_string(), COL_PORT, is_selected);
+                            data_cell(ui, &flow.tuple.dst.to_string(), col_ip, is_selected);
+                            data_cell(ui, &flow.tuple.dport.to_string(), COL_PORT, is_selected);
+                            if show_conn {
+                                data_cell(ui, conn, COL_CONN, is_selected);
+                            }
+                            if show_proc {
+                                let owners = db.flow_owners(fid);
+                                let cell =
+                                    data_cell(ui, db.owner_label(fid), COL_PROC, is_selected);
+                                if !owners.is_empty() {
+                                    cell.on_hover_ui(|ui| owner_details(ui, owners));
+                                }
+                            }
+                            data_cell(ui, &stats.series_count.to_string(), COL_SERIES, is_selected);
+                            data_cell(
+                                ui,
+                                &format_count(stats.point_count),
+                                COL_POINTS,
+                                is_selected,
+                            );
+                        });
+
+                        // Make the whole row clickable
+                        let row_rect = row_response.response.rect;
+                        let row_click =
+                            table::row_click(ui, row_rect, ui.id().with((id_salt, "row", fid)));
+                        if row_click.clicked() && !is_selected {
+                            self.selected_id = Some(fid);
+                            new_selection = Some(fid);
+                        }
+
+                        table::row_divider(ui, row_response.response.rect);
+                    }
+                });
+        });
 
         new_selection
     }
 }
 
+/// The owners of a flow, one line each, for the hover of the process cell
+fn owner_details(ui: &mut Ui, owners: &[FlowOwner]) {
+    for o in owners {
+        let uid = o.uid.map(|uid| format!(", uid {uid}")).unwrap_or_default();
+        let cmd = o.cmdline.as_deref().unwrap_or(&o.comm);
+        ui.label(format!("{}[{}] ({}{uid}): {cmd}", o.comm, o.pid, o.source));
+    }
+}
+
 fn flow_stats(db: &DbBackend, flow: &Flow) -> FlowStats {
-    let series = db.list_series_for_flow(flow);
-    let point_count = series
-        .iter()
-        .map(|series| db.get_point_count(series.id))
-        .sum();
+    // Catalog rows carry the point counts.
+    let series = db.list_series_for_flow(flow.id);
+    let point_count = series.iter().map(|series| series.n).sum();
     FlowStats {
         series_count: series.len(),
         point_count,
     }
 }
 
-fn flow_matches(flow: &Flow, filter: &str) -> bool {
+/// `conn` is the flow's connection label, see `DbBackend::connection_label`, `owners` its
+/// processes, `DbBackend::flow_owners`
+fn flow_matches(flow: &Flow, conn: &str, owners: &[FlowOwner], filter: &str) -> bool {
     if filter.is_empty() {
         return true;
     }
@@ -282,10 +237,17 @@ fn flow_matches(flow: &Flow, filter: &str) -> bool {
     if filter.split_whitespace().count() > 1 {
         return filter
             .split_whitespace()
-            .all(|term| flow_matches(flow, term));
+            .all(|term| flow_matches(flow, conn, owners, term));
     }
 
     if let Some((column, value)) = filter.split_once(':') {
+        if column == "conn" {
+            return value.is_empty()
+                || conn.split(", ").any(|c| c.split('/').next() == Some(value));
+        }
+        if let Some(matches) = owner_matches(owners, column, value) {
+            return matches;
+        }
         return flow_column_matches(flow, column, value);
     }
 
@@ -299,6 +261,28 @@ fn flow_matches(flow: &Flow, filter: &str) -> bool {
         || sport.contains(filter)
         || dport.contains(filter)
         || id.contains(filter)
+        || owners
+            .iter()
+            .any(|o| o.comm.to_lowercase().contains(filter))
+}
+
+/// The terms on the processes of a flow, None for other columns. pid and uid are exact, the
+/// names parts of them; the command line is the process name where it is not known.
+fn owner_matches(owners: &[FlowOwner], column: &str, value: &str) -> Option<bool> {
+    let any = |matches: &dyn Fn(&FlowOwner) -> bool| value.is_empty() || owners.iter().any(matches);
+    Some(match column {
+        "proc" | "process" | "comm" => any(&|o| o.comm.to_lowercase().contains(value)),
+        "pid" => any(&|o| o.pid.to_string() == value),
+        "uid" => any(&|o| o.uid.is_some_and(|uid| uid.to_string() == value)),
+        "cmd" | "cmdline" => any(&|o| {
+            o.cmdline
+                .as_deref()
+                .unwrap_or(&o.comm)
+                .to_lowercase()
+                .contains(value)
+        }),
+        _ => return None,
+    })
 }
 
 fn flow_column_matches(flow: &Flow, column: &str, value: &str) -> bool {
@@ -332,32 +316,87 @@ fn format_count(count: i64) -> String {
     }
 }
 
-fn header_cell(ui: &mut Ui, label: &str, width: f32) {
-    let dark_mode = ui.visuals().dark_mode;
-    ui.add_sized(
-        [width, ROW_HEIGHT],
-        egui::Label::new(
-            RichText::new(label)
-                .color(theme::table_header_text(dark_mode))
-                .strong()
-                .size(12.0),
-        ),
-    );
-}
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
 
-fn data_cell(ui: &mut Ui, text: &str, width: f32, selected: bool) {
-    let dark_mode = ui.visuals().dark_mode;
-    let color = if selected {
-        if dark_mode {
-            Color32::from_rgb(226, 232, 240)
-        } else {
-            Color32::from_rgb(20, 40, 80)
+    use ts_storage::IpTuple;
+
+    use super::*;
+
+    fn flow() -> Flow {
+        let ip = |last| IpAddr::V4(Ipv4Addr::new(10, 0, 0, last));
+        Flow::new(
+            12,
+            IpTuple {
+                src: ip(1),
+                dst: ip(2),
+                sport: 40000,
+                dport: 5201,
+                l4proto: 6,
+            },
+        )
+    }
+
+    #[test]
+    fn conn_filter_matches_the_connection_id() {
+        let f = flow();
+        assert!(flow_matches(&f, "3/2", &[], "conn:3"));
+        assert!(flow_matches(&f, "1, 3", &[], "conn:3"));
+        assert!(!flow_matches(&f, "13/1", &[], "conn:3"));
+        assert!(!flow_matches(&f, "", &[], "conn:3"));
+        assert!(flow_matches(&f, "3/2", &[], "conn:3 dport:5201"));
+        assert!(flow_matches(&f, "", &[], "dport:5201"));
+    }
+
+    fn owners() -> Vec<FlowOwner> {
+        vec![
+            FlowOwner {
+                pid: 4242,
+                uid: Some(1000),
+                comm: "curl".into(),
+                cmdline: Some("curl -O https://example.org/x".into()),
+                ..FlowOwner::default()
+            },
+            FlowOwner {
+                pid: 7,
+                uid: Some(0),
+                comm: "Isolated Web Co".into(),
+                ..FlowOwner::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn process_terms_match_the_owners() {
+        let (f, o) = (flow(), owners());
+        for term in [
+            "proc:curl",
+            "proc:web",
+            "pid:4242",
+            "pid:7",
+            "uid:1000",
+            "uid:0",
+            "cmd:example.org",
+            "cmd:isolated",
+            "curl",
+            "proc:curl dport:5201",
+            "pid:",
+        ] {
+            assert!(flow_matches(&f, "", &o, term), "{term}");
         }
-    } else {
-        theme::text(dark_mode)
-    };
-    ui.add_sized(
-        [width, ROW_HEIGHT],
-        egui::Label::new(RichText::new(text).color(color).size(12.0)).truncate(),
-    );
+        for term in [
+            "proc:wget",
+            "pid:424",
+            "uid:10",
+            "cmd:wget",
+            "wget",
+            "proc:curl dport:22",
+        ] {
+            assert!(!flow_matches(&f, "", &o, term), "{term}");
+        }
+        // A flow without known owners matches no process term
+        assert!(!flow_matches(&f, "", &[], "proc:curl"));
+        assert!(flow_matches(&f, "", &[], "10.0.0.1"));
+    }
 }

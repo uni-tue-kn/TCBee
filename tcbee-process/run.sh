@@ -1,3 +1,3 @@
 #!/bin/bash
-# Runs the rust program as sudo, needed privileges
-RUST_LOG=debug cargo run --release -- --output ./db.sqlite --sqlite 
+# Processes the latest recording in /tmp/ into ./db.sqlite, replacing an existing file.
+RUST_LOG=debug cargo run --release -- --output ./db.sqlite --sqlite --force

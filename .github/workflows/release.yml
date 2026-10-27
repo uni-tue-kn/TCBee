@@ -4,15 +4,32 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual runs build the archive and the packages of any branch as workflow artifacts, without a release
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Name and version
+        # A tag names the release; a manual run gets e.g. dev-1a2b3c4 and the package version
+        # 0.0.0~dev.<run>, which sorts below every release
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            TAG="$GITHUB_REF_NAME"
+            VERSION="${TAG#v}"
+          else
+            BRANCH=$(echo "$GITHUB_REF_NAME" | tr -c 'a-zA-Z0-9.\n' '.')
+            TAG="$BRANCH-$(git rev-parse --short HEAD)"
+            VERSION="0.0.0~$BRANCH.$GITHUB_RUN_NUMBER"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Install system dependencies
         run: |
@@ -20,59 +37,89 @@ jobs:
           sudo apt-get install -y \
             cmake \
             llvm clang \
-            libelf-dev libclang-dev \
-            pkg-config \
+            libelf-dev libclang-dev zlib1g-dev \
+            pkg-config make \
+            autoconf automake autopoint gettext libtool flex bison gawk \
             fontconfig libfontconfig1-dev \
-            libgl-dev libegl-dev \
-            zip
+            libgl-dev libegl-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Rust Nightly
-        run: rustup toolchain install nightly --component rust-src
-
-      - name: Install bpf-linker
-        run: cargo install bpf-linker
-
       - name: Build tcbee-record
+        # Builds libbpf, libelf and zlib from source and links them statically
         run: |
           cd tcbee-record
-          cargo build --release
+          cargo build --release --features static
 
-      - name: Build tcbee-process (bundled)
-        run: |
-          cd tcbee-process
-          cargo build --release --features ts_storage/bundled
+      - name: Cache cargo (workspace)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-bundled
 
-      - name: Build tcbee-viz
-        run: |
-          cd tcbee-viz
-          cargo build --release --features ts_storage/bundled
+      # One cargo call for both tools: DuckDB and SQLite are compiled once (bundled, both engines)
+      - name: Build tcbee-process and tcbee-viz (bundled)
+        run: cargo build --release -p tcbee-process -p tcbee-viz --features bundled
 
       - name: Build tcbee-live
+        # Like tcbee-record: libbpf, libelf and zlib built from source and linked statically
         run: |
           cd tcbee-live
-          cargo build --release
+          cargo build --release --features static
 
-      - name: Package release zip
+      - name: Package release archive
         run: |
-          mkdir -p release
-          cp tcbee-record/target/release/tcbee-record release/
-          cp tcbee-process/target/release/tcbee-process release/
-          cp tcbee-viz/target/release/tcbee-viz release/
-          cp tcbee-live/target/release/tcbee-live release/
-          cp tcbee release/
-          cp LICENSE release/
-          cp NOTICES release/
-          chmod +x release/tcbee
-          zip -j "tcbee-${{ github.ref_name }}-linux-x86_64.zip" release/*
+          NAME="tcbee-$TAG-linux-x86_64"
+          mkdir -p "$NAME"
+          cp tcbee-record/target/release/tcbee-record "$NAME/"
+          cp target/release/tcbee-process "$NAME/"
+          cp target/release/tcbee-viz "$NAME/"
+          cp tcbee-live/target/release/tcbee-live "$NAME/"
+          sed "s|@VERSION@|$TAG|" tcbee > "$NAME/tcbee"
+          cp packaging/install.sh "$NAME/"
+          cp LICENSE NOTICES "$NAME/"
+          chmod 755 "$NAME"/tcbee* "$NAME/install.sh"
+          tar czf "$NAME.tar.gz" "$NAME"
+
+      - name: Install nfpm
+        run: |
+          curl -sSLO https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz
+          echo "0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783  nfpm_2.47.0_Linux_x86_64.tar.gz" | sha256sum -c
+          tar xzf nfpm_2.47.0_Linux_x86_64.tar.gz nfpm
+
+      - name: Build .deb and .rpm
+        run: |
+          export PKG_DIR="$PWD/tcbee-$TAG-linux-x86_64"
+          GLIBC_MIN=$(objdump -T "$PKG_DIR"/tcbee-{record,process,viz,live} | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | cut -d_ -f2)
+          test -n "$GLIBC_MIN"
+          export GLIBC_MIN
+          envsubst '$VERSION $PKG_DIR $GLIBC_MIN' < packaging/nfpm.yaml > nfpm.yaml
+          mkdir -p dist
+          ./nfpm package -f nfpm.yaml -p deb -t dist/
+          ./nfpm package -f nfpm.yaml -p rpm -t dist/
+          mv dist/* .
+          sha256sum "tcbee-$TAG-linux-x86_64.tar.gz" tcbee_*.deb tcbee-*.rpm > SHA256SUMS
+
+      - name: Upload artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tcbee-${{ env.TAG }}
+          path: |
+            tcbee-${{ env.TAG }}-linux-x86_64.tar.gz
+            tcbee_*.deb
+            tcbee-*.rpm
+            SHA256SUMS
 
       - name: Create release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+        # A tag with a suffix (v2.0.0-rc1) makes a pre-release, which is not marked as the latest
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "TCBee ${{ github.ref_name }}" \
+          PRERELEASE=()
+          if [[ "$TAG" == *-* ]]; then PRERELEASE=(--prerelease); fi
+          gh release create "$TAG" "${PRERELEASE[@]}" \
+            --title "TCBee $TAG" \
             --generate-notes \
-            "tcbee-${{ github.ref_name }}-linux-x86_64.zip"
+            "tcbee-$TAG-linux-x86_64.tar.gz" tcbee_*.deb tcbee-*.rpm SHA256SUMS

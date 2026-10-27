@@ -112,7 +112,7 @@ impl TabSingleFlow {
             // Reserve space for flow table — takes up top half of sidebar
             egui::Frame::NONE.show(ui, |ui| {
                 ui.set_max_height(flow_table_height);
-                if let Some(new_id) = self.flow_table.show(ui, db, &flows) {
+                if let Some(new_id) = self.flow_table.show(ui, db, flows) {
                     self.state.select_flow(db, new_id);
                     self.manual_x_min = self.state.data_x_min;
                     self.manual_x_max = self.state.data_x_max;
@@ -124,7 +124,7 @@ impl TabSingleFlow {
         if self.state.flow_id.is_none() {
             ui.add_space(8.0);
             ui.label(
-                RichText::new("← Select a flow above.")
+                RichText::new("Select a flow above.")
                     .color(egui::Color32::GRAY)
                     .italics(),
             );
@@ -289,7 +289,7 @@ impl TabSingleFlow {
             .iter()
             .filter(|s| !s.is_string_type() && !s.is_boolean_type())
             .map(|s| {
-                let points = points_after_outlier_removal(&s.points, remove_outliers);
+                let points = points_after_outlier_removal(&s.points, remove_outliers && !s.step);
                 (to_plot_points(points), s.color, s.name.clone())
             })
             .collect();
@@ -424,7 +424,7 @@ impl TabSingleFlow {
             .iter()
             .filter(|s| !s.is_string_type())
             .map(|s| {
-                let points = points_after_outlier_removal(&s.points, remove_outliers);
+                let points = points_after_outlier_removal(&s.points, remove_outliers && !s.step);
                 let pts = to_plot_points(points);
                 let (y_min, y_max) = if remove_outliers {
                     points_bounds(&pts)
@@ -635,6 +635,20 @@ pub fn time_or_compact_coordinates_formatter(origin_ns: f64) -> CoordinatesForma
     })
 }
 
+/// Hover label of a plot: the item's name, the time in seconds since `origin_ns` and the
+/// compact value
+pub fn seconds_label_formatter(origin_ns: f64) -> impl Fn(&str, &PlotPoint) -> String {
+    move |name, point| {
+        let time = format!("{:.3} s", (point.x - origin_ns) / 1_000_000_000.0);
+        let value = compact_axis_label(point.y);
+        if name.is_empty() {
+            format!("{time}\n{value}")
+        } else {
+            format!("{name}\n{time}\n{value}")
+        }
+    }
+}
+
 pub fn compact_coordinates_formatter(origin_ns: f64) -> CoordinatesFormatter<'static> {
     CoordinatesFormatter::new(move |point, bounds| {
         format!(
@@ -810,7 +824,7 @@ pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -
     ((available_height - PLOT_AXIS_FOOTER) / count).max(80.0)
 }
 
-fn section_heading(ui: &mut egui::Ui, label: &str) {
+pub fn section_heading(ui: &mut egui::Ui, label: &str) {
     let dark_mode = ui.visuals().dark_mode;
     ui.label(
         RichText::new(label)
@@ -819,4 +833,17 @@ fn section_heading(ui: &mut egui::Ui, label: &str) {
             .color(theme::muted_text(dark_mode)),
     );
     ui.add_space(4.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hover_label_shows_seconds_since_origin() {
+        let label = seconds_label_formatter(1_000_000_000_000.0);
+        let point = PlotPoint::new(1_002_500_000_000.0, 41_565.5);
+        assert_eq!(label("subflow 1", &point), "subflow 1\n2.500 s\n41.6k");
+        assert_eq!(label("", &point), "2.500 s\n41.6k");
+    }
 }

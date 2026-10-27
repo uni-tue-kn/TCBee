@@ -1,15 +1,35 @@
 mod app;
+mod bpf;
 mod types;
 mod worker;
 
-use anyhow::Context as _;
+use std::{mem::MaybeUninit, path::Path, sync::mpsc};
+
+use anyhow::{Context as _, bail};
 use app::TcbeeApp;
-use aya::{programs::FEntry, Btf};
+use bpf::LiveSkelBuilder;
+use libbpf_rs::{
+    PrintLevel,
+    skel::{OpenSkel, SkelBuilder},
+};
 use log::{debug, info, warn};
-use std::sync::mpsc;
+
+fn libbpf_log(level: PrintLevel, msg: String) {
+    let msg = msg.trim_end();
+    match level {
+        PrintLevel::Warn => warn!(target: "libbpf", "{msg}"),
+        PrintLevel::Info => info!(target: "libbpf", "{msg}"),
+        PrintLevel::Debug => debug!(target: "libbpf", "{msg}"),
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
+    libbpf_rs::set_print(Some((PrintLevel::Debug, libbpf_log)));
+
+    if !Path::new("/sys/kernel/btf/vmlinux").exists() {
+        bail!("the kernel has no BTF (/sys/kernel/btf/vmlinux), it needs CONFIG_DEBUG_INFO_BTF=y");
+    }
 
     // Raise the memlock limit so eBPF maps can be allocated.
     let rlim = libc::rlimit {
@@ -21,35 +41,34 @@ fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
-    // Load eBPF bytecode and attach probes.
-    let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/tcbee-live"
-    )))?;
+    // Load the eBPF object and attach the probes. The skeleton borrows its storage
+    // for its whole life, which is the life of the program.
+    let storage = Box::leak(Box::new(MaybeUninit::uninit()));
+    let open = LiveSkelBuilder::default()
+        .open(storage)
+        .context("opening the eBPF object")?;
+    let skel = open
+        .load()
+        .context("loading the eBPF programs (needs root; RUST_LOG=libbpf=debug shows why)")?;
 
-    let btf = Btf::from_sys_fs().context("BTF from sysfs")?;
+    let mut links = Vec::new();
+    for (program, hook) in [
+        (&skel.progs.cwnd_transmit_skb, "__tcp_transmit_skb"),
+        (&skel.progs.cwnd_rcv_established, "tcp_rcv_established"),
+    ] {
+        let link = program
+            .attach()
+            .with_context(|| format!("attaching to {hook}"))?;
+        links.push(link);
+        info!("FEntry probe attached to {hook}");
+    }
 
-    let program: &mut FEntry = ebpf.program_mut("cwnd_sock_sendmsg").unwrap().try_into()?;
-    program.load("__tcp_transmit_skb", &btf)?;
-    program.attach()?;
-    info!("FEntry probe attached to __tcp_transmit_skb");
-
-    let program: &mut FEntry = ebpf.program_mut("cwnd_sock_recvmsg").unwrap().try_into()?;
-    program.load("tcp_rcv_established", &btf)?;
-    program.attach()?;
-    info!("FEntry probe attached to tcp_rcv_established");
-
-    // Channels bridging the Tokio worker and the egui main thread.
+    // Channels bridging the worker thread and the egui main thread.
     let (event_tx, event_rx) = mpsc::sync_channel(10_000);
     let (disc_tx, disc_rx) = mpsc::sync_channel(1_000);
     let (filter_tx, filter_rx) = mpsc::sync_channel(64);
 
-    // Build a multi-threaded Tokio runtime on a background OS thread.
-    // eframe must own the main thread, so we cannot use #[tokio::main].
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
+    let maps = worker::WorkerMaps::new(&skel.maps, event_tx)?;
 
     let select_ports: std::collections::HashSet<u16> = std::env::args()
         .zip(std::env::args().skip(1))
@@ -72,11 +91,13 @@ fn main() -> anyhow::Result<()> {
         Box::new(move |cc| {
             let egui_ctx = cc.egui_ctx.clone();
             info!("GUI initialised, spawning eBPF worker");
-            rt.spawn(worker::run_ebpf_worker(
-                ebpf, event_tx, disc_tx, filter_rx, egui_ctx, select_ports.clone(),
-            ));
+            let worker_ports = select_ports.clone();
+            std::thread::Builder::new()
+                .name("ebpf-worker".into())
+                .spawn(move || {
+                    worker::run_ebpf_worker(maps, disc_tx, filter_rx, egui_ctx, worker_ports)
+                })?;
             Ok(Box::new(TcbeeApp::new(
-                rt,
                 event_rx,
                 disc_rx,
                 filter_tx,
@@ -86,5 +107,10 @@ fn main() -> anyhow::Result<()> {
             )))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
+    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
+
+    // Detach the probes only after the GUI is closed
+    drop(links);
+    drop(skel);
+    Ok(())
 }

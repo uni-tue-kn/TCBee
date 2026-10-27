@@ -79,8 +79,8 @@ def unpack_ports(packed: int) -> tuple[int, int]:
 
 def read_flow_data(file_path: Path) -> dict[FlowKey, list[CwndDataPoint]]:
     """Read all events and group by flow."""
-    CUBIC_EVENT_FORMAT = "<QQ16s16sIHIIIIIIIIIIIIII4s"
-    CUBIC_EVENT_SIZE = 114
+    CUBIC_EVENT_FORMAT = "<QQQ16s16sIHIIIIIIIIIIIIII4s"
+    CUBIC_EVENT_SIZE = 122
 
     flow_data = defaultdict(list)
 
@@ -98,7 +98,7 @@ def read_flow_data(file_path: Path) -> dict[FlowKey, list[CwndDataPoint]]:
 
             # Unpack event
             unpacked = struct.unpack(CUBIC_EVENT_FORMAT, data)
-            time, addr_v4, src_v6, dst_v6, ports, family, \
+            time, hook_seq, addr_v4, src_v6, dst_v6, ports, family, \
                 cnt, last_max_cwnd, last_cwnd, last_time, \
                 bic_origin_point, bic_K, delay_min, epoch_start, \
                 ack_cnt, tcp_cwnd, round_start, end_seq, \

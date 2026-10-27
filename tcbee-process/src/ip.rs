@@ -1,5 +1,50 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use ts_storage::IpTuple;
+
+/// Address family value of `AF_INET` in the kernel structs.
+pub const AF_INET: u16 = 2;
+
+/// The kernel sometimes uses a 28 byte IP address struct:
+/// the first 4 bytes are IP version and port, the next 4 bytes the IPv4 address (0 if IPv6),
+/// the next 16 bytes the IPv6 address (0 if IPv4).
+pub fn shorten_to_ipv6(arg: [u8; 28]) -> [u8; 16] {
+    std::array::from_fn(|i| arg[i + 8])
+}
+
+pub fn shorten_to_ipv4(arg: [u8; 28]) -> [u8; 4] {
+    std::array::from_fn(|i| arg[i + 4])
+}
+
+/// Source and destination of the bindings that carry `addr_v4` (both IPv4 addresses packed into
+/// one u64, network byte order) next to two IPv6 slots. Which of the two is used is decided by
+/// the caller (`use_v4`), and differs between bindings on purpose.
+pub fn kernel_addr_pair(
+    use_v4: bool,
+    addr_v4: u64,
+    src_v6: [u8; 16],
+    dst_v6: [u8; 16],
+) -> (IpAddr, IpAddr) {
+    if use_v4 {
+        let src = Ipv4Addr::from(u32::from_be((addr_v4 >> 32) as u32));
+        let dst = Ipv4Addr::from(u32::from_be(addr_v4 as u32));
+        (IpAddr::V4(src), IpAddr::V4(dst))
+    } else {
+        (ip_addr_from_16_bytes(src_v6), ip_addr_from_16_bytes(dst_v6))
+    }
+}
+
+/// The flow identity of a TCP packet. Ports are stored as read (not byte swapped).
+pub fn flow_tuple(src: IpAddr, dst: IpAddr, sport: u16, dport: u16) -> IpTuple {
+    IpTuple {
+        src,
+        dst,
+        sport: i64::from(sport),
+        dport: i64::from(dport),
+        l4proto: 6,
+    }
+}
+
 pub fn ip_addr_from_16_bytes(bytes: [u8; 16]) -> IpAddr {
     if is_ipv4_mapped(bytes) {
         IpAddr::V4(Ipv4Addr::from([bytes[12], bytes[13], bytes[14], bytes[15]]))

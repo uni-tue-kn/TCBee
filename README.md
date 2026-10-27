@@ -1,281 +1,142 @@
 <div align="center">
- <img src="./imgs/tcbee.png" height=300/>
+ <img src="./imgs/tcbee.png" height=200/>
  <h2>TCBee: TCP Flow Analysis with eBPF</h2>
 
  ![License](https://img.shields.io/github/license/uni-tue-kn/TCBee) ![image](https://img.shields.io/badge/lang-rust-darkred) ![GitHub Release](https://img.shields.io/github/v/release/uni-tue-kn/TCBee) [![TCBee build](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml/badge.svg)](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml)
 
- *Special thanks to [Evelyn](https://github.com/ScatteredDrifter) and Lars for their support during development.*
-
+ <img alt="tcbee-record while recording" width="800" src="imgs/record-dark.png"/>
 </div>
 
-TCBee monitors TCP flows at up to 5M events/s. It captures packet headers via TC hooks, reads kernel metrics through eBPF function hooks, and stores everything in a DuckDB or SQLite database for offline analysis and visualization.
-
-**Linux-only.** Tested on kernel 6.13.6.
-
----
-
-- [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Build](#build)
-  - [Record → Process → Visualize](#record--process--visualize)
-- [What TCBee Does](#what-tcbee-does)
-- [Architecture](#architecture)
-- [Usage](#usage)
-  - [`tcbee record`](#tcbee-record)
-  - [`tcbee process`](#tcbee-process)
-  - [`tcbee viz`](#tcbee-viz)
-- [tcbee-live](#tcbee-live)
-- [Custom Data Access](#custom-data-access)
-- [Testing](#testing)
-- [Screenshots](#screenshots)
-  - [Recording](#recording)
-  - [Visualization](#visualization)
-- [Status](#status)
-
----
+TCBee monitors TCP flows at up to 5M events/s. It records packet headers and kernel TCP state with eBPF, stores them in a DuckDB or SQLite database and plots them. Linux only.
 
 ## Quick Start
 
-### Prerequisites
-
-**Build tools:**
-- Clang/LLVM: `sudo apt install -y llvm clang libelf-dev libclang-dev`
-- Rust (> 1.28.1): [rustup.rs](https://rustup.rs/)
-- Stable + nightly toolchains: `rustup toolchain install stable && rustup toolchain install nightly --component rust-src`
-- BPF linker: `cargo install bpf-linker`
-
-**Database libraries:**
-- SQLite: `sudo apt install -y libsqlite3-dev` (Arch: `sudo pacman -S sqlite`)
-- DuckDB: download the shared library and headers from [duckdb/duckdb releases](https://github.com/duckdb/duckdb/releases) and install them to `/usr/local/`
-
-**Visualization:**
-- `sudo apt install -y pkg-config fontconfig libfontconfig1-dev`
-
-**Testing environment:**
-- Python 3
-- Mininet
-- Open vSwitch
-- iperf3
-- Linux with root privileges for Mininet and eBPF programs
-
-> **Bundled mode:** To statically link SQLite or DuckDB instead of relying on system libraries, enable the `bundled` feature in [ts-storage/Cargo.toml](ts-storage/Cargo.toml). This removes the system dependency at the cost of longer compile times.
-
-### Build
+`tcbee-record` writes raw `*.tcp` files, `tcbee-process` turns them into a database, and `tcbee-viz` plots it. Download the package for your distribution from the [releases page](https://github.com/uni-tue-kn/TCBee/releases) and install it:
 
 ```bash
-make           # builds everything; binaries are copied to install/
-# or individually:
-make record
-make process
-make viz
-make live
+sudo apt install ./tcbee_<version>_amd64.deb         # Debian, Ubuntu
+sudo dnf install ./tcbee-<version>-1.x86_64.rpm      # Fedora, RHEL, Rocky, Alma
 ```
 
-Move the binaries from `install/` to a directory in your `PATH`. The `tcbee` script dispatches to the right binary based on the subcommand.
+On other distributions, unpack `tcbee-<tag>-linux-x86_64.tar.gz` and run `sudo ./install.sh` in it; it installs to `/usr/local/bin` (`PREFIX=...` for another place, `--uninstall` to remove). Where `sudo` does not search `/usr/local/bin`, call `sudo /usr/local/bin/tcbee ...`. Remove such an install before installing a package, because `/usr/local/bin` comes first in `PATH`.
 
-Built on the [aya rust template](https://github.com/aya-rs/aya-template).
+Requirements:
 
-### Record → Process → Visualize
+- Linux on x86_64, kernel 5.12 or newer with BTF (`/sys/kernel/btf/vmlinux`). Root for `record` and `live`.
+- A glibc as new as that of Ubuntu 24.04 (the release is built there), e.g. Debian 13 or RHEL 10; the packages state the exact minimum. On older distributions, [build from source](#building-from-source).
+- For `tcbee-viz`, a display with OpenGL (X11 or Wayland). If it does not start, see [its runtime requirements](tcbee-viz/README.md#runtime-requirements).
+
+Record the packet headers on `eth0` and the socket state of the flows on port 5201 (e.g. an `iperf3` test), stop with Ctrl+C, then process and open the recording:
 
 ```bash
-# 1. Record a TCP flow (Ctrl+C to stop)
-sudo tcbee record -h eth0 -k
-
-# 2. Process the raw recording into a database
-tcbee process -d -o /tmp/myflow.duck
-
-# 3. Open the visualization tool
-tcbee viz
+sudo tcbee record -h eth0 -k -p 5201
+tcbee process -o /tmp/myflow.duck
+tcbee viz /tmp/myflow.duck
 ```
 
----
+In the viewer, open *Single Flow*, pick a flow and tick `snd_cwnd`. The recording lands in `/tmp/tcbee_<timestamp>/`, and `process` picks the newest one. `tcbee <command>` runs the matching `tcbee-*` tool; `tcbee --help` lists them.
 
-## What TCBee Does
+## The tools
 
-- Captures incoming and outgoing TCP headers via XDP and TC eBPF hooks
-- Reads kernel TCP metrics (cwnd, ssthresh, srtt, ...) per packet or function call
-- Stores recordings in a SQLite or DuckDB database
-- Provides a plugin interface to compute derived metrics (e.g. retransmissions, duplicate ACKs) during post-processing
-- Includes an interactive visualization tool for plotting and comparing flows
-- Exposes a Rust library (`ts-storage`) for building custom analysis tools
+### tcbee-record
 
----
+Records what you select with one or more source flags:
 
-## Architecture
-
-TCBee works in three phases: **record**, **process**, and **visualize**.
-
-<img src="./imgs/architecture.png" height=150/>
-
-**Record:** attaches eBPF probes and writes raw event data to `*.tcp` files. XDP/TC hooks capture packet headers; function hooks and tracepoints read kernel TCP metrics.
-
-**Process:** reads the raw files and writes a structured SQL database. Plugins run here to compute metrics that are too expensive to calculate live.
-
-**Visualize:** loads the database and displays interactive graphs. You can also query the database directly with your own scripts or tools.
-
-Per-module documentation: [tcbee-record](tcbee-record/README.md) · [tcbee-process](tcbee-process/README.md) · [ts-storage](ts-storage/README.md)
-
----
-
-## Usage
-
-All subcommands are called through the `tcbee` script.
-
-### `tcbee record`
-
-At least one metric source flag is required.
-
-Metric sources:
-
-| Flag | Description |
+| Flag | Records |
 |---|---|
-| `-h [iface]` | TCP headers via XDP/TC on the given interface |
-| `-t` | Kernel tracepoints (most TCP metrics) |
-| `-k` | `tcp_sendmsg`/`tcp_recvmsg` hooks (all TCP metrics) |
-| `-w` | `snd_cwnd` only (best performance, single metric) |
-| `-a` | Congestion control internals (Cubic and BBR) |
-
-Filtering:
-
-| Flag | Default | Description |
-|---|---|---|
-| `-p PORT` | | Fast single-port filter for source or destination port |
-| `--ports PORTS` | | Comma-separated source or destination ports |
-| `--src-ports PORTS` | | Comma-separated source ports |
-| `--dst-ports PORTS` | | Comma-separated destination ports |
-| `--ips IPS` | | Comma-separated source or destination IPv4/IPv6 addresses |
-| `--src-ips IPS` | | Comma-separated source IPv4/IPv6 addresses |
-| `--dst-ips IPS` | | Comma-separated destination IPv4/IPv6 addresses |
-
-Filtering is disabled by default, so probes only take the fast no-filter branch. Use
-`-p`/`--port` when a single local or remote port is enough; this uses the fastest filtered path.
-The multi-value port and IP filters use eBPF maps for exact matches. Values inside one option are
-ORed, while port and IP dimensions are ANDed. For example, `--ports 80,443 --ips 10.0.0.1`
-records traffic where either endpoint port is 80 or 443 and either endpoint IP is `10.0.0.1`.
-
-Other options:
-
-| Flag | Default | Description |
-|---|---|---|
-| `-d DIR` | `/tmp/` | Output directory for raw recordings |
-| `-c N` | `1` | Number of CPUs used for processing |
-| `-q` | | Disable the terminal UI |
-| `-m` | | Write a `metrics.json` summary file |
-| `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
-
-Raw data is written as `*.tcp` files to the output directory.
-
-### `tcbee process`
-
-Reads raw recordings and writes a flow database:
+| `-h IFACE` | Packet headers (TC; `--headers-at driver` for XDP) |
+| `-t` | TCP tracepoints: `tcp_probe`, retransmissions, resets, state changes |
+| `-k` | Full socket state at timers and TCP events |
+| `-w` | Congestion window only (lowest overhead) |
+| `-a` | Cubic, BBR and Reno internals |
+| `-m` | MPTCP path manager events and subflows |
 
 ```bash
-tcbee process -d -o /tmp/myflow.duck    # DuckDB (recommended for large traces)
-tcbee process -q -o /tmp/myflow.sqlite  # SQLite
+sudo tcbee record -w -p 5201 --duration 30                  # cwnd of port 5201 for 30 s
+sudo tcbee record -k -a -p 5201                             # socket state and CC internals
+sudo tcbee record -k --on-change cc                         # write only when the CC state changes
+sudo tcbee record -t -p 5201                                # tracepoints: tcp_probe, retransmits, RSTs, state changes
+sudo tcbee record --tp retransmit,rto,state                 # only these tracepoints
+sudo tcbee record --tp +drops,-probe                        # default tracepoints plus drops, without tcp_probe
+sudo tcbee record -k --sock-hooks +ingress --no-owners      # add the per-segment socket hook, skip process owners
+sudo tcbee record -k --ports 80,443 --ips 10.0.0.1          # several ports and hosts
+sudo tcbee record -h eth0 -k -q --duration 60 --metadata    # no terminal UI, with host metadata
+sudo tcbee record -k -d ~/rec                               # write to ~/rec instead of /tmp
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| `-s DIR` | `/tmp/` | Source directory containing `*.tcp` files |
-| `-o FILE` | `/tmp/db.duck` or `.sqlite` | Output database file |
+`--tp` and `--sock-hooks` take a list: plain names replace the default set, `+name` and `-name` add to or remove from it. `tcbee record --help` lists all flags. Filters, on-change mode, process owners and kernel requirements are in [tcbee-record/README.md](tcbee-record/README.md).
 
-### `tcbee viz`
+### tcbee-process
+
+Converts a recording into a database. The extension of `-o` picks the engine: `.duck`/`.duckdb` for DuckDB, `.sqlite`/`.db` for SQLite.
 
 ```bash
-tcbee viz
+tcbee process -o /tmp/myflow.duck                              # newest recording in /tmp
+tcbee process -s ~/rec -o /tmp/myflow.sqlite -f                # newest in ~/rec, replace the output
+tcbee process -s /tmp/tcbee_2026-10-05T18-16-22 -o /tmp/a.duck # one specific recording
 ```
 
-Load a `*.sqlite` or `*.duck` file from within the tool. The navigation bar switches between single-flow plots, multi-flow comparison, the processing panel, and settings.
+An existing output file is only replaced with `-f`. More in [tcbee-process/README.md](tcbee-process/README.md).
 
----
+### tcbee-viz
 
-## tcbee-live
-
-A live cwnd monitor with no recording or post-processing needed. Attaches eBPF probes and shows congestion window metrics in real time via a GUI.
+Plots one flow, compares two, and adds derived series such as retransmissions or bytes in flight through plugins. Recordings made with `-m` get an MPTCP tab, and the flow table filters by tuple or process (`dport:5201`, `proc:iperf3`).
 
 ```bash
-make live
-sudo ./install/tcbee live --select-port 5001
+tcbee viz /tmp/myflow.duck    # or start without an argument and open a file from Home
 ```
 
-See [tcbee-live/README.md](tcbee-live/README.md) for details.
+To try it without root, process the small recording in the repository: `tcbee process -s tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`. Tabs and filter syntax are in [tcbee-viz/README.md](tcbee-viz/README.md).
 
----
+### tcbee-live
 
-## Custom Data Access
+A live congestion window monitor with a GUI that writes no files. It needs Linux 5.8 or newer with BTF. See [tcbee-live/README.md](tcbee-live/README.md).
 
-The flow database is standard SQLite or DuckDB and can be queried with any compatible client or library.
+```bash
+sudo tcbee live --select-port 5201
+```
 
-- **Rust:** use the `ts-storage` library, see [ts-storage/README.md](ts-storage/README.md)
-- **Other languages:** use any SQLite/DuckDB client; see [`examples/db/`](examples/db/) for working examples
-- **Raw `*.tcp` files:** packed structs; struct definitions are in [tcbee-record/tcbee-common/src/bindings/](tcbee-record/tcbee-common/src/bindings/) (look for names ending in `_entry`); Python reader examples are in [`examples/raw/`](examples/raw/)
+## Building from source
 
----
+Building needs Rust stable 1.82 or newer ([rustup.rs](https://rustup.rs/)) and these Debian/Ubuntu packages:
+
+```bash
+sudo apt install -y clang libclang-dev libelf-dev zlib1g-dev pkg-config make \
+    libsqlite3-dev fontconfig libfontconfig1-dev libgl-dev libegl-dev
+```
+
+Build all tools into `bin/` and install them to `/usr/local/bin`:
+
+```bash
+make
+sudo make install    # PREFIX=... and DESTDIR=... as usual; make uninstall removes them
+```
+
+`make record process viz` leaves out `tcbee-live`. To run without installing, call `./bin/tcbee`.
+
+DuckDB is compiled from source on the first build, which takes about ten minutes. To skip it, build with `make record process viz CARGO_FLAGS="--no-default-features --features sqlite"` and write `.sqlite` files. Cargo features and DuckDB linking options are in the [tcbee-process Building section](tcbee-process/README.md#building).
+
+## Reading the data yourself
+
+The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-storage` library, see [ts-storage/README.md](ts-storage/README.md), which also lists the tables and columns. [examples/db/](examples/db/) has Python scripts that list flows and plot the congestion window, and [examples/raw/](examples/raw/) reads the raw `*.tcp` files.
 
 ## Testing
 
-The [`testing/`](testing/) directory has a Mininet-based emulation environment. It sets up a bottleneck topology, drives traffic with `iperf3`, and launches `tcbee-record`, `tcbee-live`, or the full record/process/visualize pipeline automatically.
-
-Additional packages for the test environment:
-
-```bash
-# Debian / Ubuntu
-sudo apt install -y mininet openvswitch-switch iperf3 python3
-
-# Arch Linux
-sudo pacman -S mininet openvswitch iperf3 python
-sudo systemctl start ovsdb-server ovs-vswitchd
-```
-
-Before running the tests, build the tools you want to exercise:
-
-```bash
-make           # build record, process, viz, and live
-# or individually:
-make record
-make process
-make viz
-make live
-```
-
-Run the launcher from the repository root:
-
-```bash
-python3 testing/run.py
-```
-
-The launcher needs root-capable networking through Mininet, and `tcbee-record` / `tcbee-live` need eBPF privileges. See [testing/README.md](testing/README.md) for the topology and menu options.
-
----
+[testing/](testing/) has a Mininet setup with a bottleneck topology that drives `iperf3` traffic through the tools. Start it with `python3 testing/run.py`. Prerequisites and menu options are in [testing/README.md](testing/README.md).
 
 ## Screenshots
 
-### Recording
+<picture>
+ <source media="(prefers-color-scheme: dark)" srcset="imgs/visualize-single-dark.png"/>
+ <img alt="CWND, SSTHRESH and retransmissions of one Reno flow" src="imgs/visualize-single-light.png"/>
+</picture>
+<picture>
+ <source media="(prefers-color-scheme: dark)" srcset="imgs/visualize-multi-dark.png"/>
+ <img alt="Two Cubic flows sharing a bottleneck in one plot" src="imgs/visualize-multi-light.png"/>
+</picture>
 
-<img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.png"/>
-<img alt="Recording" style="border-radius: 10px; border: 1px solid #000;" src="imgs/record.webp"/>
+## License and credits
 
-### Visualization
-
-<img alt="CWND and SSTHRESH" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize.png"/>
-<img alt="Sliding window and SEQ NUM" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_2.png"/>
-<img alt="Split graphs: CWND, SRTT and WND Size" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_3.png"/>
-<img alt="Calculating a new metric" style="border-radius: 10px; border: 1px solid #000;" src="imgs/plugins.png"/>
-<img alt="Multiple flows" style="border-radius: 10px; border: 1px solid #000;" src="imgs/visualize_multiple_flows.png"/>
-
----
-
-## Status
-
-This is the first stable release. Work in progress:
-
-- Documentation for all modules
-- Merging tools into a single binary
-- Plugins for common TCP congestion metrics
-- InfluxDB interface for faster processing
-- Ringbuffer and file writer benchmarks
-- Code cleanup
-
----
+MIT, see [LICENSE](LICENSE). Special thanks to [Evelyn](https://github.com/ScatteredDrifter) and Lars for their support during development.
 
 *Developed with AI coding assistance. All code reviewed and verified by human developers before inclusion.*

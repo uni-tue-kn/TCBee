@@ -73,11 +73,11 @@ def unpack_ports(packed: int) -> tuple[int, int]:
 def extract_flow_key(event_data: bytes) -> FlowKey:
     """Extract flow key from a CubicEvent binary data."""
     # Unpack just the fields we need for flow identification
-    # Format: <QQ16s16sIH...
-    header_format = "<QQ16s16sIH"
+    # Format: <QQQ16s16sIH...
+    header_format = "<QQQ16s16sIH"
     header_size = struct.calcsize(header_format)
 
-    time, addr_v4, src_v6, dst_v6, ports, family = struct.unpack(
+    time, hook_seq, addr_v4, src_v6, dst_v6, ports, family = struct.unpack(
         header_format, event_data[:header_size]
     )
 
@@ -94,7 +94,7 @@ def extract_flow_key(event_data: bytes) -> FlowKey:
 
 def identify_flows(file_path: Path) -> dict[FlowKey, FlowStats]:
     """Identify all unique flows in the trace file."""
-    CUBIC_EVENT_SIZE = 114
+    CUBIC_EVENT_SIZE = 122
     flows = {}
     flow_counts = defaultdict(int)
     flow_first_time = {}

@@ -1,0 +1,95 @@
+# tcbee-process
+
+Part of [TCBee](../README.md). Converts a raw recording of `tcbee-record` (the `*.tcp` files) into a SQLite or DuckDB database that `tcbee-viz` and your own scripts can read.
+
+```bash
+tcbee-process -o /tmp/myflow.duck                 # engine from the extension
+tcbee-process -q -o /tmp/myflow.sqlite -t 4 -f    # SQLite, 4 threads, replace an existing file
+tcbee-process -s ~/traces/tcbee_2026-10-05T18-16-22 -d
+```
+
+`tcbee-process --help` prints the flags. The table layout is in [ts-storage/README.md](../ts-storage/README.md#database-layout-schema-version-3).
+
+## Usage
+
+| Flag | Default | Description |
+|---|---|---|
+| `-s DIR` | `/tmp/` | Recording directory (holds the `*.tcp` files), or a directory to search for the latest `tcbee_*` recording |
+| `-o FILE` | `/tmp/db.sqlite` with `-q`, `/tmp/db.duck` with `-d` | Output database file |
+| `-q`, `--sqlite` | | Write SQLite |
+| `-d`, `--duckdb` | | Write DuckDB |
+| `-t N`, `--threads N` | number of cores | Worker threads |
+| `-f`, `--force` | | Replace the output file if it exists |
+
+Engine. `-q` or `-d` decide. Without them the extension of `-o` does: `.sqlite` and `.db` are SQLite, `.duck` and `.duckdb` DuckDB. If neither gives an engine the command fails. An engine that is not compiled in is an error too (see [Building](#building)).
+
+Output. An existing output file is never touched without `-f`. The database is written to `<output>.partial` and renamed when everything succeeded, so a failed run leaves no half-written file. Files without a decoder (`tcp_retransmit_synack`, `tcp_bad_csum`) are skipped with a message. A truncated last record (the recorder was stopped mid-write) is dropped with a warning. Any other problem in a trace file (wrong divider, undecodable record, read error) stops the run. A summary line reports records, rows, flows, connections, owners (and those whose connection has no flow), series, time and output size.
+
+Exit codes. `0` is success (and `--help`), `1` means processing failed (unreadable or corrupt recording, existing output without `-f`, I/O or database error), `2` means wrong arguments.
+
+Format. Databases use schema version 3: one table per record type (`ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_reno`, `ev_tcp4`, `ev_tcp6`, `ev_mptcp_pm`, `ev_tcp_event`; the header records of the driver hooks go to `ev_tcp4_driver` and `ev_tcp6_driver`, the socket records of the write timer, the ingress hook and the socket events to `ev_sock_timer`, `ev_sock_ingress` and `ev_sock_event`) with one row per record and one typed column per field, plus the `flows`, `connections`, `connection_flows`, `flow_owners` and `series` catalogs. Timestamps are exact integer nanoseconds. Send and receive samples of a flow are separate series. Databases written by earlier versions are not readable; process the recording again. Recordings in older record layouts (sock records without `ca_state`, the delivery and chrono fields, the rest of TCP_INFO or the send buffer and delivery rate fields, records without `conn_id`, cubic and bbr records without `hook`, cubic records without `new_state`, bbr records without the mode, gains and rate sample, header records without `ECN` and `TSTAMP`) are still decoded; the columns they lack are 0 and have no series. On-change files (`*_oc.tcp`) go to `ev_sock_oc` and `ev_cwnd_oc`, step series kept apart from the full ones.
+
+MPTCP. A recording made with `tcbee-record -m` is grouped into MPTCP connections: one row in `connections` per connection (`key` is its local token) and its subflows in `connection_flows`. The token comes from the `conn_id` of the sock and cwnd records and from the path manager events. The kernel can reuse a token once its connection is gone, so the path manager events of a token are cut into connections at each `TOKEN_DESTROYED`; without them a token is one connection. Header flows (`ev_tcp4`, `ev_tcp6`) of a subflow's reversed tuple join its connection, with the time span of the subflow. A client whose connection fell back to plain TCP in the handshake keeps the token on its socket, so the fallback shows up as a connection with one flow and the events FALLBACK, CLOSED and TOKEN_DESTROYED. The server side of such a connection is a plain TCP socket without a token; its flow stays out of the client's connection when both ends are recorded on one host, like every flow whose socket records (sock, cwnd, tcp_probe, cubic, bbr) carry no token.
+
+Owners. The table `flow_owners` holds the processes of the flows: one row per flow, time and process, with pid, uid, name, command line, start time, cgroup and network namespace. `source` tells where the row comes from: `connect` and `accept` from the owner records (`flow_owners.tcp`), `snapshot` from the connections that existed when the recording started (`flow_owners.json`, one row per process that held the socket), `connection` for the subflows that an MPTCP path manager added, which take the owner of their connection. Command lines come from `flow_owners.json`, as far as the recorder found the process. An owner is joined to the flow of its tuple (local to remote) and to the flow of the reversed tuple, so header records of received packets and both ends of a connection recorded on one host get it; v4-mapped addresses of dual-stack sockets match the IPv4 flows. A reused tuple gets one row per connection, ordered by time. Both ends of a connection recorded on one host, over loopback for instance, name each other's flow: each of the two flows gets the client and the server. `start_time` is exact for owner records and rounded down to a clock tick (10 ms at 100 Hz) for snapshot rows, as `/proc` shows it. An MPTCP connection that existed before the recording has no owner, its subflows are not in the snapshot. Owners never create flows: the owner of a connection that has no other record is counted in the summary and left out. A snapshot row of a process that has an owner record of the same flow from before the snapshot is left out. The table is optional in schema 3: databases written before owners have none, and readers see no owners in them.
+
+## How it works
+
+The `*.tcp` files are cut into work units of up to one million records. A pool of worker threads (`--threads`) reads a unit in 4 MiB chunks, decodes the records with `bincode`, checks the divider of every record, resolves the flow id, and appends the fields to a column-wise batch of its event table (`ev_sock`, `ev_tcp_probe`, ...). Batches go to the database through `ts-storage`; per-series statistics are collected on the way, so the `series` catalog needs no second pass. The main thread merges the statistics, groups MPTCP subflows into connections (reading `mptcp_pm.tcp` once more), joins the owners to the flows, writes flows, connections, owners, series and `meta`, builds the SQLite indexes and renames `<output>.partial` to the output. The first error in any worker stops the others; nothing is left at the output path.
+
+## Building
+
+`tcbee-process`, `tcbee-viz` and the `ts-storage` library are one cargo workspace in the repository root with a single `target/` and `Cargo.lock`. Build from the root:
+
+```bash
+cargo build --release -p tcbee-process                                            # both engines
+cargo build --release -p tcbee-process --no-default-features --features sqlite    # no DuckDB
+cargo build --release -p tcbee-process --no-default-features --features duckdb    # no SQLite
+cargo build --release -p tcbee-process --features bundled                         # static SQLite and DuckDB
+```
+
+`make process viz CARGO_FLAGS="--features bundled"` does the same through the Makefile. A binary built without an engine reports that when it is given a file of that engine. `bundled` compiles SQLite and DuckDB from source, which takes about ten minutes for DuckDB. Without it, `libsqlite3-dev` must be installed (Arch: `sqlite`) and DuckDB is compiled from source too, unless you point the build at a library (below).
+
+### Without waiting for DuckDB
+
+Use `--no-default-features --features sqlite` and DuckDB is never compiled. To keep DuckDB, link a `libduckdb` that is already there, which takes seconds. These environment variables of the `libduckdb-sys` build script choose the library:
+
+| Variable | Effect |
+|---|---|
+| `DUCKDB_LIB_DIR=/opt/duckdb` | directory with `libduckdb.so` (and `duckdb.h`) |
+| `DUCKDB_INCLUDE_DIR=...` | directory with `duckdb.h`, if it is elsewhere |
+| `DUCKDB_STATIC=1` | link `libduckdb_static.a` |
+| `DUCKDB_DOWNLOAD_LIB=1` | download the official `libduckdb` for the crate's DuckDB version into `target/` and link it |
+
+The library version should match the `duckdb` crate in `Cargo.lock`. Set the variables for every cargo command, or put them into an uncommitted `.cargo/config.toml` in the repository root:
+
+```toml
+[env]
+DUCKDB_LIB_DIR = "/opt/duckdb"
+```
+
+A binary linked to a dynamic `libduckdb` outside the standard library path must find the `.so` when it starts. `cargo run` and `cargo test` take care of that. A binary started directly from `target/` does not, so install the library to a standard path or set `LD_LIBRARY_PATH`.
+
+### Sharing one DuckDB build
+
+DuckDB's build script runs again (and with `bundled` recompiles all of DuckDB) when its build inputs change. In this workspace `cargo build -p`, `cargo test` and `cargo clippy` of `ts-storage`, `tcbee-process` and `tcbee-viz` share one compiled `libduckdb-sys`, as long as these stay the same:
+
+- `bundled` or not: they are two separate builds.
+- Profile: `--release` and the default debug build are separate.
+- `RUSTFLAGS` and the other cargo environment, including the `DUCKDB_*` variables.
+
+Build from the repository root; a `target/` per crate would compile DuckDB once per crate. The crate `duckdb-cache/` and the `[profile.dev.build-override]` in the root `Cargo.toml` exist so that the choice of `-p` does not change the build. If `cargo tree -p tcbee-viz -e features -i syn@3` shows `syn` features that are missing in [duckdb-cache/Cargo.toml](../duckdb-cache/Cargo.toml), add them there.
+
+## Tests
+
+```bash
+cargo test -p tcbee-process                                          # both engines
+cargo test -p tcbee-process --no-default-features --features sqlite
+cargo test -p tcbee-process --no-default-features --features duckdb
+```
+
+`tests/e2e.rs` processes the traces in `tests/fixtures/` (see [its README](tests/fixtures/README.md)) into both engines and compares everything through the `ts-storage` API: row counts per file, identical flows and series on both engines, separate send and receive series, truncated and corrupt input, existing output without `--force`.
+
+## Adding a record type
+
+A trace record is a struct of `tcbee_common::records` (generated from the recorder's `records.h`) that implements `Event` in `src/bindings/`. The `event_schema!` macro in `src/event.rs` declares its table (`ev_<source>`), the record size in the trace file (a test checks it against the encoding) and one column per field, and generates the code that fills a batch. Then add the trace file to `binding()` in `src/bindings/mod.rs`; `event_tables()` follows from it. The tests expect a file for every trace file type in `tests/fixtures/tcbee_small` (see its README), and the golden digests in `tests/e2e.rs` change with new data. Column names are the field names of the series in the visualizer, so they are never renamed.

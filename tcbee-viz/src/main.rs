@@ -37,7 +37,11 @@ fn parse_database_path_arg() -> Option<PathBuf> {
     let first = args.next()?;
 
     if first == "--help" || first == "-h" {
-        println!("Usage: tcbee-viz [DATABASE.sqlite|DATABASE.duck]");
+        let names: Vec<String> = backend::db::DB_EXTENSIONS
+            .iter()
+            .map(|e| format!("DATABASE.{e}"))
+            .collect();
+        println!("Usage: tcbee-viz [{}]", names.join("|"));
         return None;
     }
 

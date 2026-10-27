@@ -1,160 +1,124 @@
-use ratatui::layout::Constraint;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols::Marker::Braille;
-use ratatui::text::Span;
-use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, LegendPosition};
+use ratatui::{
+    layout::Rect,
+    style::{Modifier, Style},
+    symbols::Marker::Braille,
+    text::{Line, Span},
+    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType},
+    Frame,
+};
 
-use crate::viz::rate_watcher::RateWatcher;
+use crate::viz::{
+    format,
+    history::{self, thin},
+    model::ChartModel,
+};
 
-pub struct Graph {
-    data: Vec<Vec<(f64, f64)>>,
-    labels: Vec<String>,
-    colors: Vec<Color>,
-    ymax: f64,
-    xmin: f64,
-    xmax: f64,
-    observation_window: Option<f64>,
-    name: String,
+/// Title of a chart `width` cells wide: its zoom key, name and unit in bold, then the series
+/// names in their colours. Names get shorter or go when they do not fit, the colour squares stay.
+pub fn title(chart: &ChartModel, key: usize, width: u16) -> Line<'static> {
+    let head = format!(" {key} {} ({}) ", chart.title, chart.unit);
+    // The corners and a cell of border stay visible
+    let room = (width as usize).saturating_sub(3);
+    let legend = |chars: usize| -> Vec<String> {
+        chart
+            .series
+            .iter()
+            .map(|series| match chars {
+                0 => "\u{25a0}".to_string(),
+                _ => format!(
+                    "\u{25a0} {}",
+                    series.label.chars().take(chars).collect::<String>()
+                ),
+            })
+            .collect()
+    };
+    let length = |names: &[String]| {
+        head.chars().count() + names.iter().map(|n| n.chars().count() + 1).sum::<usize>()
+    };
+    let names = [usize::MAX, 4, 0]
+        .into_iter()
+        .map(legend)
+        .find(|names| length(names) <= room)
+        .unwrap_or_else(|| legend(0));
+    let mut spans = vec![Span::styled(
+        head,
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    for (series, name) in chart.series.iter().zip(names) {
+        spans.push(Span::styled(
+            format!("{name} "),
+            Style::default().fg(series.color),
+        ));
+    }
+    Line::from(spans)
 }
 
-impl Graph {
-    pub fn new(
-        label_1: String,
-        label_2: String,
-        color_1: Color,
-        color_2: Color,
-        observation_window: Option<f64>,
-        name: String,
-    ) -> Graph {
-        Graph {
-            data: vec![Vec::new(), Vec::new()],
-            labels: vec![label_1, label_2],
-            colors: vec![color_1, color_2],
-            ymax: 0.0,
-            xmin: 0.0,
-            xmax: 0.0,
-            observation_window,
-            name,
-        }
+/// The Braille line chart of a chart's histories in `span`, the legend is in the title and
+/// `bottom` at the right of the bottom border
+pub fn render(
+    frame: &mut Frame,
+    chart: &ChartModel,
+    key: usize,
+    span: history::Span,
+    bottom: Option<Line<'static>>,
+    area: Rect,
+) {
+    let end = chart.end();
+    let (xmin, xmax) = match span {
+        history::Span::Whole => (0.0, end.max(1.0)),
+        history::Span::Last(window) => (end - window, end),
+    };
+    // Two points per Braille dot are enough, more only cost drawing time
+    let data: Vec<_> = chart
+        .series
+        .iter()
+        .map(|series| thin(series.points(span, end), 4 * area.width as usize))
+        .collect();
+    let ymax = data
+        .iter()
+        .flat_map(|points| points.iter().map(|(_, y)| *y))
+        .fold(0.0, f64::max);
+    let ymax = if ymax > 0.0 { ymax } else { 1.0 };
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    // A window counts back from now
+    let x_labels = match span {
+        history::Span::Whole => [xmin, (xmin + xmax) / 2.0, xmax].map(format::axis_time),
+        history::Span::Last(window) => [
+            format!("-{}", format::axis_time(window)),
+            format!("-{}", format::axis_time(window / 2.0)),
+            "now".to_string(),
+        ],
     }
+    .map(|label| Span::styled(label, bold))
+    .to_vec();
+    let y_labels = [0.0, ymax / 2.0, ymax]
+        .into_iter()
+        .map(|y| Span::styled(format::si(y), bold))
+        .collect::<Vec<_>>();
 
-    pub fn new_single(
-        label: String,
-        color: Color,
-        observation_window: Option<f64>,
-        name: String,
-    ) -> Graph {
-        Graph {
-            data: vec![Vec::new()],
-            labels: vec![label],
-            colors: vec![color],
-            ymax: 0.0,
-            xmin: 0.0,
-            xmax: 0.0,
-            observation_window,
-            name,
-        }
+    let datasets: Vec<Dataset> = chart
+        .series
+        .iter()
+        .zip(&data)
+        .map(|(series, points)| {
+            Dataset::default()
+                .marker(Braille)
+                .style(Style::default().fg(series.color))
+                .graph_type(GraphType::Line)
+                .data(points)
+        })
+        .collect();
+
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(title(chart, key, area.width));
+    if let Some(bottom) = bottom {
+        block = block.title_bottom(bottom.right_aligned());
     }
-
-    pub fn get_chart(&self, y_suffix: &str, axis_color: Color, border_color: Color) -> Chart<'_> {
-        let xmax = if self.xmax > self.xmin {
-            self.xmax
-        } else {
-            self.xmin + 1.0
-        };
-        let ymax = if self.ymax > 0.0 { self.ymax } else { 1.0 };
-        let x_labels = vec![
-            Span::styled(
-                format!("{:.2}s", self.xmin),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:.2}s", (self.xmin + xmax) / 2.0),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{:.2}s", xmax),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ];
-
-        let y_labels = vec![
-            Span::styled(
-                format!("{}", 0),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}", RateWatcher::<u32>::format_rate(ymax / 2.0, y_suffix)),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}", RateWatcher::<u32>::format_rate(ymax, y_suffix)),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ];
-
-        let datasets: Vec<Dataset> = self
-            .data
-            .iter()
-            .zip(self.labels.iter())
-            .zip(self.colors.iter())
-            .map(|((data, label), color)| {
-                Dataset::default()
-                    .name(label.clone())
-                    .marker(Braille)
-                    .style(Style::default().fg(*color))
-                    .graph_type(GraphType::Line)
-                    .data(data)
-            })
-            .collect();
-
-        Chart::new(datasets)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(border_color))
-                    .title(self.name.clone()),
-            )
-            .x_axis(
-                Axis::default()
-                    .style(Style::default().fg(axis_color))
-                    .bounds([self.xmin, xmax])
-                    .labels(x_labels),
-            )
-            .y_axis(
-                Axis::default()
-                    .style(Style::default().fg(axis_color))
-                    .bounds([0.0, ymax])
-                    .labels(y_labels),
-            )
-            .legend_position(Some(LegendPosition::TopLeft))
-            .hidden_legend_constraints((Constraint::Min(0), Constraint::Min(0)))
-    }
-
-    pub fn add_val(&mut self, idx: usize, val: (f64, f64)) {
-        if let Some(data) = self.data.get_mut(idx) {
-            data.push(val);
-            self.update_bounds(val.0);
-        }
-    }
-
-    fn update_bounds(&mut self, latest_x: f64) {
-        self.xmax = self.xmax.max(latest_x);
-        self.xmin = self
-            .observation_window
-            .map(|window| (self.xmax - window).max(0.0))
-            .unwrap_or(0.0);
-
-        if self.observation_window.is_some() {
-            for data in &mut self.data {
-                data.retain(|(x, _)| *x >= self.xmin);
-            }
-        }
-
-        self.ymax = self
-            .data
-            .iter()
-            .flat_map(|data| data.iter().map(|(_, y)| *y))
-            .fold(0.0, f64::max);
-    }
+    let widget = Chart::new(datasets)
+        .block(block)
+        .x_axis(Axis::default().bounds([xmin, xmax]).labels(x_labels))
+        .y_axis(Axis::default().bounds([0.0, ymax]).labels(y_labels))
+        .legend_position(None);
+    frame.render_widget(widget, area);
 }

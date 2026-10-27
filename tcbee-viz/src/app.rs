@@ -4,24 +4,34 @@ use crate::{
     backend::db::DbBackend,
     settings::AppSettings,
     ui::{
-        tab_home::TabHome, tab_multi_flow::TabMultiFlow, tab_process::TabProcess,
-        tab_settings::TabSettings, tab_single_flow::TabSingleFlow, theme,
+        tab_home::TabHome,
+        tab_mptcp::{self, TabMptcp},
+        tab_multi_flow::TabMultiFlow,
+        tab_overview::TabOverview,
+        tab_process::TabProcess,
+        tab_settings::TabSettings,
+        tab_single_flow::TabSingleFlow,
+        theme,
     },
 };
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tab {
     Home,
+    Overview,
     Single,
     Multi,
+    Mptcp,
     Process,
     Settings,
 }
 
 const TABS: &[(Tab, &str)] = &[
     (Tab::Home, "Home"),
+    (Tab::Overview, "Overview"),
     (Tab::Single, "Single Flow"),
     (Tab::Multi, "Multi Flow"),
+    (Tab::Mptcp, "MPTCP"),
     (Tab::Process, "Process"),
     (Tab::Settings, "Settings"),
 ];
@@ -32,8 +42,10 @@ pub struct TcbeeApp {
     db: DbBackend,
 
     tab_home: TabHome,
+    tab_overview: TabOverview,
     tab_single: TabSingleFlow,
     tab_multi: TabMultiFlow,
+    tab_mptcp: TabMptcp,
     tab_process: TabProcess,
     tab_settings: TabSettings,
 }
@@ -45,8 +57,10 @@ impl Default for TcbeeApp {
             settings: AppSettings::default(),
             db: DbBackend::default(),
             tab_home: TabHome::default(),
+            tab_overview: TabOverview::default(),
             tab_single: TabSingleFlow::default(),
             tab_multi: TabMultiFlow::default(),
+            tab_mptcp: TabMptcp::default(),
             tab_process: TabProcess::default(),
             tab_settings: TabSettings::default(),
         }
@@ -75,8 +89,19 @@ impl eframe::App for TcbeeApp {
                     );
                     ui.add_space(16.0);
 
+                    let has_mptcp = tab_mptcp::has_mptcp(&self.db);
+                    if self.active_tab == Tab::Mptcp && !has_mptcp {
+                        self.reset_tab(Tab::Mptcp);
+                        self.active_tab = Tab::Home;
+                    }
+                    let mptcp_hint = if self.db.is_connected() {
+                        tab_mptcp::NO_MPTCP_HINT
+                    } else {
+                        "Open a database on the Home tab first."
+                    };
                     for &(tab, label) in TABS {
                         let selected = self.active_tab == tab;
+                        let enabled = tab != Tab::Mptcp || has_mptcp;
                         let button = egui::Button::new(egui::RichText::new(label).strong().color(
                             if selected {
                                 egui::Color32::WHITE
@@ -97,7 +122,10 @@ impl eframe::App for TcbeeApp {
                                 egui::Color32::TRANSPARENT
                             },
                         ));
-                        if ui.add(button).clicked() && !selected {
+                        let response = ui
+                            .add_enabled(enabled, button)
+                            .on_disabled_hover_text(mptcp_hint);
+                        if response.clicked() && !selected {
                             self.reset_tab(self.active_tab);
                             self.active_tab = tab;
                         }
@@ -112,11 +140,17 @@ impl eframe::App for TcbeeApp {
                 Tab::Home => {
                     self.tab_home.show(ui, &mut self.db, &mut self.settings);
                 }
+                Tab::Overview => {
+                    self.tab_overview.show(ui, &self.db, &self.settings);
+                }
                 Tab::Single => {
                     self.tab_single.show(ui, &self.db, &self.settings);
                 }
                 Tab::Multi => {
                     self.tab_multi.show(ui, &self.db, &self.settings);
+                }
+                Tab::Mptcp => {
+                    self.tab_mptcp.show(ui, &self.db, &self.settings);
                 }
                 Tab::Process => {
                     self.tab_process.show(ui, &self.db, &self.settings);
@@ -140,11 +174,10 @@ impl TcbeeApp {
                         .set_status(format!("Connected: {}", path.to_string_lossy()));
                 }
                 Err(e) => {
-                    app.tab_home.set_status(format!(
-                        "Error opening {}: {}",
-                        path.to_string_lossy(),
-                        e
-                    ));
+                    app.tab_home.set_error(
+                        format!("Error opening {}: {}", path.to_string_lossy(), e.summary),
+                        e.details,
+                    );
                 }
             }
         }
@@ -154,8 +187,10 @@ impl TcbeeApp {
 
     fn reset_tab(&mut self, tab: Tab) {
         match tab {
+            Tab::Overview => self.tab_overview.reset(),
             Tab::Single => self.tab_single.reset(),
             Tab::Multi => self.tab_multi.reset(),
+            Tab::Mptcp => self.tab_mptcp.reset(),
             Tab::Process => self.tab_process.reset(),
             _ => {}
         }

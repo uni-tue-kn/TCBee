@@ -1,14 +1,23 @@
 [package]
 name = "ts_storage"
 version = "0.1.0"
-edition = "2021"
-license = "MIT"
+edition.workspace = true
+license.workspace = true
 
 [features]
-bundled = ["duckdb/bundled"]
+default = ["sqlite", "duckdb"]
+# Storage engines. Build with --no-default-features --features sqlite to skip DuckDB
+# (which takes very long to build).
+sqlite = ["dep:rusqlite"]
+duckdb = ["dep:duckdb"]
+# Bundled C libraries, for whichever engines are enabled.
+bundled = ["duckdb?/bundled", "rusqlite?/bundled"]
 
 [dependencies]
-duckdb = { version = "1.3.2" }
-ouroboros = "0.18.5"
-sqlite = { version = "0.36.1" }
+duckdb = { version = "1.3.2", features = ["appender-arrow"], optional = true }
+rusqlite = { version = "0.37", optional = true }
 thiserror = "1.0.60"
+duckdb-cache.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

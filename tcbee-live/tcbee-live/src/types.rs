@@ -1,5 +1,6 @@
 use egui::Color32;
-use tcbee_live_common::tcp_sock::{cwnd_trace_entry, FlowKey};
+
+use crate::bpf::FlowKey;
 
 /// Minimum nanoseconds between stored samples — one point per 50 ms.
 pub const SAMPLE_INTERVAL_NS: u64 = 50_000_000;
@@ -46,19 +47,6 @@ impl FlowData {
     }
 }
 
-/// Extract a FlowKey from a ring-buffer event using the same socket-local
-/// ordering as the eBPF probe's make_flow_key().
-pub fn flow_key_from_entry(entry: &cwnd_trace_entry) -> FlowKey {
-    FlowKey {
-        src_v6: entry.src_v6,
-        dst_v6: entry.dst_v6,
-        src_port: entry.sport,
-        dst_port: entry.dport,
-        family: entry.family,
-        _pad: 0,
-    }
-}
-
 pub fn format_flow(key: &FlowKey) -> String {
     let src = format_addr(&key.src_v6, key.family);
     let dst = format_addr(&key.dst_v6, key.family);
@@ -71,5 +59,32 @@ fn format_addr(v6: &[u8; 16], family: u16) -> String {
         format!("{}.{}.{}.{}", v6[12], v6[13], v6[14], v6[15])
     } else {
         std::net::Ipv6Addr::from(*v6).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_ipv4_mapped_and_ipv6_flows() {
+        let mut src_v6 = [0; 16];
+        src_v6[10..].copy_from_slice(&[0xff, 0xff, 10, 0, 0, 1]);
+        let mut dst_v6 = [0; 16];
+        dst_v6[10..].copy_from_slice(&[0xff, 0xff, 10, 0, 0, 2]);
+        let mut key = FlowKey {
+            src_v6,
+            dst_v6,
+            src_port: 5201,
+            dst_port: 40000,
+            family: 2,
+            _pad: 0,
+        };
+        assert_eq!(format_flow(&key), "10.0.0.1:5201 \u{2192} 10.0.0.2:40000");
+
+        key.family = 10;
+        key.src_v6 = std::net::Ipv6Addr::LOCALHOST.octets();
+        key.dst_v6 = "fd00::2".parse::<std::net::Ipv6Addr>().unwrap().octets();
+        assert_eq!(format_flow(&key), "::1:5201 \u{2192} fd00::2:40000");
     }
 }

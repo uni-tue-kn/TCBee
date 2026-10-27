@@ -4,7 +4,13 @@ TCBee unified testing launcher.
 
 Interactively selects a tool (tcbee-live, tcbee-record, or tcbee-full) and a
 scenario, then delegates to topology.py.
+
+    run.py [--headless [--duration S]]
+
+--headless skips the tool menu and runs tcbee-full without the recorder's terminal UI: the
+recorder stops after S seconds, then the recording is processed and opened in tcbee-viz.
 """
+import argparse
 import os
 import sys
 import subprocess
@@ -35,10 +41,11 @@ def menu(title, options):
 RECORD_FLAGS = [
     ("-h tcbee-eth0", "headers",       "TCP packet headers on tcbee-eth0"),
     ("-w", "cwnd",          "send_cwnd kernel calls"),
-    ("-a", "algorithms",    "CUBIC / BBR algorithm state"),
-    ("-t", "tracepoints",   "tcp_probe tracepoint (main TCP metrics)"),
-    ("-k", "kernel",        "tcp_sendmsg / tcp_recvmsg (all TCP metrics)"),
-    ("-m", "metrics",       "write metrics.json"),
+    ("-a", "algorithms",    "CUBIC, BBR and Reno internals"),
+    ("-t", "tracepoints",   "TCP tracepoints: tcp_probe and the TCP events"),
+    ("-k", "kernel",        "socket (all TCP metrics) at timers and TCP events"),
+    ("-m", "mptcp",         "MPTCP path manager events (added for the MPTCP scenario)"),
+    ("--metrics", "metrics", "write metrics.json"),
 ]
 
 
@@ -49,7 +56,7 @@ def ask_record_args():
         ("algorithms            [-a]",           "-a"),
         ("tracepoints           [-t]",           "-t"),
         ("kernel functions      [-k]",           "-k"),
-        ("full trace            [-h tcbee-eth0 -w -t -k -a -m]", "-h tcbee-eth0 -w -t -k -a -m"),
+        ("full trace            [-h tcbee-eth0 -w -t -k -a --metrics]", "-h tcbee-eth0 -w -t -k -a --metrics"),
         ("custom",                               None),
     ]
     choice = menu("Select recording profile:", profiles)
@@ -89,49 +96,66 @@ def rebuild():
         dirs.append(REPO_ROOT / "tcbee-live")
     if target in ("record", "all"):
         dirs.append(REPO_ROOT / "tcbee-record")
-    if target in ("process", "all"):
-        dirs.append(REPO_ROOT / "tcbee-process")
-    if target in ("viz", "all"):
-        dirs.append(REPO_ROOT / "tcbee-viz")
-    for d in dirs:
-        print(f"\nBuilding {d.name}...")
-        result = subprocess.run(
-            ["cargo", "build", "--release"],
-            cwd=d,
-        )
+    # tcbee-process and tcbee-viz are members of the cargo workspace in the repository root
+    # (one target/, DuckDB is compiled once): build them in one cargo call.
+    packages = [p for t, p in (("process", "tcbee-process"), ("viz", "tcbee-viz")) if target in (t, "all")]
+    builds = [(d.name, ["cargo", "build", "--release"], d) for d in dirs]
+    if packages:
+        flags = [flag for p in packages for flag in ("-p", p)]
+        builds.append((", ".join(packages), ["cargo", "build", "--release", *flags], REPO_ROOT))
+    # run.py re-runs itself under sudo; build as the invoking user so target/ stays owned by them
+    user = os.environ.get("SUDO_USER")
+    as_user = ["sudo", "-u", user, "-E"] if os.geteuid() == 0 and user else []
+    for name, cmd, cwd in builds:
+        cmd = as_user + cmd
+        print(f"\nBuilding {name}...")
+        result = subprocess.run(cmd, cwd=cwd)
         if result.returncode != 0:
-            print(f"  Build failed for {d.name}.")
+            print(f"  Build failed for {name}.")
         else:
             print(f"  Done.")
 
 
-def main():
+def main(args):
     # ── Tool ──────────────────────────────────────────────────────────────────
-    tool = menu("Select tool:", [
-        ("tcbee-live   (egui window)",          "live"),
-        ("tcbee-record (TUI)",                  "record"),
-        ("tcbee-full   (record, process, viz)", "full"),
-        ("Rebuild Program",                     "rebuild"),
-    ])
+    if args.headless:
+        tool = "full"
+    else:
+        tool = menu("Select tool:", [
+            ("tcbee-live   (egui window)",          "live"),
+            ("tcbee-record (TUI)",                  "record"),
+            ("tcbee-full   (record, process, viz)", "full"),
+            ("Rebuild Program",                     "rebuild"),
+        ])
 
     if tool == "rebuild":
         rebuild()
-        main()
+        main(args)
         return
 
     # ── Scenario ──────────────────────────────────────────────────────────────
-    cc, double = menu("Select scenario:", [
-        ("CUBIC  —  single stream",                       ("cubic", False)),
-        ("CUBIC  —  two streams  (second starts at +30s)", ("cubic", True)),
-        ("BBR    —  single stream",                       ("bbr",   False)),
-        ("BBR    —  two streams  (second starts at +30s)", ("bbr",   True)),
-    ])
+    scenarios = [
+        ("CUBIC  —  single stream",                       ("cubic", False, False)),
+        ("CUBIC  —  two streams  (second starts at +30s)", ("cubic", True,  False)),
+        ("BBR    —  single stream",                       ("bbr",   False, False)),
+        ("BBR    —  two streams  (second starts at +30s)", ("bbr",   True,  False)),
+    ]
+    if tool != "live":
+        scenarios.append(
+            ("MPTCP  —  two paths: subflow joins, fails, turns backup, leaves",
+             ("cubic", False, True)))
+    cc, double, mptcp = menu("Select scenario:", scenarios)
 
     # ── tcbee-record profile ───────────────────────────────────────────────────
     record_args = ""
     if tool in ("record", "full"):
         record_args = ask_record_args()
-        if tool == "full":
+        if args.headless:
+            print(
+                "\n  Headless run: tcbee-record runs without its terminal UI and stops\n"
+                "  by itself; processing and visualization then continue automatically.\n"
+            )
+        elif tool == "full":
             print(
                 "\n  tcbee-full starts with tcbee-record. Quit the recorder with q\n"
                 "  when the capture is complete; processing and visualization then\n"
@@ -150,8 +174,14 @@ def main():
     ]
     if double:
         cmd.append("--double")
+    if mptcp:
+        cmd.append("--mptcp")
     if record_args:
         cmd.append(f"--record-args={record_args}")
+    if args.headless:
+        cmd.append("--headless")
+    if args.duration:
+        cmd.append(f"--duration={args.duration}")
 
     print(f"\nCleaning up any leftover mininet state...")
     subprocess.run(["sudo", "mn", "-c"], capture_output=True)
@@ -161,7 +191,17 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="TCBee testing launcher")
+    parser.add_argument("--headless", action="store_true",
+                        help="record without the terminal UI, stop after --duration seconds, "
+                             "then process and open tcbee-viz")
+    parser.add_argument("--duration", type=int,
+                        help="seconds a headless run records (default: 30, 60 for two "
+                             "streams)")
+    args = parser.parse_args()
+    if args.duration and not args.headless:
+        parser.error("--duration needs --headless")
     if os.geteuid() != 0:
         # Re-exec under sudo -E so DISPLAY is preserved.
         os.execvp("sudo", ["sudo", "-E", sys.executable] + sys.argv)
-    main()
+    main(args)

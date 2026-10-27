@@ -59,6 +59,24 @@ pub fn muted_text(dark_mode: bool) -> Color32 {
     }
 }
 
+/// Marks something to watch, between success and error
+pub fn warning(dark_mode: bool) -> Color32 {
+    if dark_mode {
+        Color32::from_rgb(251, 146, 60)
+    } else {
+        Color32::from_rgb(234, 88, 12)
+    }
+}
+
+/// Marks information, apart from the accent blue
+pub fn info(dark_mode: bool) -> Color32 {
+    if dark_mode {
+        Color32::from_rgb(167, 139, 250)
+    } else {
+        Color32::from_rgb(124, 58, 237)
+    }
+}
+
 pub fn border(dark_mode: bool) -> Color32 {
     if dark_mode {
         Color32::from_rgb(51, 65, 85)

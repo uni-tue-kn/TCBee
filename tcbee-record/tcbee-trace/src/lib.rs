@@ -1,9 +1,21 @@
+pub mod name_list;
+pub mod onchange;
+pub mod owners;
+pub mod sock_hooks;
+
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
 use chrono::Local;
+
+/// Run metadata that tcbee-record writes with `--metadata` (JSON)
+pub const METADATA_FILE: &str = "metadata.json";
+
+/// Values and names of the kernel's drop reasons, written with `--drops` (JSON): the values
+/// differ between kernels
+pub const DROP_REASONS_FILE: &str = "drop_reasons.json";
 
 /// All trace file types produced by tcbee-record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +33,29 @@ pub enum TraceFile {
     Tcp4Send,
     Tcp6Receive,
     Tcp6Send,
+    MptcpPm,
+    TcpEvents,
+    /// Socket state after each run of the write timer (full mode)
+    TimerSock,
+    /// Socket state after each received segment (full mode, `--sock-hooks ingress`)
+    IngressSock,
+    /// Socket state at TCP events (full mode, the socket event hooks)
+    EventSock,
+    /// Reno's congestion avoidance and ssthresh, also when other algorithms use them (-a)
+    Reno,
+    /// Headers at the driver (`--headers-at driver`): received packets at XDP, sent ones at
+    /// net_dev_start_xmit
+    Tcp4DriverReceive,
+    Tcp6DriverReceive,
+    Tcp4DriverSend,
+    Tcp6DriverSend,
+    /// The process that opened each connection, at connect and accept
+    FlowOwners,
+    /// On-change mode (`--on-change`): step series, see `onchange::Manifest`
+    SendSockOc,
+    RecvSockOc,
+    SendCwndOc,
+    RecvCwndOc,
 }
 
 impl TraceFile {
@@ -39,6 +74,21 @@ impl TraceFile {
             TraceFile::Tcp4Send => "tcp4_send.tcp",
             TraceFile::Tcp6Receive => "tcp6_receive.tcp",
             TraceFile::Tcp6Send => "tcp6_send.tcp",
+            TraceFile::MptcpPm => "mptcp_pm.tcp",
+            TraceFile::TcpEvents => "tcp_events.tcp",
+            TraceFile::TimerSock => "timer_sock.tcp",
+            TraceFile::IngressSock => "ingress_sock.tcp",
+            TraceFile::EventSock => "event_sock.tcp",
+            TraceFile::Reno => "reno.tcp",
+            TraceFile::Tcp4DriverReceive => "tcp4_driver_receive.tcp",
+            TraceFile::Tcp6DriverReceive => "tcp6_driver_receive.tcp",
+            TraceFile::Tcp4DriverSend => "tcp4_driver_send.tcp",
+            TraceFile::Tcp6DriverSend => "tcp6_driver_send.tcp",
+            TraceFile::FlowOwners => "flow_owners.tcp",
+            TraceFile::SendSockOc => "send_sock_oc.tcp",
+            TraceFile::RecvSockOc => "recv_sock_oc.tcp",
+            TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
+            TraceFile::RecvCwndOc => "recv_cwnd_oc.tcp",
         }
     }
 
@@ -57,6 +107,21 @@ impl TraceFile {
             TraceFile::Tcp4Send,
             TraceFile::Tcp6Receive,
             TraceFile::Tcp6Send,
+            TraceFile::MptcpPm,
+            TraceFile::TcpEvents,
+            TraceFile::TimerSock,
+            TraceFile::IngressSock,
+            TraceFile::EventSock,
+            TraceFile::Reno,
+            TraceFile::Tcp4DriverReceive,
+            TraceFile::Tcp6DriverReceive,
+            TraceFile::Tcp4DriverSend,
+            TraceFile::Tcp6DriverSend,
+            TraceFile::FlowOwners,
+            TraceFile::SendSockOc,
+            TraceFile::RecvSockOc,
+            TraceFile::SendCwndOc,
+            TraceFile::RecvCwndOc,
         ]
     }
 }

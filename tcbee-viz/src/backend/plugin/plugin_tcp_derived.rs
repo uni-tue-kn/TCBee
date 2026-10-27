@@ -1,4 +1,4 @@
-use ts_storage::DataValue;
+use ts_storage::{DataValue, ValueKind};
 
 use crate::data::series_data::SeriesData;
 
@@ -459,7 +459,7 @@ fn int_series(
     let mut out = SeriesData::new(
         name.to_string(),
         -1,
-        DataValue::Int(0),
+        ValueKind::Int,
         template.global_t_min,
         template.global_t_max,
         y_min,
@@ -481,7 +481,7 @@ fn bool_series(
     let mut out = SeriesData::new(
         name.to_string(),
         -1,
-        DataValue::Boolean(false),
+        ValueKind::Bool,
         template.global_t_min,
         template.global_t_max,
         y_min,
@@ -503,7 +503,7 @@ fn float_series(
     let mut out = SeriesData::new(
         name.to_string(),
         -1,
-        DataValue::Float(0.0),
+        ValueKind::Float,
         template.global_t_min,
         template.global_t_max,
         y_min,
@@ -533,7 +533,7 @@ fn string_series(
     let mut out = SeriesData::new(
         name.to_string(),
         -1,
-        DataValue::String(String::new()),
+        ValueKind::String,
         template.global_t_min,
         template.global_t_max,
         0.0,
