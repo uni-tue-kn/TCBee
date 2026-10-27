@@ -83,6 +83,12 @@ jobs:
         sudo apt update
         sudo apt install -y libsqlite3-dev pkg-config fontconfig libfontconfig1-dev libgl-dev libegl-dev
 
+    # The cache restores libduckdb-sys as built but not the libduckdb it downloaded into
+    # target/duckdb-download, so rerun its build script to fetch the library again
+    - name: Fetch libduckdb
+      if: matrix.download_duckdb == '1'
+      run: cargo clean -p libduckdb-sys
+
     - name: Test
       run: cargo test $PACKAGES ${{ matrix.features }}
 
