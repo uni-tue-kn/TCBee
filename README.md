@@ -11,17 +11,19 @@ TCBee monitors TCP flows at up to 5M events/s. It records packet headers and ker
 
 ## Quick Start
 
-`tcbee-record` writes raw `*.tcp` files, `tcbee-process` turns them into a database, and `tcbee-viz` plots it. Download `tcbee-<tag>-linux-x86_64.tar.gz` from the [releases page](https://github.com/uni-tue-kn/TCBee/releases) and install it to `/usr/local/bin`:
+`tcbee-record` writes raw `*.tcp` files, `tcbee-process` turns them into a database, and `tcbee-viz` plots it. Download the package for your distribution from the [releases page](https://github.com/uni-tue-kn/TCBee/releases) and install it:
 
 ```bash
-tar xzf tcbee-<tag>-linux-x86_64.tar.gz
-sudo tcbee-<tag>-linux-x86_64/install.sh     # PREFIX=... for another place, --uninstall to remove
+sudo apt install ./tcbee_<version>_amd64.deb         # Debian, Ubuntu
+sudo dnf install ./tcbee-<version>-1.x86_64.rpm      # Fedora, RHEL, Rocky, Alma
 ```
+
+On other distributions, unpack `tcbee-<tag>-linux-x86_64.tar.gz` and run `sudo ./install.sh` in it; it installs to `/usr/local/bin` (`PREFIX=...` for another place, `--uninstall` to remove). Where `sudo` does not search `/usr/local/bin`, call `sudo /usr/local/bin/tcbee ...`. Remove such an install before installing a package, because `/usr/local/bin` comes first in `PATH`.
 
 Requirements:
 
 - Linux on x86_64, kernel 5.12 or newer with BTF (`/sys/kernel/btf/vmlinux`). Root for `record` and `live`.
-- glibc. On much older distributions, [build from source](#building-from-source).
+- A glibc as new as that of Ubuntu 24.04 (the release is built there), e.g. Debian 13 or RHEL 10; the packages state the exact minimum. On older distributions, [build from source](#building-from-source).
 - For `tcbee-viz`, a display with OpenGL (X11 or Wayland). If it does not start, see [its runtime requirements](tcbee-viz/README.md#runtime-requirements).
 
 Record the packet headers on `eth0` and the socket state of the flows on port 5201 (e.g. an `iperf3` test), stop with Ctrl+C, then process and open the recording:
@@ -32,7 +34,7 @@ tcbee process -o /tmp/myflow.duck
 tcbee viz /tmp/myflow.duck
 ```
 
-In the viewer, open *Single Flow*, pick a flow and tick `snd_cwnd`. The recording lands in `/tmp/tcbee_<timestamp>/`, and `process` picks the newest one. `tcbee <command>` runs the matching `tcbee-*` tool; `tcbee --help` lists them. On RHEL, Rocky and Alma, `sudo` does not search `/usr/local/bin`, so run `sudo /usr/local/bin/tcbee record ...` there.
+In the viewer, open *Single Flow*, pick a flow and tick `snd_cwnd`. The recording lands in `/tmp/tcbee_<timestamp>/`, and `process` picks the newest one. `tcbee <command>` runs the matching `tcbee-*` tool; `tcbee --help` lists them.
 
 ## The tools
 
