@@ -18,9 +18,9 @@ run_tool() {
     shift
 
     if [ -x "$SCRIPT_DIR/$tool" ]; then
-        "$SCRIPT_DIR/$tool" "$@"
+        exec "$SCRIPT_DIR/$tool" "$@"
     else
-        "$tool" "$@"
+        exec "$tool" "$@"
     fi
 }
 
@@ -47,5 +47,3 @@ case "$COMMAND" in
         exit 1
         ;;
 esac
-
-exit 0
