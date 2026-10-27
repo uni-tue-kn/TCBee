@@ -14,11 +14,11 @@ Databases from earlier TCBee versions (`time_series` and `time_series_data` tabl
 
 ## Database schema
 
-Besides the catalog tables there is one table per kind of recorded event, with one row per record. The complete description is in [ts-storage/README.md](../../ts-storage/README.md#database-layout-schema-version-2).
+Besides the catalog tables there is one table per kind of recorded event, with one row per record. The complete description is in [ts-storage/README.md](../../ts-storage/README.md#database-layout-schema-version-3).
 
 | Table | Content |
 |---|---|
-| `meta(key, value)` | `schema_version` is `'2'`; also `writer`, `trace_dir`, `created_at` |
+| `meta(key, value)` | `schema_version` is `'3'`; also `writer`, `trace_dir`, `created_at` |
 | `flows(id, src, dst, sport, dport, l4proto)` | one row per flow; ports are in host byte order |
 | `series(id, flow_id, kind, source, dir, name, value_type, tbl, col, n, t_min, t_max, v_min, v_max)` | one row per series: a column of an event table for one flow and direction, or a series computed in `tcbee-viz` |
 | `ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6` | the events: `flow_id`, `dir`, `ts`, `seq`, then one column per field |

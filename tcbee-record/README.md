@@ -1,4 +1,4 @@
-# TCBee
+# tcbee-record
 
 ## Prerequisites
 

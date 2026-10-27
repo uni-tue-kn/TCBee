@@ -8,7 +8,7 @@ tcbee-process -q -o /tmp/myflow.sqlite -t 4 -f    # SQLite, 4 threads, replace a
 tcbee-process -s ~/traces/tcbee_2026-10-05T18-16-22 -d
 ```
 
-`tcbee-process --help` prints the flags. The table layout is in [ts-storage/README.md](../ts-storage/README.md#database-layout-schema-version-2).
+`tcbee-process --help` prints the flags. The table layout is in [ts-storage/README.md](../ts-storage/README.md#database-layout-schema-version-3).
 
 ## Usage
 
