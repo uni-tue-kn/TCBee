@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual runs build the archive and the packages of any branch as workflow artifacts, without a release
+  workflow_dispatch:
 
 jobs:
   build:
@@ -13,6 +15,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Name and version
+        # A tag names the release; a manual run gets e.g. dev-1a2b3c4 and the package version
+        # 0.0.0~dev.<run>, which sorts below every release
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            TAG="$GITHUB_REF_NAME"
+            VERSION="${TAG#v}"
+          else
+            BRANCH=$(echo "$GITHUB_REF_NAME" | tr -c 'a-zA-Z0-9.\n' '.')
+            TAG="$BRANCH-$(git rev-parse --short HEAD)"
+            VERSION="0.0.0~$BRANCH.$GITHUB_RUN_NUMBER"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Install system dependencies
         run: |
@@ -51,8 +68,6 @@ jobs:
           cargo build --release --features static
 
       - name: Package release archive
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           NAME="tcbee-$TAG-linux-x86_64"
           mkdir -p "$NAME"
@@ -73,10 +88,7 @@ jobs:
           tar xzf nfpm_2.47.0_Linux_x86_64.tar.gz nfpm
 
       - name: Build .deb and .rpm
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
-          export VERSION="${TAG#v}"
           export PKG_DIR="$PWD/tcbee-$TAG-linux-x86_64"
           GLIBC_MIN=$(objdump -T "$PKG_DIR"/tcbee-{record,process,viz,live} | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | cut -d_ -f2)
           test -n "$GLIBC_MIN"
@@ -88,7 +100,19 @@ jobs:
           mv dist/* .
           sha256sum "tcbee-$TAG-linux-x86_64.tar.gz" tcbee_*.deb tcbee-*.rpm > SHA256SUMS
 
+      - name: Upload artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tcbee-${{ env.TAG }}
+          path: |
+            tcbee-${{ env.TAG }}-linux-x86_64.tar.gz
+            tcbee_*.deb
+            tcbee-*.rpm
+            SHA256SUMS
+
       - name: Create release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
