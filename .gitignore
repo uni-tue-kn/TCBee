@@ -1,4 +1,5 @@
-install/
+/install/
+/bin/
 /target/
 
 # working notes, kept local
