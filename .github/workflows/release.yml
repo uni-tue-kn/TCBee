@@ -115,8 +115,11 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+        # A tag with a suffix (v2.0.0-rc1) makes a pre-release, which is not marked as the latest
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "TCBee ${{ github.ref_name }}" \
+          PRERELEASE=()
+          if [[ "$TAG" == *-* ]]; then PRERELEASE=(--prerelease); fi
+          gh release create "$TAG" "${PRERELEASE[@]}" \
+            --title "TCBee $TAG" \
             --generate-notes \
-            "tcbee-${{ github.ref_name }}-linux-x86_64.tar.gz" tcbee_*.deb tcbee-*.rpm SHA256SUMS
+            "tcbee-$TAG-linux-x86_64.tar.gz" tcbee_*.deb tcbee-*.rpm SHA256SUMS
