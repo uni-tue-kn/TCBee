@@ -3,12 +3,11 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use egui::{RichText, ScrollArea};
 use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoints};
 use indexmap::IndexMap;
-use tcbee_live_common::tcp_sock::FlowKey;
 
+use crate::bpf::FlowKey;
 use crate::types::{CwndEvent, FilterCmd, FlowData, PALETTE, SAMPLE_INTERVAL_NS};
 
 pub struct TcbeeApp {
-    _rt: tokio::runtime::Runtime,
     event_rx: Receiver<CwndEvent>,
     disc_rx: Receiver<FlowKey>,
     filter_tx: SyncSender<FilterCmd>,
@@ -25,7 +24,6 @@ pub struct TcbeeApp {
 
 impl TcbeeApp {
     pub fn new(
-        rt: tokio::runtime::Runtime,
         event_rx: Receiver<CwndEvent>,
         disc_rx: Receiver<FlowKey>,
         filter_tx: SyncSender<FilterCmd>,
@@ -34,7 +32,6 @@ impl TcbeeApp {
         auto_fit_x: bool,
     ) -> Self {
         TcbeeApp {
-            _rt: rt,
             event_rx,
             disc_rx,
             filter_tx,

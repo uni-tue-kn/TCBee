@@ -88,7 +88,7 @@ The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-sto
 
 ## tcbee-live
 
-An optional live congestion window monitor with a GUI that writes no files. It needs a nightly toolchain and `bpf-linker`, and it is tested on Linux 6.13.6. Build it with `make live` and run `sudo ./tcbee live --select-port 5001`. See [tcbee-live/README.md](tcbee-live/README.md).
+An optional live congestion window monitor with a GUI that writes no files. It needs Linux 5.8 or newer with BTF. Build it with `make live` and run `sudo ./tcbee live --select-port 5001`. See [tcbee-live/README.md](tcbee-live/README.md).
 
 ## Testing
 

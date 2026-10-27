@@ -36,13 +36,6 @@ jobs:
           cd tcbee-record
           cargo build --release --features static
 
-      # Only tcbee-live still builds its eBPF programs with aya
-      - name: Install Rust Nightly
-        run: rustup toolchain install nightly --component rust-src
-
-      - name: Install bpf-linker
-        run: cargo install bpf-linker
-
       - name: Cache cargo (workspace)
         uses: Swatinem/rust-cache@v2
         with:
@@ -53,9 +46,10 @@ jobs:
         run: cargo build --release -p tcbee-process -p tcbee-viz --features bundled
 
       - name: Build tcbee-live
+        # Like tcbee-record: libbpf, libelf and zlib built from source and linked statically
         run: |
           cd tcbee-live
-          cargo build --release
+          cargo build --release --features static
 
       - name: Package release zip
         run: |

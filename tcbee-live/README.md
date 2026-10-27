@@ -28,19 +28,17 @@ Two eBPF `fentry` probes are attached to kernel functions at startup:
 - `__tcp_transmit_skb`: fires on every TCP segment sent
 - `tcp_rcv_established`: fires on every segment received
 
-Each probe reads the current `snd_cwnd` from the TCP socket and writes a timestamped event to a per-probe ring buffer. A background Tokio worker drains both ring buffers and forwards events to the GUI thread via a channel. The GUI downsamples incoming events to one point per 50 ms and plots cwnd over elapsed time.
+Each probe reads the current `snd_cwnd` from the TCP socket and writes a timestamped event to a ring buffer. The probes are written in C and loaded with libbpf; CO-RE resolves the kernel struct fields against the running kernel's BTF. A background thread drains the ring buffer every 33 ms and forwards events to the GUI thread via a channel. The GUI downsamples incoming events to one point per 50 ms and plots cwnd over elapsed time.
 
 A flow filter map in the eBPF layer ensures only selected flows generate events, so overhead scales with what you are actually watching.
 
 ## Prerequisites
 
-*Note: tcbee-live is Linux-only and requires BTF (BPF Type Format) support in the running kernel. It is tested on Linux 6.13.6.*
+*Note: tcbee-live is Linux-only and requires Linux 5.8 or newer (6.0 on arm64) with BTF (BPF Type Format) support.*
 
-- Clang and LLVM (e.g. `sudo apt install -y llvm clang libelf-dev libclang-dev`)
+- Clang, libelf and zlib (e.g. `sudo apt install -y clang libelf-dev zlib1g-dev pkg-config make`)
 - Rustup (> 1.28.1), install via [rustup.rs](https://rustup.rs/)
 - Stable Rust toolchain: `rustup toolchain install stable`
-- Nightly Rust toolchain: `rustup toolchain install nightly --component rust-src`
-- BPF linker: `cargo install bpf-linker`
 - pkg-config and fontconfig (e.g. `sudo apt install -y pkg-config fontconfig libfontconfig1-dev`)
 
 ## Build
@@ -50,11 +48,11 @@ cd tcbee-live
 cargo build --release
 ```
 
-The build script compiles the eBPF bytecode using a nested cargo invocation and embeds it into the binary automatically.
+The build script compiles the C eBPF programs in `tcbee-live/src/bpf/` with clang and embeds them into the binary. `cargo build --release --features static` links libbpf, libelf and zlib statically, as the release binaries do.
 
 ## Running
 
-Loading eBPF programs requires root privileges (or `CAP_BPF`/`CAP_SYS_ADMIN`):
+Loading eBPF programs requires root privileges:
 
 ```bash
 sudo ./target/release/tcbee-live
@@ -88,7 +86,8 @@ Each checked flow is rendered as a coloured line. The x-axis shows time in secon
 
 ## Limitations
 
-- Requires `root` or `CAP_BPF` to load eBPF probes.
-- Requires a kernel with BTF enabled (`CONFIG_DEBUG_INFO_BTF=y`).
-- Tested on Linux 6.13.6; may not work on significantly older or newer kernels without adjusting the kernel struct offsets in [`tcbee-live-common/src/tcp_sock.rs`](tcbee-live-common/src/tcp_sock.rs).
+- Requires `root` to load eBPF probes.
+- Requires Linux 5.8 or newer (6.0 on arm64) with BTF enabled (`CONFIG_DEBUG_INFO_BTF=y`).
+- The flow list keeps every flow seen since the start. On a host that opens thousands of connections per second it grows without bound.
+- At most 256 flows can be selected at a time. With `--select-port`, many short flows on that port use them up.
 - Data is held in memory only; closing the window discards all recorded points.
