@@ -1,5 +1,6 @@
 use egui::Color32;
-use tcbee_live_common::tcp_sock::{cwnd_trace_entry, FlowKey};
+
+use crate::bpf::FlowKey;
 
 /// Minimum nanoseconds between stored samples — one point per 50 ms.
 pub const SAMPLE_INTERVAL_NS: u64 = 50_000_000;
@@ -43,19 +44,6 @@ impl FlowData {
             selected: false,
             color,
         }
-    }
-}
-
-/// Extract a FlowKey from a ring-buffer event using the same socket-local
-/// ordering as the eBPF probe's make_flow_key().
-pub fn flow_key_from_entry(entry: &cwnd_trace_entry) -> FlowKey {
-    FlowKey {
-        src_v6: entry.src_v6,
-        dst_v6: entry.dst_v6,
-        src_port: entry.sport,
-        dst_port: entry.dport,
-        family: entry.family,
-        _pad: 0,
     }
 }
 
