@@ -61,3 +61,30 @@ fn format_addr(v6: &[u8; 16], family: u16) -> String {
         std::net::Ipv6Addr::from(*v6).to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_ipv4_mapped_and_ipv6_flows() {
+        let mut src_v6 = [0; 16];
+        src_v6[10..].copy_from_slice(&[0xff, 0xff, 10, 0, 0, 1]);
+        let mut dst_v6 = [0; 16];
+        dst_v6[10..].copy_from_slice(&[0xff, 0xff, 10, 0, 0, 2]);
+        let mut key = FlowKey {
+            src_v6,
+            dst_v6,
+            src_port: 5201,
+            dst_port: 40000,
+            family: 2,
+            _pad: 0,
+        };
+        assert_eq!(format_flow(&key), "10.0.0.1:5201 \u{2192} 10.0.0.2:40000");
+
+        key.family = 10;
+        key.src_v6 = std::net::Ipv6Addr::LOCALHOST.octets();
+        key.dst_v6 = "fd00::2".parse::<std::net::Ipv6Addr>().unwrap().octets();
+        assert_eq!(format_flow(&key), "::1:5201 \u{2192} fd00::2:40000");
+    }
+}

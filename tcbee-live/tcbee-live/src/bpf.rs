@@ -69,3 +69,78 @@ pub fn parse_event(bytes: &[u8]) -> Option<CwndEvent> {
         snd_cwnd: event.snd_cwnd,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::mem::MaybeUninit;
+
+    use libbpf_rs::{MapType, skel::SkelBuilder};
+
+    use super::*;
+
+    fn key() -> FlowKey {
+        let mut src_v6 = [0; 16];
+        src_v6[10..].copy_from_slice(&[0xff, 0xff, 10, 0, 0, 1]);
+        FlowKey {
+            src_v6,
+            dst_v6: [7; 16],
+            src_port: 5201,
+            dst_port: 40000,
+            family: 2,
+            _pad: 0,
+        }
+    }
+
+    #[test]
+    fn skeleton_has_the_programs_and_maps() {
+        let mut storage = MaybeUninit::uninit();
+        let open = LiveSkelBuilder::default().open(&mut storage).unwrap();
+        // Compiles only while both programs exist
+        let _ = (
+            &open.progs.cwnd_transmit_skb,
+            &open.progs.cwnd_rcv_established,
+        );
+
+        assert_eq!(open.maps.KNOWN_FLOWS.map_type(), MapType::LruHash);
+        assert_eq!(open.maps.FLOW_FILTER.map_type(), MapType::Hash);
+        // README: at most 256 flows can be selected at a time
+        assert_eq!(open.maps.FLOW_FILTER.max_entries(), 256);
+        assert_eq!(open.maps.EVENTS.map_type(), MapType::RingBuf);
+        assert_eq!(
+            open.maps.KNOWN_FLOWS.key_size() as usize,
+            size_of::<FlowKey>()
+        );
+        assert_eq!(
+            open.maps.FLOW_FILTER.key_size() as usize,
+            size_of::<FlowKey>()
+        );
+
+        // The kernel wants a ring buffer size that is a power of two and a page multiple
+        let size = open.maps.EVENTS.max_entries();
+        assert!(size.is_power_of_two() && size >= 4096, "{size}");
+    }
+
+    #[test]
+    fn flow_key_bytes_round_trip() {
+        let key = key();
+        assert_eq!(key.as_bytes().len(), 40);
+        assert_eq!(FlowKey::from_bytes(key.as_bytes()), Some(key));
+        assert_eq!(FlowKey::from_bytes(&[0; 39]), None);
+    }
+
+    #[test]
+    fn parse_event_reads_the_c_layout() {
+        let mut bytes = Vec::new();
+        bytes.extend(123_456_789u64.to_ne_bytes());
+        bytes.extend(key().as_bytes());
+        bytes.extend(42u32.to_ne_bytes());
+        bytes.extend(0u32.to_ne_bytes());
+
+        let event = parse_event(&bytes).unwrap();
+        assert_eq!(event.time_ns, 123_456_789);
+        assert_eq!(event.key, key());
+        assert_eq!(event.snd_cwnd, 42);
+
+        assert!(parse_event(&bytes[..55]).is_none());
+    }
+}
