@@ -45,5 +45,5 @@ The Open dialog uses `xdg-desktop-portal` with a desktop backend, or `zenity` if
 
 ## Building
 
-`make viz` in the repository root builds it into `install/`. Without DuckDB: `make viz CARGO_FLAGS="--no-default-features --features sqlite"`; opening a `.duck` file then shows an error.
+`make viz` in the repository root builds it into `bin/`, `sudo make install` installs it. Without DuckDB: `make viz CARGO_FLAGS="--no-default-features --features sqlite"`; opening a `.duck` file then shows an error.
 Cargo features and DuckDB linking are described in the [tcbee-process Building section](../tcbee-process/README.md#building).

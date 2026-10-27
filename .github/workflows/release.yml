@@ -24,8 +24,7 @@ jobs:
             pkg-config make \
             autoconf automake autopoint gettext libtool flex bison gawk \
             fontconfig libfontconfig1-dev \
-            libgl-dev libegl-dev \
-            zip
+            libgl-dev libegl-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,18 +50,22 @@ jobs:
           cd tcbee-live
           cargo build --release --features static
 
-      - name: Package release zip
+      - name: Package release archive
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          mkdir -p release
-          cp tcbee-record/target/release/tcbee-record release/
-          cp target/release/tcbee-process release/
-          cp target/release/tcbee-viz release/
-          cp tcbee-live/target/release/tcbee-live release/
-          cp tcbee release/
-          cp LICENSE release/
-          cp NOTICES release/
-          chmod +x release/tcbee
-          zip -j "tcbee-${{ github.ref_name }}-linux-x86_64.zip" release/*
+          NAME="tcbee-$TAG-linux-x86_64"
+          mkdir -p "$NAME"
+          cp tcbee-record/target/release/tcbee-record "$NAME/"
+          cp target/release/tcbee-process "$NAME/"
+          cp target/release/tcbee-viz "$NAME/"
+          cp tcbee-live/target/release/tcbee-live "$NAME/"
+          sed "s|@VERSION@|$TAG|" tcbee > "$NAME/tcbee"
+          cp packaging/install.sh "$NAME/"
+          cp LICENSE NOTICES "$NAME/"
+          chmod 755 "$NAME"/tcbee* "$NAME/install.sh"
+          tar czf "$NAME.tar.gz" "$NAME"
+          sha256sum "$NAME.tar.gz" > SHA256SUMS
 
       - name: Create release
         env:
@@ -71,4 +74,4 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "TCBee ${{ github.ref_name }}" \
             --generate-notes \
-            "tcbee-${{ github.ref_name }}-linux-x86_64.zip"
+            "tcbee-${{ github.ref_name }}-linux-x86_64.tar.gz" SHA256SUMS
