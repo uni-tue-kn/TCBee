@@ -698,6 +698,36 @@ impl MmapBackedFile {
     }
 }
 
+/// Where a writer puts the file bytes of its records
+enum Sink {
+    /// A memory-mapped file, grown in the background
+    Mmap(MmapBackedFile),
+}
+
+impl Sink {
+    /// Runs the sink's helper threads on `helpers` instead of the writer's CPU
+    fn set_helpers(&mut self, helpers: HelperPlacement) {
+        match self {
+            Sink::Mmap(file) => file.helpers = Some(helpers),
+        }
+    }
+
+    /// Returns the next `len` bytes of the file for writing
+    #[inline]
+    fn reserve(&mut self, len: usize) -> io::Result<&mut [u8]> {
+        match self {
+            Sink::Mmap(file) => file.reserve(len),
+        }
+    }
+
+    /// Writes out all reserved bytes, cuts the file to them and syncs it
+    fn finish(self) -> io::Result<()> {
+        match self {
+            Sink::Mmap(file) => file.finish(),
+        }
+    }
+}
+
 impl Drop for Writer {
     fn drop(&mut self) {
         self.stop_balancer();
@@ -780,7 +810,7 @@ where
     T: Serialize + Copy + Send + 'static,
 {
     bytes_written: Arc<AtomicU64>,
-    sink: Option<MmapBackedFile>,
+    sink: Option<Sink>,
     file_path: PathBuf,
     /// Size of a record in the file without the delimiter
     record_size: usize,
@@ -810,7 +840,7 @@ where
             .unwrap_or(WRITER_BUFFER_SIZE * 128)
             .max(WRITER_BUFFER_SIZE);
 
-        let sink = MmapBackedFile::new(&file_path, chunk_bytes)?;
+        let sink = Sink::Mmap(MmapBackedFile::new(&file_path, chunk_bytes)?);
         // Records are plain old data, all zeros is a valid value
         let zero: T = unsafe { mem::zeroed() };
         let record_size = bincode::serialized_size(&zero)
@@ -850,7 +880,7 @@ where
     /// Grows and unmaps the file on `helpers` instead of the writer's CPU
     fn with_helpers(mut self, helpers: HelperPlacement) -> Self {
         if let Some(sink) = &mut self.sink {
-            sink.helpers = Some(helpers);
+            sink.set_helpers(helpers);
         }
         self
     }
@@ -1236,7 +1266,10 @@ mod tests {
                 cpus: Arc::new(WriterCpus::new(vec![0], Placement::RoundRobin)),
                 writer: None,
             });
-        assert!(job.sink.as_ref().unwrap().helpers.is_some());
+        let Some(Sink::Mmap(file)) = &job.sink else {
+            panic!("the default sink is the memory-mapped file");
+        };
+        assert!(file.helpers.is_some());
         drop(job);
         let _ = std::fs::remove_file(&path);
     }
