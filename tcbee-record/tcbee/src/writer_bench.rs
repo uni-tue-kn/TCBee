@@ -16,7 +16,8 @@
 //! `TCBEE_BENCH_IDLE_SECS` (host CPU measured before the run as a baseline, default 2),
 //! `TCBEE_BENCH_SINK` (mmap, direct or buffered, default mmap), `TCBEE_BENCH_BUF_MB`,
 //! `TCBEE_BENCH_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled sinks' buffers and I/O
-//! threads per file), `TCBEE_BENCH_IO_CPUS` (cores for the file helpers and I/O threads of all
+//! threads per file), `TCBEE_BENCH_PREALLOC=0` (O_DIRECT without preallocation),
+//! `TCBEE_BENCH_IO_CPUS` (cores for the file helpers and I/O threads of all
 //! sinks; by default they inherit the writer's core), `TCBEE_BENCH_STEADY_GB` (the steady state
 //! of a disk run starts once this much was written, default the size of the memory),
 //! `TCBEE_BENCH_OUT` (append the JSON result to this file), `TCBEE_BENCH_MAX_GB` (stop when
@@ -94,6 +95,7 @@ impl Config {
                     * (1 << 20) as f64) as usize,
                 buffers: num("TCBEE_BENCH_BUFFERS", defaults.buffers as f64) as usize,
                 io_threads: num("TCBEE_BENCH_IO_THREADS", defaults.io_threads as f64) as usize,
+                preallocate: num("TCBEE_BENCH_PREALLOC", 1.0) != 0.0,
             },
             io_cpus: cpus("TCBEE_BENCH_IO_CPUS"),
             steady_bytes: (num("TCBEE_BENCH_STEADY_GB", 0.0) * 1e9) as u64,
@@ -535,11 +537,14 @@ where
         "devices": devs, "tmpfs": on_tmpfs(&cfg.dir), "rate_per_file": cfg.rate, "cpus": cfg.cpus, "secs": cfg.secs,
         "max_bytes": cfg.max_bytes, "size_capped": results.iter().any(|r| r.size_capped),
         "sink": cfg.sink.kind.name(), "buffer_bytes": cfg.sink.buffer_bytes, "buffers": cfg.sink.buffers,
-        "io_threads": cfg.sink.io_threads, "io_cpus": cfg.io_cpus,
+        "io_threads": cfg.sink.io_threads, "io_cpus": cfg.io_cpus, "preallocate": cfg.sink.preallocate,
         "effective_sinks": results.iter().map(|r| r.sink.as_ref().map_or("mmap", |s| s.sink)).collect::<Vec<_>>(),
         "stalls": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stalls).sum::<u64>(),
         "stall_secs": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_ns).sum::<u64>() as f64 / 1e9,
         "stall_max_ms": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_max_ns).max().unwrap_or(0) as f64 / 1e6,
+        "preallocs": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.preallocs).sum::<u64>(),
+        "prealloc_failures": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.prealloc_failures).sum::<u64>(),
+        "prealloc_stall_secs": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.prealloc_stall_ns).sum::<u64>() as f64 / 1e9,
     });
     let throughput = json!({
         "records": records, "mb": mb,

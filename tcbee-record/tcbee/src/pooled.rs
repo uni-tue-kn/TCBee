@@ -24,13 +24,20 @@ use std::{
 use log::{info, warn};
 use serde::Serialize;
 
-use crate::placement::HelperPlacement;
+use crate::{
+    placement::HelperPlacement,
+    writer::{allocate, next_capacity, spawn_helper, starts_growth},
+};
 
 /// Room after a buffer's end for the record that crosses it. A record never exceeds it.
 const SLACK: usize = 64 << 10;
 /// Alignment of the buffers in memory, and the offset alignment if the file system does
 /// not report its own
 const PAGE: usize = 4096;
+/// First preallocation step of an O_DIRECT file. Every step waits for the writes in flight
+/// (the file system drains direct I/O to change the file's size), so steps are large, and
+/// grow with the file as for the memory-mapped file.
+const PREALLOC_STEP: usize = 64 << 20;
 /// A buffer that has been filling for this long is written as it is, so that a quiet ring
 /// does not keep its records in memory only. The full buffer is written again later.
 const IDLE_WRITE: Duration = Duration::from_secs(1);
@@ -67,6 +74,9 @@ pub struct SinkConfig {
     pub buffers: usize,
     /// I/O threads per file, at most `buffers - 1` writes run at once
     pub io_threads: usize,
+    /// Extend an O_DIRECT file ahead of the writes on a helper thread. A direct write past
+    /// the end of the file takes the file system's exclusive lock.
+    pub preallocate: bool,
 }
 
 impl Default for SinkConfig {
@@ -76,6 +86,7 @@ impl Default for SinkConfig {
             buffer_bytes: 2 << 20,
             buffers: 8,
             io_threads: 2,
+            preallocate: true,
         }
     }
 }
@@ -91,6 +102,10 @@ pub struct SinkStats {
     pub stalls: u64,
     pub stall_ns: u64,
     pub stall_max_ns: u64,
+    /// Preallocation steps, the failed ones, and the stall time while one was running
+    pub preallocs: u64,
+    pub prealloc_failures: u64,
+    pub prealloc_stall_ns: u64,
 }
 
 /// A page-aligned anonymous mapping, owned by whoever holds it: the writer or, while it is
@@ -204,7 +219,7 @@ impl IoThreads {
         let mut handles = Vec::with_capacity(threads);
         for _ in 0..threads.max(1) {
             let (file, jobs, done) = (file.clone(), jobs_rx.clone(), done_tx.clone());
-            handles.push(crate::writer::spawn_helper(
+            handles.push(spawn_helper(
                 "tcbee-io",
                 cpus,
                 load_sink.clone(),
@@ -287,6 +302,9 @@ pub struct PooledFile {
     /// The first failed write. The writer stops at the next reserve.
     error: Option<io::Error>,
     failed: bool,
+    /// Length of the file with its preallocated space, and the preallocation in flight
+    allocated: u64,
+    prealloc: Option<mpsc::Receiver<io::Result<u64>>>,
     stats: SinkStats,
 }
 
@@ -373,6 +391,8 @@ impl PooledFile {
             durable_end: cur_offset,
             error: None,
             failed: false,
+            allocated: start.max(cur_offset + align as u64),
+            prealloc: None,
             stats: SinkStats {
                 sink: kind.name(),
                 ..SinkStats::default()
@@ -415,7 +435,65 @@ impl PooledFile {
         self.cur_len = overflow;
         self.partial_len = 0;
         self.partial_at = Instant::now();
+        self.preallocate();
         Ok(())
+    }
+
+    /// Takes over a finished preallocation, and starts the next one when the free space
+    /// ahead of the writes gets short
+    fn preallocate(&mut self) {
+        if !self.direct || !self.config.preallocate {
+            return;
+        }
+        if let Some(rx) = &self.prealloc {
+            match rx.try_recv() {
+                Ok(Ok(allocated)) => self.allocated = self.allocated.max(allocated),
+                Ok(Err(err)) => self.prealloc_failed(err),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.prealloc_failed(io::Error::other("the preallocation helper died"))
+                }
+            }
+            self.prealloc = None;
+        }
+        // The writes in flight and the next buffer must fit
+        let required = (self.cur_offset as usize).saturating_add(self.buffers() * self.buf_size);
+        let capacity = self.allocated as usize;
+        let next = next_capacity(capacity, PREALLOC_STEP, required);
+        if required <= capacity && !starts_growth(capacity, required, next) {
+            return;
+        }
+        let file = self.file.clone();
+        let (tx, rx) = mpsc::channel();
+        let (cpus, load_sink) = match &self.helpers {
+            Some(helpers) => (helpers.cpu_set(), helpers.load_sink()),
+            None => (None, None),
+        };
+        let spawned = spawn_helper("tcbee-prealloc", cpus, load_sink, move || {
+            let _ = tx.send(allocate(&file, capacity, next - capacity).map(|()| next as u64));
+        });
+        match spawned {
+            Ok(_) => {
+                self.prealloc = Some(rx);
+                self.stats.preallocs += 1;
+            }
+            Err(err) => self.prealloc_failed(err),
+        }
+    }
+
+    /// Writes go on without preallocation, past the end of the file. A full disk fails them.
+    fn prealloc_failed(&mut self, err: io::Error) {
+        if self.stats.prealloc_failures == 0 {
+            warn!(
+                "Preallocating the trace file failed, writing without: {}",
+                err
+            );
+        }
+        self.stats.prealloc_failures += 1;
+    }
+
+    fn buffers(&self) -> usize {
+        self.free.len() + self.in_flight + 1
     }
 
     /// Called regularly by the writer: takes back finished buffers, fails with a write error,
@@ -504,6 +582,9 @@ impl PooledFile {
         self.stats.stalls += 1;
         self.stats.stall_ns += ns;
         self.stats.stall_max_ns = self.stats.stall_max_ns.max(ns);
+        if self.prealloc.is_some() {
+            self.stats.prealloc_stall_ns += ns;
+        }
         self.take_error()
     }
 
@@ -589,6 +670,10 @@ impl PooledFile {
             }
         }
         result = result.and_then(|()| self.take_error());
+        // A running preallocation must not extend the file after it is cut
+        if let Some(rx) = self.prealloc.take() {
+            let _ = rx.recv();
+        }
         let record_len = record_len.max(1) as u64;
         let (records, len) = match &result {
             Ok(()) => ((end - self.start) / record_len, end),
@@ -719,6 +804,7 @@ pub(crate) mod tests {
             buffer_bytes: 8192,
             buffers: 3,
             io_threads: 2,
+            preallocate: true,
         }
     }
 
@@ -801,6 +887,23 @@ pub(crate) mod tests {
         let (written, _, result) = file.finish(100);
         result.unwrap();
         assert_eq!(written, 5000);
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// The file is preallocated ahead of the writes and cut to the records at the end
+    #[test]
+    fn preallocated_file_keeps_all_bytes() {
+        let path = temp("prealloc");
+        let mut file = PooledFile::new(&path, config(SinkKind::Direct)).unwrap();
+        if !file.is_direct() {
+            return;
+        }
+        let expected = fill(&mut file, 2000, 100);
+        let (written, stats, result) = file.finish(100);
+        result.unwrap();
+        assert_eq!(written, 2000);
+        assert!(stats.preallocs >= 1);
         assert_eq!(fs::read(&path).unwrap(), expected);
         fs::remove_file(&path).unwrap();
     }

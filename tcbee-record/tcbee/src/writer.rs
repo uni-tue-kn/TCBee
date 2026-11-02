@@ -484,7 +484,7 @@ where
 
 /// Allocates the blocks of a file range. Without this, a full disk is only noticed when a
 /// write into the mapping faults, and the kernel kills the process with SIGBUS.
-fn allocate(file: &File, offset: usize, len: usize) -> io::Result<()> {
+pub(crate) fn allocate(file: &File, offset: usize, len: usize) -> io::Result<()> {
     if len == 0 {
         return Ok(());
     }
@@ -513,7 +513,7 @@ const MIN_BACKGROUND_GROWTH: usize = 16 << 20;
 
 /// Capacity after growing a file of `capacity` that must hold `required` bytes: geometric
 /// steps between MIN_BACKGROUND_GROWTH and MAX_MMAP_GROWTH, in multiples of `growth`
-fn next_capacity(capacity: usize, growth: usize, required: usize) -> usize {
+pub(crate) fn next_capacity(capacity: usize, growth: usize, required: usize) -> usize {
     let step = capacity.clamp(growth.max(MIN_BACKGROUND_GROWTH), MAX_MMAP_GROWTH);
     required
         .max(capacity.saturating_add(step))
@@ -525,7 +525,7 @@ fn next_capacity(capacity: usize, growth: usize, required: usize) -> usize {
 /// kept the file at twice the bytes written once the step reached its maximum, and the helper
 /// zeroed new tmpfs pages at twice the write rate. Below the maximum step a step is as large
 /// as the file, so the half bound keeps small files small.
-fn starts_growth(capacity: usize, required: usize, new_capacity: usize) -> bool {
+pub(crate) fn starts_growth(capacity: usize, required: usize, new_capacity: usize) -> bool {
     capacity.saturating_sub(required) < (new_capacity - capacity).min(capacity / 2)
 }
 
@@ -1448,6 +1448,7 @@ mod tests {
                 buffer_bytes: 64 << 10,
                 buffers: 3,
                 io_threads: 2,
+                ..SinkConfig::default()
             };
             for half in [&entries[..7_777], &entries[7_777..]] {
                 let job = MapWriterJob::<tcp4_packet_trace>::with_sink(
