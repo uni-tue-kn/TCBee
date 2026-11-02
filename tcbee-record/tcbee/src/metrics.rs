@@ -20,7 +20,10 @@ use tcbee_common::{
     },
 };
 
-use crate::{stats::Snapshot, writer::WriterReport};
+use crate::{
+    stats::Snapshot,
+    writer::{SinkStats, WriterReport},
+};
 
 /// Kernel statistics of one loaded eBPF program
 #[derive(Serialize, Clone)]
@@ -72,6 +75,8 @@ pub struct RingBufMetrics {
     /// None if no writer was registered for this ring buffer
     pub records_written: Option<u64>,
     pub writer_error: Option<String>,
+    /// What the writer's pooled sink did, None for a memory-mapped file
+    pub writer_sink: Option<SinkStats>,
     /// Sum of the last hook_seq of every flow direction at this ring buffer's hook. Equals
     /// handled + dropped + the errors after hook_seq was taken (after the filter in the
     /// default mode), so it also covers drops at the end of a flow, which leave no gap.
@@ -168,6 +173,7 @@ impl Metrics {
                     counters: RingCounters::of(snapshot, rb),
                     records_written: report.map(|r| r.records),
                     writer_error: report.and_then(|r| r.error.clone()),
+                    writer_sink: report.and_then(|r| r.sink.clone()),
                     hook_seq_issued: hook_seq
                         .filter(|_| rb != RB_OWNERS)
                         .map(|totals| totals.issued[rb as usize]),

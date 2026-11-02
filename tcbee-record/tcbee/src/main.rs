@@ -5,6 +5,7 @@ mod metadata;
 mod metrics;
 mod owners;
 mod placement;
+mod pooled;
 mod stats;
 mod viz;
 mod writer;

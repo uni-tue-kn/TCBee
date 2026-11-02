@@ -1,0 +1,746 @@
+//! A trace file written from a pool of large aligned buffers. The writer copies records into
+//! the current buffer; full buffers go to I/O threads, which write them with `pwrite`, by
+//! default with `O_DIRECT`. The writer never takes a page fault or a file system lock for a
+//! record. It only waits when every buffer is still being written, and that wait is counted.
+//!
+//! The file bytes are the same as from the memory-mapped file: records back to back, cut to
+//! their exact length at the end. `O_DIRECT` needs aligned offsets and lengths, so the last
+//! buffer is padded with zeros and the file is truncated afterwards. A file that exists is
+//! appended to: its last partial block is read back once and written again.
+
+use std::{
+    collections::BTreeMap,
+    fs::{File, OpenOptions},
+    io::{self, ErrorKind},
+    mem,
+    os::fd::AsRawFd,
+    path::Path,
+    ptr::NonNull,
+    sync::{mpsc, Arc, Mutex},
+    thread::JoinHandle,
+    time::Instant,
+};
+
+use log::{info, warn};
+use serde::Serialize;
+
+use crate::placement::HelperPlacement;
+
+/// Room after a buffer's end for the record that crosses it. A record never exceeds it.
+const SLACK: usize = 64 << 10;
+/// Alignment of the buffers in memory, and the offset alignment if the file system does
+/// not report its own
+const PAGE: usize = 4096;
+
+/// How the trace file is written
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SinkKind {
+    /// Memory-mapped file, grown in the background
+    #[default]
+    Mmap,
+    /// Buffer pool, I/O threads write with O_DIRECT
+    Direct,
+    /// Buffer pool, I/O threads write through the page cache
+    Buffered,
+}
+
+impl SinkKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            SinkKind::Mmap => "mmap",
+            SinkKind::Direct => "direct",
+            SinkKind::Buffered => "buffered",
+        }
+    }
+}
+
+/// How a writer's trace file is written
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SinkConfig {
+    pub kind: SinkKind,
+    /// Size of one buffer of a pooled sink
+    pub buffer_bytes: usize,
+    /// Buffers per file, at least 2
+    pub buffers: usize,
+    /// I/O threads per file, at most `buffers - 1` writes run at once
+    pub io_threads: usize,
+}
+
+impl Default for SinkConfig {
+    fn default() -> Self {
+        Self {
+            kind: SinkKind::Mmap,
+            buffer_bytes: 2 << 20,
+            buffers: 8,
+            io_threads: 2,
+        }
+    }
+}
+
+/// What a pooled sink did, for the writer report
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct SinkStats {
+    /// The kind of sink that wrote, after any fallback
+    pub sink: &'static str,
+    /// Buffers handed to the I/O threads
+    pub writes: u64,
+    /// Times the writer waited for a free buffer, and how long in total and at most
+    pub stalls: u64,
+    pub stall_ns: u64,
+    pub stall_max_ns: u64,
+}
+
+/// A page-aligned anonymous mapping, owned by whoever holds it: the writer or, while it is
+/// written, an I/O thread
+struct AlignedBuf {
+    ptr: NonNull<u8>,
+    len: usize,
+}
+
+// The buffer is plain memory owned by one thread at a time
+unsafe impl Send for AlignedBuf {}
+
+impl AlignedBuf {
+    fn new(len: usize) -> io::Result<Self> {
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_POPULATE,
+                -1,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        let ptr = NonNull::new(ptr.cast()).ok_or_else(|| io::Error::other("mmap returned null"))?;
+        Ok(Self { ptr, len })
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for AlignedBuf {
+    fn drop(&mut self) {
+        unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.len) };
+    }
+}
+
+/// A buffer for an I/O thread: write `len` bytes of it at `offset`
+struct IoJob {
+    buf: AlignedBuf,
+    offset: u64,
+    len: usize,
+}
+
+/// A written buffer back from an I/O thread: how many bytes reached the file, and the error
+/// that stopped it short
+struct IoDone {
+    buf: AlignedBuf,
+    offset: u64,
+    written: usize,
+    result: io::Result<()>,
+}
+
+/// Writes all of `data` at `offset`, retrying after signals and short writes
+fn pwrite_all(file: &File, data: &[u8], offset: u64) -> (usize, io::Result<()>) {
+    let mut done = 0;
+    while done < data.len() {
+        let rest = &data[done..];
+        let ret = unsafe {
+            libc::pwrite(
+                file.as_raw_fd(),
+                rest.as_ptr().cast(),
+                rest.len(),
+                (offset + done as u64) as libc::off_t,
+            )
+        };
+        match ret {
+            n if n > 0 => done += n as usize,
+            0 => return (done, Err(io::Error::from(ErrorKind::WriteZero))),
+            _ => {
+                let err = io::Error::last_os_error();
+                if err.kind() != ErrorKind::Interrupted {
+                    return (done, Err(err));
+                }
+            }
+        }
+    }
+    (done, Ok(()))
+}
+
+/// The I/O threads of one file. Dropping them lets every queued write finish first.
+struct IoThreads {
+    jobs: Option<mpsc::Sender<IoJob>>,
+    done: mpsc::Receiver<IoDone>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl IoThreads {
+    fn start(
+        file: &Arc<File>,
+        threads: usize,
+        helpers: Option<&HelperPlacement>,
+    ) -> io::Result<Self> {
+        let (jobs_tx, jobs_rx) = mpsc::channel::<IoJob>();
+        let (done_tx, done_rx) = mpsc::channel();
+        let jobs_rx = Arc::new(Mutex::new(jobs_rx));
+        let cpus = helpers.and_then(HelperPlacement::cpu_set);
+        let load_sink = helpers.and_then(HelperPlacement::load_sink);
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads.max(1) {
+            let (file, jobs, done) = (file.clone(), jobs_rx.clone(), done_tx.clone());
+            handles.push(crate::writer::spawn_helper(
+                "tcbee-io",
+                cpus,
+                load_sink.clone(),
+                move || loop {
+                    // The lock is held only while taking the next job
+                    let job = jobs.lock().map(|rx| rx.recv());
+                    let Ok(Ok(job)) = job else { return };
+                    let (written, result) =
+                        pwrite_all(&file, &job.buf.as_slice()[..job.len], job.offset);
+                    let back = IoDone {
+                        buf: job.buf,
+                        offset: job.offset,
+                        written,
+                        result,
+                    };
+                    if done.send(back).is_err() {
+                        return;
+                    }
+                },
+            )?);
+        }
+        Ok(Self {
+            jobs: Some(jobs_tx),
+            done: done_rx,
+            handles,
+        })
+    }
+
+    fn submit(&self, job: IoJob) -> io::Result<()> {
+        self.jobs
+            .as_ref()
+            .and_then(|jobs| jobs.send(job).ok())
+            .ok_or_else(|| io::Error::other("the file's I/O threads stopped"))
+    }
+}
+
+impl Drop for IoThreads {
+    fn drop(&mut self) {
+        // Closing the queue ends the threads once it is empty
+        self.jobs = None;
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
+pub struct PooledFile {
+    file: Arc<File>,
+    config: SinkConfig,
+    /// Whether the file is open with O_DIRECT
+    direct: bool,
+    /// Offsets and lengths of direct writes are multiples of this
+    align: usize,
+    /// Bytes per buffer handed to the I/O threads, a multiple of `align`
+    buf_size: usize,
+    /// Length of the file when it was opened: the records written here start there
+    start: u64,
+    /// The buffer records go to, its file offset and the bytes in it (beyond `buf_size`
+    /// while a record crosses the buffer's end)
+    cur: AlignedBuf,
+    cur_offset: u64,
+    cur_len: usize,
+    free: Vec<AlignedBuf>,
+    /// Started with the first full buffer, on the writer's thread
+    io: Option<IoThreads>,
+    helpers: Option<HelperPlacement>,
+    in_flight: usize,
+    /// File ranges written that do not yet join the durable prefix, by start offset
+    written: BTreeMap<u64, u64>,
+    /// Everything before this offset is in the file
+    durable_end: u64,
+    /// The first failed write. The writer stops at the next reserve.
+    error: Option<io::Error>,
+    failed: bool,
+    stats: SinkStats,
+}
+
+impl PooledFile {
+    /// Opens `path` for appending. With `SinkKind::Direct`, falls back to buffered writes if
+    /// the file system refuses O_DIRECT.
+    pub fn new(path: &Path, config: SinkConfig) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        let start = file.metadata()?.len();
+        let mut direct = config.kind == SinkKind::Direct;
+        let align = if direct {
+            match dio_alignment(&file) {
+                Some((mem_align, offset_align)) if mem_align <= PAGE => offset_align.max(512),
+                Some((mem_align, _)) => {
+                    warn!(
+                        "{}: O_DIRECT needs {} byte aligned memory, writing through the page cache",
+                        path.display(),
+                        mem_align
+                    );
+                    direct = false;
+                    1
+                }
+                None => PAGE,
+            }
+        } else {
+            1
+        };
+        let buf_size = config
+            .buffer_bytes
+            .max(PAGE)
+            .next_multiple_of(PAGE.max(align));
+        let buffers = config.buffers.max(2);
+        let mut cur = AlignedBuf::new(buf_size + SLACK)?;
+        let free = (1..buffers)
+            .map(|_| AlignedBuf::new(buf_size + SLACK))
+            .collect::<io::Result<Vec<_>>>()?;
+
+        // A direct write starts at an aligned offset, so the partial block at the end of an
+        // existing file is read into the first buffer and written again with the new records
+        let partial = (start % align as u64) as usize;
+        let cur_offset = start - partial as u64;
+        if partial > 0 {
+            read_exact_at(&file, &mut cur.as_mut_slice()[..partial], cur_offset)?;
+        }
+        if direct {
+            direct = enable_direct(&file, &cur, cur_offset, align, path)?;
+        }
+        let kind = if direct {
+            SinkKind::Direct
+        } else {
+            SinkKind::Buffered
+        };
+        info!(
+            "Writing {} with {} buffers of {} KiB ({}, {} I/O threads)",
+            path.display(),
+            buffers,
+            buf_size >> 10,
+            if direct { "O_DIRECT" } else { "page cache" },
+            config.io_threads.max(1)
+        );
+        Ok(Self {
+            file: Arc::new(file),
+            config,
+            direct,
+            align: if direct { align } else { 1 },
+            buf_size,
+            start,
+            cur,
+            cur_offset,
+            cur_len: partial,
+            free,
+            io: None,
+            helpers: None,
+            in_flight: 0,
+            written: BTreeMap::new(),
+            durable_end: cur_offset,
+            error: None,
+            failed: false,
+            stats: SinkStats {
+                sink: kind.name(),
+                ..SinkStats::default()
+            },
+        })
+    }
+
+    pub fn set_helpers(&mut self, helpers: HelperPlacement) {
+        self.helpers = Some(helpers);
+    }
+
+    /// Returns the next `len` bytes of the file for writing. The bytes of a record that
+    /// crosses the buffer's end are moved to the next buffer at the next call, once written.
+    #[inline]
+    pub fn reserve(&mut self, len: usize) -> io::Result<&mut [u8]> {
+        if self.cur_len >= self.buf_size {
+            self.rotate()?;
+        }
+        if len > SLACK {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("record of {} bytes is larger than {} bytes", len, SLACK),
+            ));
+        }
+        let start = self.cur_len;
+        self.cur_len += len;
+        Ok(&mut self.cur.as_mut_slice()[start..start + len])
+    }
+
+    /// Hands the full buffer to the I/O threads and continues in a free one
+    fn rotate(&mut self) -> io::Result<()> {
+        self.reap()?;
+        let next = self.free_buffer()?;
+        let full = mem::replace(&mut self.cur, next);
+        let overflow = self.cur_len - self.buf_size;
+        self.cur.as_mut_slice()[..overflow]
+            .copy_from_slice(&full.as_slice()[self.buf_size..self.cur_len]);
+        self.submit(full, self.cur_offset, self.buf_size)?;
+        self.cur_offset += self.buf_size as u64;
+        self.cur_len = overflow;
+        Ok(())
+    }
+
+    fn submit(&mut self, buf: AlignedBuf, offset: u64, len: usize) -> io::Result<()> {
+        if self.io.is_none() {
+            self.io = Some(IoThreads::start(
+                &self.file,
+                self.config.io_threads,
+                self.helpers.as_ref(),
+            )?);
+        }
+        let io = self.io.as_ref().expect("just started");
+        io.submit(IoJob { buf, offset, len })?;
+        self.in_flight += 1;
+        self.stats.writes += 1;
+        Ok(())
+    }
+
+    /// A free buffer, waiting for a write to finish if there is none
+    fn free_buffer(&mut self) -> io::Result<AlignedBuf> {
+        if let Some(buf) = self.free.pop() {
+            return Ok(buf);
+        }
+        let waited = Instant::now();
+        while self.free.is_empty() {
+            self.wait_one()?;
+        }
+        let ns = waited.elapsed().as_nanos() as u64;
+        self.stats.stalls += 1;
+        self.stats.stall_ns += ns;
+        self.stats.stall_max_ns = self.stats.stall_max_ns.max(ns);
+        self.take_error()?;
+        Ok(self.free.pop().expect("a write finished"))
+    }
+
+    /// Takes back the buffers of finished writes without waiting. Fails with the first
+    /// write error.
+    fn reap(&mut self) -> io::Result<()> {
+        if let Some(io) = &self.io {
+            let finished: Vec<IoDone> = io.done.try_iter().collect();
+            for done in finished {
+                self.finished(done);
+            }
+        }
+        self.take_error()
+    }
+
+    /// Waits for one write to finish
+    fn wait_one(&mut self) -> io::Result<()> {
+        let done = match &self.io {
+            Some(io) if self.in_flight > 0 => io
+                .done
+                .recv()
+                .map_err(|_| io::Error::other("the file's I/O threads stopped"))?,
+            _ => return Err(io::Error::other("no write in flight to wait for")),
+        };
+        self.finished(done);
+        Ok(())
+    }
+
+    fn finished(&mut self, done: IoDone) {
+        self.in_flight -= 1;
+        self.free.push(done.buf);
+        if done.written > 0 {
+            self.written
+                .insert(done.offset, done.offset + done.written as u64);
+            while let Some(end) = self.written.remove(&self.durable_end) {
+                self.durable_end = end;
+            }
+        }
+        if let Err(err) = done.result {
+            if self.error.is_none() && !self.failed {
+                self.error = Some(err);
+            }
+        }
+    }
+
+    fn take_error(&mut self) -> io::Result<()> {
+        if let Some(err) = self.error.take() {
+            self.failed = true;
+            return Err(err);
+        }
+        if self.failed {
+            return Err(io::Error::other("an earlier write to the file failed"));
+        }
+        Ok(())
+    }
+
+    /// Writes out the rest, cuts the file to the records and syncs it. Returns how many
+    /// whole records of `record_len` bytes from this session are in the file: all of them,
+    /// or after a failed write the prefix before it, to which the file is then cut.
+    pub fn finish(mut self, record_len: usize) -> (u64, SinkStats, io::Result<()>) {
+        let end = self.cur_offset + self.cur_len as u64;
+        let mut result = self.write_rest();
+        // Every write must be back before the file is cut, whatever failed
+        while self.in_flight > 0 {
+            if let Err(err) = self.wait_one() {
+                result = result.and(Err(err));
+                break;
+            }
+        }
+        result = result.and_then(|()| self.take_error());
+        let record_len = record_len.max(1) as u64;
+        let (records, len) = match &result {
+            Ok(()) => ((end - self.start) / record_len, end),
+            Err(_) => {
+                let durable = self.durable_end.min(end).saturating_sub(self.start);
+                let records = durable / record_len;
+                (records, self.start + records * record_len)
+            }
+        };
+        let cut = self.file.set_len(len).and_then(|()| self.file.sync_all());
+        let stats = mem::take(&mut self.stats);
+        (records, stats, result.and(cut))
+    }
+
+    /// Submits the full buffer, if any, and the partial last one, padded for O_DIRECT
+    fn write_rest(&mut self) -> io::Result<()> {
+        if self.cur_len >= self.buf_size {
+            self.rotate()?;
+        }
+        if self.cur_len == 0 {
+            return Ok(());
+        }
+        let len = self.cur_len.next_multiple_of(self.align);
+        self.cur.as_mut_slice()[self.cur_len..len].fill(0);
+        let last = mem::replace(&mut self.cur, AlignedBuf::new(PAGE)?);
+        self.submit(last, self.cur_offset, len)?;
+        self.cur_len = 0;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn is_direct(&self) -> bool {
+        self.direct
+    }
+}
+
+/// Memory and file offset alignment for O_DIRECT, from statx. None if the kernel or file
+/// system does not report them.
+fn dio_alignment(file: &File) -> Option<(usize, usize)> {
+    let mut stx: libc::statx = unsafe { mem::zeroed() };
+    let ret = unsafe {
+        libc::statx(
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH,
+            libc::STATX_DIOALIGN,
+            &mut stx,
+        )
+    };
+    (ret == 0 && stx.stx_mask & libc::STATX_DIOALIGN != 0 && stx.stx_dio_offset_align > 0)
+        .then_some((
+            stx.stx_dio_mem_align as usize,
+            stx.stx_dio_offset_align as usize,
+        ))
+}
+
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    file.read_exact_at(buf, offset)
+}
+
+/// Switches the file to O_DIRECT and checks with one aligned write of the first block (the
+/// partial block it already holds, or zeros past its end) that the file system takes direct
+/// writes. False, with the file left buffered, if it does not.
+fn enable_direct(
+    file: &File,
+    first: &AlignedBuf,
+    offset: u64,
+    align: usize,
+    path: &Path,
+) -> io::Result<bool> {
+    let fd = file.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let refused = |err: io::Error| {
+        warn!(
+            "{}: no O_DIRECT ({}), writing through the page cache",
+            path.display(),
+            err
+        );
+        Ok(false)
+    };
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_DIRECT) } < 0 {
+        return refused(io::Error::last_os_error());
+    }
+    let probe = probe_direct_write(file, &first.as_slice()[..align], offset);
+    match probe {
+        Ok(()) => Ok(true),
+        Err(err) if err.raw_os_error() == Some(libc::EINVAL) => {
+            if unsafe { libc::fcntl(fd, libc::F_SETFL, flags) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            refused(err)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(not(test))]
+fn probe_direct_write(file: &File, block: &[u8], offset: u64) -> io::Result<()> {
+    pwrite_all(file, block, offset).1
+}
+
+/// Tests can make the probe fail as on a file system without O_DIRECT
+#[cfg(test)]
+fn probe_direct_write(file: &File, block: &[u8], offset: u64) -> io::Result<()> {
+    if tests::REFUSE_DIRECT.with(|refuse| refuse.get()) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    pwrite_all(file, block, offset).1
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::{cell::Cell, env, fs};
+
+    use super::*;
+
+    thread_local! {
+        pub(crate) static REFUSE_DIRECT: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn config(kind: SinkKind) -> SinkConfig {
+        SinkConfig {
+            kind,
+            buffer_bytes: 8192,
+            buffers: 3,
+            io_threads: 2,
+        }
+    }
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let path = env::temp_dir().join(format!("tcbee-pooled-{}-{}", name, std::process::id()));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    /// Writes `records` records of `len` bytes, record i filled with byte i
+    fn fill(file: &mut PooledFile, records: usize, len: usize) -> Vec<u8> {
+        let mut expected = Vec::new();
+        for i in 0..records {
+            let buf = file.reserve(len).unwrap();
+            buf.fill(i as u8);
+            expected.extend(std::iter::repeat_n(i as u8, len));
+        }
+        expected
+    }
+
+    #[test]
+    fn pooled_file_keeps_all_bytes() {
+        for kind in [SinkKind::Direct, SinkKind::Buffered] {
+            // Ends before, at and after a buffer's end, and after several buffers
+            for records in [0, 1, 8192 / 100, 8192 / 100 + 1, 500] {
+                let path = temp("bytes");
+                let mut file = PooledFile::new(&path, config(kind)).unwrap();
+                let expected = fill(&mut file, records, 100);
+                let (written, stats, result) = file.finish(100);
+                result.unwrap();
+                assert_eq!(written, records as u64);
+                assert_eq!(fs::read(&path).unwrap(), expected, "{:?} {}", kind, records);
+                assert!(stats.writes >= (records * 100 / 8192) as u64);
+                fs::remove_file(&path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn pooled_file_appends() {
+        for kind in [SinkKind::Direct, SinkKind::Buffered] {
+            let path = temp("append");
+            // An odd length, as a memory-mapped file leaves it
+            fs::write(&path, vec![7u8; 1234]).unwrap();
+            let mut file = PooledFile::new(&path, config(kind)).unwrap();
+            let mut expected = vec![7u8; 1234];
+            expected.extend(fill(&mut file, 300, 52));
+            let (written, _, result) = file.finish(52);
+            result.unwrap();
+            assert_eq!(written, 300);
+            assert_eq!(fs::read(&path).unwrap(), expected, "{:?}", kind);
+            fs::remove_file(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn refused_direct_writes_through_the_page_cache() {
+        let path = temp("refused");
+        REFUSE_DIRECT.with(|refuse| refuse.set(true));
+        let file = PooledFile::new(&path, config(SinkKind::Direct));
+        REFUSE_DIRECT.with(|refuse| refuse.set(false));
+        let mut file = file.unwrap();
+        assert!(!file.is_direct());
+        let expected = fill(&mut file, 200, 100);
+        let (_, stats, result) = file.finish(100);
+        result.unwrap();
+        assert_eq!(stats.sink, "buffered");
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn writer_waits_for_free_buffers() {
+        let path = temp("stall");
+        let mut config = config(SinkKind::Buffered);
+        config.buffers = 2;
+        config.io_threads = 1;
+        let mut file = PooledFile::new(&path, config).unwrap();
+        let expected = fill(&mut file, 5000, 100);
+        let (written, _, result) = file.finish(100);
+        result.unwrap();
+        assert_eq!(written, 5000);
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// A failed write stops the writer, and the file keeps the whole records before it
+    #[test]
+    fn failed_write_keeps_the_records_before_it() {
+        let path = temp("fail");
+        let mut file = PooledFile::new(&path, config(SinkKind::Buffered)).unwrap();
+        let expected = fill(&mut file, 100, 100);
+        // Writes fail from now on: new I/O threads get a read-only descriptor
+        file.reap().unwrap();
+        while file.in_flight > 0 {
+            file.wait_one().unwrap();
+        }
+        let durable = file.durable_end;
+        let read_only = Arc::new(File::open(&path).unwrap());
+        file.io = Some(IoThreads::start(&read_only, 1, None).unwrap());
+        let mut failed = false;
+        for _ in 0..1000 {
+            if file.reserve(100).is_err() {
+                failed = true;
+                break;
+            }
+        }
+        let (written, _, result) = file.finish(100);
+        assert!(failed || result.is_err());
+        assert_eq!(written, durable / 100);
+        let kept = fs::read(&path).unwrap();
+        assert_eq!(kept.len() as u64, written * 100);
+        assert_eq!(kept[..], expected[..kept.len()]);
+        fs::remove_file(&path).unwrap();
+    }
+}

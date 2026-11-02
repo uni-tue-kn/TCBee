@@ -23,12 +23,14 @@ use tcbee_common::{records::RECORD_DELIMITER, stats::RINGBUFS};
 use tcbee_trace::TraceFile;
 
 pub use crate::placement::Placement;
+pub use crate::pooled::{SinkConfig, SinkKind, SinkStats};
 use crate::{
     config::WRITER_BUFFER_SIZE,
     placement::{
         balance_loop, pin_to_cpu, report_helper_time, Follower, HelperPlacement, WriterCpus,
         WriterSlot,
     },
+    pooled::PooledFile,
 };
 
 /// How writer threads wait for new records
@@ -79,6 +81,8 @@ pub struct Writer {
     next_cpu: usize,
     /// The thread that moves writers between the writer CPUs, and its stop flag
     balancer: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
+    /// How the trace files are written
+    sink: SinkConfig,
 }
 
 impl Writer {
@@ -91,7 +95,14 @@ impl Writer {
             cpus: Arc::new(WriterCpus::default()),
             next_cpu: 0,
             balancer: None,
+            sink: SinkConfig::default(),
         }
+    }
+
+    /// Write the trace files as `sink` says instead of through memory-mapped files
+    pub fn with_sink(mut self, sink: SinkConfig) -> Self {
+        self.sink = sink;
+        self
     }
 
     /// Pin each writer thread to one of the given CPU IDs, round-robin at the start and then
@@ -171,7 +182,8 @@ impl Writer {
         T: Serialize + Copy + Send + 'static,
     {
         let file_path = trace_dir.as_ref().join(file.filename());
-        let mut job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?;
+        let mut job =
+            MapWriterJob::<T>::with_sink(file_path, self.bytes_written.clone(), self.sink)?;
         job.observer = observer;
         let running = self.running.clone();
 
@@ -205,6 +217,7 @@ impl Writer {
             file: job.file_path.clone(),
             records: 0,
             error: None,
+            sink: None,
         };
         let poll_mode = self.poll_mode;
         // The ring buffers are set up inside the thread, which then reports whether that
@@ -277,8 +290,9 @@ impl Writer {
             .drain(..)
             .map(|(mut report, handle)| {
                 match handle.join() {
-                    Ok((records, result)) => {
+                    Ok((records, stats, result)) => {
                         report.records = records;
+                        report.sink = stats;
                         report.error = result.err().map(|err| err.to_string());
                     }
                     Err(_) => report.error = Some(WriterError::WorkerPanicked.to_string()),
@@ -291,30 +305,27 @@ impl Writer {
 
 /// Runs `work` on a new thread restricted to `cpus`. Its CPU time counts toward the load of
 /// the writer CPU it ends on in `load_sink`, if given.
-fn spawn_helper(
+pub(crate) fn spawn_helper(
     name: &str,
     cpus: Option<libc::cpu_set_t>,
     load_sink: Option<Arc<WriterCpus>>,
     work: impl FnOnce() + Send + 'static,
-) -> io::Result<()> {
-    thread::Builder::new()
-        .name(name.into())
-        .spawn(move || {
-            if let Some(set) = cpus {
-                let ret = unsafe { libc::sched_setaffinity(0, mem::size_of_val(&set), &set) };
-                if ret != 0 {
-                    error!(
-                        "Failed to move a file helper off the writer's CPU: errno {}",
-                        io::Error::last_os_error()
-                    );
-                }
+) -> io::Result<JoinHandle<()>> {
+    thread::Builder::new().name(name.into()).spawn(move || {
+        if let Some(set) = cpus {
+            let ret = unsafe { libc::sched_setaffinity(0, mem::size_of_val(&set), &set) };
+            if ret != 0 {
+                error!(
+                    "Failed to move a file helper off the writer's CPU: errno {}",
+                    io::Error::last_os_error()
+                );
             }
-            work();
-            if let Some(sink) = load_sink {
-                report_helper_time(&sink);
-            }
-        })
-        .map(drop)
+        }
+        work();
+        if let Some(sink) = load_sink {
+            report_helper_time(&sink);
+        }
+    })
 }
 
 fn job_loop<T>(
@@ -365,7 +376,7 @@ where
                 remove_if_empty(&job.file_path);
             }
             let _ = ready.send(Err(err));
-            return (0, flushed);
+            return (0, None, flushed);
         }
     };
 
@@ -420,7 +431,7 @@ where
     }
 
     // The records written before an error are in the file and still count
-    (job.records, result.and(flushed))
+    (job.records, job.sink_stats.take(), result.and(flushed))
 }
 
 /// Removes a file that has no data. A file that had data before is kept.
@@ -433,8 +444,8 @@ fn remove_if_empty(path: &Path) {
     }
 }
 
-/// Records a writer thread wrote, and the error that stopped it, if any
-type JobResult = (u64, Result<(), JobError>);
+/// Records a writer thread wrote, what its pooled sink did, and the error that stopped it
+type JobResult = (u64, Option<SinkStats>, Result<(), JobError>);
 
 /// Sees every record a writer wrote, see `Writer::register_observed`
 pub type Observer = Box<dyn FnMut(&[u8]) + Send>;
@@ -593,7 +604,8 @@ impl MmapBackedFile {
                 let _ = tx
                     .send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
             },
-        )?;
+        )
+        .map(drop)?;
         self.pending = Some(rx);
         Ok(())
     }
@@ -702,13 +714,25 @@ impl MmapBackedFile {
 enum Sink {
     /// A memory-mapped file, grown in the background
     Mmap(MmapBackedFile),
+    /// Buffers written by I/O threads
+    Pooled(Box<PooledFile>),
 }
 
 impl Sink {
+    fn open(path: &Path, chunk_bytes: usize, config: SinkConfig) -> io::Result<Self> {
+        Ok(match config.kind {
+            SinkKind::Mmap => Sink::Mmap(MmapBackedFile::new(path, chunk_bytes)?),
+            SinkKind::Direct | SinkKind::Buffered => {
+                Sink::Pooled(Box::new(PooledFile::new(path, config)?))
+            }
+        })
+    }
+
     /// Runs the sink's helper threads on `helpers` instead of the writer's CPU
     fn set_helpers(&mut self, helpers: HelperPlacement) {
         match self {
             Sink::Mmap(file) => file.helpers = Some(helpers),
+            Sink::Pooled(file) => file.set_helpers(helpers),
         }
     }
 
@@ -717,13 +741,19 @@ impl Sink {
     fn reserve(&mut self, len: usize) -> io::Result<&mut [u8]> {
         match self {
             Sink::Mmap(file) => file.reserve(len),
+            Sink::Pooled(file) => file.reserve(len),
         }
     }
 
-    /// Writes out all reserved bytes, cuts the file to them and syncs it
-    fn finish(self) -> io::Result<()> {
+    /// Writes out all reserved bytes, cuts the file to them and syncs it. Returns how many
+    /// records of `record_len` bytes the file got, None for all that were reserved.
+    fn finish(self, record_len: usize) -> (Option<u64>, Option<SinkStats>, io::Result<()>) {
         match self {
-            Sink::Mmap(file) => file.finish(),
+            Sink::Mmap(file) => (None, None, file.finish()),
+            Sink::Pooled(file) => {
+                let (records, stats, result) = file.finish(record_len);
+                (Some(records), Some(stats), result)
+            }
         }
     }
 }
@@ -826,6 +856,8 @@ where
     cpus: CpuRuns,
     /// Sees each written record
     observer: Option<Observer>,
+    /// What a pooled sink did, once the file is finished
+    sink_stats: Option<SinkStats>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -833,14 +865,23 @@ impl<T> MapWriterJob<T>
 where
     T: Serialize + Copy + Send + 'static,
 {
+    #[cfg(test)]
     fn new(file_path: PathBuf, bytes_written: Arc<AtomicU64>) -> Result<Self, WriterError> {
+        Self::with_sink(file_path, bytes_written, SinkConfig::default())
+    }
+
+    fn with_sink(
+        file_path: PathBuf,
+        bytes_written: Arc<AtomicU64>,
+        sink: SinkConfig,
+    ) -> Result<Self, WriterError> {
         let entry_size = std::mem::size_of::<T>().max(1);
         let chunk_bytes = entry_size
             .checked_mul(WRITER_BUFFER_SIZE)
             .unwrap_or(WRITER_BUFFER_SIZE * 128)
             .max(WRITER_BUFFER_SIZE);
 
-        let sink = Sink::Mmap(MmapBackedFile::new(&file_path, chunk_bytes)?);
+        let sink = Sink::open(&file_path, chunk_bytes, sink)?;
         // Records are plain old data, all zeros is a valid value
         let zero: T = unsafe { mem::zeroed() };
         let record_size = bincode::serialized_size(&zero)
@@ -873,6 +914,7 @@ where
             counted: 0,
             error: None,
             observer: None,
+            sink_stats: None,
             _marker: std::marker::PhantomData,
         })
     }
@@ -956,12 +998,23 @@ where
     }
 
     fn flush(&mut self) -> Result<(), JobError> {
+        let mut result = Ok(());
+        if let Some(sink) = self.sink.take() {
+            let record_len = self.record_size + RECORD_DELIMITER.len();
+            let (records, stats, finished) = sink.finish(record_len);
+            // A failed write cuts the file before records that were already counted
+            if let Some(records) = records {
+                self.records = self.records.min(records);
+            }
+            if let Some(stats) = &stats {
+                info!("Finished {}: {:?}", self.file_path.display(), stats);
+            }
+            self.sink_stats = stats;
+            result = finished.map_err(JobError::Io);
+        }
         // The side file is finished even if the trace is not, it describes the records written
         self.cpus.finish(self.records);
-        if let Some(sink) = self.sink.take() {
-            sink.finish().map_err(JobError::Io)?;
-        }
-        Ok(())
+        result
     }
 }
 
@@ -1056,6 +1109,8 @@ pub struct WriterReport {
     pub file: PathBuf,
     pub records: u64,
     pub error: Option<String>,
+    /// What a pooled sink did, None for the memory-mapped file
+    pub sink: Option<SinkStats>,
 }
 
 #[derive(Debug)]
@@ -1358,6 +1413,55 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_file(job.cpus.path).unwrap();
         assert_eq!(runs, [(0, 0), (2, 2), (3, 5), (5, 0), (6, CPU_SIDE_END)]);
+    }
+
+    /// Every sink writes the same file bytes, also when the job moves to another thread as in
+    /// `Writer::spawn`, and when it appends to an existing file
+    #[test]
+    fn sinks_write_the_same_bytes() {
+        let size = mem::size_of::<tcp4_packet_trace>();
+        let mut rng = Rng(0x5eed);
+        let entries: Vec<Vec<u8>> = (0..20_000).map(|_| rng.bytes(size)).collect();
+        let write = |kind: SinkKind, name: &str| {
+            let path = env::temp_dir().join(format!("tcbee-sink-{}-{}", name, std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let sink = SinkConfig {
+                kind,
+                buffer_bytes: 64 << 10,
+                buffers: 3,
+                io_threads: 2,
+            };
+            for half in [&entries[..7_777], &entries[7_777..]] {
+                let job = MapWriterJob::<tcp4_packet_trace>::with_sink(
+                    path.clone(),
+                    Arc::new(AtomicU64::new(0)),
+                    sink,
+                )
+                .unwrap();
+                let records = thread::scope(|scope| {
+                    scope
+                        .spawn(move || {
+                            let mut job = job;
+                            for entry in half {
+                                assert_eq!(job.write(entry), 0);
+                            }
+                            job.flush().unwrap();
+                            assert_eq!(job.sink_stats.is_some(), kind != SinkKind::Mmap);
+                            job.records
+                        })
+                        .join()
+                        .unwrap()
+                });
+                assert_eq!(records, half.len() as u64);
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            bytes
+        };
+        let mmap = write(SinkKind::Mmap, "mmap");
+        assert_eq!(mmap.len() % entries.len(), 0);
+        assert!(write(SinkKind::Direct, "direct") == mmap);
+        assert!(write(SinkKind::Buffered, "buffered") == mmap);
     }
 
     #[test]
