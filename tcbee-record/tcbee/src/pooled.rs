@@ -18,7 +18,7 @@ use std::{
     ptr::NonNull,
     sync::{mpsc, Arc, Mutex},
     thread::JoinHandle,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use log::{info, warn};
@@ -31,6 +31,9 @@ const SLACK: usize = 64 << 10;
 /// Alignment of the buffers in memory, and the offset alignment if the file system does
 /// not report its own
 const PAGE: usize = 4096;
+/// A buffer that has been filling for this long is written as it is, so that a quiet ring
+/// does not keep its records in memory only. The full buffer is written again later.
+const IDLE_WRITE: Duration = Duration::from_secs(1);
 
 /// How the trace file is written
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,11 +137,13 @@ impl Drop for AlignedBuf {
     }
 }
 
-/// A buffer for an I/O thread: write `len` bytes of it at `offset`
+/// A buffer for an I/O thread: write `len` bytes of it at `offset`. A partial job is a copy
+/// of the current buffer before it is full.
 struct IoJob {
     buf: AlignedBuf,
     offset: u64,
     len: usize,
+    partial: bool,
 }
 
 /// A written buffer back from an I/O thread: how many bytes reached the file, and the error
@@ -147,6 +152,7 @@ struct IoDone {
     buf: AlignedBuf,
     offset: u64,
     written: usize,
+    partial: bool,
     result: io::Result<()>,
 }
 
@@ -212,6 +218,7 @@ impl IoThreads {
                         buf: job.buf,
                         offset: job.offset,
                         written,
+                        partial: job.partial,
                         result,
                     };
                     if done.send(back).is_err() {
@@ -266,6 +273,13 @@ pub struct PooledFile {
     io: Option<IoThreads>,
     helpers: Option<HelperPlacement>,
     in_flight: usize,
+    /// A copy of the current buffer is being written. A later write of the same range must
+    /// not overtake it.
+    partial_in_flight: bool,
+    /// Bytes of the current buffer written by the last partial write, and when the current
+    /// buffer was started or partially written
+    partial_len: usize,
+    partial_at: Instant,
     /// File ranges written that do not yet join the durable prefix, by start offset
     written: BTreeMap<u64, u64>,
     /// Everything before this offset is in the file
@@ -352,6 +366,9 @@ impl PooledFile {
             io: None,
             helpers: None,
             in_flight: 0,
+            partial_in_flight: false,
+            partial_len: 0,
+            partial_at: Instant::now(),
             written: BTreeMap::new(),
             durable_end: cur_offset,
             error: None,
@@ -393,13 +410,55 @@ impl PooledFile {
         let overflow = self.cur_len - self.buf_size;
         self.cur.as_mut_slice()[..overflow]
             .copy_from_slice(&full.as_slice()[self.buf_size..self.cur_len]);
-        self.submit(full, self.cur_offset, self.buf_size)?;
+        self.submit(full, self.cur_offset, self.buf_size, false)?;
         self.cur_offset += self.buf_size as u64;
         self.cur_len = overflow;
+        self.partial_len = 0;
+        self.partial_at = Instant::now();
         Ok(())
     }
 
-    fn submit(&mut self, buf: AlignedBuf, offset: u64, len: usize) -> io::Result<()> {
+    /// Called regularly by the writer: takes back finished buffers, fails with a write error,
+    /// and writes the current buffer as it is once it has been filling for `IDLE_WRITE`
+    pub fn tick(&mut self) -> io::Result<()> {
+        self.reap()?;
+        if self.cur_len > self.partial_len
+            && self.cur_len < self.buf_size
+            && !self.partial_in_flight
+            && self.partial_at.elapsed() >= IDLE_WRITE
+        {
+            self.write_partial()?;
+        }
+        Ok(())
+    }
+
+    /// Writes a copy of the current buffer, padded for O_DIRECT. Skipped without a free buffer:
+    /// then writes are in flight and the buffer fills.
+    fn write_partial(&mut self) -> io::Result<()> {
+        let Some(mut copy) = self.free.pop() else {
+            return Ok(());
+        };
+        let len = self.cur_len.next_multiple_of(self.align);
+        copy.as_mut_slice()[..self.cur_len].copy_from_slice(&self.cur.as_slice()[..self.cur_len]);
+        copy.as_mut_slice()[self.cur_len..len].fill(0);
+        self.submit(copy, self.cur_offset, len, true)?;
+        self.partial_in_flight = true;
+        self.partial_len = self.cur_len;
+        self.partial_at = Instant::now();
+        Ok(())
+    }
+
+    fn submit(
+        &mut self,
+        buf: AlignedBuf,
+        offset: u64,
+        len: usize,
+        partial: bool,
+    ) -> io::Result<()> {
+        // The I/O threads may write in any order, so a partial write of this range ends first
+        if !partial {
+            self.wait_partial()?;
+        }
         if self.io.is_none() {
             self.io = Some(IoThreads::start(
                 &self.file,
@@ -408,7 +467,12 @@ impl PooledFile {
             )?);
         }
         let io = self.io.as_ref().expect("just started");
-        io.submit(IoJob { buf, offset, len })?;
+        io.submit(IoJob {
+            buf,
+            offset,
+            len,
+            partial,
+        })?;
         self.in_flight += 1;
         self.stats.writes += 1;
         Ok(())
@@ -416,19 +480,31 @@ impl PooledFile {
 
     /// A free buffer, waiting for a write to finish if there is none
     fn free_buffer(&mut self) -> io::Result<AlignedBuf> {
-        if let Some(buf) = self.free.pop() {
-            return Ok(buf);
+        if self.free.is_empty() {
+            self.stall(|file| file.free.is_empty())?;
         }
+        Ok(self.free.pop().expect("a write finished"))
+    }
+
+    /// Waits for a partial write of the current buffer to end
+    fn wait_partial(&mut self) -> io::Result<()> {
+        if self.partial_in_flight {
+            self.stall(|file| file.partial_in_flight)?;
+        }
+        Ok(())
+    }
+
+    /// Waits for finished writes while `waiting` holds, counted as a stall of the writer
+    fn stall(&mut self, waiting: impl Fn(&Self) -> bool) -> io::Result<()> {
         let waited = Instant::now();
-        while self.free.is_empty() {
+        while waiting(self) {
             self.wait_one()?;
         }
         let ns = waited.elapsed().as_nanos() as u64;
         self.stats.stalls += 1;
         self.stats.stall_ns += ns;
         self.stats.stall_max_ns = self.stats.stall_max_ns.max(ns);
-        self.take_error()?;
-        Ok(self.free.pop().expect("a write finished"))
+        self.take_error()
     }
 
     /// Takes back the buffers of finished writes without waiting. Fails with the first
@@ -459,11 +535,26 @@ impl PooledFile {
     fn finished(&mut self, done: IoDone) {
         self.in_flight -= 1;
         self.free.push(done.buf);
-        if done.written > 0 {
-            self.written
-                .insert(done.offset, done.offset + done.written as u64);
-            while let Some(end) = self.written.remove(&self.durable_end) {
-                self.durable_end = end;
+        if done.partial {
+            self.partial_in_flight = false;
+        }
+        // A partial write is durable up to its records, not its padding
+        let written = if done.partial {
+            done.written.min(self.partial_len)
+        } else {
+            done.written
+        };
+        if written > 0 {
+            // A range written again after a partial write starts inside the durable prefix
+            let end = done.offset + written as u64;
+            let known = self.written.entry(done.offset).or_insert(end);
+            *known = (*known).max(end);
+            while let Some((&start, &end)) = self.written.first_key_value() {
+                if start > self.durable_end {
+                    break;
+                }
+                self.written.remove(&start);
+                self.durable_end = self.durable_end.max(end);
             }
         }
         if let Err(err) = done.result {
@@ -523,7 +614,7 @@ impl PooledFile {
         let len = self.cur_len.next_multiple_of(self.align);
         self.cur.as_mut_slice()[self.cur_len..len].fill(0);
         let last = mem::replace(&mut self.cur, AlignedBuf::new(PAGE)?);
-        self.submit(last, self.cur_offset, len)?;
+        self.submit(last, self.cur_offset, len, false)?;
         self.cur_len = 0;
         Ok(())
     }
@@ -712,6 +803,28 @@ pub(crate) mod tests {
         assert_eq!(written, 5000);
         assert_eq!(fs::read(&path).unwrap(), expected);
         fs::remove_file(&path).unwrap();
+    }
+
+    /// A quiet buffer reaches the file before it is full, and is written in full later
+    #[test]
+    fn idle_buffer_is_written() {
+        for kind in [SinkKind::Direct, SinkKind::Buffered] {
+            let path = temp("idle");
+            let mut file = PooledFile::new(&path, config(kind)).unwrap();
+            let mut expected = fill(&mut file, 10, 100);
+            file.partial_at -= IDLE_WRITE;
+            file.tick().unwrap();
+            while file.partial_in_flight {
+                file.wait_one().unwrap();
+            }
+            assert_eq!(fs::read(&path).unwrap()[..1000], expected[..]);
+            expected.extend(fill(&mut file, 300, 100));
+            let (written, _, result) = file.finish(100);
+            result.unwrap();
+            assert_eq!(written, 310);
+            assert_eq!(fs::read(&path).unwrap(), expected, "{:?}", kind);
+            fs::remove_file(&path).unwrap();
+        }
     }
 
     /// A failed write stops the writer, and the file keeps the whole records before it

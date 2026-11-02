@@ -396,7 +396,7 @@ where
                     check(&job, rb.poll_raw(WAIT_TIMEOUT))?;
                 }
             }
-            job.borrow_mut().count_bytes();
+            job.borrow_mut().tick()?;
             if let Some(follower) = &mut follower {
                 follower.tick();
             }
@@ -745,6 +745,15 @@ impl Sink {
         }
     }
 
+    /// Regular upkeep on the writer thread between polls of the rings
+    #[inline]
+    fn tick(&mut self) -> io::Result<()> {
+        match self {
+            Sink::Mmap(_) => Ok(()),
+            Sink::Pooled(file) => file.tick(),
+        }
+    }
+
     /// Writes out all reserved bytes, cuts the file to them and syncs it. Returns how many
     /// records of `record_len` bytes the file got, None for all that were reserved.
     fn finish(self, record_len: usize) -> (Option<u64>, Option<SinkStats>, io::Result<()>) {
@@ -983,6 +992,15 @@ where
         }
         delimiter.copy_from_slice(&RECORD_DELIMITER);
         Ok(())
+    }
+
+    /// Counts the bytes written and lets the sink catch up between polls of the rings
+    fn tick(&mut self) -> Result<(), JobError> {
+        self.count_bytes();
+        match &mut self.sink {
+            Some(sink) => sink.tick().map_err(JobError::Io),
+            None => Ok(()),
+        }
     }
 
     /// Adds the records written since the last call to `bytes_written`
