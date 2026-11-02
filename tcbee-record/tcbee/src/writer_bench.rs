@@ -96,6 +96,7 @@ impl Config {
                 buffers: num("TCBEE_BENCH_BUFFERS", defaults.buffers as f64) as usize,
                 io_threads: num("TCBEE_BENCH_IO_THREADS", defaults.io_threads as f64) as usize,
                 preallocate: num("TCBEE_BENCH_PREALLOC", 1.0) != 0.0,
+                io_cpus: Vec::new(),
             },
             io_cpus: cpus("TCBEE_BENCH_IO_CPUS"),
             steady_bytes: (num("TCBEE_BENCH_STEADY_GB", 0.0) * 1e9) as u64,
@@ -285,7 +286,8 @@ where
         .join(format!("tcbee-bench-{}-{idx}.tcp", std::process::id()));
     let file = RemoveOnDrop(path.clone());
     let mut job =
-        MapWriterJob::<T>::with_sink(path.clone(), Arc::new(AtomicU64::new(0)), cfg.sink).unwrap();
+        MapWriterJob::<T>::with_sink(path.clone(), Arc::new(AtomicU64::new(0)), cfg.sink.clone())
+            .unwrap();
     if !cfg.io_cpus.is_empty() {
         // No writer is placed on these CPUs, so every helper may use all of them
         job = job.with_helpers(HelperPlacement {

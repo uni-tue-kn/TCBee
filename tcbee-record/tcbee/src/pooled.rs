@@ -25,7 +25,7 @@ use log::{info, warn};
 use serde::Serialize;
 
 use crate::{
-    placement::HelperPlacement,
+    placement::{cpu_set, report_helper_delta, HelperPlacement},
     writer::{allocate, next_capacity, spawn_helper, starts_growth},
 };
 
@@ -38,6 +38,8 @@ const PAGE: usize = 4096;
 /// (the file system drains direct I/O to change the file's size), so steps are large, and
 /// grow with the file as for the memory-mapped file.
 const PREALLOC_STEP: usize = 64 << 20;
+/// How often an I/O thread reports its CPU time to the balancer and moves with its writer
+const IO_UPKEEP: Duration = Duration::from_secs(1);
 /// A buffer that has been filling for this long is written as it is, so that a quiet ring
 /// does not keep its records in memory only. The full buffer is written again later.
 const IDLE_WRITE: Duration = Duration::from_secs(1);
@@ -65,7 +67,7 @@ impl SinkKind {
 }
 
 /// How a writer's trace file is written
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SinkConfig {
     pub kind: SinkKind,
     /// Size of one buffer of a pooled sink
@@ -77,6 +79,9 @@ pub struct SinkConfig {
     /// Extend an O_DIRECT file ahead of the writes on a helper thread. A direct write past
     /// the end of the file takes the file system's exclusive lock.
     pub preallocate: bool,
+    /// CPUs for the I/O threads, outside the balancing. Empty: they run as the file helpers
+    /// on the writer CPUs, their CPU time counts there, and they follow their writer.
+    pub io_cpus: Vec<usize>,
 }
 
 impl Default for SinkConfig {
@@ -87,6 +92,7 @@ impl Default for SinkConfig {
             buffers: 8,
             io_threads: 2,
             preallocate: true,
+            io_cpus: Vec::new(),
         }
     }
 }
@@ -206,41 +212,50 @@ struct IoThreads {
 }
 
 impl IoThreads {
+    /// Starts `threads` I/O threads on `io_cpus`, or if empty where `helpers` says
     fn start(
         file: &Arc<File>,
         threads: usize,
+        io_cpus: &[usize],
         helpers: Option<&HelperPlacement>,
     ) -> io::Result<Self> {
         let (jobs_tx, jobs_rx) = mpsc::channel::<IoJob>();
         let (done_tx, done_rx) = mpsc::channel();
         let jobs_rx = Arc::new(Mutex::new(jobs_rx));
-        let cpus = helpers.and_then(HelperPlacement::cpu_set);
-        let load_sink = helpers.and_then(HelperPlacement::load_sink);
+        // Placed with the file helpers, the threads follow them while they run
+        let follow = helpers.filter(|_| io_cpus.is_empty()).cloned();
+        let cpus = if io_cpus.is_empty() {
+            helpers.and_then(HelperPlacement::cpu_set)
+        } else {
+            Some(cpu_set(io_cpus))
+        };
         let mut handles = Vec::with_capacity(threads);
         for _ in 0..threads.max(1) {
             let (file, jobs, done) = (file.clone(), jobs_rx.clone(), done_tx.clone());
-            handles.push(spawn_helper(
-                "tcbee-io",
-                cpus,
-                load_sink.clone(),
-                move || loop {
-                    // The lock is held only while taking the next job
-                    let job = jobs.lock().map(|rx| rx.recv());
-                    let Ok(Ok(job)) = job else { return };
-                    let (written, result) =
-                        pwrite_all(&file, &job.buf.as_slice()[..job.len], job.offset);
-                    let back = IoDone {
-                        buf: job.buf,
-                        offset: job.offset,
-                        written,
-                        partial: job.partial,
-                        result,
-                    };
-                    if done.send(back).is_err() {
-                        return;
-                    }
-                },
-            )?);
+            let mut upkeep = IoUpkeep::new(follow.clone(), cpus);
+            // The thread reports its CPU time itself, not only when it ends
+            handles.push(spawn_helper("tcbee-io", cpus, None, move || loop {
+                // The lock is held only while taking the next job
+                let job = jobs.lock().map(|rx| rx.recv_timeout(IO_UPKEEP));
+                upkeep.tick();
+                let job = match job {
+                    Ok(Ok(job)) => job,
+                    Ok(Err(mpsc::RecvTimeoutError::Timeout)) => continue,
+                    _ => return upkeep.report(),
+                };
+                let (written, result) =
+                    pwrite_all(&file, &job.buf.as_slice()[..job.len], job.offset);
+                let back = IoDone {
+                    buf: job.buf,
+                    offset: job.offset,
+                    written,
+                    partial: job.partial,
+                    result,
+                };
+                if done.send(back).is_err() {
+                    return upkeep.report();
+                }
+            })?);
         }
         Ok(Self {
             jobs: Some(jobs_tx),
@@ -254,6 +269,50 @@ impl IoThreads {
             .as_ref()
             .and_then(|jobs| jobs.send(job).ok())
             .ok_or_else(|| io::Error::other("the file's I/O threads stopped"))
+    }
+}
+
+/// An I/O thread placed as a file helper: reports its CPU time to the balancer, and moves
+/// where a helper of its writer would start now, as the writers move
+struct IoUpkeep {
+    helpers: Option<HelperPlacement>,
+    cpus: Option<libc::cpu_set_t>,
+    reported_ns: u64,
+    last: Instant,
+}
+
+impl IoUpkeep {
+    fn new(helpers: Option<HelperPlacement>, cpus: Option<libc::cpu_set_t>) -> Self {
+        Self {
+            helpers,
+            cpus,
+            reported_ns: 0,
+            last: Instant::now(),
+        }
+    }
+
+    fn tick(&mut self) {
+        if self.helpers.is_none() || self.last.elapsed() < IO_UPKEEP {
+            return;
+        }
+        self.last = Instant::now();
+        self.report();
+        let cpus = self.helpers.as_ref().and_then(HelperPlacement::cpu_set);
+        let moved = match (&cpus, &self.cpus) {
+            (Some(new), Some(old)) => unsafe { !libc::CPU_EQUAL(new, old) },
+            (new, old) => new.is_some() != old.is_some(),
+        };
+        if let (true, Some(set)) = (moved, cpus) {
+            if unsafe { libc::sched_setaffinity(0, mem::size_of_val(&set), &set) } == 0 {
+                self.cpus = Some(set);
+            }
+        }
+    }
+
+    fn report(&mut self) {
+        if let Some(sink) = self.helpers.as_ref().and_then(HelperPlacement::load_sink) {
+            report_helper_delta(&sink, &mut self.reported_ns);
+        }
     }
 }
 
@@ -541,6 +600,7 @@ impl PooledFile {
             self.io = Some(IoThreads::start(
                 &self.file,
                 self.config.io_threads,
+                &self.config.io_cpus,
                 self.helpers.as_ref(),
             )?);
         }
@@ -805,6 +865,7 @@ pub(crate) mod tests {
             buffers: 3,
             io_threads: 2,
             preallocate: true,
+            io_cpus: Vec::new(),
         }
     }
 
@@ -943,7 +1004,7 @@ pub(crate) mod tests {
         }
         let durable = file.durable_end;
         let read_only = Arc::new(File::open(&path).unwrap());
-        file.io = Some(IoThreads::start(&read_only, 1, None).unwrap());
+        file.io = Some(IoThreads::start(&read_only, 1, &[], None).unwrap());
         let mut failed = false;
         for _ in 0..1000 {
             if file.reserve(100).is_err() {

@@ -183,7 +183,7 @@ impl Writer {
     {
         let file_path = trace_dir.as_ref().join(file.filename());
         let mut job =
-            MapWriterJob::<T>::with_sink(file_path, self.bytes_written.clone(), self.sink)?;
+            MapWriterJob::<T>::with_sink(file_path, self.bytes_written.clone(), self.sink.clone())?;
         job.observer = observer;
         let running = self.running.clone();
 
@@ -1454,7 +1454,7 @@ mod tests {
                 let job = MapWriterJob::<tcp4_packet_trace>::with_sink(
                     path.clone(),
                     Arc::new(AtomicU64::new(0)),
-                    sink,
+                    sink.clone(),
                 )
                 .unwrap();
                 let records = thread::scope(|scope| {

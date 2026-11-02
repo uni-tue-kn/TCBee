@@ -386,6 +386,16 @@ impl HelperPlacement {
     }
 }
 
+/// Counts the CPU time a long-lived helper thread used since `last` (its CPU time at the last
+/// report, updated here) toward the writer CPU it runs on
+pub fn report_helper_delta(cpus: &WriterCpus, last: &mut u64) {
+    let cpu = unsafe { libc::sched_getcpu() };
+    if let (Ok(cpu), Some(ns)) = (usize::try_from(cpu), thread_cpu_ns()) {
+        cpus.add_helper_time(cpu, ns.saturating_sub(*last));
+        *last = ns;
+    }
+}
+
 /// Counts the calling helper thread's CPU time toward the writer CPU it runs on
 pub fn report_helper_time(cpus: &WriterCpus) {
     let cpu = unsafe { libc::sched_getcpu() };
