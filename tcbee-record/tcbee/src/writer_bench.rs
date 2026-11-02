@@ -14,6 +14,11 @@
 //! (sock, tcp4 or cwnd, default sock), `TCBEE_BENCH_RATE` (records/s per file, 0 = as fast
 //! as possible), `TCBEE_BENCH_CPUS` (cores to pin the writers to, round robin),
 //! `TCBEE_BENCH_IDLE_SECS` (host CPU measured before the run as a baseline, default 2),
+//! `TCBEE_BENCH_SINK` (mmap, direct or buffered, default mmap), `TCBEE_BENCH_BUF_MB`,
+//! `TCBEE_BENCH_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled sinks' buffers and I/O
+//! threads per file), `TCBEE_BENCH_IO_CPUS` (cores for the file helpers and I/O threads of all
+//! sinks; by default they inherit the writer's core), `TCBEE_BENCH_STEADY_GB` (the steady state
+//! of a disk run starts once this much was written, default the size of the memory),
 //! `TCBEE_BENCH_OUT` (append the JSON result to this file), `TCBEE_BENCH_MAX_GB` (stop when
 //! the files hold this much; by default 40 % of what the directory can hold after the writer's
 //! preallocation, which keeps about twice the data plus up to 1 GiB per file allocated). A run
@@ -52,28 +57,46 @@ struct Config {
     idle_secs: f64,
     out: Option<PathBuf>,
     max_bytes: u64,
+    sink: SinkConfig,
+    io_cpus: Vec<usize>,
+    steady_bytes: u64,
 }
 
 impl Config {
     fn from_env() -> Self {
         let var = |k: &str| env::var(k).ok().filter(|v| !v.is_empty());
         let num = |k: &str, d: f64| var(k).map(|v| v.parse().expect(k)).unwrap_or(d);
+        let cpus = |k: &str| -> Vec<usize> {
+            var(k)
+                .map(|v| v.split(',').map(|c| c.trim().parse().expect(k)).collect())
+                .unwrap_or_default()
+        };
+        let defaults = SinkConfig::default();
+        let kind = match var("TCBEE_BENCH_SINK").as_deref() {
+            None | Some("mmap") => SinkKind::Mmap,
+            Some("direct") => SinkKind::Direct,
+            Some("buffered") => SinkKind::Buffered,
+            Some(other) => panic!("TCBEE_BENCH_SINK {other}: mmap, direct or buffered"),
+        };
         Config {
             dir: var("TCBEE_BENCH_DIR").expect("set TCBEE_BENCH_DIR").into(),
             secs: num("TCBEE_BENCH_SECS", 20.0),
             files: num("TCBEE_BENCH_FILES", 1.0) as usize,
             record: var("TCBEE_BENCH_RECORD").unwrap_or_else(|| "sock".into()),
             rate: num("TCBEE_BENCH_RATE", 0.0),
-            cpus: var("TCBEE_BENCH_CPUS")
-                .map(|v| {
-                    v.split(',')
-                        .map(|c| c.trim().parse().expect("TCBEE_BENCH_CPUS"))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            cpus: cpus("TCBEE_BENCH_CPUS"),
             idle_secs: num("TCBEE_BENCH_IDLE_SECS", 2.0),
             out: var("TCBEE_BENCH_OUT").map(PathBuf::from),
             max_bytes: (num("TCBEE_BENCH_MAX_GB", 0.0) * 1e9) as u64,
+            sink: SinkConfig {
+                kind,
+                buffer_bytes: (num("TCBEE_BENCH_BUF_MB", (defaults.buffer_bytes >> 20) as f64)
+                    * (1 << 20) as f64) as usize,
+                buffers: num("TCBEE_BENCH_BUFFERS", defaults.buffers as f64) as usize,
+                io_threads: num("TCBEE_BENCH_IO_THREADS", defaults.io_threads as f64) as usize,
+            },
+            io_cpus: cpus("TCBEE_BENCH_IO_CPUS"),
+            steady_bytes: (num("TCBEE_BENCH_STEADY_GB", 0.0) * 1e9) as u64,
         }
     }
 }
@@ -242,6 +265,8 @@ struct ThreadResult {
     /// CPU of the write phase and of the final flush (msync, truncate, fsync)
     cpu_ns: u64,
     finish_cpu_ns: u64,
+    /// what a pooled sink did
+    sink: Option<SinkStats>,
     /// removes the file when dropped, after the run's end snapshots
     file: Option<RemoveOnDrop>,
 }
@@ -257,7 +282,15 @@ where
         .dir
         .join(format!("tcbee-bench-{}-{idx}.tcp", std::process::id()));
     let file = RemoveOnDrop(path.clone());
-    let mut job = MapWriterJob::<T>::new(path.clone(), Arc::new(AtomicU64::new(0))).unwrap();
+    let mut job =
+        MapWriterJob::<T>::with_sink(path.clone(), Arc::new(AtomicU64::new(0)), cfg.sink).unwrap();
+    if !cfg.io_cpus.is_empty() {
+        // No writer is placed on these CPUs, so every helper may use all of them
+        job = job.with_helpers(HelperPlacement {
+            cpus: Arc::new(WriterCpus::new(cfg.io_cpus.clone(), Placement::RoundRobin)),
+            writer: None,
+        });
+    }
     let size = mem::size_of::<T>();
     let limit =
         cfg.max_bytes / cfg.files as u64 / (job.record_size + RECORD_DELIMITER.len()) as u64;
@@ -299,7 +332,9 @@ where
     let cpu1 = cpu_ns(libc::RUSAGE_THREAD);
     job.flush().unwrap();
     let finish_secs = start.elapsed().as_secs_f64() - write_secs;
+    assert_eq!(job.records, n, "records lost in the file");
     ThreadResult {
+        sink: job.sink_stats.take(),
         records: n,
         size_capped,
         write_secs,
@@ -399,8 +434,7 @@ where
 
     // Per second of the write phase (the final flush is not part of it): the writer's MB/s
     // and the MB/s that reached the target's device. Steady state: the second half of the write
-    // phase, and for a disk only after Dirty reached 90 % of its maximum (the page cache filled
-    // up to the dirty limit); before that the writer runs at memory speed.
+    // phase on tmpfs; on a disk once the run wrote more than the memory holds (see below).
     let series = series.into_inner().unwrap();
     let in_write: Vec<_> = series.iter().filter(|s| s.0 <= write_secs).collect();
     let mut per_sec = Vec::new();
@@ -414,10 +448,9 @@ where
             last = (t, n, sec);
         }
     }
-    // The steady state of a disk run starts once Dirty is near the kernel's throttling setpoint
-    // (from vm.dirty_bytes/dirty_ratio and the background ones, ratios of the memory available at
-    // the start, which is close to the kernel's dirtyable memory). A run that never gets there
-    // wrote into memory only: no steady MB/s then.
+    // When Dirty got near the kernel's throttling setpoint (from vm.dirty_bytes/dirty_ratio and
+    // the background ones, ratios of the memory available at the start), as a diagnostic of the
+    // page cache sinks: before that they write at memory speed.
     let dirty_max = in_write.iter().map(|s| s.2).max().unwrap_or(0);
     let limit_reached = |t: &&&(f64, u64, u64, u64, u64)| t.2 * 10 >= dirty_setpoint_kb * 9;
     let plateau = in_write.iter().find(limit_reached).map(|s| s.0);
@@ -427,7 +460,22 @@ where
     } else {
         0.0
     };
-    let from = plateau_t.max(write_secs / 2.0);
+    // Every sink, also one that keeps the page cache clean (O_DIRECT, write-behind): a disk run
+    // is steady once it wrote more than the memory could hold, and at the earliest after 10 s
+    let steady_bytes = if cfg.steady_bytes > 0 {
+        cfg.steady_bytes
+    } else {
+        meminfo_kb("MemTotal:") * 1024
+    };
+    let steady_t = in_write
+        .iter()
+        .find(|s| s.1 * record_bytes as u64 >= steady_bytes)
+        .map(|s| s.0.max(10.0));
+    let from = if disk_run {
+        steady_t.unwrap_or(write_secs)
+    } else {
+        write_secs / 2.0
+    };
     let median = |v: &[(f64, f64)]| {
         let mut x: Vec<f64> = v
             .iter()
@@ -437,7 +485,7 @@ where
         x.sort_by(|a, b| a.partial_cmp(b).unwrap());
         x.get(x.len() / 2).copied()
     };
-    let (steady_mbps, disk_steady_mbps) = match (disk_run, plateau) {
+    let (steady_mbps, disk_steady_mbps) = match (disk_run, steady_t) {
         (false, _) => (median(&per_sec), None),
         (true, Some(_)) => (median(&per_sec), median(&disk_per_sec)),
         (true, None) => (None, None),
@@ -486,6 +534,12 @@ where
         "record": cfg.record, "record_bytes": record_bytes, "files": cfg.files, "dir": cfg.dir,
         "devices": devs, "tmpfs": on_tmpfs(&cfg.dir), "rate_per_file": cfg.rate, "cpus": cfg.cpus, "secs": cfg.secs,
         "max_bytes": cfg.max_bytes, "size_capped": results.iter().any(|r| r.size_capped),
+        "sink": cfg.sink.kind.name(), "buffer_bytes": cfg.sink.buffer_bytes, "buffers": cfg.sink.buffers,
+        "io_threads": cfg.sink.io_threads, "io_cpus": cfg.io_cpus,
+        "effective_sinks": results.iter().map(|r| r.sink.as_ref().map_or("mmap", |s| s.sink)).collect::<Vec<_>>(),
+        "stalls": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stalls).sum::<u64>(),
+        "stall_secs": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_ns).sum::<u64>() as f64 / 1e9,
+        "stall_max_ms": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_max_ns).max().unwrap_or(0) as f64 / 1e6,
     });
     let throughput = json!({
         "records": records, "mb": mb,
@@ -498,7 +552,7 @@ where
         "mbps_per_sec": per_sec.iter().map(|x| x.1).collect::<Vec<_>>(),
         "disk_mbps_steady": disk_steady_mbps,
         "disk_mbps_per_sec": disk_per_sec.iter().map(|x| x.1).collect::<Vec<_>>(),
-        "dirty_plateau_secs": plateau_t, "steady_from_secs": from,
+        "dirty_plateau_secs": plateau_t, "steady_from_secs": from, "steady_bytes": steady_bytes,
         "dirty_limit_kb": dirty_limit_kb, "dirty_setpoint_kb": dirty_setpoint_kb,
         "dirty_limit_reached": plateau.is_some(),
         "steady_consistent": steady_consistent,
@@ -563,9 +617,9 @@ fn bench_writer_throughput() {
     };
     let f = |k: &str| res[k].as_f64().unwrap_or(f64::NAN);
     println!(
-        "{} x{} on {}: {:.0} MB/s write, {:.0} MB/s steady (disk {:.0}), {:.0} MB/s durable; \
+        "{} {} x{} on {}: {:.0} MB/s write, {:.0} MB/s steady (disk {:.0}), {:.0} MB/s durable; \
          writer {:.2} cores, process {:.2}, host {:.2} (idle {:.2}); {:.0} ns/MB writer, {:.0} ns/MB host{}",
-        cfg.record, cfg.files, cfg.dir.display(), f("mbps_write"), f("mbps_steady"),
+        cfg.sink.kind.name(), cfg.record, cfg.files, cfg.dir.display(), f("mbps_write"), f("mbps_steady"),
         f("disk_mbps_steady"), f("mbps_durable"), f("writer_cores"), f("process_cores"),
         f("host_busy_cores"), f("host_idle_busy_cores"), f("writer_ns_per_mb"), f("host_ns_per_mb"),
         if res["size_capped"].as_bool().unwrap() {

@@ -5,8 +5,11 @@
 #
 #   testing/writer_bench.sh <disk_dir> [secs=60] [out.jsonl]
 #
-# Runs must be long enough to fill the page cache up to the dirty limit: the steady MB/s are
-# taken after that (dirty_plateau_secs). Every result line gets the machine, the build and the
+# SINKS (default "mmap direct buffered") lists the sinks to compare; the other TCBEE_BENCH_*
+# variables (buffers, I/O threads and CPUs, steady GB) pass through to every run.
+#
+# Runs must be long enough to write more than the memory holds: the steady MB/s of a disk run
+# are taken after that (steady_from_secs; TCBEE_BENCH_STEADY_GB lowers the bound). Every result line gets the machine, the build and the
 # target's file system; with fio installed, the disk's sequential write bandwidth (O_DIRECT) is
 # measured once as the reference for "the disk is saturated".
 #
@@ -73,16 +76,18 @@ fail=0
 for dir in "$tmpfs" "$disk"; do
   for files in 1 2 4; do
     for record in sock tcp4 cwnd; do
-      if ! TCBEE_BENCH_DIR=$dir TCBEE_BENCH_SECS=$secs TCBEE_BENCH_FILES=$files TCBEE_BENCH_RECORD=$record \
-        TCBEE_BENCH_OUT=$out "$bin" --ignored --nocapture --exact writer::bench::bench_writer_throughput \
-        > "$out.run.log" 2>&1; then
-        echo "run failed: $dir $files $record (see $out.run.log)" >&2
-        fail=1
-        cp "$out.run.log" "$out.failed-$(basename "$dir")-$files-$record.log"
-      fi
-      grep -E ' on .*MB/s|: util|warning:' "$out.run.log"
-      sync
-      sleep 5   # let writeback of the last run finish before the next one starts
+      for sink in ${SINKS:-mmap direct buffered}; do
+        if ! TCBEE_BENCH_SINK=$sink TCBEE_BENCH_DIR=$dir TCBEE_BENCH_SECS=$secs TCBEE_BENCH_FILES=$files \
+          TCBEE_BENCH_RECORD=$record TCBEE_BENCH_OUT=$out \
+          "$bin" --ignored --nocapture --exact writer::bench::bench_writer_throughput > "$out.run.log" 2>&1; then
+          echo "run failed: $sink $dir $files $record (see $out.run.log)" >&2
+          fail=1
+          cp "$out.run.log" "$out.failed-$sink-$(basename "$dir")-$files-$record.log"
+        fi
+        grep -E ' on .*MB/s|: util|warning:' "$out.run.log"
+        sync
+        sleep 5   # let writeback of the last run finish before the next one starts
+      done
     done
   done
 done
