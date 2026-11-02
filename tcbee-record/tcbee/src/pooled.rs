@@ -1,6 +1,6 @@
 //! A trace file written from a pool of large aligned buffers. The writer copies records into
 //! the current buffer; full buffers go to I/O threads, which write them with `pwrite`, by
-//! default with `O_DIRECT`. The writer never takes a page fault or a file system lock for a
+//! default with `O_DIRECT`, or the writer submits them to an io_uring. The writer never takes a page fault or a file system lock for a
 //! record. It only waits when every buffer is still being written, and that wait is counted.
 //!
 //! The file bytes are the same as from the memory-mapped file: records back to back, cut to
@@ -9,11 +9,11 @@
 //! appended to: its last partial block is read back once and written again.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs::{File, OpenOptions},
     io::{self, ErrorKind},
     mem,
-    os::fd::AsRawFd,
+    os::fd::{AsRawFd, RawFd},
     path::Path,
     ptr::NonNull,
     sync::{mpsc, Arc, Mutex},
@@ -21,6 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use io_uring::{opcode, types, IoUring};
 use log::{info, warn};
 use serde::Serialize;
 
@@ -55,6 +56,8 @@ pub enum SinkKind {
     /// Buffer pool, I/O threads write through the page cache and push the written pages to
     /// the disk right away, then drop them from the cache
     Buffered,
+    /// Buffer pool, the writer submits O_DIRECT writes to an io_uring
+    Uring,
 }
 
 impl SinkKind {
@@ -63,6 +66,7 @@ impl SinkKind {
             SinkKind::Mmap => "mmap",
             SinkKind::Direct => "direct",
             SinkKind::Buffered => "buffered",
+            SinkKind::Uring => "uring",
         }
     }
 }
@@ -75,13 +79,15 @@ pub struct SinkConfig {
     pub buffer_bytes: usize,
     /// Buffers per file, at least 2
     pub buffers: usize,
-    /// I/O threads per file, at most `buffers - 1` writes run at once
+    /// I/O threads per file, at most `buffers - 1` writes run at once (an io_uring runs that
+    /// many)
     pub io_threads: usize,
     /// Extend an O_DIRECT file ahead of the writes on a helper thread. A direct write past
     /// the end of the file takes the file system's exclusive lock.
     pub preallocate: bool,
-    /// CPUs for the I/O threads, outside the balancing. Empty: they run as the file helpers
-    /// on the writer CPUs, their CPU time counts there, and they follow their writer.
+    /// CPUs for the I/O threads (or the io_uring's kernel workers), outside the balancing.
+    /// Empty: they run as the file helpers on the writer CPUs, the I/O threads' CPU time
+    /// counts there, and they follow their writer.
     pub io_cpus: Vec<usize>,
 }
 
@@ -120,6 +126,8 @@ pub struct SinkStats {
 struct AlignedBuf {
     ptr: NonNull<u8>,
     len: usize,
+    /// Index among the buffers registered with an io_uring
+    fixed: Option<u16>,
 }
 
 // The buffer is plain memory owned by one thread at a time
@@ -141,7 +149,11 @@ impl AlignedBuf {
             return Err(io::Error::last_os_error());
         }
         let ptr = NonNull::new(ptr.cast()).ok_or_else(|| io::Error::other("mmap returned null"))?;
-        Ok(Self { ptr, len })
+        Ok(Self {
+            ptr,
+            len,
+            fixed: None,
+        })
     }
 
     fn as_slice(&self) -> &[u8] {
@@ -356,6 +368,255 @@ impl IoUpkeep {
     }
 }
 
+/// Where the writes of a file go
+enum Io {
+    Threads(IoThreads),
+    Uring(Box<UringIo>),
+}
+
+/// An io_uring the writer thread submits the file's writes to and reaps them from. It is set
+/// up on the writer thread, which alone may use it (single issuer, deferred task work).
+struct UringIo {
+    ring: IoUring,
+    /// The writes in flight, by user data. The kernel reads their buffers until they complete.
+    slots: Vec<Option<IoJob>>,
+    /// Writes beyond `max_in_flight`, submitted as others complete, like the I/O threads'
+    /// queue
+    queued: VecDeque<IoJob>,
+    max_in_flight: usize,
+    fd: RawFd,
+    file_registered: bool,
+    buffers_registered: bool,
+    /// The kernel's I/O workers follow the writer's helper CPUs
+    follow: Option<HelperPlacement>,
+    cpus: Option<libc::cpu_set_t>,
+    upkeep_at: Instant,
+}
+
+impl UringIo {
+    /// Sets up the ring and registers the file and `buffers`, which must outlive it. At most
+    /// `in_flight` writes are in the kernel at once.
+    fn start(
+        file: &File,
+        buffers: &mut [&mut AlignedBuf],
+        in_flight: usize,
+        io_cpus: &[usize],
+        helpers: Option<&HelperPlacement>,
+    ) -> io::Result<Self> {
+        let entries = (in_flight.max(buffers.len()) as u32)
+            .next_power_of_two()
+            .max(8);
+        let ring = IoUring::builder()
+            .setup_single_issuer()
+            .setup_defer_taskrun()
+            .setup_taskrun_flag()
+            .build(entries)
+            .or_else(|err| match err.raw_os_error() {
+                // A kernel before 6.1
+                Some(libc::EINVAL) => IoUring::builder().build(entries),
+                _ => Err(err),
+            })?;
+        let fd = file.as_raw_fd();
+        let file_registered = ring.submitter().register_files(&[fd]).is_ok();
+        let iovecs: Vec<libc::iovec> = buffers
+            .iter()
+            .map(|buf| libc::iovec {
+                iov_base: buf.ptr.as_ptr().cast(),
+                iov_len: buf.len,
+            })
+            .collect();
+        // SAFETY: the buffers are only unmapped when the file is dropped. The kernel pins
+        // their pages while they are registered.
+        let buffers_registered = unsafe { ring.submitter().register_buffers(&iovecs) }.is_ok();
+        if buffers_registered {
+            for (index, buf) in buffers.iter_mut().enumerate() {
+                buf.fixed = Some(index as u16);
+            }
+        } else {
+            info!("Cannot register the trace buffers with the io_uring, writing without");
+        }
+        let follow = helpers.filter(|_| io_cpus.is_empty()).cloned();
+        let cpus = if io_cpus.is_empty() {
+            helpers.and_then(HelperPlacement::cpu_set)
+        } else {
+            Some(cpu_set(io_cpus))
+        };
+        if let Some(set) = &cpus {
+            if let Err(err) = ring.submitter().register_iowq_aff(set) {
+                info!("Cannot place the io_uring's workers: {}", err);
+            }
+        }
+        Ok(Self {
+            ring,
+            slots: Vec::new(),
+            queued: VecDeque::new(),
+            max_in_flight: in_flight,
+            fd,
+            file_registered,
+            buffers_registered,
+            follow,
+            cpus,
+            upkeep_at: Instant::now(),
+        })
+    }
+
+    fn submit(&mut self, job: IoJob) -> io::Result<()> {
+        self.queued.push_back(job);
+        self.pump()
+    }
+
+    /// Submits queued writes while fewer than `max_in_flight` are in the kernel
+    fn pump(&mut self) -> io::Result<()> {
+        let mut pushed = false;
+        while self.slots.iter().filter(|slot| slot.is_some()).count() < self.max_in_flight {
+            let Some(job) = self.queued.pop_front() else {
+                break;
+            };
+            self.push(job)?;
+            pushed = true;
+        }
+        if pushed {
+            self.enter(0)?;
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, job: IoJob) -> io::Result<()> {
+        let slot = match self.slots.iter().position(Option::is_none) {
+            Some(slot) => slot,
+            None => {
+                self.slots.push(None);
+                self.slots.len() - 1
+            }
+        };
+        let (buf, len) = (job.buf.ptr.as_ptr() as *const u8, job.len as u32);
+        let fixed = job.buf.fixed.filter(|_| self.buffers_registered);
+        let entry = match (self.file_registered, fixed) {
+            (true, Some(index)) => opcode::WriteFixed::new(types::Fixed(0), buf, len, index)
+                .offset(job.offset)
+                .build(),
+            (false, Some(index)) => opcode::WriteFixed::new(types::Fd(self.fd), buf, len, index)
+                .offset(job.offset)
+                .build(),
+            (true, None) => opcode::Write::new(types::Fixed(0), buf, len)
+                .offset(job.offset)
+                .build(),
+            (false, None) => opcode::Write::new(types::Fd(self.fd), buf, len)
+                .offset(job.offset)
+                .build(),
+        }
+        .user_data(slot as u64);
+        self.slots[slot] = Some(job);
+        // SAFETY: the buffer stays in `slots`, and mapped, until the write completes
+        while unsafe { self.ring.submission().push(&entry) }.is_err() {
+            self.enter(0)?;
+        }
+        Ok(())
+    }
+
+    /// Submits the queued entries and, with `want > 0`, waits for that many completions
+    fn enter(&mut self, want: usize) -> io::Result<()> {
+        loop {
+            match self.ring.submit_and_wait(want) {
+                Ok(_) => return Ok(()),
+                Err(err) => match err.raw_os_error() {
+                    Some(libc::EINTR) => continue,
+                    // Completions wait for room in the completion queue: reap them
+                    Some(libc::EBUSY) => return Ok(()),
+                    _ => return Err(err),
+                },
+            }
+        }
+    }
+
+    /// The writes that completed, without waiting
+    fn reap(&mut self) -> io::Result<Vec<IoDone>> {
+        // Deferred completions are posted only by an enter that asks for events. The kernel
+        // flags when there are any, so an idle ring costs no system call.
+        if self.ring.submission().taskrun() {
+            self.enter(0)?;
+        }
+        let done = self.completed();
+        self.pump()?;
+        Ok(done)
+    }
+
+    /// Waits until at least one write completed
+    fn wait(&mut self) -> io::Result<Vec<IoDone>> {
+        loop {
+            let done = self.completed();
+            if !done.is_empty() {
+                self.pump()?;
+                return Ok(done);
+            }
+            self.enter(1)?;
+        }
+    }
+
+    fn completed(&mut self) -> Vec<IoDone> {
+        let mut done = Vec::new();
+        for cqe in self.ring.completion() {
+            let job = self
+                .slots
+                .get_mut(cqe.user_data() as usize)
+                .and_then(Option::take);
+            let Some(job) = job else { continue };
+            let ret = cqe.result();
+            let (written, result) = if ret < 0 {
+                (0, Err(io::Error::from_raw_os_error(-ret)))
+            } else if (ret as usize) < job.len {
+                // The rest would be unaligned for O_DIRECT, and is a full disk or an I/O error
+                (
+                    ret as usize,
+                    Err(io::Error::new(ErrorKind::WriteZero, "short write")),
+                )
+            } else {
+                (job.len, Ok(()))
+            };
+            done.push(IoDone {
+                buf: job.buf,
+                offset: job.offset,
+                written,
+                partial: job.partial,
+                result,
+            });
+        }
+        done
+    }
+
+    /// Moves the kernel's I/O workers where a helper of the writer would start now
+    fn upkeep(&mut self) {
+        let Some(helpers) = &self.follow else { return };
+        if self.upkeep_at.elapsed() < IO_UPKEEP {
+            return;
+        }
+        self.upkeep_at = Instant::now();
+        let Some(set) = helpers.cpu_set() else { return };
+        let moved = self
+            .cpus
+            .is_none_or(|old| unsafe { !libc::CPU_EQUAL(&set, &old) });
+        if moved && self.ring.submitter().register_iowq_aff(&set).is_ok() {
+            self.cpus = Some(set);
+        }
+    }
+}
+
+impl Drop for UringIo {
+    fn drop(&mut self) {
+        // The kernel may still read the buffers of writes in flight
+        while self.slots.iter().any(Option::is_some) {
+            if self.enter(1).is_err() {
+                // Leak them rather than unmap memory the kernel may still read
+                for job in self.slots.iter_mut().filter_map(Option::take) {
+                    mem::forget(job.buf);
+                }
+                return;
+            }
+            drop(self.completed());
+        }
+    }
+}
+
 impl Drop for IoThreads {
     fn drop(&mut self) {
         // Closing the queue ends the threads once it is empty
@@ -384,7 +645,7 @@ pub struct PooledFile {
     cur_len: usize,
     free: Vec<AlignedBuf>,
     /// Started with the first full buffer, on the writer's thread
-    io: Option<IoThreads>,
+    io: Option<Io>,
     helpers: Option<HelperPlacement>,
     in_flight: usize,
     /// A copy of the current buffer is being written. A later write of the same range must
@@ -418,7 +679,7 @@ impl PooledFile {
             .write(true)
             .open(path)?;
         let start = file.metadata()?.len();
-        let mut direct = config.kind == SinkKind::Direct;
+        let mut direct = matches!(config.kind, SinkKind::Direct | SinkKind::Uring);
         let align = if direct {
             match dio_alignment(&file) {
                 Some((mem_align, offset_align)) if mem_align <= PAGE => offset_align.max(512),
@@ -456,17 +717,18 @@ impl PooledFile {
         if direct {
             direct = enable_direct(&file, &cur, cur_offset, align, path)?;
         }
-        let kind = if direct {
-            SinkKind::Direct
-        } else {
-            SinkKind::Buffered
+        // io_uring writes O_DIRECT only, the page cache path uses the I/O threads
+        let kind = match (direct, config.kind) {
+            (true, SinkKind::Uring) => SinkKind::Uring,
+            (true, _) => SinkKind::Direct,
+            (false, _) => SinkKind::Buffered,
         };
         info!(
-            "Writing {} with {} buffers of {} KiB ({}, {} I/O threads)",
+            "Writing {} with {} buffers of {} KiB ({}, {} writes at once)",
             path.display(),
             buffers,
             buf_size >> 10,
-            if direct { "O_DIRECT" } else { "page cache" },
+            kind.name(),
             config.io_threads.max(1)
         );
         Ok(Self {
@@ -599,6 +861,9 @@ impl PooledFile {
     /// and writes the current buffer as it is once it has been filling for `IDLE_WRITE`
     pub fn tick(&mut self) -> io::Result<()> {
         self.reap()?;
+        if let Some(Io::Uring(uring)) = &mut self.io {
+            uring.upkeep();
+        }
         if self.cur_len > self.partial_len
             && self.cur_len < self.buf_size
             && !self.partial_in_flight
@@ -627,34 +892,63 @@ impl PooledFile {
 
     fn submit(
         &mut self,
-        buf: AlignedBuf,
+        mut buf: AlignedBuf,
         offset: u64,
         len: usize,
         partial: bool,
     ) -> io::Result<()> {
-        // The I/O threads may write in any order, so a partial write of this range ends first
+        // Writes may complete in any order, so a partial write of this range ends first
         if !partial {
             self.wait_partial()?;
         }
         if self.io.is_none() {
-            self.io = Some(IoThreads::start(
-                &self.file,
-                self.config.io_threads,
-                !self.direct,
-                &self.config.io_cpus,
-                self.helpers.as_ref(),
-            )?);
+            self.io = Some(self.start_io(&mut buf)?);
         }
-        let io = self.io.as_ref().expect("just started");
-        io.submit(IoJob {
+        let job = IoJob {
             buf,
             offset,
             len,
             partial,
-        })?;
+        };
+        match self.io.as_mut().expect("just started") {
+            Io::Threads(threads) => threads.submit(job)?,
+            Io::Uring(uring) => uring.submit(job)?,
+        }
         self.in_flight += 1;
         self.stats.writes += 1;
         Ok(())
+    }
+
+    /// Sets up the io_uring or the I/O threads, on the writer's thread. `taken` is the buffer
+    /// about to be written, the others are in the pool.
+    fn start_io(&mut self, taken: &mut AlignedBuf) -> io::Result<Io> {
+        if self.config.kind == SinkKind::Uring && self.direct {
+            let mut buffers: Vec<&mut AlignedBuf> = self.free.iter_mut().collect();
+            buffers.push(&mut self.cur);
+            buffers.push(taken);
+            let uring = UringIo::start(
+                &self.file,
+                &mut buffers,
+                self.config.io_threads.max(1),
+                &self.config.io_cpus,
+                self.helpers.as_ref(),
+            );
+            match uring {
+                Ok(uring) => return Ok(Io::Uring(Box::new(uring))),
+                Err(err) => {
+                    warn!("No io_uring ({}), writing O_DIRECT from I/O threads", err);
+                    self.stats.sink = SinkKind::Direct.name();
+                }
+            }
+        }
+        IoThreads::start(
+            &self.file,
+            self.config.io_threads,
+            !self.direct,
+            &self.config.io_cpus,
+            self.helpers.as_ref(),
+        )
+        .map(Io::Threads)
     }
 
     /// A free buffer, waiting for a write to finish if there is none
@@ -692,25 +986,30 @@ impl PooledFile {
     /// Takes back the buffers of finished writes without waiting. Fails with the first
     /// write error.
     fn reap(&mut self) -> io::Result<()> {
-        if let Some(io) = &self.io {
-            let finished: Vec<IoDone> = io.done.try_iter().collect();
-            for done in finished {
-                self.finished(done);
-            }
+        let finished: Vec<IoDone> = match &mut self.io {
+            Some(Io::Threads(threads)) => threads.done.try_iter().collect(),
+            Some(Io::Uring(uring)) => uring.reap()?,
+            None => Vec::new(),
+        };
+        for done in finished {
+            self.finished(done);
         }
         self.take_error()
     }
 
     /// Waits for one write to finish
     fn wait_one(&mut self) -> io::Result<()> {
-        let done = match &self.io {
-            Some(io) if self.in_flight > 0 => io
+        let finished = match &mut self.io {
+            Some(Io::Threads(threads)) if self.in_flight > 0 => vec![threads
                 .done
                 .recv()
-                .map_err(|_| io::Error::other("the file's I/O threads stopped"))?,
+                .map_err(|_| io::Error::other("the file's I/O threads stopped"))?],
+            Some(Io::Uring(uring)) if self.in_flight > 0 => uring.wait()?,
             _ => return Err(io::Error::other("no write in flight to wait for")),
         };
-        self.finished(done);
+        for done in finished {
+            self.finished(done);
+        }
         Ok(())
     }
 
@@ -927,9 +1226,11 @@ pub(crate) mod tests {
         expected
     }
 
+    const POOLED: [SinkKind; 3] = [SinkKind::Direct, SinkKind::Buffered, SinkKind::Uring];
+
     #[test]
     fn pooled_file_keeps_all_bytes() {
-        for kind in [SinkKind::Direct, SinkKind::Buffered] {
+        for kind in POOLED {
             // Ends before, at and after a buffer's end, and after several buffers
             for records in [0, 1, 8192 / 100, 8192 / 100 + 1, 500] {
                 let path = temp("bytes");
@@ -947,7 +1248,7 @@ pub(crate) mod tests {
 
     #[test]
     fn pooled_file_appends() {
-        for kind in [SinkKind::Direct, SinkKind::Buffered] {
+        for kind in POOLED {
             let path = temp("append");
             // An odd length, as a memory-mapped file leaves it
             fs::write(&path, vec![7u8; 1234]).unwrap();
@@ -993,6 +1294,30 @@ pub(crate) mod tests {
         fs::remove_file(&path).unwrap();
     }
 
+    /// A finished io_uring write comes back without waiting for it: the deferred completion is
+    /// posted when the writer looks
+    #[test]
+    fn uring_reaps_without_waiting() {
+        let path = temp("uring");
+        let mut file = PooledFile::new(&path, config(SinkKind::Uring)).unwrap();
+        let expected = fill(&mut file, 8192 / 100 + 1, 100);
+        file.reserve(0).unwrap();
+        assert_eq!(file.in_flight, 1);
+        if !matches!(file.io, Some(Io::Uring(_))) {
+            eprintln!("no io_uring here, skipped");
+            fs::remove_file(&path).unwrap();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        file.reap().unwrap();
+        assert_eq!(file.in_flight, 0);
+        let (_, stats, result) = file.finish(100);
+        result.unwrap();
+        assert_eq!(stats.sink, "uring");
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(&path).unwrap();
+    }
+
     /// The file is preallocated ahead of the writes and cut to the records at the end
     #[test]
     fn preallocated_file_keeps_all_bytes() {
@@ -1013,7 +1338,7 @@ pub(crate) mod tests {
     /// A quiet buffer reaches the file before it is full, and is written in full later
     #[test]
     fn idle_buffer_is_written() {
-        for kind in [SinkKind::Direct, SinkKind::Buffered] {
+        for kind in POOLED {
             let path = temp("idle");
             let mut file = PooledFile::new(&path, config(kind)).unwrap();
             let mut expected = fill(&mut file, 10, 100);
@@ -1045,7 +1370,9 @@ pub(crate) mod tests {
         }
         let durable = file.durable_end;
         let read_only = Arc::new(File::open(&path).unwrap());
-        file.io = Some(IoThreads::start(&read_only, 1, false, &[], None).unwrap());
+        file.io = Some(Io::Threads(
+            IoThreads::start(&read_only, 1, false, &[], None).unwrap(),
+        ));
         let mut failed = false;
         for _ in 0..1000 {
             if file.reserve(100).is_err() {

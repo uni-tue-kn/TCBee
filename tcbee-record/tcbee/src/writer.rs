@@ -722,7 +722,7 @@ impl Sink {
     fn open(path: &Path, chunk_bytes: usize, config: SinkConfig) -> io::Result<Self> {
         Ok(match config.kind {
             SinkKind::Mmap => Sink::Mmap(MmapBackedFile::new(path, chunk_bytes)?),
-            SinkKind::Direct | SinkKind::Buffered => {
+            SinkKind::Direct | SinkKind::Buffered | SinkKind::Uring => {
                 Sink::Pooled(Box::new(PooledFile::new(path, config)?))
             }
         })
@@ -1481,6 +1481,7 @@ mod tests {
         assert_eq!(mmap.len() % entries.len(), 0);
         assert!(write(SinkKind::Direct, "direct") == mmap);
         assert!(write(SinkKind::Buffered, "buffered") == mmap);
+        assert!(write(SinkKind::Uring, "uring") == mmap);
     }
 
     #[test]

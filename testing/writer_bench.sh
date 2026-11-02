@@ -5,7 +5,7 @@
 #
 #   testing/writer_bench.sh <disk_dir> [secs=60] [out.jsonl]
 #
-# SINKS (default "mmap direct buffered") lists the sinks to compare; the other TCBEE_BENCH_*
+# SINKS (default "mmap direct uring buffered") lists the sinks to compare; the other TCBEE_BENCH_*
 # variables (buffers, I/O threads and CPUs, steady GB) pass through to every run.
 #
 # Runs must be long enough to write more than the memory holds: the steady MB/s of a disk run
@@ -76,7 +76,7 @@ fail=0
 for dir in "$tmpfs" "$disk"; do
   for files in 1 2 4; do
     for record in sock tcp4 cwnd; do
-      for sink in ${SINKS:-mmap direct buffered}; do
+      for sink in ${SINKS:-mmap direct uring buffered}; do
         if ! TCBEE_BENCH_SINK=$sink TCBEE_BENCH_DIR=$dir TCBEE_BENCH_SECS=$secs TCBEE_BENCH_FILES=$files \
           TCBEE_BENCH_RECORD=$record TCBEE_BENCH_OUT=$out \
           "$bin" --ignored --nocapture --exact writer::bench::bench_writer_throughput > "$out.run.log" 2>&1; then

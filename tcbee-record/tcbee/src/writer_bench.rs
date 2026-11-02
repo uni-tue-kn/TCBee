@@ -14,9 +14,9 @@
 //! (sock, tcp4 or cwnd, default sock), `TCBEE_BENCH_RATE` (records/s per file, 0 = as fast
 //! as possible), `TCBEE_BENCH_CPUS` (cores to pin the writers to, round robin),
 //! `TCBEE_BENCH_IDLE_SECS` (host CPU measured before the run as a baseline, default 2),
-//! `TCBEE_BENCH_SINK` (mmap, direct or buffered, default mmap), `TCBEE_BENCH_BUF_MB`,
-//! `TCBEE_BENCH_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled sinks' buffers and I/O
-//! threads per file), `TCBEE_BENCH_PREALLOC=0` (O_DIRECT without preallocation),
+//! `TCBEE_BENCH_SINK` (mmap, direct, buffered or uring, default mmap), `TCBEE_BENCH_BUF_MB`,
+//! `TCBEE_BENCH_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled sinks' buffers, and their
+//! I/O threads or io_uring writes at once, per file), `TCBEE_BENCH_PREALLOC=0` (O_DIRECT without preallocation),
 //! `TCBEE_BENCH_IO_CPUS` (cores for the file helpers and I/O threads of all
 //! sinks; by default they inherit the writer's core), `TCBEE_BENCH_STEADY_GB` (the steady state
 //! of a disk run starts once this much was written, default the size of the memory),
@@ -77,7 +77,8 @@ impl Config {
             None | Some("mmap") => SinkKind::Mmap,
             Some("direct") => SinkKind::Direct,
             Some("buffered") => SinkKind::Buffered,
-            Some(other) => panic!("TCBEE_BENCH_SINK {other}: mmap, direct or buffered"),
+            Some("uring") => SinkKind::Uring,
+            Some(other) => panic!("TCBEE_BENCH_SINK {other}: mmap, direct, buffered or uring"),
         };
         Config {
             dir: var("TCBEE_BENCH_DIR").expect("set TCBEE_BENCH_DIR").into(),
