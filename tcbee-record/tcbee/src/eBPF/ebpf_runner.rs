@@ -255,6 +255,18 @@ fn algorithms_left(
 }
 
 /// Ring buffers that the enabled probe groups write to
+/// Starts or stops recording in every program at once (TCBEE_RUNNING in config.h). The
+/// programs read the flag from the mapped .bss on every run.
+fn set_running(skel: &mut TcbeeSkel<'_>, running: bool) -> Result<(), Box<dyn Error>> {
+    let bss = skel
+        .maps
+        .bss_data
+        .as_deref_mut()
+        .ok_or("eBPF object has no .bss section")?;
+    bss.TCBEE_RUNNING = u32::from(running);
+    Ok(())
+}
+
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
     let sock_events = optional.iter().any(|group| group.is_sock_event());
@@ -371,9 +383,14 @@ impl EbpfRunner {
             .map(|started| started.elapsed().as_secs_f64())
             .unwrap_or_default();
 
-        // Detach all programs so no new records arrive while draining. The writer, the
-        // stats and the TUI hold their own map handles, so the maps stay open after the
-        // object is closed.
+        // All probes stop recording at the same moment, then the programs are detached so no
+        // new records arrive while draining. The writer, the stats and the TUI hold their own
+        // map handles, so the maps stay open after the object is closed.
+        if let Some(skel) = self.skel.as_mut() {
+            if let Err(err) = set_running(skel, false) {
+                warn!("Could not stop the probes before detaching them: {}", err);
+            }
+        }
         self.links.clear();
         if let Some(tc) = self.tc.take() {
             tc.detach();
@@ -1063,6 +1080,9 @@ impl EbpfRunner {
                 self.ringbuf_sizes[RB_OWNERS as usize] = None;
             }
         }
+        // Every program is attached and every writer runs: all probes start recording now
+        set_running(skel, true)?;
+
         // The connections that exist already, now that the owner programs see the new ones.
         // It reads all of /proc, so it runs on a thread of its own and writes its file when done.
         if host_pids {

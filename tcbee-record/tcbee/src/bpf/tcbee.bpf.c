@@ -36,6 +36,7 @@ static __always_inline void tuple_set_v4(__u8 *dst, const __u8 *src)
 SEC("tracepoint/tcp/tcp_probe")
 int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 {
+	TCBEE_GATE(0);
 	/* sockaddr_in or sockaddr_in6 */
 	__u8 saddr[28] __attribute__((aligned(8))), daddr[28] __attribute__((aligned(8)));
 	struct tcp_probe_entry *rec;
@@ -103,6 +104,7 @@ int tcp_probe(struct trace_event_raw_tcp_probe *ctx)
 SEC("tracepoint/tcp/tcp_retransmit_synack")
 int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 {
+	TCBEE_GATE(0);
 	__u8 saddr[4] __attribute__((aligned(4))), daddr[4] __attribute__((aligned(4)));
 	__u8 saddr_v6[16] __attribute__((aligned(8))), daddr_v6[16] __attribute__((aligned(8)));
 	struct tcp_retransmit_synack_entry *rec;
@@ -163,6 +165,7 @@ int tcp_retransmit_synack(struct trace_event_raw_tcp_retransmit_synack *ctx)
 SEC("tracepoint/tcp/tcp_bad_csum")
 int tcp_bad_csum(struct trace_event_raw_tcp_event_skb *ctx)
 {
+	TCBEE_GATE(0);
 	__u8 saddr[28] __attribute__((aligned(8))), daddr[28] __attribute__((aligned(8)));
 	struct tcp_bad_csum_entry *rec;
 	__u16 sport, dport, family;
@@ -513,6 +516,7 @@ static __always_inline int trace_packet(void *ctx, enum pkt_hook hook, bool egre
 SEC("tc")
 int tc_ingress_packet_tracer(struct __sk_buff *skb)
 {
+	TCBEE_GATE(TC_ACT_UNSPEC);
 	return trace_packet(skb, PKT_TC, false, &TCP4_PACKETS_INGRESS, RB_TCP4_INGRESS,
 			    &TCP6_PACKETS_INGRESS, RB_TCP6_INGRESS);
 }
@@ -520,6 +524,7 @@ int tc_ingress_packet_tracer(struct __sk_buff *skb)
 SEC("tc")
 int tc_egress_packet_tracer(struct __sk_buff *skb)
 {
+	TCBEE_GATE(TC_ACT_UNSPEC);
 	return trace_packet(skb, PKT_TC, true, &TCP4_PACKETS_EGRESS, RB_TCP4_EGRESS,
 			    &TCP6_PACKETS_EGRESS, RB_TCP6_EGRESS);
 }
@@ -533,6 +538,7 @@ int tc_egress_packet_tracer(struct __sk_buff *skb)
 SEC("?xdp.frags")
 int xdp_ingress_packet_tracer(struct xdp_md *xdp)
 {
+	TCBEE_GATE(XDP_PASS);
 	trace_packet(xdp, PKT_XDP, false, &TCP4_DRIVER_INGRESS, RB_TCP4_DRIVER_INGRESS,
 		     &TCP6_DRIVER_INGRESS, RB_TCP6_DRIVER_INGRESS);
 	return XDP_PASS;
@@ -547,6 +553,7 @@ int xdp_ingress_packet_tracer(struct xdp_md *xdp)
 SEC("?tp_btf/net_dev_start_xmit")
 int BPF_PROG(xmit_egress_packet_tracer, const struct sk_buff *skb, const struct net_device *dev)
 {
+	TCBEE_GATE(0);
 	if (dev->ifindex != HEADERS_IFINDEX)
 		return 0;
 	if (bpf_core_field_exists(dev->nd_net.net) && dev->nd_net.net->ns.inum != HEADERS_NETNS)
@@ -778,6 +785,7 @@ static __always_inline int trace_sock(struct sock *sk, struct sk_buff *skb, void
 SEC("fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	return trace_sock(sk, skb, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, 0);
 }
 
@@ -785,6 +793,7 @@ int BPF_PROG(sock_sendmsg, struct sock *sk, struct sk_buff *skb)
 SEC("fentry/tcp_rcv_established")
 int BPF_PROG(sock_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	return trace_sock(sk, skb, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, 0);
 }
 
@@ -797,6 +806,7 @@ int BPF_PROG(sock_recvmsg, struct sock *sk, struct sk_buff *skb)
 SEC("?fexit/tcp_write_timer_handler")
 int BPF_PROG(sock_timer, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_sock(sk, NULL, &TCP_TIMER_SOCK_EVENTS, RB_SOCK_TIMER,
 			  SOCK_HOOK_TIMER << SOCK_HOOK_SHIFT);
 }
@@ -820,12 +830,14 @@ static __always_inline int trace_sock_ingress(struct sock *sk)
 SEC("?fexit/tcp_rcv_established")
 int BPF_PROG(sock_ingress, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_sock_ingress(sk);
 }
 
 SEC("?fexit/tcp_rcv_state_process")
 int BPF_PROG(sock_ingress_state, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_sock_ingress(sk);
 }
 
@@ -878,6 +890,7 @@ static __always_inline int trace_sock_event(struct sock *sk, __u32 hook, __u32 n
 SEC("?tp_btf/inet_sock_set_state")
 int BPF_PROG(sock_event_state, const struct sock *sk, int oldstate, int newstate)
 {
+	TCBEE_GATE(0);
 	struct sock *s = (struct sock *)sk;
 	__u16 sport, dport;
 
@@ -895,6 +908,7 @@ int BPF_PROG(sock_event_state, const struct sock *sk, int oldstate, int newstate
 SEC("?tp_btf/tcp_cong_state_set")
 int BPF_PROG(sock_event_ca_state, struct sock *sk, const __u8 ca_state)
 {
+	TCBEE_GATE(0);
 	struct tcp_sock *tp;
 
 	if (!sk)
@@ -908,6 +922,7 @@ int BPF_PROG(sock_event_ca_state, struct sock *sk, const __u8 ca_state)
 SEC("?tp_btf/tcp_retransmit_skb")
 int BPF_PROG(sock_event_retransmit, const struct sock *sk)
 {
+	TCBEE_GATE(0);
 	if (!sk || retransmit_failed(ctx))
 		return 0;
 	return trace_sock_event((struct sock *)sk, SOCK_HOOK_RETRANSMIT, 0);
@@ -917,6 +932,7 @@ int BPF_PROG(sock_event_retransmit, const struct sock *sk)
 SEC("?fexit/tcp_cwnd_restart")
 int BPF_PROG(sock_event_restart, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_sock_event(sk, SOCK_HOOK_RESTART, 0);
 }
 
@@ -924,6 +940,7 @@ int BPF_PROG(sock_event_restart, struct sock *sk)
 SEC("?tp_btf/tcp_rcvbuf_grow")
 int BPF_PROG(sock_event_rcvbuf, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	if (!sk)
 		return 0;
 	return trace_sock_event(sk, SOCK_HOOK_RCVBUF, 0);
@@ -933,12 +950,14 @@ int BPF_PROG(sock_event_rcvbuf, struct sock *sk)
 SEC("fentry/__tcp_transmit_skb")
 int BPF_PROG(cwnd_sock_sendmsg, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cwnd(sk, &TCP_SEND_CWND_EVENTS, RB_CWND_SEND);
 }
 
 SEC("fentry/tcp_rcv_established")
 int BPF_PROG(cwnd_sock_recvmsg, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cwnd(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
 }
 
@@ -1047,12 +1066,14 @@ static __always_inline int trace_cwnd_oc(struct sock *sk, void *ringbufs, __u32 
 SEC("?fentry/__tcp_transmit_skb")
 int BPF_PROG(cwnd_oc_sendmsg, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cwnd_oc(sk, &TCP_SEND_CWND_EVENTS, RB_CWND_SEND);
 }
 
 SEC("?fexit/tcp_rcv_established")
 int BPF_PROG(cwnd_oc_recvmsg, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
 }
 
@@ -1060,12 +1081,14 @@ int BPF_PROG(cwnd_oc_recvmsg, struct sock *sk)
 SEC("?fexit/tcp_rcv_state_process")
 int BPF_PROG(cwnd_oc_rcv_state, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
 }
 
 SEC("?fexit/tcp_write_timer_handler")
 int BPF_PROG(cwnd_oc_timer, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cwnd_oc(sk, &TCP_RECEIVE_CWND_EVENTS, RB_CWND_RECV);
 }
 
@@ -1166,18 +1189,21 @@ static __always_inline int trace_sock_oc(struct sock *sk, void *ringbufs, __u32 
 SEC("?fentry/__tcp_transmit_skb")
 int BPF_PROG(sock_oc_sendmsg, struct sock *sk, struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	return trace_sock_oc(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, SOCK_HOOK_EGRESS);
 }
 
 SEC("?fexit/tcp_rcv_established")
 int BPF_PROG(sock_oc_recvmsg, struct sock *sk, struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_INGRESS);
 }
 
 SEC("?fexit/tcp_rcv_state_process")
 int BPF_PROG(sock_oc_rcv_state, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_INGRESS);
 }
 
@@ -1185,6 +1211,7 @@ int BPF_PROG(sock_oc_rcv_state, struct sock *sk)
 SEC("?fexit/tcp_write_timer_handler")
 int BPF_PROG(sock_oc_timer, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_sock_oc(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, SOCK_HOOK_TIMER);
 }
 
@@ -1238,6 +1265,7 @@ static __always_inline int trace_cubic(struct sock *sk, enum tcbee_cc_hook hook,
 SEC("fentry/cubictcp_cong_avoid")
 int BPF_PROG(cubic_cong_control, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cubic(sk, TCBEE_CC_HOOK_ACK, 0);
 }
 
@@ -1249,6 +1277,7 @@ int BPF_PROG(cubic_cong_control, struct sock *sk)
 SEC("fentry/cubictcp_cwnd_event")
 int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cubic(sk, TCBEE_CC_HOOK_CWND_EVENT, 0);
 }
 
@@ -1260,6 +1289,7 @@ int BPF_PROG(cubic_cwnd_event, struct sock *sk)
 SEC("?fexit/cubictcp_recalc_ssthresh")
 int BPF_PROG(cubic_ssthresh, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_cubic(sk, TCBEE_CC_HOOK_SSTHRESH, 0);
 }
 
@@ -1275,6 +1305,7 @@ int BPF_PROG(cubic_ssthresh, struct sock *sk)
 SEC("?fexit/cubictcp_state")
 int BPF_PROG(cubic_state, struct sock *sk, __u8 new_state)
 {
+	TCBEE_GATE(0);
 	return trace_cubic(sk, TCBEE_CC_HOOK_STATE, new_state);
 }
 
@@ -1367,6 +1398,7 @@ static __always_inline int trace_bbr(struct sock *sk, enum tcbee_cc_hook hook,
 SEC("fentry/bbr_main")
 int BPF_PROG(bbr_cong_control, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	__u64 rs = 0;
 
 	if (bpf_core_enum_value_exists(enum bpf_func_id___tcbee,
@@ -1383,6 +1415,7 @@ int BPF_PROG(bbr_cong_control, struct sock *sk)
 SEC("fentry/bbr_cwnd_event")
 int BPF_PROG(bbr_cwnd_event, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_bbr(sk, TCBEE_CC_HOOK_CWND_EVENT, NULL);
 }
 
@@ -1433,6 +1466,7 @@ static __always_inline int trace_reno(struct sock *sk, enum tcbee_cc_hook hook, 
 SEC("?fexit/tcp_reno_cong_avoid")
 int BPF_PROG(reno_cong_avoid, struct sock *sk, __u32 ack, __u32 acked)
 {
+	TCBEE_GATE(0);
 	return trace_reno(sk, TCBEE_CC_HOOK_ACK, acked, 0);
 }
 
@@ -1443,6 +1477,7 @@ int BPF_PROG(reno_cong_avoid, struct sock *sk, __u32 ack, __u32 acked)
 SEC("?fexit/tcp_reno_ssthresh")
 int BPF_PROG(reno_ssthresh, struct sock *sk, __u32 ret)
 {
+	TCBEE_GATE(0);
 	return trace_reno(sk, TCBEE_CC_HOOK_SSTHRESH, 0, ret);
 }
 
@@ -1615,6 +1650,7 @@ static __always_inline int trace_tcp_event_skb(const struct sk_buff *skb, bool r
 SEC("tp_btf/tcp_retransmit_skb")
 int BPF_PROG(tcp_event_retransmit, const struct sock *sk, const struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	struct tcp_event_entry *rec;
 
 	if (!sk || retransmit_failed(ctx))
@@ -1640,6 +1676,7 @@ int BPF_PROG(tcp_event_retransmit, const struct sock *sk, const struct sk_buff *
 SEC("tp_btf/tcp_send_reset")
 int BPF_PROG(tcp_event_rst_sent, const struct sock *sk, const struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	if (sk && bpf_skc_to_tcp_sock((struct sock *)sk))
 		return trace_tcp_event_sk((struct sock *)sk, TCBEE_TCP_RST_SENT);
 	/* skb is the packet the RST answers, which this host received */
@@ -1651,6 +1688,7 @@ int BPF_PROG(tcp_event_rst_sent, const struct sock *sk, const struct sk_buff *sk
 SEC("tp_btf/tcp_receive_reset")
 int BPF_PROG(tcp_event_rst_received, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	if (!sk)
 		return 0;
 	return trace_tcp_event_sk(sk, TCBEE_TCP_RST_RECEIVED);
@@ -1664,6 +1702,7 @@ int BPF_PROG(tcp_event_rst_received, struct sock *sk)
 SEC("tp_btf/inet_sock_set_state")
 int BPF_PROG(tcp_event_state, const struct sock *sk, int oldstate, int newstate)
 {
+	TCBEE_GATE(0);
 	struct sock *s = (struct sock *)sk;
 	struct tcp_event_entry *rec;
 	__u16 sport, dport;
@@ -1691,6 +1730,7 @@ int BPF_PROG(tcp_event_state, const struct sock *sk, int oldstate, int newstate)
 SEC("tp_btf/tcp_cong_state_set")
 int BPF_PROG(tcp_event_ca_state, struct sock *sk, const __u8 ca_state)
 {
+	TCBEE_GATE(0);
 	struct tcp_event_entry *rec;
 	struct tcp_sock *tp;
 	__u8 old;
@@ -1717,6 +1757,7 @@ int BPF_PROG(tcp_event_ca_state, struct sock *sk, const __u8 ca_state)
 SEC("fentry/tcp_enter_loss")
 int BPF_PROG(tcp_event_rto, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_tcp_event_sk(sk, TCBEE_TCP_RTO);
 }
 
@@ -1727,6 +1768,7 @@ int BPF_PROG(tcp_event_rto, struct sock *sk)
 SEC("fentry/tcp_enter_cwr")
 int BPF_PROG(tcp_event_cwr, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	return trace_tcp_event_sk(sk, TCBEE_TCP_CWR);
 }
 
@@ -1738,6 +1780,7 @@ int BPF_PROG(tcp_event_cwr, struct sock *sk)
 SEC("?tp_btf/tcp_destroy_sock")
 int BPF_PROG(tcp_event_destroy, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	struct tcp_event_entry *rec;
 	__u16 sport, dport;
 
@@ -1768,6 +1811,7 @@ int BPF_PROG(tcp_event_destroy, struct sock *sk)
 SEC("tp_btf/kfree_skb")
 int BPF_PROG(tcp_event_drop, struct sk_buff *skb, void *location)
 {
+	TCBEE_GATE(0);
 	struct tcp_event_entry *rec;
 	__u16 sport, dport;
 	__u32 reason = 0;
@@ -1931,6 +1975,7 @@ static __always_inline int trace_mptcp_pm(__u8 event, const struct mptcp_sock *m
 SEC("fentry/mptcp_event")
 int BPF_PROG(mptcp_pm_event, int type, const struct mptcp_sock *msk, const struct sock *ssk)
 {
+	TCBEE_GATE(0);
 	return trace_mptcp_pm(type, msk, ssk, NULL, NULL);
 }
 
@@ -1938,6 +1983,7 @@ int BPF_PROG(mptcp_pm_event, int type, const struct mptcp_sock *msk, const struc
 SEC("fentry/mptcp_event_addr_announced")
 int BPF_PROG(mptcp_pm_announced, const struct sock *ssk, const struct mptcp_addr_info *info)
 {
+	TCBEE_GATE(0);
 	return trace_mptcp_pm(TCBEE_MPTCP_ANNOUNCED, NULL, ssk, info, NULL);
 }
 
@@ -1945,6 +1991,7 @@ int BPF_PROG(mptcp_pm_announced, const struct sock *ssk, const struct mptcp_addr
 SEC("fentry/mptcp_event_addr_removed")
 int BPF_PROG(mptcp_pm_removed, const struct mptcp_sock *msk, __u8 id)
 {
+	TCBEE_GATE(0);
 	return trace_mptcp_pm(TCBEE_MPTCP_REMOVED, msk, NULL, NULL,
 			      &(struct mptcp_pm_extra){ .addr_id = id });
 }
@@ -1953,6 +2000,7 @@ int BPF_PROG(mptcp_pm_removed, const struct mptcp_sock *msk, __u8 id)
 SEC("fentry/mptcp_token_destroy")
 int BPF_PROG(mptcp_pm_token_destroy, struct mptcp_sock *msk)
 {
+	TCBEE_GATE(0);
 	if (!BPF_CORE_READ(msk, token))
 		return 0;
 	return trace_mptcp_pm(TCBEE_MPTCP_TOKEN_DESTROYED, msk, NULL, NULL, NULL);
@@ -1963,6 +2011,7 @@ SEC("fexit/__mptcp_subflow_connect")
 int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_info *loc,
 	     const struct mptcp_addr_info *remote, int ret)
 {
+	TCBEE_GATE(0);
 	return trace_mptcp_pm(TCBEE_MPTCP_SUBFLOW_CONNECT, (const struct mptcp_sock *)sk, NULL,
 			      remote, &(struct mptcp_pm_extra){ .error = ret });
 }
@@ -1971,6 +2020,7 @@ int BPF_PROG(mptcp_pm_subflow_connect, struct sock *sk, const struct mptcp_addr_
 SEC("fentry/mptcp_pm_nl_subflow_chk_stale")
 int BPF_PROG(mptcp_pm_stale_check, const struct mptcp_sock *msk, struct sock *ssk)
 {
+	TCBEE_GATE(0);
 	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)ssk;
 	__u16 sport, dport;
@@ -1996,6 +2046,7 @@ int BPF_PROG(mptcp_pm_stale_check, const struct mptcp_sock *msk, struct sock *ss
 SEC("fexit/mptcp_pm_nl_subflow_chk_stale")
 int BPF_PROG(mptcp_pm_stale, const struct mptcp_sock *msk, struct sock *ssk)
 {
+	TCBEE_GATE(0);
 	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)ssk;
 
@@ -2016,6 +2067,7 @@ SEC("fexit/mptcp_pm_nl_mp_prio_send_ack")
 int BPF_PROG(mptcp_pm_prio_sent, struct mptcp_sock *msk, struct mptcp_addr_info *addr,
 	     struct mptcp_addr_info *rem, __u8 bkup, int ret)
 {
+	TCBEE_GATE(0);
 	return trace_mptcp_pm(TCBEE_MPTCP_MP_PRIO_SENT, msk, NULL, addr,
 			      &(struct mptcp_pm_extra){
 				      .error = ret,
@@ -2031,6 +2083,7 @@ int BPF_PROG(mptcp_pm_prio_sent, struct mptcp_sock *msk, struct mptcp_addr_info 
 SEC("fentry/__mptcp_retrans")
 int BPF_PROG(mptcp_pm_retrans_start, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	const struct mptcp_sock *msk = (const struct mptcp_sock *)sk;
 	struct mptcp_retrans_start start = {
 		.bytes_retrans = BPF_CORE_READ(msk, bytes_retrans),
@@ -2049,6 +2102,7 @@ int BPF_PROG(mptcp_pm_retrans_start, struct sock *sk)
 SEC("fexit/__mptcp_retrans")
 int BPF_PROG(mptcp_pm_retrans, struct sock *sk)
 {
+	TCBEE_GATE(0);
 	const struct mptcp_sock *msk = (const struct mptcp_sock *)sk;
 	struct mptcp_retrans_start *found, start;
 	__u64 key = (__u64)sk, bytes;
@@ -2072,6 +2126,7 @@ int BPF_PROG(mptcp_pm_retrans, struct sock *sk)
 SEC("fexit/__mptcp_retransmit_pending_data")
 int BPF_PROG(mptcp_pm_requeue, struct sock *sk, bool ret)
 {
+	TCBEE_GATE(0);
 	const struct mptcp_sock *msk = (const struct mptcp_sock *)sk;
 
 	if (!ret)
@@ -2084,6 +2139,7 @@ int BPF_PROG(mptcp_pm_requeue, struct sock *sk, bool ret)
 SEC("fentry/subflow_finish_connect")
 int BPF_PROG(mptcp_pm_connect_check, struct sock *sk, const struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)sk;
 	__u16 sport, dport;
@@ -2106,6 +2162,7 @@ int BPF_PROG(mptcp_pm_connect_check, struct sock *sk, const struct sk_buff *skb)
 SEC("fexit/subflow_finish_connect")
 int BPF_PROG(mptcp_pm_fallback, struct sock *sk, const struct sk_buff *skb)
 {
+	TCBEE_GATE(0);
 	struct mptcp_subflow_context *subflow;
 	__u64 key = (__u64)sk;
 
@@ -2121,6 +2178,7 @@ int BPF_PROG(mptcp_pm_fallback, struct sock *sk, const struct sk_buff *skb)
 SEC("fentry/mptcp_pm_mp_fail_received")
 int BPF_PROG(mptcp_pm_mp_fail, struct sock *ssk, __u64 fail_seq)
 {
+	TCBEE_GATE(0);
 	return trace_mptcp_pm(TCBEE_MPTCP_MP_FAIL, NULL, ssk, NULL,
 			      &(struct mptcp_pm_extra){ .data_seq = fail_seq });
 }
@@ -2188,6 +2246,7 @@ static __always_inline int owner_connect(struct sock *sk, int ret)
 SEC("?fexit/tcp_v4_connect")
 int BPF_PROG(owner_connect_v4, struct sock *sk, void *uaddr, int addr_len, int ret)
 {
+	TCBEE_GATE(0);
 	if (sk->__sk_common.skc_family == AF_INET6)
 		return 0;
 	return owner_connect(sk, ret);
@@ -2197,6 +2256,7 @@ int BPF_PROG(owner_connect_v4, struct sock *sk, void *uaddr, int addr_len, int r
 SEC("?fexit/tcp_v6_connect")
 int BPF_PROG(owner_connect_v6, struct sock *sk, void *uaddr, int addr_len, int ret)
 {
+	TCBEE_GATE(0);
 	return owner_connect(sk, ret);
 }
 
@@ -2211,6 +2271,7 @@ int BPF_PROG(owner_connect_v6, struct sock *sk, void *uaddr, int addr_len, int r
 SEC("?fexit/inet_csk_accept")
 int owner_accept(unsigned long long *ctx)
 {
+	TCBEE_GATE(0);
 	__u16 sport, dport;
 	struct sock *sk;
 
