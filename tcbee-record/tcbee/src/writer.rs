@@ -585,10 +585,15 @@ impl MmapBackedFile {
         let file = self.file.try_clone()?;
         let old_capacity = self.capacity;
         let (tx, rx) = mpsc::channel();
-        spawn_helper("tcbee-grow", self.helper_set(), self.load_sink(), move || {
-            let _ =
-                tx.send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
-        })?;
+        spawn_helper(
+            "tcbee-grow",
+            self.helper_set(),
+            self.load_sink(),
+            move || {
+                let _ = tx
+                    .send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
+            },
+        )?;
         self.pending = Some(rx);
         Ok(())
     }
@@ -1245,9 +1250,14 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             pin_to_cpu(writer);
-            spawn_helper("test-helper", helpers.round_robin_helper_set(), None, move || {
-                tx.send(allowed_cpus()).unwrap();
-            })
+            spawn_helper(
+                "test-helper",
+                helpers.round_robin_helper_set(),
+                None,
+                move || {
+                    tx.send(allowed_cpus()).unwrap();
+                },
+            )
             .unwrap();
         })
         .join()
