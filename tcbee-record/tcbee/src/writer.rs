@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -22,7 +22,11 @@ use serde::Serialize;
 use tcbee_common::{records::RECORD_DELIMITER, stats::RINGBUFS};
 use tcbee_trace::TraceFile;
 
-use crate::config::WRITER_BUFFER_SIZE;
+pub use crate::placement::Placement;
+use crate::{
+    config::WRITER_BUFFER_SIZE,
+    placement::{balance_loop, pin_to_cpu, Follower, HelperPlacement, WriterCpus, WriterSlot},
+};
 
 /// How writer threads wait for new records
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,12 +70,12 @@ pub struct Writer {
     running: Arc<AtomicBool>,
     bytes_written: Arc<AtomicU64>,
     handles: Vec<(WriterReport, JoinHandle<JobResult>)>,
-    /// CPU IDs to pin writer threads to, assigned round-robin.
+    /// The CPUs to pin writer threads to, assigned round-robin at the start, and the writers.
     /// Requires `isolcpus=<ids>` in the kernel boot parameters for full isolation.
-    cpu_pool: Vec<usize>,
+    cpus: Arc<WriterCpus>,
     next_cpu: usize,
-    /// Where the file helpers of all writer threads run
-    helper_cpus: Arc<HelperCpus>,
+    /// The thread that moves writers between the writer CPUs, and its stop flag
+    balancer: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
 }
 
 impl Writer {
@@ -81,18 +85,17 @@ impl Writer {
             running: Arc::new(AtomicBool::new(true)),
             bytes_written: Arc::new(AtomicU64::new(0)),
             handles: Vec::new(),
-            cpu_pool: Vec::new(),
+            cpus: Arc::new(WriterCpus::default()),
             next_cpu: 0,
-            helper_cpus: Arc::new(HelperCpus::default()),
+            balancer: None,
         }
     }
 
-    /// Pin each writer thread to one of the given CPU IDs (round-robin).
-    /// For full isolation, also boot with `isolcpus=<ids>` so the kernel
+    /// Pin each writer thread to one of the given CPU IDs, round-robin at the start and then
+    /// as `placement` says. For full isolation, also boot with `isolcpus=<ids>` so the kernel
     /// scheduler never places other tasks on those cores.
-    pub fn with_cpu_affinity(mut self, cpus: Vec<usize>) -> Self {
-        self.helper_cpus = Arc::new(HelperCpus::new(cpus.clone()));
-        self.cpu_pool = cpus;
+    pub fn with_cpu_affinity(mut self, cpus: Vec<usize>, placement: Placement) -> Self {
+        self.cpus = Arc::new(WriterCpus::new(cpus, placement));
         self
     }
 
@@ -165,19 +168,28 @@ impl Writer {
         T: Serialize + Copy + Send + 'static,
     {
         let file_path = trace_dir.as_ref().join(file.filename());
-        let mut job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?
-            .with_helper_cpus(self.helper_cpus.clone());
+        let mut job = MapWriterJob::<T>::new(file_path, self.bytes_written.clone())?;
         job.observer = observer;
         let running = self.running.clone();
 
-        let cpu = if self.cpu_pool.is_empty() {
+        let pool = &self.cpus.pool;
+        let slot = if pool.is_empty() {
             None
         } else {
-            let id = self.cpu_pool[self.next_cpu % self.cpu_pool.len()];
+            let id = pool[self.next_cpu % pool.len()];
             self.next_cpu += 1;
-            self.helper_cpus.add_writer(id);
-            Some(id)
+            Some(self.cpus.add_writer(id, file.filename()))
         };
+        let cpu = slot.as_ref().map(|slot| slot.cpu.load(Ordering::Relaxed));
+        let job = job.with_helpers(HelperPlacement {
+            cpus: self.cpus.clone(),
+            writer: slot.clone(),
+        });
+        // Only a balanced writer follows the balancer
+        let follow = slot
+            .clone()
+            .filter(|_| self.cpus.balanced())
+            .map(|slot| (self.cpus.clone(), slot));
 
         debug!(
             "Spawning writer thread for {} (cpu: {:?})",
@@ -195,20 +207,52 @@ impl Writer {
         // The ring buffers are set up inside the thread, which then reports whether that
         // worked, so a broken map fails here and not only at shutdown
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let handle = thread::spawn(move || job_loop(job, maps, running, cpu, poll_mode, ready_tx));
-        match ready_rx.recv() {
+        let handle =
+            thread::spawn(move || job_loop(job, maps, running, cpu, follow, poll_mode, ready_tx));
+        let result = match ready_rx.recv() {
             Ok(Ok(())) => {
                 self.handles.push((report, handle));
-                Ok(())
+                self.start_balancer();
+                return Ok(());
             }
-            Ok(Err(err)) => {
-                let _ = handle.join();
-                Err(WriterError::RingBuffer(err))
-            }
-            Err(_) => {
-                let _ = handle.join();
-                Err(WriterError::WorkerPanicked)
-            }
+            Ok(Err(err)) => Err(WriterError::RingBuffer(err)),
+            Err(_) => Err(WriterError::WorkerPanicked),
+        };
+        let _ = handle.join();
+        if let Some(slot) = slot.filter(|_| self.cpus.balanced()) {
+            self.cpus.remove_writer(&slot);
+        }
+        result
+    }
+
+    /// Starts the balancer with the first writer, if writers are balanced over several CPUs
+    fn start_balancer(&mut self) {
+        if !self.cpus.balanced() || self.cpus.pool.len() < 2 || self.balancer.is_some() {
+            return;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let (cpus, stopped) = (self.cpus.clone(), stop.clone());
+        let spawned = thread::Builder::new()
+            .name("tcbee-balance".into())
+            .spawn(move || balance_loop(&cpus, &stopped));
+        match spawned {
+            Ok(handle) => self.balancer = Some((stop, handle)),
+            Err(err) => warn!(
+                "Cannot start the writer balancer, writers stay round-robin: {}",
+                err
+            ),
+        }
+    }
+
+    fn stop_balancer(&mut self) {
+        if let Some((stop, handle)) = self.balancer.take() {
+            stop.store(true, Ordering::Relaxed);
+            handle.thread().unpark();
+            let _ = handle.join();
+            info!(
+                "Moved writer threads {} times",
+                self.cpus.moves.load(Ordering::Relaxed)
+            );
         }
     }
 
@@ -216,6 +260,7 @@ impl Writer {
     /// join them. The eBPF programs must be detached before, otherwise records that are
     /// submitted after the final drain are lost.
     pub fn shutdown(mut self) -> Vec<WriterReport> {
+        self.stop_balancer();
         self.signal_stop();
         self.join_all()
     }
@@ -238,84 +283,6 @@ impl Writer {
                 report
             })
             .collect()
-    }
-}
-
-fn pin_to_cpu(cpu_id: usize) {
-    unsafe {
-        let mut set: libc::cpu_set_t = mem::zeroed();
-        libc::CPU_ZERO(&mut set);
-        libc::CPU_SET(cpu_id, &mut set);
-        let ret = libc::sched_setaffinity(0, mem::size_of::<libc::cpu_set_t>(), &set);
-        if ret != 0 {
-            error!(
-                "Failed to pin writer thread to CPU {}: errno {}",
-                cpu_id,
-                io::Error::last_os_error()
-            );
-        } else {
-            info!("Writer thread pinned to CPU {}", cpu_id);
-        }
-    }
-}
-
-/// The CPUs for the threads that grow and unmap trace files. A thread inherits the CPU
-/// affinity of the thread that starts it, so without this they would run on their writer's
-/// CPU: at about 1 GB/s into one file, zeroing the new tmpfs pages takes half of that CPU and
-/// the writer falls behind its ring buffers.
-#[derive(Default)]
-struct HelperCpus {
-    /// The writer CPU pool, empty if writers are not pinned
-    pool: Vec<usize>,
-    /// The CPUs that have a writer thread
-    writers: Mutex<Vec<usize>>,
-    /// The warning that helpers share the writers' CPUs was logged
-    warned: AtomicBool,
-}
-
-impl HelperCpus {
-    fn new(pool: Vec<usize>) -> Self {
-        HelperCpus {
-            pool,
-            writers: Mutex::new(Vec::new()),
-            warned: AtomicBool::new(false),
-        }
-    }
-
-    fn add_writer(&self, cpu: usize) {
-        self.writers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(cpu);
-    }
-
-    /// The pool CPUs without a writer, or the whole pool if every one has a writer. None if
-    /// writers are not pinned: helpers then run wherever their writer may.
-    fn set(&self) -> Option<libc::cpu_set_t> {
-        if self.pool.is_empty() {
-            return None;
-        }
-        let writers = self.writers.lock().unwrap_or_else(|e| e.into_inner());
-        let mut free: Vec<usize> = self
-            .pool
-            .iter()
-            .copied()
-            .filter(|c| !writers.contains(c))
-            .collect();
-        if free.is_empty() {
-            if !self.warned.swap(true, Ordering::Relaxed) {
-                warn!("Every writer CPU has a writer, file growth shares their CPUs");
-            }
-            free = self.pool.clone();
-        }
-        unsafe {
-            let mut set: libc::cpu_set_t = mem::zeroed();
-            libc::CPU_ZERO(&mut set);
-            for cpu in free {
-                libc::CPU_SET(cpu, &mut set);
-            }
-            Some(set)
-        }
     }
 }
 
@@ -347,15 +314,23 @@ fn job_loop<T>(
     maps: Vec<(u32, MapHandle)>,
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
+    follow: Option<(Arc<WriterCpus>, Arc<WriterSlot>)>,
     poll_mode: PollMode,
     ready: mpsc::SyncSender<Result<(), libbpf_rs::Error>>,
 ) -> JobResult
 where
     T: Serialize + Copy + Send + 'static,
 {
-    if let Some(cpu_id) = cpu {
-        pin_to_cpu(cpu_id);
-    }
+    let pinned = cpu.is_some_and(pin_to_cpu);
+    // A writer that is not where its slot says stays out of the balancing
+    let mut follower = follow.and_then(|(cpus, slot)| {
+        if pinned {
+            Some(Follower::new(cpus, slot))
+        } else {
+            cpus.remove_writer(&slot);
+            None
+        }
+    });
 
     // libbpf calls the callback for every record while consuming the ring buffers. The
     // loop below needs the job too, so the callbacks only borrow it.
@@ -403,6 +378,9 @@ where
                 }
             }
             job.borrow_mut().count_bytes();
+            if let Some(follower) = &mut follower {
+                follower.tick();
+            }
         }
         // Drain what was submitted before the programs were detached
         while check(&job, rb.consume_raw())? > 0 {}
@@ -541,7 +519,7 @@ struct MmapBackedFile {
     /// Background growth in flight: the new mapping and the capacity it covers
     pending: Option<mpsc::Receiver<io::Result<(MmapMut, usize)>>>,
     /// Where the growth and unmap helpers run, None to inherit the writer's CPUs
-    helper_cpus: Option<Arc<HelperCpus>>,
+    helpers: Option<HelperPlacement>,
 }
 
 impl MmapBackedFile {
@@ -575,7 +553,7 @@ impl MmapBackedFile {
             capacity,
             growth,
             pending: None,
-            helper_cpus: None,
+            helpers: None,
         })
     }
 
@@ -608,7 +586,7 @@ impl MmapBackedFile {
     }
 
     fn helper_set(&self) -> Option<libc::cpu_set_t> {
-        self.helper_cpus.as_ref().and_then(|h| h.set())
+        self.helpers.as_ref().and_then(HelperPlacement::cpu_set)
     }
 
     fn adopt(&mut self, map: MmapMut, capacity: usize) {
@@ -702,6 +680,7 @@ impl MmapBackedFile {
 
 impl Drop for Writer {
     fn drop(&mut self) {
+        self.stop_balancer();
         if self.handles.is_empty() {
             return;
         }
@@ -849,9 +828,9 @@ where
     }
 
     /// Grows and unmaps the file on `helpers` instead of the writer's CPU
-    fn with_helper_cpus(mut self, helpers: Arc<HelperCpus>) -> Self {
+    fn with_helpers(mut self, helpers: HelperPlacement) -> Self {
         if let Some(sink) = &mut self.sink {
-            sink.helper_cpus = Some(helpers);
+            sink.helpers = Some(helpers);
         }
         self
     }
@@ -1097,11 +1076,12 @@ impl From<io::Error> for JobError {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
+    use std::{env, sync::Mutex};
 
     use tcbee_common::records::*;
 
     use super::*;
+    use crate::placement::tests::allowed_cpus;
 
     /// xorshift64*, enough to fill records with arbitrary bytes
     struct Rng(u64);
@@ -1228,8 +1208,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let job = MapWriterJob::<tcp4_packet_trace>::new(path.clone(), Arc::new(AtomicU64::new(0)))
             .unwrap()
-            .with_helper_cpus(Arc::new(HelperCpus::new(vec![0])));
-        assert!(job.sink.as_ref().unwrap().helper_cpus.is_some());
+            .with_helpers(HelperPlacement {
+                cpus: Arc::new(WriterCpus::new(vec![0], Placement::RoundRobin)),
+                writer: None,
+            });
+        assert!(job.sink.as_ref().unwrap().helpers.is_some());
         drop(job);
         let _ = std::fs::remove_file(&path);
     }
@@ -1237,31 +1220,18 @@ mod tests {
     /// Helpers run on the CPUs without a writer, not on the CPU of the thread that starts them
     #[test]
     fn helpers_avoid_writer_cpus() {
-        let online: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
-            .filter(|&c| unsafe {
-                let mut set: libc::cpu_set_t = mem::zeroed();
-                libc::sched_getaffinity(0, mem::size_of_val(&set), &mut set) == 0
-                    && libc::CPU_ISSET(c, &set)
-            })
-            .collect();
+        let online = allowed_cpus();
         if online.len() < 2 {
             return;
         }
         let (writer, other) = (online[0], online[1]);
-        let helpers = HelperCpus::new(vec![writer, other]);
-        helpers.add_writer(writer);
+        let helpers = WriterCpus::new(vec![writer, other], Placement::RoundRobin);
+        helpers.add_writer(writer, "w");
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             pin_to_cpu(writer);
-            spawn_helper("test-helper", helpers.set(), move || {
-                let mut set: libc::cpu_set_t = unsafe { mem::zeroed() };
-                unsafe { libc::sched_getaffinity(0, mem::size_of_val(&set), &mut set) };
-                let cpus: Vec<usize> = online
-                    .iter()
-                    .copied()
-                    .filter(|&c| unsafe { libc::CPU_ISSET(c, &set) })
-                    .collect();
-                tx.send(cpus).unwrap();
+            spawn_helper("test-helper", helpers.round_robin_helper_set(), move || {
+                tx.send(allowed_cpus()).unwrap();
             })
             .unwrap();
         })
@@ -1269,11 +1239,10 @@ mod tests {
         .unwrap();
         assert_eq!(rx.recv().unwrap(), vec![other]);
         // Every pool CPU has a writer: the helpers may use the whole pool
-        let full = HelperCpus::new(vec![writer]);
-        full.add_writer(writer);
-        let set = full.set().unwrap();
+        let full = WriterCpus::new(vec![writer], Placement::RoundRobin);
+        full.add_writer(writer, "w");
+        let set = full.round_robin_helper_set().unwrap();
         assert!(unsafe { libc::CPU_ISSET(writer, &set) });
-        assert!(HelperCpus::default().set().is_none());
     }
 
     /// A file that was opened but never written is removed, one with data is kept

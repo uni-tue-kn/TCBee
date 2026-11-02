@@ -4,6 +4,7 @@ mod eBPF;
 mod metadata;
 mod metrics;
 mod owners;
+mod placement;
 mod stats;
 mod viz;
 mod writer;

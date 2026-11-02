@@ -59,7 +59,7 @@ use crate::{
         ebpf_watcher::EBPFWatcher,
         flow_owners::{self, SharedOwners},
     },
-    writer::{observe_all, Writer, WriterReport},
+    writer::{observe_all, Placement, Writer, WriterReport},
 };
 use tcbee_trace::{owners::FlowOwners, sock_hooks::Hook};
 
@@ -891,7 +891,8 @@ impl EbpfRunner {
         // kept in self right away, so that stop() detaches the programs before draining
         // the writers if starting fails below.
         let writer = self.writer.insert(
-            Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone()),
+            Writer::new(self.config.poll_mode)
+                .with_cpu_affinity(self.config.writer_cpus.clone(), Placement::default()),
         );
         self.started = Some(Instant::now());
         let dir = self.config.dir.as_str();
