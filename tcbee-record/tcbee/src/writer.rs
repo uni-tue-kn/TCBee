@@ -25,7 +25,10 @@ use tcbee_trace::TraceFile;
 pub use crate::placement::Placement;
 use crate::{
     config::WRITER_BUFFER_SIZE,
-    placement::{balance_loop, pin_to_cpu, Follower, HelperPlacement, WriterCpus, WriterSlot},
+    placement::{
+        balance_loop, pin_to_cpu, report_helper_time, Follower, HelperPlacement, WriterCpus,
+        WriterSlot,
+    },
 };
 
 /// How writer threads wait for new records
@@ -286,10 +289,12 @@ impl Writer {
     }
 }
 
-/// Runs `work` on a new thread restricted to `cpus`
+/// Runs `work` on a new thread restricted to `cpus`. Its CPU time counts toward the load of
+/// the writer CPU it ends on in `load_sink`, if given.
 fn spawn_helper(
     name: &str,
     cpus: Option<libc::cpu_set_t>,
+    load_sink: Option<Arc<WriterCpus>>,
     work: impl FnOnce() + Send + 'static,
 ) -> io::Result<()> {
     thread::Builder::new()
@@ -304,7 +309,10 @@ fn spawn_helper(
                     );
                 }
             }
-            work()
+            work();
+            if let Some(sink) = load_sink {
+                report_helper_time(&sink);
+            }
         })
         .map(drop)
 }
@@ -577,7 +585,7 @@ impl MmapBackedFile {
         let file = self.file.try_clone()?;
         let old_capacity = self.capacity;
         let (tx, rx) = mpsc::channel();
-        spawn_helper("tcbee-grow", self.helper_set(), move || {
+        spawn_helper("tcbee-grow", self.helper_set(), self.load_sink(), move || {
             let _ =
                 tx.send(Self::grow(&file, old_capacity, new_capacity).map(|m| (m, new_capacity)));
         })?;
@@ -589,12 +597,19 @@ impl MmapBackedFile {
         self.helpers.as_ref().and_then(HelperPlacement::cpu_set)
     }
 
+    fn load_sink(&self) -> Option<Arc<WriterCpus>> {
+        self.helpers.as_ref().and_then(HelperPlacement::load_sink)
+    }
+
     fn adopt(&mut self, map: MmapMut, capacity: usize) {
         self.capacity = capacity;
         if let Some(old) = self.map.replace(map) {
             // Unmapping a large dirty mapping is slow, keep it off the writer thread.
             // The written pages stay in the page cache.
-            if let Err(err) = spawn_helper("tcbee-unmap", self.helper_set(), move || drop(old)) {
+            let unmap = spawn_helper("tcbee-unmap", self.helper_set(), self.load_sink(), || {
+                drop(old)
+            });
+            if let Err(err) = unmap {
                 error!("Failed to start the unmap helper: {}", err);
             }
         }
@@ -1230,7 +1245,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             pin_to_cpu(writer);
-            spawn_helper("test-helper", helpers.round_robin_helper_set(), move || {
+            spawn_helper("test-helper", helpers.round_robin_helper_set(), None, move || {
                 tx.send(allowed_cpus()).unwrap();
             })
             .unwrap();

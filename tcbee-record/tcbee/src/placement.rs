@@ -4,8 +4,10 @@
 //! leave another idle, and a file helper that runs on its own writer's CPU takes half of it
 //! while the writer is busiest. With `Placement::Balanced`, a balancer thread measures each
 //! writer's CPU time and moves busy writers apart, and file helpers run on the least loaded
-//! writer CPU. A writer moves itself: no other thread acts on a writer's thread id, which is
-//! gone once the writer exits.
+//! writer CPU, where the CPU time of finished helpers counts toward the load of the CPU they
+//! ran on. Writers move by their own load only: a helper reports its time when it ends, which
+//! would look like a burst. A writer moves itself: no other thread acts on a writer's thread
+//! id, which is gone once the writer exits.
 
 use std::{
     io, mem,
@@ -36,6 +38,10 @@ const BALANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BALANCE_MARGIN: f64 = 0.1;
 /// How often a writer publishes its CPU time and checks where it should run
 pub const FOLLOW_INTERVAL: Duration = Duration::from_millis(10);
+/// Weight of the newest interval in the smoothed helper load. Helpers report their CPU time
+/// only when they end, a growth after up to a few seconds, so their load is smoothed over
+/// about a second of balancer intervals.
+const HELPER_SMOOTHING: f64 = 0.1;
 
 /// One writer to move from the most loaded CPU to the least loaded one, as (writer, CPU),
 /// if that lowers the most loaded CPU by more than `margin` cores. Writer `i` runs on
@@ -48,7 +54,7 @@ pub fn balance(
     loads: &[f64],
     margin: f64,
 ) -> Option<(usize, usize)> {
-    let totals = totals(cpus, placed, loads);
+    let totals = totals(cpus, placed, loads, &[]);
     let busiest = argmax(&totals)?;
     let idlest = argmin(&totals)?;
     if busiest == idlest {
@@ -74,11 +80,13 @@ pub fn balance(
 
 /// The CPUs for a file helper of the writer on `own` with load `own_load`: the pool CPUs
 /// without a writer if there are any, else the least loaded CPU, where the writer's own CPU
-/// counts its load twice: the writer waits for the helper, so sharing hurts it twice.
+/// counts its load twice: the writer waits for the helper, so sharing hurts it twice. CPU
+/// `cpus[k]` also carries `other[k]` cores of earlier helpers.
 pub fn helper_cpus(
     cpus: &[usize],
     placed: &[usize],
     loads: &[f64],
+    other: &[f64],
     own: usize,
     own_load: f64,
 ) -> Vec<usize> {
@@ -90,23 +98,25 @@ pub fn helper_cpus(
     if !free.is_empty() {
         return free;
     }
-    let mut totals = totals(cpus, placed, loads);
+    let mut totals = totals(cpus, placed, loads, other);
     if let Some(k) = cpus.iter().position(|&c| c == own) {
         totals[k] += own_load;
     }
     argmin(&totals).map_or_else(|| cpus.to_vec(), |k| vec![cpus[k]])
 }
 
-/// Load per CPU of `cpus`
-fn totals(cpus: &[usize], placed: &[usize], loads: &[f64]) -> Vec<f64> {
+/// Load per CPU of `cpus`: its writers' loads plus `other[k]` (missing entries count 0)
+fn totals(cpus: &[usize], placed: &[usize], loads: &[f64], other: &[f64]) -> Vec<f64> {
     cpus.iter()
-        .map(|&cpu| {
-            placed
+        .enumerate()
+        .map(|(k, &cpu)| {
+            let writers: f64 = placed
                 .iter()
                 .zip(loads)
                 .filter(|(&c, _)| c == cpu)
                 .map(|(_, load)| load)
-                .sum()
+                .sum();
+            writers + other.get(k).copied().unwrap_or(0.0)
         })
         .collect()
 }
@@ -132,6 +142,18 @@ pub struct WriterCpus {
     pub moves: AtomicU64,
     /// The warning that helpers share the writers' CPUs was logged
     warned: AtomicBool,
+    /// CPU time in ns of the finished file helpers, per pool CPU they ended on
+    helper_ns: Vec<AtomicU64>,
+    /// The balancer's view of the helpers' CPU time
+    helper_load: Mutex<HelperLoad>,
+}
+
+#[derive(Default)]
+struct HelperLoad {
+    /// helper_ns at the last balancer interval, and when
+    last: Option<(Vec<u64>, Instant)>,
+    /// Smoothed helper load per pool CPU, in cores
+    load: Vec<f64>,
 }
 
 /// A pinned writer thread, shared by the writer and the balancer
@@ -173,10 +195,55 @@ impl WriterSlot {
 impl WriterCpus {
     pub fn new(pool: Vec<usize>, placement: Placement) -> Self {
         WriterCpus {
+            helper_ns: pool.iter().map(|_| AtomicU64::new(0)).collect(),
             pool,
             placement,
             ..Default::default()
         }
+    }
+
+    /// Counts `ns` of CPU time of a finished file helper that ended on `cpu`. Ignored if
+    /// `cpu` is not a writer CPU.
+    pub fn add_helper_time(&self, cpu: usize, ns: u64) {
+        if let Some(k) = self.pool.iter().position(|&c| c == cpu) {
+            self.helper_ns[k].fetch_add(ns, Ordering::Relaxed);
+        }
+    }
+
+    /// The smoothed helper load per pool CPU, in cores
+    fn helper_loads(&self) -> Vec<f64> {
+        lock(&self.helper_load).load.clone()
+    }
+
+    /// Updates the helper loads from the helper time counted since the last call
+    fn update_helper_loads(&self, now: Instant) {
+        let ns: Vec<u64> = self
+            .helper_ns
+            .iter()
+            .map(|n| n.load(Ordering::Relaxed))
+            .collect();
+        let mut state = lock(&self.helper_load);
+        if let Some((last_ns, last_at)) = &state.last {
+            let elapsed = now.saturating_duration_since(*last_at).as_secs_f64();
+            if elapsed > 0.0 {
+                let fresh: Vec<f64> = ns
+                    .iter()
+                    .zip(last_ns)
+                    .map(|(n, l)| n.saturating_sub(*l) as f64 / 1e9 / elapsed)
+                    .collect();
+                state.load = if state.load.len() == fresh.len() {
+                    state
+                        .load
+                        .iter()
+                        .zip(&fresh)
+                        .map(|(old, new)| old + HELPER_SMOOTHING * (new - old))
+                        .collect()
+                } else {
+                    fresh.iter().map(|new| HELPER_SMOOTHING * new).collect()
+                };
+            }
+        }
+        state.last = Some((ns, now));
     }
 
     pub fn balanced(&self) -> bool {
@@ -237,6 +304,7 @@ impl WriterCpus {
             &self.pool,
             &placed,
             &loads,
+            &self.helper_loads(),
             writer.cpu.load(Ordering::Relaxed),
             writer.load(),
         ))
@@ -246,6 +314,7 @@ impl WriterCpus {
     /// A load is the CPU time between two publications over the time between them, both
     /// taken by the writer, so a late publication does not distort it.
     pub fn rebalance(&self) -> Option<(usize, usize)> {
+        self.update_helper_loads(Instant::now());
         let writers = lock(&self.writers);
         let mut placed = Vec::with_capacity(writers.len());
         let mut loads = Vec::with_capacity(writers.len());
@@ -309,6 +378,19 @@ impl HelperPlacement {
             Some(writer) if self.cpus.balanced() => Some(self.cpus.balanced_helper_set(writer)),
             _ => self.cpus.round_robin_helper_set(),
         }
+    }
+
+    /// Where a finished helper reports its CPU time, None if helper loads are not balanced
+    pub fn load_sink(&self) -> Option<Arc<WriterCpus>> {
+        (self.writer.is_some() && self.cpus.balanced()).then(|| self.cpus.clone())
+    }
+}
+
+/// Counts the calling helper thread's CPU time toward the writer CPU it runs on
+pub fn report_helper_time(cpus: &WriterCpus) {
+    let cpu = unsafe { libc::sched_getcpu() };
+    if let (Ok(cpu), Some(ns)) = (usize::try_from(cpu), thread_cpu_ns()) {
+        cpus.add_helper_time(cpu, ns);
     }
 }
 
@@ -449,7 +531,7 @@ pub mod tests {
         assert_eq!(balance(&cpus, &placed, &loads, MARGIN), Some((4, 27)));
         settle(&cpus, &mut placed, &loads);
         assert_ne!(placed[2], placed[4]);
-        assert!(totals(&cpus, &placed, &loads).iter().all(|&t| t < 0.7));
+        assert!(totals(&cpus, &placed, &loads, &[]).iter().all(|&t| t < 0.7));
     }
 
     /// The busiest writer gets a CPU of its own, in one move
@@ -503,14 +585,14 @@ pub mod tests {
         let loads = [0.9, 0.8, 0.7, 0.2, 0.1, 0.1];
         let mut placed = [0; 6];
         settle(&cpus, &mut placed, &loads);
-        let totals = totals(&cpus, &placed, &loads);
+        let totals = totals(&cpus, &placed, &loads, &[]);
         assert!(totals.iter().all(|&t| t <= 1.0 + 1e-9), "{totals:?}");
     }
 
     #[test]
     fn helpers_prefer_cpus_without_a_writer() {
         assert_eq!(
-            helper_cpus(&[0, 1, 2], &[0, 0], &[0.5, 0.1], 0, 0.5),
+            helper_cpus(&[0, 1, 2], &[0, 0], &[0.5, 0.1], &[], 0, 0.5),
             [1, 2]
         );
     }
@@ -521,17 +603,17 @@ pub mod tests {
         let cpus = [26, 27];
         let placed = [26, 27, 27];
         let loads = [0.7, 0.1, 0.02];
-        assert_eq!(helper_cpus(&cpus, &placed, &loads, 26, 0.7), [27]);
+        assert_eq!(helper_cpus(&cpus, &placed, &loads, &[], 26, 0.7), [27]);
         // The light writers' helpers stay away from the send writer too
-        assert_eq!(helper_cpus(&cpus, &placed, &loads, 27, 0.1), [27]);
+        assert_eq!(helper_cpus(&cpus, &placed, &loads, &[], 27, 0.1), [27]);
         // Two busy CPUs: the other one
         let loads = [0.7, 0.8, 0.0];
-        assert_eq!(helper_cpus(&cpus, &placed, &loads, 26, 0.7), [27]);
+        assert_eq!(helper_cpus(&cpus, &placed, &loads, &[], 26, 0.7), [27]);
     }
 
     #[test]
     fn a_single_cpu_is_shared() {
-        assert_eq!(helper_cpus(&[5], &[5, 5], &[0.9, 0.1], 5, 0.9), [5]);
+        assert_eq!(helper_cpus(&[5], &[5, 5], &[0.9, 0.1], &[], 5, 0.9), [5]);
     }
 
     /// Writers on `cpus`, each with a first publication at `start`
@@ -559,6 +641,53 @@ pub mod tests {
             let used = (load * (at - since).as_secs_f64() * 1e9) as u64;
             slot.publish(ns + used, at);
         }
+    }
+
+    /// eval2b all probes at 16 flows: the growth helpers of the busiest writer went to the other
+    /// CPU, whose writers looked lighter but which also ran the earlier helpers
+    #[test]
+    fn helpers_count_earlier_helper_load() {
+        let (cpus, placed, loads) = ([26, 27], [26, 27, 27, 27], [0.45, 0.3, 0.1, 0.1]);
+        assert_eq!(helper_cpus(&cpus, &placed, &loads, &[], 26, 0.45), [27]);
+        assert_eq!(
+            helper_cpus(&cpus, &placed, &loads, &[0.0, 0.5], 26, 0.45),
+            [26]
+        );
+        // A CPU without a writer is still preferred
+        assert_eq!(
+            helper_cpus(&[26, 27, 28], &placed, &loads, &[0.0, 0.5, 0.9], 26, 0.45),
+            [28]
+        );
+    }
+
+    /// Helper CPU time becomes a smoothed load of the CPU it was counted on
+    #[test]
+    fn helper_time_becomes_cpu_load() {
+        let cpus = WriterCpus::new(vec![26, 27], Placement::Balanced);
+        let t0 = Instant::now();
+        cpus.update_helper_loads(t0);
+        assert!(cpus.helper_loads().is_empty());
+        cpus.add_helper_time(27, 500_000_000);
+        cpus.add_helper_time(3, 900_000_000);
+        cpus.update_helper_loads(t0 + Duration::from_secs(1));
+        let loads = cpus.helper_loads();
+        assert_eq!(loads[0], 0.0);
+        assert!((loads[1] - HELPER_SMOOTHING * 0.5).abs() < 1e-9);
+        // Without new helper time the load decays
+        cpus.update_helper_loads(t0 + Duration::from_secs(2));
+        assert!(cpus.helper_loads()[1] < loads[1]);
+        // Round-robin placement does not count helpers
+        let slot = cpus.add_writer(26, "w");
+        let balanced = HelperPlacement {
+            cpus: Arc::new(cpus),
+            writer: Some(slot.clone()),
+        };
+        assert!(balanced.load_sink().is_some());
+        let round_robin = HelperPlacement {
+            cpus: Arc::new(WriterCpus::new(vec![26, 27], Placement::RoundRobin)),
+            writer: Some(slot),
+        };
+        assert!(round_robin.load_sink().is_none());
     }
 
     /// E5a hk at 16 flows: the two busy writers started on one CPU
