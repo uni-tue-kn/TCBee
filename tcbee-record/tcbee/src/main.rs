@@ -23,7 +23,7 @@ use eBPF::ebpf_runner_config::{
 use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
 use tcbee_trace::TCBeeTrace;
-use writer::{Placement, PollMode};
+use writer::{Placement, PollMode, SinkConfig, SinkKind};
 
 // Error handling
 use log::info;
@@ -108,6 +108,8 @@ fn main() -> anyhow::Result<()> {
     let mut poll: String = "busy".to_string();
     let mut writer_cpus: String = String::new();
     let mut writer_placement: String = "balanced".to_string();
+    let mut writer_sink: String = "mmap".to_string();
+    let mut writer_io_cpus: String = String::new();
     let mut on_change: String = String::new();
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
@@ -247,6 +249,16 @@ fn main() -> anyhow::Result<()> {
             Store,
             "How writer threads use the --writer-cpus: 'balanced' moves busy writers apart by their CPU time and runs file growth on the least loaded writer CPU, 'round-robin' leaves each writer on the CPU it started on. Default is balanced.",
         );
+        argparser.refer(&mut writer_sink).add_option(
+            &["--writer-sink"],
+            Store,
+            "How writers write the trace files: 'mmap' maps them, 'direct' copies records into large buffers that I/O threads write with O_DIRECT, 'uring' submits those writes to an io_uring, 'buffered' writes the buffers through the page cache and pushes them to the disk at once. The file bytes are the same. Default is mmap.",
+        );
+        argparser.refer(&mut writer_io_cpus).add_option(
+            &["--writer-io-cpus"],
+            Store,
+            "Comma-separated CPU ids for the I/O threads (or io_uring workers) of the direct, uring and buffered sinks. By default they run on the --writer-cpus like the file growth helpers.",
+        );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
@@ -361,6 +373,29 @@ fn main() -> anyhow::Result<()> {
         "wait" => PollMode::Wait,
         other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
     };
+    let writer_io_cpus: Vec<usize> = parse_csv(&writer_io_cpus, "CPU id")?;
+    if let Some(cpu) = writer_io_cpus
+        .iter()
+        .find(|cpu| **cpu >= libc::CPU_SETSIZE as usize)
+    {
+        return Err(anyhow!("Invalid writer I/O CPU id {}", cpu));
+    }
+    let writer_sink = SinkConfig {
+        kind: match writer_sink.as_str() {
+            "mmap" => SinkKind::Mmap,
+            "direct" => SinkKind::Direct,
+            "uring" => SinkKind::Uring,
+            "buffered" => SinkKind::Buffered,
+            other => {
+                return Err(anyhow!(
+                    "Unknown --writer-sink '{}', use mmap, direct, uring or buffered",
+                    other
+                ))
+            }
+        },
+        io_cpus: writer_io_cpus,
+        ..SinkConfig::default()
+    };
     let writer_placement = match writer_placement.as_str() {
         "balanced" => Placement::Balanced,
         "round-robin" => Placement::RoundRobin,
@@ -449,6 +484,7 @@ fn main() -> anyhow::Result<()> {
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())
         .writer_placement(writer_placement)
+        .writer_sink(writer_sink)
         .on_change(on_change)
         .sock_hooks(sock_hooks)
         .owners(!no_owners)

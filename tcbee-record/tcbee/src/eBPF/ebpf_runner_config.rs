@@ -7,7 +7,7 @@ use crate::{
         headers::HeadersAt,
         tracepoints::{Tracepoint, TracepointSet},
     },
-    writer::{Placement, PollMode},
+    writer::{Placement, PollMode, SinkConfig},
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
 use tcbee_trace::{
@@ -489,6 +489,7 @@ pub struct EbpfRunnerConfig {
     pub poll_mode: PollMode,
     pub writer_cpus: Vec<usize>,
     pub writer_placement: Placement,
+    pub writer_sink: SinkConfig,
     pub on_change: Option<OnChange>,
     /// The hooks of -k in full mode, None without -k or in on-change mode (`HookFlags`)
     pub sock_hooks: Option<HookSet>,
@@ -523,6 +524,7 @@ impl EbpfRunnerConfig {
             poll_mode: PollMode::default(),
             writer_cpus: Vec::new(),
             writer_placement: Placement::default(),
+            writer_sink: SinkConfig::default(),
             on_change: None,
             sock_hooks: None,
             owners: false,
@@ -632,6 +634,11 @@ impl EbpfRunnerConfig {
 
     pub fn writer_placement(mut self, placement: Placement) -> EbpfRunnerConfig {
         self.writer_placement = placement;
+        self
+    }
+
+    pub fn writer_sink(mut self, sink: SinkConfig) -> EbpfRunnerConfig {
+        self.writer_sink = sink;
         self
     }
 

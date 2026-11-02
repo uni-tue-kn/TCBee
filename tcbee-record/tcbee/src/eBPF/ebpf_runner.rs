@@ -907,12 +907,14 @@ impl EbpfRunner {
         // This is the backend writer thread that reads and writes data to files. It is
         // kept in self right away, so that stop() detaches the programs before draining
         // the writers if starting fails below.
-        let writer = self
-            .writer
-            .insert(Writer::new(self.config.poll_mode).with_cpu_affinity(
-                self.config.writer_cpus.clone(),
-                self.config.writer_placement,
-            ));
+        let writer = self.writer.insert(
+            Writer::new(self.config.poll_mode)
+                .with_cpu_affinity(
+                    self.config.writer_cpus.clone(),
+                    self.config.writer_placement,
+                )
+                .with_sink(self.config.writer_sink.clone()),
+        );
         self.started = Some(Instant::now());
         let dir = self.config.dir.as_str();
         let links = &mut self.links;

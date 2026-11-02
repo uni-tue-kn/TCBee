@@ -83,6 +83,8 @@ At least one metric source is required.
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to; they start round-robin |
 | `--writer-placement balanced\|round-robin` | `balanced` | Move busy writers apart on the writer CPUs by their CPU time and grow files on the least loaded one, or keep each writer on its start CPU |
+| `--writer-sink mmap\|direct\|uring\|buffered` | `mmap` | How the trace files are written: memory-mapped, or from large buffers that I/O threads write with O_DIRECT (`direct`), that the writer submits to an io_uring (`uring`), or that go through the page cache and to the disk at once (`buffered`). Same file bytes; `metrics.json` reports the writers' waits for buffers |
+| `--writer-io-cpus LIST` | | CPU ids for the I/O threads or io_uring workers of the buffered sinks; by default they run on the writer CPUs |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 | `--headers-at HOOKS` | `tc` | With `-h`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
 | `--yes` | | Do not ask for confirmation (`--headers-at tc,driver`) |
