@@ -52,7 +52,8 @@ pub enum SinkKind {
     Mmap,
     /// Buffer pool, I/O threads write with O_DIRECT
     Direct,
-    /// Buffer pool, I/O threads write through the page cache
+    /// Buffer pool, I/O threads write through the page cache and push the written pages to
+    /// the disk right away, then drop them from the cache
     Buffered,
 }
 
@@ -204,6 +205,40 @@ fn pwrite_all(file: &File, data: &[u8], offset: u64) -> (usize, io::Result<()>) 
     (done, Ok(()))
 }
 
+/// Write-behind for buffered writes: starts writeback of the range just written, then waits
+/// for the range two buffers before it and drops it from the page cache. So the dirty pages
+/// stay at a few buffers, and the writes never run into the kernel's dirty throttling.
+fn write_behind(file: &File, offset: u64, len: usize) {
+    let fd = file.as_raw_fd();
+    unsafe {
+        libc::sync_file_range(
+            fd,
+            offset as libc::off64_t,
+            len as libc::off64_t,
+            libc::SYNC_FILE_RANGE_WRITE,
+        );
+    }
+    let Some(older) = offset.checked_sub(2 * len as u64) else {
+        return;
+    };
+    unsafe {
+        libc::sync_file_range(
+            fd,
+            older as libc::off64_t,
+            len as libc::off64_t,
+            libc::SYNC_FILE_RANGE_WAIT_BEFORE
+                | libc::SYNC_FILE_RANGE_WRITE
+                | libc::SYNC_FILE_RANGE_WAIT_AFTER,
+        );
+        libc::posix_fadvise(
+            fd,
+            older as libc::off_t,
+            len as libc::off_t,
+            libc::POSIX_FADV_DONTNEED,
+        );
+    }
+}
+
 /// The I/O threads of one file. Dropping them lets every queued write finish first.
 struct IoThreads {
     jobs: Option<mpsc::Sender<IoJob>>,
@@ -216,6 +251,7 @@ impl IoThreads {
     fn start(
         file: &Arc<File>,
         threads: usize,
+        write_behind_buffers: bool,
         io_cpus: &[usize],
         helpers: Option<&HelperPlacement>,
     ) -> io::Result<Self> {
@@ -245,6 +281,10 @@ impl IoThreads {
                 };
                 let (written, result) =
                     pwrite_all(&file, &job.buf.as_slice()[..job.len], job.offset);
+                // Write-behind errors show at the final sync
+                if write_behind_buffers && !job.partial && result.is_ok() {
+                    write_behind(&file, job.offset, job.len);
+                }
                 let back = IoDone {
                     buf: job.buf,
                     offset: job.offset,
@@ -600,6 +640,7 @@ impl PooledFile {
             self.io = Some(IoThreads::start(
                 &self.file,
                 self.config.io_threads,
+                !self.direct,
                 &self.config.io_cpus,
                 self.helpers.as_ref(),
             )?);
@@ -1004,7 +1045,7 @@ pub(crate) mod tests {
         }
         let durable = file.durable_end;
         let read_only = Arc::new(File::open(&path).unwrap());
-        file.io = Some(IoThreads::start(&read_only, 1, &[], None).unwrap());
+        file.io = Some(IoThreads::start(&read_only, 1, false, &[], None).unwrap());
         let mut failed = false;
         for _ in 0..1000 {
             if file.reserve(100).is_err() {
