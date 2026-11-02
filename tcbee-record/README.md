@@ -81,7 +81,8 @@ At least one metric source is required.
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
 | `--tui-observation-window-s N` | `0` | Start the TUI charts with a window of N seconds, rounded up to 10 s, 30 s, 1, 2, 5, 10 or 30 min (at most what the update rate keeps); 0 starts with the whole recording, see [Terminal UI](#terminal-ui) |
 | `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
-| `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
+| `--writer-cpus LIST` | | CPU ids to pin the writer threads to; they start round-robin |
+| `--writer-placement balanced\|round-robin` | `balanced` | Move busy writers apart on the writer CPUs by their CPU time and grow files on the least loaded one, or keep each writer on its start CPU |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 | `--headers-at HOOKS` | `tc` | With `-h`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
 | `--yes` | | Do not ask for confirmation (`--headers-at tc,driver`) |

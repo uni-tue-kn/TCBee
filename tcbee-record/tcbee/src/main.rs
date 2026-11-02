@@ -22,7 +22,7 @@ use eBPF::ebpf_runner_config::{
 use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
 use tcbee_trace::TCBeeTrace;
-use writer::PollMode;
+use writer::{Placement, PollMode};
 
 // Error handling
 use log::info;
@@ -106,6 +106,7 @@ fn main() -> anyhow::Result<()> {
     let mut ringbuf_size: String = String::new();
     let mut poll: String = "busy".to_string();
     let mut writer_cpus: String = String::new();
+    let mut writer_placement: String = "balanced".to_string();
     let mut on_change: String = String::new();
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
@@ -238,7 +239,12 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut writer_cpus).add_option(
             &["--writer-cpus"],
             Store,
-            "Comma-separated CPU ids to pin the writer threads to, assigned round-robin. One thread runs per output file.",
+            "Comma-separated CPU ids to pin the writer threads to. One thread runs per output file. They start round-robin, see --writer-placement.",
+        );
+        argparser.refer(&mut writer_placement).add_option(
+            &["--writer-placement"],
+            Store,
+            "How writer threads use the --writer-cpus: 'balanced' moves busy writers apart by their CPU time and runs file growth on the least loaded writer CPU, 'round-robin' leaves each writer on the CPU it started on. Default is balanced.",
         );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
@@ -354,6 +360,16 @@ fn main() -> anyhow::Result<()> {
         "wait" => PollMode::Wait,
         other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
     };
+    let writer_placement = match writer_placement.as_str() {
+        "balanced" => Placement::Balanced,
+        "round-robin" => Placement::RoundRobin,
+        other => {
+            return Err(anyhow!(
+                "Unknown --writer-placement '{}', use balanced or round-robin",
+                other
+            ))
+        }
+    };
 
     let mptcp = if !mptcp_modes.is_empty() {
         MptcpModes::parse(&mptcp_modes)?
@@ -431,6 +447,7 @@ fn main() -> anyhow::Result<()> {
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())
+        .writer_placement(writer_placement)
         .on_change(on_change)
         .sock_hooks(sock_hooks)
         .owners(!no_owners)
