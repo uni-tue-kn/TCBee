@@ -1350,6 +1350,17 @@ impl Sink {
         }
     }
 
+    /// Appends `data`; the sync sink writes long runs from there without copying them
+    fn write_bytes(&mut self, data: &[u8]) -> io::Result<()> {
+        match self {
+            Sink::Mmap(file) => {
+                file.reserve(data.len())?.copy_from_slice(data);
+                Ok(())
+            }
+            Sink::Pooled(file) => file.write_bytes(data),
+        }
+    }
+
     /// Regular upkeep on the writer thread between polls of the rings
     #[inline]
     fn tick(&mut self) -> io::Result<()> {
@@ -1593,7 +1604,9 @@ where
             sink.reserve(header.len())?.copy_from_slice(&header);
             state.header = true;
         }
-        sink.reserve(span.len())?.copy_from_slice(span);
+        // From the ring's mapping straight into the file where the sink can: the producers get
+        // the span back only after this returns
+        sink.write_bytes(span)?;
         // The side file counts frames, which are the records unless some were discarded
         self.cpus.note(state.frames, cpu);
         state.frames += records + discards;

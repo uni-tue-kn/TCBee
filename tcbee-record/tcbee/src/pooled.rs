@@ -56,6 +56,9 @@ const ENTER_RETRIES: u32 = 1000;
 /// for the window two before the current one, so the dirty pages stay at a few windows and
 /// the writes never run into the kernel's dirty throttling
 const WRITE_BEHIND_WINDOW: u64 = 8 << 20;
+/// Sync sink: bytes from at least this long a run of the caller's memory are written from
+/// there, not copied into a buffer first
+pub(crate) const DIRECT_WRITE_BYTES: usize = 16 << 10;
 
 /// How the trace file is written
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -453,6 +456,15 @@ struct InlineIo {
 }
 
 impl InlineIo {
+    /// Writes `file` from `offset` on
+    fn new(file: &Arc<File>, offset: u64) -> Self {
+        Self {
+            file: file.clone(),
+            done: Vec::new(),
+            behind: WriteBehind::new(offset, WRITE_BEHIND_WINDOW),
+        }
+    }
+
     fn submit(&mut self, job: IoJob) {
         let (written, mut result) =
             pwrite_all(&self.file, &job.buf.as_slice()[..job.len], job.offset);
@@ -1016,16 +1028,59 @@ impl PooledFile {
         Ok(&mut self.cur.as_mut_slice()[start..start + len])
     }
 
+    /// Appends `data`. The sync sink writes a long run straight from the caller's memory (a
+    /// span of a ring buffer's mapping, say), after the bytes in the current buffer; the
+    /// others copy it into the buffer.
+    pub fn write_bytes(&mut self, data: &[u8]) -> io::Result<()> {
+        if self.config.kind != SinkKind::Sync || self.direct || data.len() < DIRECT_WRITE_BYTES {
+            self.reserve(data.len())?.copy_from_slice(data);
+            return Ok(());
+        }
+        let written = self.write_through(data);
+        self.fail_on(written)
+    }
+
+    fn write_through(&mut self, data: &[u8]) -> io::Result<()> {
+        self.reap()?;
+        if self.cur_len > 0 {
+            self.rotate_at(self.cur_len)?;
+            self.reap()?;
+        }
+        let offset = self.cur_offset;
+        let inline = match self
+            .io
+            .get_or_insert_with(|| Io::Inline(InlineIo::new(&self.file, offset)))
+        {
+            Io::Inline(inline) => inline,
+            _ => unreachable!("the sync sink writes inline"),
+        };
+        let (written, mut result) = pwrite_all(&inline.file, data, offset);
+        if result.is_ok() {
+            result = inline.behind.written(&inline.file, offset + written as u64);
+        }
+        self.stats.writes += 1;
+        self.note_written(offset, written);
+        self.cur_offset += data.len() as u64;
+        self.partial_len = 0;
+        self.partial_at = Instant::now();
+        result
+    }
+
     /// Hands the full buffer to the I/O threads and continues in a free one
     fn rotate(&mut self) -> io::Result<()> {
+        self.rotate_at(self.buf_size)
+    }
+
+    /// As `rotate`, with the buffer full at `len` bytes. Only the sync sink cuts a buffer short:
+    /// O_DIRECT needs `len` aligned.
+    fn rotate_at(&mut self, len: usize) -> io::Result<()> {
         self.reap()?;
         let next = self.free_buffer()?;
         let full = mem::replace(&mut self.cur, next);
-        let overflow = self.cur_len - self.buf_size;
-        self.cur.as_mut_slice()[..overflow]
-            .copy_from_slice(&full.as_slice()[self.buf_size..self.cur_len]);
-        self.submit(full, self.cur_offset, self.buf_size, false)?;
-        self.cur_offset += self.buf_size as u64;
+        let overflow = self.cur_len - len;
+        self.cur.as_mut_slice()[..overflow].copy_from_slice(&full.as_slice()[len..self.cur_len]);
+        self.submit(full, self.cur_offset, len, false)?;
+        self.cur_offset += len as u64;
         self.cur_len = overflow;
         self.partial_len = 0;
         self.partial_at = Instant::now();
@@ -1171,11 +1226,7 @@ impl PooledFile {
     /// about to be written, the others are in the pool.
     fn start_io(&mut self, taken: &mut AlignedBuf) -> io::Result<Io> {
         if self.config.kind == SinkKind::Sync {
-            return Ok(Io::Inline(InlineIo {
-                file: self.file.clone(),
-                done: Vec::new(),
-                behind: WriteBehind::new(self.cur_offset, WRITE_BEHIND_WINDOW),
-            }));
+            return Ok(Io::Inline(InlineIo::new(&self.file, self.cur_offset)));
         }
         if self.config.kind == SinkKind::Uring && self.direct {
             let mut buffers: Vec<&mut AlignedBuf> = self.free.iter_mut().collect();
@@ -1276,23 +1327,29 @@ impl PooledFile {
         } else {
             done.written
         };
-        if written > 0 {
-            // A range written again after a partial write starts inside the durable prefix
-            let end = done.offset + written as u64;
-            let known = self.written.entry(done.offset).or_insert(end);
-            *known = (*known).max(end);
-            while let Some((&start, &end)) = self.written.first_key_value() {
-                if start > self.durable_end {
-                    break;
-                }
-                self.written.remove(&start);
-                self.durable_end = self.durable_end.max(end);
-            }
-        }
+        self.note_written(done.offset, written);
         if let Err(err) = done.result {
             if self.error.is_none() && !self.failed {
                 self.error = Some(err);
             }
+        }
+    }
+
+    /// `written` bytes from `offset` are in the file
+    fn note_written(&mut self, offset: u64, written: usize) {
+        if written == 0 {
+            return;
+        }
+        // A range written again after a partial write starts inside the durable prefix
+        let end = offset + written as u64;
+        let known = self.written.entry(offset).or_insert(end);
+        *known = (*known).max(end);
+        while let Some((&start, &end)) = self.written.first_key_value() {
+            if start > self.durable_end {
+                break;
+            }
+            self.written.remove(&start);
+            self.durable_end = self.durable_end.max(end);
         }
     }
 
@@ -1742,6 +1799,55 @@ pub(crate) mod tests {
         let kept = fs::read(&path).unwrap();
         assert_eq!(kept.len() as u64, written * 100);
         assert_eq!(kept[..], expected[..kept.len()]);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// A long run goes straight to the file after the buffered bytes, also after an idle
+    /// partial write of them, and the buffer goes on behind it
+    #[test]
+    fn sync_writes_long_runs_through() {
+        let path = temp("sync-through");
+        let mut file = PooledFile::new(&path, config(SinkKind::Sync)).unwrap();
+        let mut expected = fill(&mut file, 10, 100);
+        file.partial_at -= IDLE_WRITE;
+        file.tick().unwrap();
+        let run: Vec<u8> = (0..300 * 100).map(|i| (i / 100) as u8 ^ 0x5a).collect();
+        assert!(run.len() >= DIRECT_WRITE_BYTES);
+        let writes = file.stats.writes;
+        file.write_bytes(&run).unwrap();
+        assert!(file.stats.writes >= writes + 2, "buffer and run written");
+        expected.extend_from_slice(&run);
+        expected.extend(fill(&mut file, 50, 100));
+        // A short run is copied into the buffer
+        file.write_bytes(&run[..100]).unwrap();
+        expected.extend_from_slice(&run[..100]);
+        let (written, _, result) = file.finish(100);
+        result.unwrap();
+        assert_eq!(written, 361);
+        assert!(fs::read(&path).unwrap() == expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// A long run that fails to reach the file fails the sink, and the file keeps the whole
+    /// records before the failure
+    #[test]
+    fn failed_run_keeps_the_records_before_it() {
+        let path = temp("sync-run-fail");
+        let mut file = PooledFile::new(&path, config(SinkKind::Sync)).unwrap();
+        let expected = fill(&mut file, 100, 100);
+        let run = vec![9u8; 300 * 100];
+        file.write_bytes(&run).unwrap();
+        let durable = file.durable_end;
+        assert_eq!(durable, 400 * 100);
+        let read_only = Arc::new(File::open(&path).unwrap());
+        file.io = Some(Io::Inline(InlineIo::new(&read_only, durable)));
+        assert!(file.write_bytes(&run).is_err());
+        let (written, _, result) = file.finish(100);
+        assert!(result.is_err());
+        assert_eq!(written, 400);
+        let kept = fs::read(&path).unwrap();
+        assert_eq!(kept.len(), 400 * 100);
+        assert_eq!(kept[..10_000], expected[..]);
         fs::remove_file(&path).unwrap();
     }
 
