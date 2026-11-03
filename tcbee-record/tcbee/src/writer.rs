@@ -11,7 +11,7 @@ use std::{
         mpsc, Arc,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bincode::ErrorKind as BincodeErrorKind;
@@ -69,6 +69,9 @@ pub enum WriterFormat {
 /// Raw format: the most bytes one span copies before the ring gets them back. Producers
 /// see the ring as full until then, and the pooled sinks take at most this much at once.
 const RAW_SPAN_BYTES: usize = 64 << 10;
+
+/// Raw format: how long the final drain waits for records that are still being written
+const SHUTDOWN_BUSY_WAIT: Duration = Duration::from_millis(100);
 
 /// Upper bound for a blocking wait, so that a stop request is noticed
 const WAIT_TIMEOUT: Duration = Duration::from_millis(100);
@@ -538,13 +541,44 @@ where
                 follower.tick();
             }
         }
-        // Drain what was submitted before the programs were detached
-        while drain_rings(&mut job, &rings)? > 0 {}
-        Ok(())
+        drain_at_shutdown(&mut job, &rings, SHUTDOWN_BUSY_WAIT)
     })();
     job.count_bytes();
     drop(rings);
     finish_job(job, result)
+}
+
+/// Drains what was submitted before the programs were detached. A program that still runs
+/// (detaching does not wait for it) leaves its record busy, and the committed records behind
+/// it wait for it too: retry for up to `busy_wait`, then give up on what is left.
+fn drain_at_shutdown<T>(
+    job: &mut MapWriterJob<T>,
+    rings: &[(u32, RingMap)],
+    busy_wait: Duration,
+) -> Result<(), JobError>
+where
+    T: Serialize + Copy + Send + 'static,
+{
+    let deadline = Instant::now() + busy_wait;
+    loop {
+        while drain_rings(job, rings)? > 0 {}
+        let left: u64 = rings
+            .iter()
+            .map(|(_, ring)| ring.producer() - ring.consumer())
+            .sum();
+        if left == 0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            warn!(
+                "{}: {} bytes of records were still being written at the end and are lost",
+                job.name(),
+                left
+            );
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Drains every ring once, returns the records and discarded records copied
@@ -1668,6 +1702,58 @@ mod tests {
         assert!(write(SinkKind::Direct, "direct") == mmap);
         assert!(write(SinkKind::Buffered, "buffered") == mmap);
         assert!(write(SinkKind::Uring, "uring") == mmap);
+    }
+
+    /// The final drain waits for a record that is still being written and takes the
+    /// committed ones behind it too
+    #[test]
+    fn shutdown_waits_for_busy_records() {
+        let len = mem::size_of::<tcp4_packet_trace>();
+        let size = 2 * page();
+        let path = env::temp_dir().join(format!("tcbee-raw-busy-{}", std::process::id()));
+        let mut fake = FakeRing::new(size, len);
+        fake.push(1);
+        let busy = fake.reserve(2);
+        fake.push(3);
+        let mut mem = MemRing::new(size);
+        mem.load(&fake);
+        let rings = vec![(0, mem.ring_map())];
+        let mut job = raw_job(&path, SinkConfig::default());
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(20));
+                fake.commit(busy);
+                mem.load(&fake);
+            });
+            drain_at_shutdown(&mut job, &rings, Duration::from_secs(5)).unwrap();
+        });
+        assert_eq!(job.records, 3);
+        job.flush().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(cpu_side_path(&path));
+    }
+
+    /// A record that never gets committed ends the drain after the wait
+    #[test]
+    fn shutdown_gives_up_on_stuck_records() {
+        let len = mem::size_of::<tcp4_packet_trace>();
+        let size = 2 * page();
+        let path = env::temp_dir().join(format!("tcbee-raw-stuck-{}", std::process::id()));
+        let mut fake = FakeRing::new(size, len);
+        fake.push(1);
+        fake.reserve(2);
+        fake.push(3);
+        let mut mem = MemRing::new(size);
+        mem.load(&fake);
+        let rings = vec![(0, mem.ring_map())];
+        let mut job = raw_job(&path, SinkConfig::default());
+        let start = Instant::now();
+        drain_at_shutdown(&mut job, &rings, Duration::from_millis(30)).unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(30));
+        assert_eq!(job.records, 1);
+        job.flush().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(cpu_side_path(&path));
     }
 
     #[test]
