@@ -414,14 +414,7 @@ where
                 rb
             }
             Err(err) => {
-                let mut job = job.borrow_mut();
-                let flushed = job.flush();
-                // Without a ring buffer there is no trace, so don't leave an empty file
-                if flushed.is_ok() {
-                    remove_if_empty(&job.file_path);
-                }
-                let _ = ready.send(Err(WriterError::RingBuffer(err)));
-                return (0, None, flushed);
+                return fail_start(&mut job.borrow_mut(), &ready, WriterError::RingBuffer(err))
             }
         };
 
@@ -534,14 +527,7 @@ where
             let _ = ready.send(Ok(()));
             rings
         }
-        Err(err) => {
-            let flushed = job.flush();
-            if flushed.is_ok() {
-                remove_if_empty(&job.file_path);
-            }
-            let _ = ready.send(Err(WriterError::Io(err)));
-            return (0, None, flushed);
-        }
+        Err(err) => return fail_start(&mut job, &ready, WriterError::Io(err)),
     };
 
     let result = (|| {
@@ -646,6 +632,24 @@ where
             return Ok(copied);
         }
     }
+}
+
+/// A writer thread could not set up its rings: finishes the file and reports `err`
+fn fail_start<T>(
+    job: &mut MapWriterJob<T>,
+    ready: &mpsc::SyncSender<Result<(), WriterError>>,
+    err: WriterError,
+) -> JobResult
+where
+    T: Serialize + Copy + Send + 'static,
+{
+    let flushed = job.flush();
+    // Without a ring buffer there is no trace, so don't leave an empty file
+    if flushed.is_ok() {
+        remove_if_empty(&job.file_path);
+    }
+    let _ = ready.send(Err(err));
+    (0, None, flushed)
 }
 
 /// Removes a file that has no data. A file that had data before is kept.

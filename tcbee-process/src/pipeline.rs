@@ -653,7 +653,8 @@ pub fn run(args: &Args) -> Result<Summary> {
     }
     if summary.discarded > 0 {
         let msg = format!(
-            "{} records were marked as discarded by the recorder and are left out",
+            "{} records were discarded in the ring buffers and are left out (TCBee's programs \
+             discard none, so this should be 0)",
             summary.discarded
         );
         warn!("{msg}");

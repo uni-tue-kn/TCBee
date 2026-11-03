@@ -117,6 +117,15 @@ impl RingMap {
     }
 }
 
+impl Drop for RingMap {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.consumer.as_ptr().cast(), self.page);
+            libc::munmap(self.producer.as_ptr().cast(), self.page + 2 * self.size);
+        }
+    }
+}
+
 /// Blocks until one of a writer's rings has new records, for `--poll wait`.
 ///
 /// The kernel wakes a waiter only when a record is committed at the consumer position, so
@@ -127,7 +136,8 @@ impl RingMap {
 /// consumer position and wakes the waiter, or the writer sees the committed record.
 pub(crate) struct RingWaiter {
     epoll: OwnedFd,
-    events: usize,
+    /// Rings registered, the most events one wait can return
+    rings: usize,
 }
 
 impl RingWaiter {
@@ -137,12 +147,12 @@ impl RingWaiter {
             return Err(io::Error::last_os_error());
         }
         let epoll = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) };
-        let mut events = 0;
+        let mut count = 0;
         for ring in rings {
             // Level-triggered: a ring that still holds records stays ready
             let mut event = libc::epoll_event {
                 events: libc::EPOLLIN as u32,
-                u64: events as u64,
+                u64: count as u64,
             };
             let ret = unsafe {
                 libc::epoll_ctl(
@@ -155,11 +165,11 @@ impl RingWaiter {
             if ret < 0 {
                 return Err(io::Error::last_os_error());
             }
-            events += 1;
+            count += 1;
         }
         Ok(Self {
             epoll,
-            events: events.max(1),
+            rings: count.max(1),
         })
     }
 
@@ -173,7 +183,7 @@ impl RingWaiter {
         if rings.into_iter().any(RingMap::has_committed) {
             return Ok(());
         }
-        let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; self.events];
+        let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; self.rings];
         let ret = unsafe {
             libc::epoll_wait(
                 self.epoll.as_raw_fd(),
@@ -189,15 +199,6 @@ impl RingWaiter {
             }
         }
         Ok(())
-    }
-}
-
-impl Drop for RingMap {
-    fn drop(&mut self) {
-        unsafe {
-            libc::munmap(self.consumer.as_ptr().cast(), self.page);
-            libc::munmap(self.producer.as_ptr().cast(), self.page + 2 * self.size);
-        }
     }
 }
 
