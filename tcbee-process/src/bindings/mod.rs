@@ -17,6 +17,7 @@ use std::{io, path::Path};
 use tcbee_common::records::{
     bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, reno_trace_entry,
     sock_trace_entry, tcp4_packet_trace, tcp6_packet_trace, tcp_event_entry, tcp_probe_entry,
+    LAYOUT_ID,
 };
 use tcbee_trace::TraceFile;
 use ts_storage::{Dir, EventTable};
@@ -167,6 +168,16 @@ pub fn binding_for(file: TraceFile, path: &Path) -> io::Result<Option<Binding>> 
         return Ok(None);
     };
     match raw::probe(path)? {
+        Some(Ok(header)) if header.layout != LAYOUT_ID => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "raw trace with record layouts {:08x}, this tcbee-process reads {:08x}: use \
+                     the tcbee-process of the recorder's version",
+                    header.layout, LAYOUT_ID
+                ),
+            ))
+        }
         Some(Ok(header)) if header.record_len as usize == current.record_len => {
             return Ok(Some(Binding {
                 entry_size: tcbee_trace::raw::stride(current.record_len),

@@ -117,7 +117,7 @@ pub mod tests {
     pub fn raw_bytes<E: Copy>(records: &[E]) -> Vec<u8> {
         let len = mem::size_of::<E>();
         let stride = raw::stride(len);
-        let mut bytes = raw::header_frame(len);
+        let mut bytes = raw::header_frame(len, tcbee_common::records::LAYOUT_ID);
         for record in records {
             let mut frame = vec![0u8; stride];
             frame[..4].copy_from_slice(&(len as u32).to_ne_bytes());
@@ -233,6 +233,15 @@ pub mod tests {
         // A raw file of another record type is an error, not garbage
         let err = binding_for(TraceFile::SendSock, &path).err().unwrap();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        fs::remove_file(path).unwrap();
+
+        // So is one written with other record layouts
+        let mut other = raw_bytes(&records);
+        other[raw::RINGBUF_HEADER_LEN + 20..raw::RINGBUF_HEADER_LEN + 24]
+            .copy_from_slice(&(tcbee_common::records::LAYOUT_ID ^ 1).to_ne_bytes());
+        let (_file, path) = temp_file("layout", &other);
+        let err = binding_for(TraceFile::Tcp4Send, &path).err().unwrap();
+        assert!(err.to_string().contains("record layouts"), "{err}");
         fs::remove_file(path).unwrap();
     }
 

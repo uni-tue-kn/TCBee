@@ -1193,7 +1193,7 @@ where
         };
         let state = self.raw.as_mut().expect("raw format");
         if !state.header {
-            let header = raw::header_frame(mem::size_of::<T>());
+            let header = raw::header_frame(mem::size_of::<T>(), tcbee_common::records::LAYOUT_ID);
             sink.reserve(header.len())?.copy_from_slice(&header);
             state.header = true;
         }

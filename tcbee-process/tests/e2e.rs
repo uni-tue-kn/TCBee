@@ -1220,7 +1220,7 @@ fn binary_exit_codes() {
 fn write_raw<T: Copy>(trace: &Path, file: &str, recs: &[T], zeros: usize) {
     use tcbee_trace::raw::{header_frame, stride, RINGBUF_HEADER_LEN};
     let len = std::mem::size_of::<T>();
-    let mut bytes = header_frame(len);
+    let mut bytes = header_frame(len, tcbee_common::records::LAYOUT_ID);
     for r in recs {
         let mut frame = vec![0u8; stride(len)];
         frame[..4].copy_from_slice(&(len as u32).to_ne_bytes());

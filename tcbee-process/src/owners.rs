@@ -166,6 +166,12 @@ fn decode_raw_records(
 ) -> Result<Vec<flow_owner_entry>, DecodeError> {
     use tcbee_trace::raw::{frame, stride, Frame};
     let len = std::mem::size_of::<flow_owner_entry>();
+    if header.layout != tcbee_common::records::LAYOUT_ID {
+        return Err(DecodeError::Bincode(format!(
+            "raw trace with other record layouts ({:08x})",
+            header.layout
+        )));
+    }
     if header.record_len as usize != len {
         return Err(DecodeError::Size {
             expected: len,

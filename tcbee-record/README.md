@@ -129,8 +129,8 @@ are committed in spans of up to 64 KiB, instead of handling each record. A raw f
 sequence of frames of one fixed size: the kernel's 8-byte ring buffer header, then the record
 as the eBPF program wrote it (the C struct with its padding), rounded up to 8 bytes. The
 first frame is a header (marked discarded, so it is skipped like a discarded record) with
-the magic `TCBEERAW`, the format version, the codec, the record length and a byte order
-marker; zeros after the last frame are unused space. The `.cpu` side file counts frames after
+the magic `TCBEERAW`, the format version, the codec, the record length, a byte order
+marker and the id of the record layouts (tcbee-process refuses raw traces of other layouts); zeros after the last frame are unused space. The `.cpu` side file counts frames after
 the header. Frames are larger than packed records (sock 288 instead of 262 bytes). The
 format is described in `tcbee-trace/src/raw.rs`.
 

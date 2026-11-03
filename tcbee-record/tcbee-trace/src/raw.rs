@@ -8,7 +8,8 @@
 //!
 //! The first frame describes the file. Its ring buffer header has the discard bit set, so
 //! anything that walks the frames like the kernel does skips it. Its payload holds the magic
-//! `TCBEERAW`, the format version, the codec, the record length and a byte order marker.
+//! `TCBEERAW`, the format version, the codec, the record length, a byte order marker and the
+//! id of the record layouts the recorder was built with.
 //! Everything after the last frame that the recorder wrote can be zeros (preallocated
 //! space); a frame of length 0 ends the data.
 
@@ -27,8 +28,8 @@ pub const VERSION: u16 = 1;
 pub const CODEC_ONE_RECORD: u16 = 1;
 /// Reads as this value only in the byte order of the recording host
 pub const BYTE_ORDER_MARKER: u32 = 0x0102_0304;
-/// Bytes of the header frame's payload: magic, version, codec, record length, marker
-pub const HEADER_PAYLOAD_LEN: usize = 20;
+/// Bytes of the header frame's payload: magic, version, codec, record length, marker, layout
+pub const HEADER_PAYLOAD_LEN: usize = 24;
 
 /// Bytes of one frame for records of `record_len` bytes: header, record, padding to 8
 pub const fn stride(record_len: usize) -> usize {
@@ -41,6 +42,9 @@ pub struct Header {
     pub version: u16,
     pub codec: u16,
     pub record_len: u32,
+    /// Id of the record layouts (`tcbee_common::records::LAYOUT_ID`): a reader built with
+    /// other layouts must not read the records as its own
+    pub layout: u32,
 }
 
 /// Why a file that starts like a raw file cannot be read
@@ -74,8 +78,9 @@ impl std::fmt::Display for HeaderError {
 
 impl std::error::Error for HeaderError {}
 
-/// The header frame for records of `record_len` bytes, one stride long
-pub fn header_frame(record_len: usize) -> Vec<u8> {
+/// The header frame for records of `record_len` bytes in the record layouts `layout`, one
+/// stride long
+pub fn header_frame(record_len: usize, layout: u32) -> Vec<u8> {
     assert!(
         record_len >= HEADER_PAYLOAD_LEN,
         "records of {} bytes cannot hold the raw header",
@@ -90,6 +95,7 @@ pub fn header_frame(record_len: usize) -> Vec<u8> {
     payload[10..12].copy_from_slice(&CODEC_ONE_RECORD.to_ne_bytes());
     payload[12..16].copy_from_slice(&record_len.to_ne_bytes());
     payload[16..20].copy_from_slice(&BYTE_ORDER_MARKER.to_ne_bytes());
+    payload[20..24].copy_from_slice(&layout.to_ne_bytes());
     frame
 }
 
@@ -108,6 +114,7 @@ pub fn parse_header(file: &[u8]) -> Option<Result<Header, HeaderError>> {
         version: u16_at(8),
         codec: u16_at(10),
         record_len: u32_at(12),
+        layout: u32_at(20),
     };
     let frame_len = u32::from_ne_bytes(file[..4].try_into().unwrap()) & !(BUSY_BIT | DISCARD_BIT);
     Some(if header.version != VERSION {
@@ -164,6 +171,7 @@ mod tests {
     #[test]
     fn stride_rounds_to_eight() {
         assert_eq!(stride(24), 32);
+        assert!(stride(24) >= RINGBUF_HEADER_LEN + HEADER_PAYLOAD_LEN);
         assert_eq!(stride(48), 56);
         assert_eq!(stride(280), 288);
         assert_eq!(stride(136), 144);
@@ -171,14 +179,15 @@ mod tests {
 
     #[test]
     fn header_round_trip() {
-        let frame = header_frame(280);
+        let frame = header_frame(280, 7);
         assert_eq!(frame.len(), 288);
         assert_eq!(
             parse_header(&frame),
             Some(Ok(Header {
                 version: VERSION,
                 codec: CODEC_ONE_RECORD,
-                record_len: 280
+                record_len: 280,
+                layout: 7
             }))
         );
         // A frame walker skips it like a discarded record
@@ -195,21 +204,21 @@ mod tests {
     #[test]
     fn bad_headers_are_rejected() {
         let swap_u32 = |frame: &mut Vec<u8>, at: usize| frame[at..at + 4].reverse();
-        let mut foreign = header_frame(48);
+        let mut foreign = header_frame(48, 7);
         swap_u32(&mut foreign, RINGBUF_HEADER_LEN + 16);
         assert_eq!(parse_header(&foreign), Some(Err(HeaderError::ByteOrder)));
 
-        let mut version = header_frame(48);
+        let mut version = header_frame(48, 7);
         version[RINGBUF_HEADER_LEN + 8..RINGBUF_HEADER_LEN + 10]
             .copy_from_slice(&9u16.to_ne_bytes());
         assert_eq!(parse_header(&version), Some(Err(HeaderError::Version(9))));
 
-        let mut codec = header_frame(48);
+        let mut codec = header_frame(48, 7);
         codec[RINGBUF_HEADER_LEN + 10..RINGBUF_HEADER_LEN + 12]
             .copy_from_slice(&2u16.to_ne_bytes());
         assert_eq!(parse_header(&codec), Some(Err(HeaderError::Codec(2))));
 
-        let mut length = header_frame(48);
+        let mut length = header_frame(48, 7);
         length[..4].copy_from_slice(&(56 | DISCARD_BIT).to_ne_bytes());
         assert_eq!(
             parse_header(&length),
@@ -240,6 +249,6 @@ mod tests {
     #[test]
     #[should_panic]
     fn records_too_short_for_the_header() {
-        header_frame(16);
+        header_frame(16, 7);
     }
 }
