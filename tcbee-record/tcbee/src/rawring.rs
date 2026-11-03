@@ -2,7 +2,164 @@
 //! record to a callback, the writer finds how far the committed records reach and copies
 //! all of them at once. See `tcbee_trace::raw` for the file format.
 
+use std::{
+    io,
+    os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
+    ptr::{self, NonNull},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+};
+
+use libbpf_rs::{MapCore, MapHandle, MapType};
 use tcbee_trace::raw::{stride, BUSY_BIT, DISCARD_BIT};
+
+/// A BPF ring buffer mapped for draining it directly, the way libbpf maps it: the consumer
+/// page writable (the kernel allows exactly one page), then the producer page and the data
+/// read-only. The kernel maps the data pages twice in a row, so a span of up to the ring's
+/// size is contiguous even where it wraps around the end.
+///
+/// Only one consumer may drain a ring: never use a `RingMap` and a libbpf ring buffer on
+/// the same map.
+pub(crate) struct RingMap {
+    /// The map's fd, for epoll
+    fd: OwnedFd,
+    consumer: NonNull<u8>,
+    /// Producer page, then the data mapped twice
+    producer: NonNull<u8>,
+    page: usize,
+    /// Data bytes (max_entries), a power of two
+    size: usize,
+}
+
+// The mappings belong to the RingMap alone and are only read and written through atomics
+// or by the one writer thread that owns it
+unsafe impl Send for RingMap {}
+
+impl RingMap {
+    pub fn new(map: MapHandle) -> io::Result<Self> {
+        if map.map_type() != MapType::RingBuf {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a ring buffer map",
+            ));
+        }
+        Self::from_fd(
+            map.as_fd().try_clone_to_owned()?,
+            map.max_entries() as usize,
+        )
+    }
+
+    /// Maps the ring buffer behind `fd` with `size` data bytes
+    fn from_fd(fd: OwnedFd, size: usize) -> io::Result<Self> {
+        let (consumer, producer, page) = map_ring(fd.as_fd(), size)?;
+        Ok(Self {
+            fd,
+            consumer,
+            producer,
+            page,
+            size,
+        })
+    }
+
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+
+    /// Bytes of data the ring holds at most
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    fn mask(&self) -> u64 {
+        self.size as u64 - 1
+    }
+
+    fn consumer_pos(&self) -> &AtomicU64 {
+        // The kernel keeps consumer_pos at the start of the consumer page (struct bpf_ringbuf)
+        unsafe { &*(self.consumer.as_ptr() as *const AtomicU64) }
+    }
+
+    /// Where the next record to drain starts. Only this consumer moves it.
+    pub fn consumer(&self) -> u64 {
+        self.consumer_pos().load(Ordering::Relaxed)
+    }
+
+    /// Where the producers will reserve the next record. Records before it are reserved,
+    /// not necessarily committed.
+    pub fn producer(&self) -> u64 {
+        // producer_pos is at the start of the producer page, stored with release by the kernel
+        unsafe { &*(self.producer.as_ptr() as *const AtomicU64) }.load(Ordering::Acquire)
+    }
+
+    /// The length word of the record at ring position `pos`, loaded with acquire so that
+    /// the record's bytes are visible once it is committed
+    pub fn header(&self, pos: u64) -> u32 {
+        let offset = self.page + (pos & self.mask()) as usize;
+        // Records are 8-byte aligned in the data area, the word is the record's first
+        unsafe { &*(self.producer.as_ptr().add(offset) as *const AtomicU32) }
+            .load(Ordering::Acquire)
+    }
+
+    /// The ring's bytes from position `from` to `to`, contiguous across the wrap. The span
+    /// must hold committed records only (see `walk`) and stay unreleased while in use.
+    pub fn span(&self, from: u64, to: u64) -> &[u8] {
+        let len = (to - from) as usize;
+        assert!(len <= self.size, "span longer than the ring");
+        let offset = self.page + (from & self.mask()) as usize;
+        unsafe { std::slice::from_raw_parts(self.producer.as_ptr().add(offset), len) }
+    }
+
+    /// Hands the records before `pos` back to the producers. Release: the copy of the span
+    /// happens before the producers may overwrite it.
+    pub fn release(&self, pos: u64) {
+        self.consumer_pos().store(pos, Ordering::Release);
+    }
+}
+
+impl Drop for RingMap {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.consumer.as_ptr().cast(), self.page);
+            libc::munmap(self.producer.as_ptr().cast(), self.page + 2 * self.size);
+        }
+    }
+}
+
+/// Maps a ring buffer of `size` data bytes from `fd`: the consumer page read-write at
+/// offset 0, the producer page and the twice-mapped data read-only from offset page size
+fn map_ring(fd: BorrowedFd<'_>, size: usize) -> io::Result<(NonNull<u8>, NonNull<u8>, usize)> {
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+    if !size.is_power_of_two() || size % page != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("ring buffer of {} bytes is no power of two of pages", size),
+        ));
+    }
+    let map = |len: usize, prot: libc::c_int, offset: usize| {
+        let addr = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                len,
+                prot,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                offset as libc::off_t,
+            )
+        };
+        if addr == libc::MAP_FAILED {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(NonNull::new(addr.cast::<u8>()).expect("mmap returned null"))
+        }
+    };
+    let consumer = map(page, libc::PROT_READ | libc::PROT_WRITE, 0)?;
+    match map(page + 2 * size, libc::PROT_READ, page) {
+        Ok(producer) => Ok((consumer, producer, page)),
+        Err(err) => {
+            unsafe { libc::munmap(consumer.as_ptr().cast(), page) };
+            Err(err)
+        }
+    }
+}
 
 /// How far a walk over a ring buffer got
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +344,120 @@ pub(crate) mod tests {
     }
 
     const LEN: usize = 24; // stride 32
+
+    fn page() -> usize {
+        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+    }
+
+    /// A file laid out like a mapped ring buffer: consumer page, producer page, then the
+    /// data twice. Holds a writable mapping of all of it for the test to play the kernel.
+    struct MemRing {
+        fd: OwnedFd,
+        map: memmap2::MmapMut,
+        size: usize,
+    }
+
+    impl MemRing {
+        fn new(size: usize) -> Self {
+            let name = std::ffi::CString::new("tcbee-ring-test").unwrap();
+            let raw = unsafe { libc::memfd_create(name.as_ptr(), 0) };
+            assert!(raw >= 0, "memfd_create: {}", io::Error::last_os_error());
+            let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) };
+            let file = std::fs::File::from(fd.try_clone().unwrap());
+            file.set_len((2 * page() + 2 * size) as u64).unwrap();
+            let map = unsafe { memmap2::MmapMut::map_mut(&file).unwrap() };
+            Self { fd, map, size }
+        }
+
+        /// Copies the fake ring's data (both mappings) and producer position in
+        fn load(&mut self, ring: &FakeRing) {
+            let page = page();
+            self.map[page..page + 8].copy_from_slice(&ring.producer.to_ne_bytes());
+            self.map[2 * page..2 * page + 2 * self.size].copy_from_slice(&ring.data);
+        }
+
+        fn consumer_pos(&self) -> u64 {
+            u64::from_ne_bytes(self.map[..8].try_into().unwrap())
+        }
+
+        fn ring_map(&self) -> RingMap {
+            RingMap::from_fd(self.fd.try_clone().unwrap(), self.size).unwrap()
+        }
+    }
+
+    #[test]
+    fn ring_map_reads_records_across_the_wrap() {
+        let size = 2 * page();
+        let mut fake = FakeRing::new(size, LEN);
+        let records = size / 32;
+        for i in 0..records - 3 {
+            fake.push(i as u8);
+        }
+        fake.consumer = fake.producer;
+        for i in 0..6 {
+            fake.push(100 + i);
+        }
+        let mut mem = MemRing::new(size);
+        mem.load(&fake);
+        let ring = mem.ring_map();
+        ring.release(fake.consumer);
+        assert_eq!(mem.consumer_pos(), fake.consumer);
+        assert_eq!(ring.consumer(), fake.consumer);
+        assert_eq!(ring.producer(), fake.producer);
+        let walk = walk(
+            |pos| ring.header(pos),
+            ring.consumer(),
+            ring.producer(),
+            LEN,
+            1 << 20,
+        )
+        .unwrap();
+        assert_eq!((walk.records, walk.stop), (6, Stop::Producer));
+        let span = ring.span(ring.consumer(), walk.end);
+        let fills: Vec<u8> = span.chunks(32).map(|frame| frame[8]).collect();
+        assert_eq!(fills, [100, 101, 102, 103, 104, 105]);
+        ring.release(walk.end);
+        assert_eq!(mem.consumer_pos(), walk.end);
+    }
+
+    #[test]
+    fn ring_map_rejects_odd_sizes() {
+        let mem = MemRing::new(2 * page());
+        assert!(RingMap::from_fd(mem.fd.try_clone().unwrap(), 3 * page()).is_err());
+        assert!(RingMap::from_fd(mem.fd.try_clone().unwrap(), 100).is_err());
+    }
+
+    /// The kernel's mapping rules for a real ring buffer (needs CAP_BPF: run as root with
+    /// `cargo test -- --ignored ring_map_maps_a_kernel_ring`)
+    #[test]
+    #[ignore]
+    fn ring_map_maps_a_kernel_ring() {
+        let size = 4 * page() as u32;
+        let opts = libbpf_rs::libbpf_sys::bpf_map_create_opts {
+            sz: std::mem::size_of::<libbpf_rs::libbpf_sys::bpf_map_create_opts>() as _,
+            ..Default::default()
+        };
+        let map = MapHandle::create(MapType::RingBuf, Some("rawring_test"), 0, 0, size, &opts)
+            .expect("creating a ring buffer needs CAP_BPF");
+        let ring = RingMap::new(map).unwrap();
+        // RingMap keeps its own fd, the map's closes with the handle
+        let fd = ring.fd().as_raw_fd();
+        assert_eq!(ring.size(), size as usize);
+        assert_eq!((ring.consumer(), ring.producer()), (0, 0));
+        // More than the consumer page writable is refused
+        let rw = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                2 * page(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+        assert_eq!(rw, libc::MAP_FAILED);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+    }
 
     #[test]
     fn empty_ring() {
