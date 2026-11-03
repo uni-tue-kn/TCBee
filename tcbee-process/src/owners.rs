@@ -133,7 +133,7 @@ pub fn decode_records(
 ) -> Result<Vec<Owned>, DecodeError> {
     let processes = json.map(Processes::new);
     if let Some(header) = tcbee_trace::raw::parse_header(bytes) {
-        let header = header.map_err(|e| DecodeError::Bincode(e.to_string()))?;
+        let header = header.map_err(|e| DecodeError::RawHeader(e.to_string()))?;
         return decode_raw_records(bytes, header, warnings).map(|records| {
             records
                 .iter()
@@ -164,10 +164,10 @@ fn decode_raw_records(
     header: tcbee_trace::raw::Header,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<flow_owner_entry>, DecodeError> {
-    use tcbee_trace::raw::{frame, stride, Frame};
+    use tcbee_trace::raw::{frames, stride, Frame};
     let len = std::mem::size_of::<flow_owner_entry>();
     if header.layout != tcbee_common::records::LAYOUT_ID {
-        return Err(DecodeError::Bincode(format!(
+        return Err(DecodeError::RawHeader(format!(
             "raw trace with other record layouts ({:08x})",
             header.layout
         )));
@@ -178,21 +178,18 @@ fn decode_raw_records(
             got: header.record_len as usize,
         });
     }
-    let frames = bytes.chunks_exact(stride(len));
-    if !frames.remainder().is_empty() {
+    let tail = bytes.len() % stride(len);
+    if tail != 0 {
         warnings.push(format!(
-            "flow_owners.tcp: {} trailing bytes do not form a whole frame and are ignored \
-             (recording stopped mid-write?)",
-            frames.remainder().len()
+            "flow_owners.tcp: {tail} trailing bytes do not form a whole frame and are ignored \
+             (recording stopped mid-write?)"
         ));
     }
     let mut records = Vec::new();
-    for bytes in frames.skip(1) {
-        match frame(bytes, len) {
-            // Plain old data, valid for any bit pattern
-            Frame::Record(record) => records.push(unsafe {
-                std::ptr::read_unaligned(record.as_ptr() as *const flow_owner_entry)
-            }),
+    // Frame 0 is the header; zeros after the data are unused space
+    for frame in frames(bytes, len).skip(1) {
+        match frame {
+            Frame::Record(record) => records.push(crate::raw::read_record(record)),
             Frame::Discarded => {}
             Frame::End => break,
             Frame::Busy => return Err(DecodeError::Busy),

@@ -1218,15 +1218,12 @@ fn binary_exit_codes() {
 /// Writes `recs` as the raw trace file `file` (`--writer-format raw`): the header frame, then
 /// each record with its ring buffer header and padding, and `zeros` unused frames at the end.
 fn write_raw<T: Copy>(trace: &Path, file: &str, recs: &[T], zeros: usize) {
-    use tcbee_trace::raw::{header_frame, stride, RINGBUF_HEADER_LEN};
+    use tcbee_trace::raw::{header_frame, record_frame, stride};
     let len = std::mem::size_of::<T>();
     let mut bytes = header_frame(len, tcbee_common::records::LAYOUT_ID);
     for r in recs {
-        let mut frame = vec![0u8; stride(len)];
-        frame[..4].copy_from_slice(&(len as u32).to_ne_bytes());
         let raw = unsafe { std::slice::from_raw_parts(r as *const T as *const u8, len) };
-        frame[RINGBUF_HEADER_LEN..RINGBUF_HEADER_LEN + len].copy_from_slice(raw);
-        bytes.extend_from_slice(&frame);
+        bytes.extend_from_slice(&record_frame(raw));
     }
     bytes.resize(bytes.len() + zeros * stride(len), 0);
     fs::write(trace.join(file), bytes).unwrap();

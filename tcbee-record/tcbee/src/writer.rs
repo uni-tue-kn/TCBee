@@ -1211,9 +1211,8 @@ where
         state.frames += records + discards;
         self.records += records;
         if let Some(observer) = &mut self.observer {
-            let stride = raw::stride(mem::size_of::<T>());
-            for frame in span.chunks_exact(stride) {
-                if let raw::Frame::Record(record) = raw::frame(frame, mem::size_of::<T>()) {
+            for frame in raw::frames(span, mem::size_of::<T>()) {
+                if let raw::Frame::Record(record) = frame {
                     observer(record);
                 }
             }

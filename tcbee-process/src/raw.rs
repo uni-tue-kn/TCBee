@@ -7,12 +7,9 @@ use std::{fs::File, io, mem, ops::Range, os::unix::fs::FileExt, path::Path};
 use tcbee_trace::raw::{self, Frame, Header, HeaderError};
 
 use crate::{
-    decode::{RangeError, RowError, RowFn},
+    decode::{read_entries, RangeError, RowError, RowFn},
     event::{DecodeError, Event},
 };
-
-/// Frames read at once
-const CHUNK_BYTES: usize = 4 << 20;
 
 /// The header of the raw trace file at `path`, None if it is no raw trace
 pub fn probe(path: &Path) -> io::Result<Option<Result<Header, HeaderError>>> {
@@ -58,42 +55,32 @@ pub fn decode_raw_range<E: Event + Copy, Err>(
     mut f: impl FnMut(u64, E) -> Result<(), Err>,
 ) -> Result<u64, RangeError<Err>> {
     let len = mem::size_of::<E>();
-    let stride = raw::stride(len);
-    let per_chunk = (CHUNK_BYTES / stride).max(1) as u64;
-    let mut buf = vec![0u8; (frames.end - frames.start).min(per_chunk) as usize * stride];
     let mut skipped = 0;
-
-    let mut next = frames.start;
-    while next < frames.end {
-        let n = (frames.end - next).min(per_chunk) as usize;
-        let offset = next * stride as u64;
-        let bytes = &mut buf[..n * stride];
-        if let Err(source) = file.read_exact_at(bytes, offset) {
-            return Err(RangeError::Io { offset, source });
-        }
-        for (i, bytes) in bytes.chunks_exact(stride).enumerate() {
-            let at = offset + (i * stride) as u64;
-            let decode = |source| RangeError::Decode { offset: at, source };
-            match raw::frame(bytes, len) {
-                Frame::Record(record) => {
-                    // The records are plain old data, valid for any bit pattern
-                    let event = unsafe { std::ptr::read_unaligned(record.as_ptr() as *const E) };
-                    f(next + i as u64, event).map_err(RangeError::Callback)?;
-                }
-                Frame::Discarded => skipped += 1,
-                Frame::Busy => return Err(decode(DecodeError::Busy)),
-                Frame::End => return Err(decode(DecodeError::DataEnded)),
-                Frame::Length(got) => {
-                    return Err(decode(DecodeError::Size {
-                        expected: len,
-                        got: got as usize,
-                    }))
-                }
+    read_entries(file, frames, raw::stride(len), |index, offset, bytes| {
+        let decode = |source| RangeError::Decode { offset, source };
+        match raw::frame(bytes, len) {
+            Frame::Record(record) => f(index, read_record(record)).map_err(RangeError::Callback),
+            Frame::Discarded => {
+                skipped += 1;
+                Ok(())
             }
+            Frame::Busy => Err(decode(DecodeError::Busy)),
+            Frame::End => Err(decode(DecodeError::DataEnded)),
+            Frame::Length(got) => Err(decode(DecodeError::Size {
+                expected: len,
+                got: got as usize,
+            })),
         }
-        next += n as u64;
-    }
+    })?;
     Ok(skipped)
+}
+
+/// A record of a raw trace (`len == size_of::<E>()`, see `tcbee_trace::raw::frame`) as the
+/// `#[repr(C)]` struct the recorder wrote
+pub fn read_record<E: Copy>(record: &[u8]) -> E {
+    assert_eq!(record.len(), mem::size_of::<E>());
+    // The records are plain old data, valid for any bit pattern
+    unsafe { std::ptr::read_unaligned(record.as_ptr() as *const E) }
 }
 
 /// `decode_raw_range::<E>` behind the `DecodeFn` signature
@@ -116,14 +103,10 @@ pub mod tests {
     /// A raw trace of `records` (header frame first), as the recorder writes it
     pub fn raw_bytes<E: Copy>(records: &[E]) -> Vec<u8> {
         let len = mem::size_of::<E>();
-        let stride = raw::stride(len);
         let mut bytes = raw::header_frame(len, tcbee_common::records::LAYOUT_ID);
         for record in records {
-            let mut frame = vec![0u8; stride];
-            frame[..4].copy_from_slice(&(len as u32).to_ne_bytes());
             let raw = unsafe { std::slice::from_raw_parts(record as *const E as *const u8, len) };
-            frame[raw::RINGBUF_HEADER_LEN..raw::RINGBUF_HEADER_LEN + len].copy_from_slice(raw);
-            bytes.extend_from_slice(&frame);
+            bytes.extend_from_slice(&raw::record_frame(raw));
         }
         bytes
     }

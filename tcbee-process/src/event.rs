@@ -22,6 +22,8 @@ pub enum DecodeError {
     Busy,
     /// Raw format: the data ended (a frame of length 0) before the record.
     DataEnded,
+    /// Raw format: the file's header frame does not fit this reader.
+    RawHeader(String),
 }
 
 impl fmt::Display for DecodeError {
@@ -34,6 +36,7 @@ impl fmt::Display for DecodeError {
             DecodeError::Divider => write!(f, "record divider mismatch (misaligned trace file)"),
             DecodeError::Busy => write!(f, "record was still being written when it was copied"),
             DecodeError::DataEnded => write!(f, "the data ended before the record"),
+            DecodeError::RawHeader(e) => write!(f, "{e}"),
         }
     }
 }

@@ -164,6 +164,22 @@ pub fn frame(bytes: &[u8], record_len: usize) -> Frame<'_> {
     }
 }
 
+/// The frames of `bytes` (whole strides only) of a file whose records are `record_len` bytes
+pub fn frames(bytes: &[u8], record_len: usize) -> impl Iterator<Item = Frame<'_>> {
+    bytes
+        .chunks_exact(stride(record_len))
+        .map(move |bytes| frame(bytes, record_len))
+}
+
+/// The frame of a committed `record`, as the kernel holds it in the ring buffer
+pub fn record_frame(record: &[u8]) -> Vec<u8> {
+    let len = u32::try_from(record.len()).expect("record length fits the ring buffer header");
+    let mut frame = vec![0; stride(record.len())];
+    frame[..4].copy_from_slice(&len.to_ne_bytes());
+    frame[RINGBUF_HEADER_LEN..RINGBUF_HEADER_LEN + record.len()].copy_from_slice(record);
+    frame
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,10 +247,14 @@ mod tests {
 
     #[test]
     fn frames_decode_by_their_header() {
-        let mut bytes = vec![0u8; stride(24)];
-        bytes[..4].copy_from_slice(&24u32.to_ne_bytes());
-        bytes[8..32].fill(7);
+        let mut bytes = record_frame(&[7; 24]);
+        assert_eq!(bytes.len(), stride(24));
         assert_eq!(frame(&bytes, 24), Frame::Record(&[7; 24]));
+        let two: Vec<u8> = [record_frame(&[1; 24]), record_frame(&[2; 24]), vec![0; 5]].concat();
+        assert_eq!(
+            frames(&two, 24).collect::<Vec<_>>(),
+            [Frame::Record(&[1; 24]), Frame::Record(&[2; 24])]
+        );
 
         bytes[..4].copy_from_slice(&(24 | DISCARD_BIT).to_ne_bytes());
         assert_eq!(frame(&bytes, 24), Frame::Discarded);

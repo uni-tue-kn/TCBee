@@ -337,6 +337,8 @@ pub(crate) fn walk(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use tcbee_trace::raw::RINGBUF_HEADER_LEN;
+
     use super::*;
 
     /// A ring buffer in plain memory: `size` data bytes mapped twice, like the kernel maps
@@ -379,7 +381,10 @@ pub(crate) mod tests {
             let step = stride(self.record_len) as u64;
             assert!(pos + step - self.consumer <= self.mask() + 1, "ring full");
             self.put(pos, &(self.record_len as u32 | BUSY_BIT).to_ne_bytes());
-            self.put(pos + 8, &vec![fill; self.record_len]);
+            self.put(
+                pos + RINGBUF_HEADER_LEN as u64,
+                &vec![fill; self.record_len],
+            );
             self.producer += step;
             pos
         }
