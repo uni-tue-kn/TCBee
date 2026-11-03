@@ -1025,7 +1025,14 @@ where
                 self.records = self.records.min(records);
             }
             if let Some(stats) = &stats {
-                info!("Finished {}: {:?}", self.file_path.display(), stats);
+                info!(
+                    "Finished {} ({}): {} writes, the writer waited {} times for {} ms",
+                    self.file_path.display(),
+                    stats.sink,
+                    stats.writes,
+                    stats.stalls,
+                    stats.stall_ns / 1_000_000
+                );
             }
             self.sink_stats = stats;
             result = finished.map_err(JobError::Io);

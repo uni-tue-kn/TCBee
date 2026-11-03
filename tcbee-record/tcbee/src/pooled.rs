@@ -13,7 +13,10 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, ErrorKind},
     mem,
-    os::fd::{AsRawFd, RawFd},
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::fs::FileExt,
+    },
     path::Path,
     ptr::NonNull,
     sync::{mpsc, Arc, Mutex},
@@ -93,8 +96,8 @@ pub struct SinkConfig {
     pub buffer_bytes: usize,
     /// Buffers per file, at least 2
     pub buffers: usize,
-    /// I/O threads per file, at most `buffers - 1` writes run at once (an io_uring runs that
-    /// many)
+    /// Writes running at once per file: I/O threads, or io_uring writes in flight. At most
+    /// `buffers - 1` can run.
     pub io_threads: usize,
     /// Extend an O_DIRECT file ahead of the writes on a helper thread. A direct write past
     /// the end of the file takes the file system's exclusive lock.
@@ -781,7 +784,7 @@ impl PooledFile {
         let partial = (start % align as u64) as usize;
         let cur_offset = start - partial as u64;
         if partial > 0 {
-            read_exact_at(&file, &mut cur.as_mut_slice()[..partial], cur_offset)?;
+            file.read_exact_at(&mut cur.as_mut_slice()[..partial], cur_offset)?;
         }
         if direct {
             direct = enable_direct(&file, &cur, cur_offset, align, path)?;
@@ -1216,11 +1219,6 @@ fn dio_alignment(file: &File) -> Option<(usize, usize)> {
             stx.stx_dio_mem_align as usize,
             stx.stx_dio_offset_align as usize,
         ))
-}
-
-fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.read_exact_at(buf, offset)
 }
 
 /// Switches the file to O_DIRECT and checks with one aligned write of the first block (the
