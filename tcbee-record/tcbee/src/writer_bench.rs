@@ -284,9 +284,13 @@ where
         .dir
         .join(format!("tcbee-bench-{}-{idx}.tcp", std::process::id()));
     let file = RemoveOnDrop(path.clone());
-    let mut job =
-        MapWriterJob::<T>::with_sink(path.clone(), Arc::new(AtomicU64::new(0)), cfg.sink.clone())
-            .unwrap();
+    let mut job = MapWriterJob::<T>::with_sink(
+        path.clone(),
+        Arc::new(AtomicU64::new(0)),
+        cfg.sink.clone(),
+        WriterFormat::Records,
+    )
+    .unwrap();
     if !cfg.io_cpus.is_empty() {
         // No writer is placed on these CPUs, so every helper may use all of them
         job = job.with_helpers(HelperPlacement {

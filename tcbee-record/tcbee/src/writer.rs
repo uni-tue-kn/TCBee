@@ -227,12 +227,13 @@ impl Writer {
         T: Serialize + Copy + Send + 'static,
     {
         let file_path = trace_dir.as_ref().join(file.filename());
-        let mut job =
-            MapWriterJob::<T>::with_sink(file_path, self.bytes_written.clone(), self.sink.clone())?;
+        let mut job = MapWriterJob::<T>::with_sink(
+            file_path,
+            self.bytes_written.clone(),
+            self.sink.clone(),
+            self.format,
+        )?;
         job.observer = observer;
-        if self.format == WriterFormat::Raw {
-            job.raw = Some(RawState::default());
-        }
         let running = self.running.clone();
 
         let pool = &self.cpus.pool;
@@ -1105,13 +1106,19 @@ where
 {
     #[cfg(test)]
     fn new(file_path: PathBuf, bytes_written: Arc<AtomicU64>) -> Result<Self, WriterError> {
-        Self::with_sink(file_path, bytes_written, SinkConfig::default())
+        Self::with_sink(
+            file_path,
+            bytes_written,
+            SinkConfig::default(),
+            WriterFormat::Records,
+        )
     }
 
     fn with_sink(
         file_path: PathBuf,
         bytes_written: Arc<AtomicU64>,
         sink: SinkConfig,
+        format: WriterFormat,
     ) -> Result<Self, WriterError> {
         let entry_size = std::mem::size_of::<T>().max(1);
         let chunk_bytes = entry_size
@@ -1153,7 +1160,7 @@ where
             error: None,
             observer: None,
             sink_stats: None,
-            raw: None,
+            raw: (format == WriterFormat::Raw).then(RawState::default),
             _marker: std::marker::PhantomData,
         })
     }
@@ -1631,14 +1638,13 @@ mod tests {
 
     fn raw_job(path: &Path, sink: SinkConfig) -> MapWriterJob<tcp4_packet_trace> {
         let _ = std::fs::remove_file(path);
-        let mut job = MapWriterJob::<tcp4_packet_trace>::with_sink(
+        MapWriterJob::<tcp4_packet_trace>::with_sink(
             path.into(),
             Arc::new(AtomicU64::new(0)),
             sink,
+            WriterFormat::Raw,
         )
-        .unwrap();
-        job.raw = Some(RawState::default());
-        job
+        .unwrap()
     }
 
     #[test]
@@ -1975,6 +1981,7 @@ mod tests {
                     path.clone(),
                     Arc::new(AtomicU64::new(0)),
                     sink.clone(),
+                    WriterFormat::Records,
                 )
                 .unwrap();
                 let records = thread::scope(|scope| {
