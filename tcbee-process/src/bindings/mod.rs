@@ -23,6 +23,7 @@ use ts_storage::{Dir, EventTable};
 
 use crate::decode::{decode_dyn, DecodeFn};
 use crate::event::Event;
+use crate::raw::{self, decode_raw_dyn};
 
 /// How one trace file is decoded and where its rows go.
 #[derive(Clone, Copy)]
@@ -31,6 +32,13 @@ pub struct Binding {
     pub table: &'static EventTable,
     pub entry_size: usize,
     pub decode: DecodeFn,
+    /// The file is a raw trace (`tcbee_trace::raw`): `entry_size` is the frame stride and
+    /// frame 0 is the header, the records start at index 1
+    pub raw: bool,
+    /// Size of the `#[repr(C)]` record and its decoder for raw traces. Only current layouts
+    /// are written raw, so `binding_for` takes these from `binding(file)`.
+    record_len: usize,
+    raw_decode: DecodeFn,
     /// Columns the records of this file do not have; their rows hold 0 there and their series
     /// are left out of the catalog
     pub missing_columns: &'static [&'static str],
@@ -82,12 +90,15 @@ static TCP6_DRIVER: EventTable = EventTable {
     columns: <tcp6_packet_trace as Event>::TABLE.columns,
 };
 
-fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
+fn binding_of<E: Event + Default + Copy + serde::Serialize>(dir: Dir) -> Binding {
     Binding {
         dir,
         table: E::TABLE,
         entry_size: E::ENTRY_SIZE,
         decode: decode_dyn::<E>,
+        raw: false,
+        record_len: std::mem::size_of::<E>(),
+        raw_decode: decode_raw_dyn::<E>,
         missing_columns: &[],
         #[cfg(test)]
         encoded_size: || bincode::serialized_size(&E::default()).unwrap() as usize,
@@ -95,7 +106,7 @@ fn binding_of<E: Event + Default + serde::Serialize>(dir: Dir) -> Binding {
 }
 
 /// As `binding_of`, into `table` instead of the record's own table
-fn binding_into<E: Event + Default + serde::Serialize>(
+fn binding_into<E: Event + Default + Copy + serde::Serialize>(
     table: &'static EventTable,
     dir: Dir,
 ) -> Binding {
@@ -141,12 +152,41 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
     })
 }
 
-/// The binding of the trace file at `path`: `binding(file)`, or the binding of an older record
-/// layout of the same table (`legacy`) if the file was written in one.
+impl Binding {
+    /// Index of the first record in the file
+    pub fn first(&self) -> u64 {
+        u64::from(self.raw)
+    }
+}
+
+/// The binding of the trace file at `path`: `binding(file)`, its raw variant for a raw trace,
+/// or the binding of an older record layout of the same table (`legacy`) if the file was
+/// written in one.
 pub fn binding_for(file: TraceFile, path: &Path) -> io::Result<Option<Binding>> {
     let Some(current) = binding(file) else {
         return Ok(None);
     };
+    match raw::probe(path)? {
+        Some(Ok(header)) if header.record_len as usize == current.record_len => {
+            return Ok(Some(Binding {
+                entry_size: tcbee_trace::raw::stride(current.record_len),
+                decode: current.raw_decode,
+                raw: true,
+                ..current
+            }))
+        }
+        Some(Ok(header)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "raw trace of {} byte records, the {} records of this version are {} bytes",
+                    header.record_len, current.table.source, current.record_len
+                ),
+            ))
+        }
+        Some(Err(err)) => return Err(io::Error::new(io::ErrorKind::InvalidData, err)),
+        None => {}
+    }
     let old = legacy::layouts(current.table.source);
     if old.is_empty() {
         return Ok(Some(current));

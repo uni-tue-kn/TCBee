@@ -14,7 +14,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::fs::File;
-use std::ops::Range;
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
@@ -24,8 +23,10 @@ use tcbee_common::records::{
 use tcbee_trace::TraceFile;
 use ts_storage::{ConnectionFlow, ConnectionInfo, Flow, IpTuple};
 
+use crate::bindings::Binding;
 use crate::decode::decode_range;
 use crate::event::Event;
+use crate::raw::decode_raw_range;
 
 /// The trace file whose events cut tokens into connections
 pub const EVENT_FILE: TraceFile = TraceFile::MptcpPm;
@@ -69,11 +70,11 @@ pub struct PmEvent {
     pub flow: IpTuple,
 }
 
-/// Reads the records `records` of an `mptcp_pm.tcp` file.
-pub fn read_pm_events(path: &Path, records: Range<u64>) -> Result<Vec<PmEvent>> {
+/// Reads the `records` records of an `mptcp_pm.tcp` file decoded by `binding`.
+pub fn read_pm_events(path: &Path, binding: &Binding, records: u64) -> Result<Vec<PmEvent>> {
     let file = File::open(path).map_err(|e| anyhow!("{}: {e}", path.display()))?;
     let mut events = Vec::new();
-    decode_range::<mptcp_pm_entry, Infallible>(&file, records, |_, r| {
+    let event = |_, r: mptcp_pm_entry| {
         events.push(PmEvent {
             ts: r.ts_ns(),
             event: r.event.into(),
@@ -81,9 +82,15 @@ pub fn read_pm_events(path: &Path, records: Range<u64>) -> Result<Vec<PmEvent>> 
             subflow_id: r.subflow_id,
             flow: r.flow_key(),
         });
-        Ok(())
-    })
-    .map_err(|e| anyhow!("{}: {e}", path.display()))?;
+        Ok::<_, Infallible>(())
+    };
+    let range = binding.first()..binding.first() + records;
+    let read = if binding.raw {
+        decode_raw_range::<mptcp_pm_entry, Infallible>(&file, range, event).map(drop)
+    } else {
+        decode_range::<mptcp_pm_entry, Infallible>(&file, range, event)
+    };
+    read.map_err(|e| anyhow!("{}: {e}", path.display()))?;
     Ok(events)
 }
 

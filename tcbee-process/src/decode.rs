@@ -101,15 +101,16 @@ fn read_at_most(file: &File, buf: &mut [u8], offset: u64) -> (usize, Option<io::
 pub type RowFn<'a> = dyn FnMut(u64, &dyn Row) -> Result<(), RowError> + 'a;
 
 /// `decode_range` with the binding type erased, so the file table can hold one per binding.
-pub type DecodeFn = fn(&File, Range<u64>, &mut RowFn<'_>) -> Result<(), RangeError<RowError>>;
+/// Returns how many records of the range were skipped (discarded records of a raw trace).
+pub type DecodeFn = fn(&File, Range<u64>, &mut RowFn<'_>) -> Result<u64, RangeError<RowError>>;
 
 /// `decode_range::<E>` behind the `DecodeFn` signature; the callback gets the record as `&dyn Row`.
 pub fn decode_dyn<E: Event>(
     file: &File,
     records: Range<u64>,
     f: &mut RowFn<'_>,
-) -> Result<(), RangeError<RowError>> {
-    decode_range::<E, RowError>(file, records, |index, e| f(index, &e))
+) -> Result<u64, RangeError<RowError>> {
+    decode_range::<E, RowError>(file, records, |index, e| f(index, &e)).map(|()| 0)
 }
 
 #[cfg(test)]

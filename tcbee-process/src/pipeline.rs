@@ -32,7 +32,7 @@ use crate::{
     bindings::{binding, binding_for, event_tables, tcp_event, Binding},
     connections::{self, TaggedFlows},
     decode::{RangeError, RowError},
-    metadata, owners,
+    metadata, owners, raw,
     registry::FlowRegistry,
     Args,
 };
@@ -54,6 +54,9 @@ pub struct Summary {
     pub rows: u64,
     /// Rows written per event table (`sock`, `tcp4`, ...), only tables that got rows.
     pub rows_by_table: BTreeMap<&'static str, u64>,
+    /// Records the recorder marked as discarded (raw traces), counted in `records` but no
+    /// rows. A run only succeeds when `rows + discarded == records`.
+    pub discarded: u64,
     /// Distinct flows.
     pub flows: usize,
     /// Connections that group flows (MPTCP).
@@ -204,7 +207,7 @@ fn plan(
             continue;
         };
         let size = binding.entry_size as u64;
-        let records = len / size;
+        let mut records = len / size;
         let tail = len % size;
         if tail != 0 {
             let msg = format!(
@@ -213,6 +216,16 @@ fn plan(
             );
             warn!("{msg}");
             summary.warnings.push(msg);
+        }
+        if binding.raw {
+            let frames = File::open(&path)
+                .and_then(|f| raw::data_frames(&f, binding.entry_size, records))
+                .with_context(|| format!("cannot read {}", path.display()))?;
+            if frames < records {
+                info!("{name}: {} unused frames after the data", records - frames);
+            }
+            // Frame 0 is the header
+            records = frames.saturating_sub(1);
         }
         if records == 0 {
             continue;
@@ -227,9 +240,9 @@ fn plan(
         bar.set_style(bar_style());
         bar.set_prefix(label(&name));
         let idx = files.len();
-        let mut start = 0;
-        while start < records {
-            let end = (start + UNIT_RECORDS).min(records);
+        let mut start = binding.first();
+        while start < binding.first() + records {
+            let end = (start + UNIT_RECORDS).min(binding.first() + records);
             units.push(Unit {
                 file: idx,
                 records: start..end,
@@ -278,6 +291,8 @@ struct WorkerOutput {
     stats: StatsAccumulator,
     rows_by_table: BTreeMap<&'static str, u64>,
     tagged: TaggedFlows,
+    /// Discarded records the decoders skipped
+    discarded: u64,
 }
 
 struct Shared<'a> {
@@ -404,7 +419,8 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
             Ok(())
         });
         match res {
-            Ok(()) => {
+            Ok(skipped) => {
+                output.discarded += skipped;
                 if !batch.is_empty() {
                     flush_batch(&mut batch, &mut *writer, &mut output, &file_plan.bar)?;
                 }
@@ -450,6 +466,7 @@ fn run_workers(shared: &Shared<'_>, threads: usize) -> Result<WorkerOutput> {
                 Ok(Some(output)) => {
                     total.stats.merge(output.stats);
                     total.tagged.merge(output.tagged);
+                    total.discarded += output.discarded;
                     for (table, rows) in output.rows_by_table {
                         *total.rows_by_table.entry(table).or_default() += rows;
                     }
@@ -625,18 +642,28 @@ pub fn run(args: &Args) -> Result<Summary> {
 
     summary.rows_by_table = output.rows_by_table;
     summary.rows = summary.rows_by_table.values().sum();
-    if summary.rows != summary.records {
+    summary.discarded = output.discarded;
+    if summary.rows + summary.discarded != summary.records {
         anyhow::bail!(
-            "internal error: wrote {} rows for {} records",
+            "internal error: wrote {} rows for {} records ({} discarded)",
             summary.rows,
-            summary.records
+            summary.records,
+            summary.discarded
         );
+    }
+    if summary.discarded > 0 {
+        let msg = format!(
+            "{} records were marked as discarded by the recorder and are left out",
+            summary.discarded
+        );
+        warn!("{msg}");
+        summary.warnings.push(msg);
     }
 
     let finish_start = Instant::now();
     // The path manager events once more, in full: they cut tokens into connections
     let pm_events = match files.iter().find(|f| f.file == connections::EVENT_FILE) {
-        Some(f) => connections::read_pm_events(&f.path, 0..f.records)?,
+        Some(f) => connections::read_pm_events(&f.path, &f.binding, f.records)?,
         None => Vec::new(),
     };
     let run_meta = metadata::read(trace.dir()).unwrap_or_else(|msg| {
