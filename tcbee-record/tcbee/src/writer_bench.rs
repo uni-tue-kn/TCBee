@@ -14,7 +14,10 @@
 //! (sock, tcp4 or cwnd, default sock), `TCBEE_BENCH_RATE` (records/s per file, 0 = as fast
 //! as possible), `TCBEE_BENCH_CPUS` (cores to pin the writers to, round robin),
 //! `TCBEE_BENCH_IDLE_SECS` (host CPU measured before the run as a baseline, default 2),
-//! `TCBEE_BENCH_SINK` (mmap, direct, buffered or uring, default mmap), `TCBEE_BENCH_BUF_MB`,
+//! `TCBEE_BENCH_SINK` (mmap, direct, buffered or uring, default mmap; `null` packs or copies into
+//! a scratch buffer and writes no file: the CPU ceiling), `TCBEE_BENCH_FORMAT` (records or raw:
+//! raw feeds spans of `RAW_SPAN_BYTES` of ring frames through `write_span`, as the raw drain
+//! does), `TCBEE_BENCH_BUF_MB`,
 //! `TCBEE_BENCH_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled sinks' buffers, and their
 //! I/O threads or io_uring writes at once, per file), `TCBEE_BENCH_PREALLOC=0` (O_DIRECT without preallocation),
 //! `TCBEE_BENCH_IO_CPUS` (cores for the file helpers and I/O threads of all
@@ -59,6 +62,9 @@ struct Config {
     out: Option<PathBuf>,
     max_bytes: u64,
     sink: SinkConfig,
+    /// No file: records are packed (or spans copied) into a scratch buffer only
+    null: bool,
+    format: WriterFormat,
     io_cpus: Vec<usize>,
     steady_bytes: u64,
 }
@@ -73,10 +79,17 @@ impl Config {
                 .unwrap_or_default()
         };
         let defaults = SinkConfig::default();
-        let kind = var("TCBEE_BENCH_SINK").map_or(SinkKind::Mmap, |name| {
-            SinkKind::from_name(&name).unwrap_or_else(|| {
-                panic!("TCBEE_BENCH_SINK {name}: mmap, direct, uring or buffered")
-            })
+        let null = var("TCBEE_BENCH_SINK").as_deref() == Some("null");
+        let kind = var("TCBEE_BENCH_SINK")
+            .filter(|_| !null)
+            .map_or(SinkKind::Mmap, |name| {
+                SinkKind::from_name(&name).unwrap_or_else(|| {
+                    panic!("TCBEE_BENCH_SINK {name}: mmap, direct, uring, buffered or null")
+                })
+            });
+        let format = var("TCBEE_BENCH_FORMAT").map_or(WriterFormat::Records, |name| {
+            WriterFormat::from_name(&name)
+                .unwrap_or_else(|| panic!("TCBEE_BENCH_FORMAT {name}: records or raw"))
         });
         Config {
             dir: var("TCBEE_BENCH_DIR").expect("set TCBEE_BENCH_DIR").into(),
@@ -97,6 +110,8 @@ impl Config {
                 preallocate: num("TCBEE_BENCH_PREALLOC", 1.0) != 0.0,
                 io_cpus: Vec::new(),
             },
+            null,
+            format,
             io_cpus: cpus("TCBEE_BENCH_IO_CPUS"),
             steady_bytes: (num("TCBEE_BENCH_STEADY_GB", 0.0) * 1e9) as u64,
         }
@@ -116,12 +131,13 @@ fn free_bytes(dir: &Path) -> u64 {
     st.f_bavail as u64 * st.f_frsize as u64
 }
 
-/// Removes a file when dropped, also when the thread panics
+/// Removes a file and its CPU side file when dropped, also when the thread panics
 struct RemoveOnDrop(PathBuf);
 
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+        let _ = fs::remove_file(cpu_side_path(&self.0));
     }
 }
 
@@ -288,9 +304,13 @@ where
         path.clone(),
         Arc::new(AtomicU64::new(0)),
         cfg.sink.clone(),
-        WriterFormat::Records,
+        cfg.format,
     )
     .unwrap();
+    if cfg.null {
+        // Packing or copying only: the job keeps no file
+        drop(job.sink.take());
+    }
     if !cfg.io_cpus.is_empty() {
         // No writer is placed on these CPUs, so every helper may use all of them
         job = job.with_helpers(HelperPlacement {
@@ -299,25 +319,48 @@ where
         });
     }
     let size = mem::size_of::<T>();
-    let limit =
-        cfg.max_bytes / cfg.files as u64 / (job.record_size + RECORD_DELIMITER.len()) as u64;
+    let limit = cfg.max_bytes / cfg.files as u64 / file_record_bytes::<T>(cfg.format) as u64;
     let mut rng = tests::Rng(0x2545_F491 ^ idx as u64);
     let pool = rng.bytes(size * POOL);
+    // Raw: the pool as ring frames, cut into spans of whole frames as a drain copies them
+    let stride = raw::stride(size);
+    let span_records = RAW_SPAN_BYTES / stride;
+    let frames: Vec<u8> = pool.chunks(size).flat_map(raw::record_frame).collect();
+    let mut scratch = vec![0u8; RAW_SPAN_BYTES.max(job.record_size + RECORD_DELIMITER.len())];
+    let layout = PackedLayout::of::<T>().expect("bench records have a packed layout");
 
     let cpu0 = cpu_ns(libc::RUSAGE_THREAD);
     let start = Instant::now();
     let mut n: u64 = 0;
     let mut size_capped = false;
     loop {
-        for _ in 0..BATCH {
-            let i = (n as usize) % POOL;
-            assert_eq!(
-                job.write(&pool[i * size..(i + 1) * size]),
-                0,
-                "write failed: {:?}",
-                job.error
-            );
-            n += 1;
+        match cfg.format {
+            WriterFormat::Records => {
+                for _ in 0..BATCH {
+                    let i = (n as usize) % POOL;
+                    let record = &pool[i * size..(i + 1) * size];
+                    if cfg.null {
+                        layout.write(record, &mut scratch[..job.record_size]);
+                        std::hint::black_box(&scratch);
+                    } else {
+                        assert_eq!(job.write(record), 0, "write failed: {:?}", job.error);
+                    }
+                    n += 1;
+                }
+            }
+            WriterFormat::Raw => {
+                for _ in 0..BATCH as usize / span_records.min(BATCH as usize) {
+                    let first = (n as usize) % (POOL - span_records);
+                    let span = &frames[first * stride..(first + span_records) * stride];
+                    if cfg.null {
+                        scratch[..span.len()].copy_from_slice(span);
+                        std::hint::black_box(&scratch);
+                    } else {
+                        job.write_span(0, span, span_records as u64, 0).unwrap();
+                    }
+                    n += span_records as u64;
+                }
+            }
         }
         count.store(n, Ordering::Relaxed);
         let t = start.elapsed().as_secs_f64();
@@ -339,7 +382,9 @@ where
     let cpu1 = cpu_ns(libc::RUSAGE_THREAD);
     job.flush().unwrap();
     let finish_secs = start.elapsed().as_secs_f64() - write_secs;
-    assert_eq!(job.records, n, "records lost in the file");
+    if !cfg.null {
+        assert_eq!(job.records, n, "records lost in the file");
+    }
     ThreadResult {
         sink: job.sink_stats.take(),
         records: n,
@@ -356,8 +401,7 @@ fn run<T>(cfg: &Config) -> Value
 where
     T: Serialize + Copy + Send + 'static,
 {
-    let record_bytes = bincode::serialized_size(&unsafe { mem::zeroed::<T>() }).unwrap() as usize
-        + RECORD_DELIMITER.len();
+    let record_bytes = file_record_bytes::<T>(cfg.format);
     let devs = devices(&cfg.dir);
     let vm_num = |k: &str| -> u64 {
         fs::read_to_string(format!("/proc/sys/vm/{k}"))
@@ -541,7 +585,7 @@ where
         "record": cfg.record, "record_bytes": record_bytes, "files": cfg.files, "dir": cfg.dir,
         "devices": devs, "tmpfs": on_tmpfs(&cfg.dir), "rate_per_file": cfg.rate, "cpus": cfg.cpus, "secs": cfg.secs,
         "max_bytes": cfg.max_bytes, "size_capped": results.iter().any(|r| r.size_capped),
-        "sink": cfg.sink.kind.name(), "buffer_bytes": cfg.sink.buffer_bytes, "buffers": cfg.sink.buffers,
+        "sink": if cfg.null { "null" } else { cfg.sink.kind.name() }, "format": cfg.format.name(), "buffer_bytes": cfg.sink.buffer_bytes, "buffers": cfg.sink.buffers,
         "io_threads": cfg.sink.io_threads, "io_cpus": cfg.io_cpus, "preallocate": cfg.sink.preallocate,
         "effective_sinks": results.iter().map(|r| r.sink.as_ref().map_or("mmap", |s| s.sink)).collect::<Vec<_>>(),
         "stalls": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stalls).sum::<u64>(),
@@ -602,6 +646,17 @@ where
     out
 }
 
+/// Bytes of one record in the file in `format`
+fn file_record_bytes<T: Serialize + Copy>(format: WriterFormat) -> usize {
+    match format {
+        WriterFormat::Records => {
+            bincode::serialized_size(&unsafe { mem::zeroed::<T>() }).unwrap() as usize
+                + RECORD_DELIMITER.len()
+        }
+        WriterFormat::Raw => raw::stride(mem::size_of::<T>()),
+    }
+}
+
 #[test]
 #[ignore = "benchmark, needs TCBEE_BENCH_DIR"]
 fn bench_writer_throughput() {
@@ -629,7 +684,7 @@ fn bench_writer_throughput() {
     println!(
         "{} {} x{} on {}: {:.0} MB/s write, {:.0} MB/s steady (disk {:.0}), {:.0} MB/s durable; \
          writer {:.2} cores, process {:.2}, host {:.2} (idle {:.2}); {:.0} ns/MB writer, {:.0} ns/MB host{}",
-        cfg.sink.kind.name(), cfg.record, cfg.files, cfg.dir.display(), f("mbps_write"), f("mbps_steady"),
+        if cfg.null { "null" } else { cfg.sink.kind.name() }, cfg.record, cfg.files, cfg.dir.display(), f("mbps_write"), f("mbps_steady"),
         f("disk_mbps_steady"), f("mbps_durable"), f("writer_cores"), f("process_cores"),
         f("host_busy_cores"), f("host_idle_busy_cores"), f("writer_ns_per_mb"), f("host_ns_per_mb"),
         if res["size_capped"].as_bool().unwrap() {
