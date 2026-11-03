@@ -497,7 +497,7 @@ fn pin_and_follow(
 }
 
 /// The writer thread of the raw format: maps the rings itself and copies the committed
-/// records of each in spans, see `drain_ring`
+/// records of each in spans, see `RingJob`
 fn raw_loop<T>(
     mut job: MapWriterJob<T>,
     maps: Vec<(u32, MapHandle)>,
@@ -529,16 +529,17 @@ where
         }
         Err(err) => return fail_start(&mut job, &ready, WriterError::Io(err)),
     };
+    let mut job: Box<dyn RingJob> = Box::new(Draining { job, rings });
 
     let result = (|| {
         while running.load(Ordering::Relaxed) {
-            let copied = drain_rings(&mut job, &rings)?;
+            let copied = drain_all(&mut *job)?;
             match &waiter {
                 // As the record format: poll again at once while there is a backlog
                 None if copied >= BACKLOG_RECORDS as u64 => std::hint::spin_loop(),
                 None => thread::sleep(IDLE_SLEEP),
                 Some(waiter) if copied == 0 => {
-                    waiter.wait(rings.iter().map(|(_, ring)| ring), WAIT_TIMEOUT)?
+                    waiter.wait(job.rings().iter().map(|(_, ring)| ring), WAIT_TIMEOUT)?
                 }
                 Some(_) => {}
             }
@@ -547,28 +548,124 @@ where
                 follower.tick();
             }
         }
-        drain_at_shutdown(&mut job, &rings, SHUTDOWN_BUSY_WAIT)
+        drain_at_shutdown(&mut *job, SHUTDOWN_BUSY_WAIT)
     })();
-    job.count_bytes();
-    drop(rings);
-    finish_job(job, result)
+    job.finish(result)
+}
+
+/// A writer job together with its rings, one per CPU, as a writer thread drives it. Object
+/// safe, so that one thread can drive the jobs of several record types.
+trait RingJob: Send {
+    fn name(&self) -> &str;
+    /// The rings with their CPU
+    fn rings(&self) -> &[(u32, RingMap)];
+    /// Copies at most one span of committed records of ring `index` into the file
+    fn drain(&mut self, index: usize) -> Result<Drained, JobError>;
+    /// Regular upkeep between passes over the rings
+    fn tick(&mut self) -> Result<(), JobError>;
+    /// Ends the job after its last drain: counts its bytes, finishes its file
+    fn finish(self: Box<Self>, result: Result<(), JobError>) -> JobResult;
+}
+
+/// What one `RingJob::drain` did
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Drained {
+    /// Records and discarded records copied
+    pub copied: u64,
+    /// The span ended at its size limit: the ring may hold more
+    pub more: bool,
+}
+
+/// The `RingJob` of a `MapWriterJob`
+struct Draining<T>
+where
+    T: Serialize + Copy + Send + 'static,
+{
+    job: MapWriterJob<T>,
+    rings: Vec<(u32, RingMap)>,
+}
+
+impl<T> RingJob for Draining<T>
+where
+    T: Serialize + Copy + Send + 'static,
+{
+    fn name(&self) -> &str {
+        self.job.name()
+    }
+
+    fn rings(&self) -> &[(u32, RingMap)] {
+        &self.rings
+    }
+
+    /// Copies the span up to the producer position, a record that is still being written,
+    /// or `RAW_SPAN_BYTES`, and gives it back to the producers once it is copied
+    fn drain(&mut self, index: usize) -> Result<Drained, JobError> {
+        let (cpu, ring) = &self.rings[index];
+        let consumer = ring.consumer();
+        let span = walk(
+            |pos| ring.header(pos),
+            consumer,
+            ring.producer(),
+            mem::size_of::<T>(),
+            RAW_SPAN_BYTES,
+        )
+        .map_err(JobError::Ring)?;
+        if span.end == consumer {
+            return Ok(Drained {
+                copied: 0,
+                more: false,
+            });
+        }
+        self.job.write_span(
+            *cpu,
+            ring.span(consumer, span.end),
+            span.records,
+            span.discards,
+        )?;
+        ring.release(span.end);
+        Ok(Drained {
+            copied: span.records + span.discards,
+            more: span.stop == Stop::Cap,
+        })
+    }
+
+    fn tick(&mut self) -> Result<(), JobError> {
+        self.job.tick()
+    }
+
+    fn finish(self: Box<Self>, result: Result<(), JobError>) -> JobResult {
+        let Draining { mut job, rings } = *self;
+        job.count_bytes();
+        drop(rings);
+        finish_job(job, result)
+    }
+}
+
+/// Drains every ring of `job` until it is empty or stops at a record still being written,
+/// returns the records and discarded records copied
+fn drain_all(job: &mut dyn RingJob) -> Result<u64, JobError> {
+    let mut copied = 0;
+    for index in 0..job.rings().len() {
+        loop {
+            let drained = job.drain(index)?;
+            copied += drained.copied;
+            if !drained.more {
+                break;
+            }
+        }
+    }
+    Ok(copied)
 }
 
 /// Drains what was submitted before the programs were detached. A program that still runs
 /// (detaching does not wait for it) leaves its record busy, and the committed records behind
 /// it wait for it too: retry for up to `busy_wait`, then give up on what is left.
-fn drain_at_shutdown<T>(
-    job: &mut MapWriterJob<T>,
-    rings: &[(u32, RingMap)],
-    busy_wait: Duration,
-) -> Result<(), JobError>
-where
-    T: Serialize + Copy + Send + 'static,
-{
+fn drain_at_shutdown(job: &mut dyn RingJob, busy_wait: Duration) -> Result<(), JobError> {
     let deadline = Instant::now() + busy_wait;
     loop {
-        while drain_rings(job, rings)? > 0 {}
-        let left: u64 = rings
+        while drain_all(job)? > 0 {}
+        let left: u64 = job
+            .rings()
             .iter()
             .map(|(_, ring)| ring.producer() - ring.consumer())
             .sum();
@@ -584,53 +681,6 @@ where
             return Ok(());
         }
         thread::sleep(Duration::from_millis(1));
-    }
-}
-
-/// Drains every ring once, returns the records and discarded records copied
-fn drain_rings<T>(job: &mut MapWriterJob<T>, rings: &[(u32, RingMap)]) -> Result<u64, JobError>
-where
-    T: Serialize + Copy + Send + 'static,
-{
-    let mut copied = 0;
-    for (cpu, ring) in rings {
-        copied += drain_ring(job, *cpu, ring)?;
-    }
-    Ok(copied)
-}
-
-/// Copies the committed records of `ring` into the job's file in spans of at most
-/// `RAW_SPAN_BYTES` and gives each span back to the producers once it is copied. Stops at
-/// the producer position or at a record that is still being written.
-fn drain_ring<T>(job: &mut MapWriterJob<T>, cpu: u32, ring: &RingMap) -> Result<u64, JobError>
-where
-    T: Serialize + Copy + Send + 'static,
-{
-    let mut copied = 0;
-    loop {
-        let consumer = ring.consumer();
-        let span = walk(
-            |pos| ring.header(pos),
-            consumer,
-            ring.producer(),
-            mem::size_of::<T>(),
-            RAW_SPAN_BYTES,
-        )
-        .map_err(JobError::Ring)?;
-        if span.end == consumer {
-            return Ok(copied);
-        }
-        job.write_span(
-            cpu,
-            ring.span(consumer, span.end),
-            span.records,
-            span.discards,
-        )?;
-        ring.release(span.end);
-        copied += span.records + span.discards;
-        if span.stop != Stop::Cap {
-            return Ok(copied);
-        }
     }
 }
 
@@ -1654,17 +1704,20 @@ mod tests {
     fn raw_spans_hold_every_record_once() {
         let path = env::temp_dir().join(format!("tcbee-raw-{}", std::process::id()));
         let (rings, mems, fakes) = raw_rings(&[100, 40], 2 * page());
-        let mut job = raw_job(&path, SinkConfig::default());
-        assert_eq!(drain_rings(&mut job, &rings).unwrap(), 140);
+        let mut job = Draining {
+            job: raw_job(&path, SinkConfig::default()),
+            rings,
+        };
+        assert_eq!(drain_all(&mut job).unwrap(), 140);
         // Nothing new: nothing copied twice
-        assert_eq!(drain_rings(&mut job, &rings).unwrap(), 0);
+        assert_eq!(drain_all(&mut job).unwrap(), 0);
         for (mem, fake) in mems.iter().zip(&fakes) {
             assert_eq!(mem.consumer_pos(), fake.producer);
         }
-        job.count_bytes();
-        let bytes_written = job.bytes_written.load(Ordering::Relaxed);
-        job.flush().unwrap();
-        assert_eq!(job.records, 140);
+        job.job.count_bytes();
+        let bytes_written = job.job.bytes_written.load(Ordering::Relaxed);
+        job.job.flush().unwrap();
+        assert_eq!(job.job.records, 140);
 
         let len = mem::size_of::<tcp4_packet_trace>();
         let stride = raw::stride(len);
@@ -1717,10 +1770,13 @@ mod tests {
                 io_threads: 2,
                 ..SinkConfig::default()
             };
-            let mut job = raw_job(&path, sink);
-            assert_eq!(drain_rings(&mut job, &rings).unwrap(), records as u64);
-            job.flush().unwrap();
-            assert_eq!(job.records, records as u64);
+            let mut job = Draining {
+                job: raw_job(&path, sink),
+                rings,
+            };
+            assert_eq!(drain_all(&mut job).unwrap(), records as u64);
+            job.job.flush().unwrap();
+            assert_eq!(job.job.records, records as u64);
             let bytes = std::fs::read(&path).unwrap();
             std::fs::remove_file(&path).unwrap();
             let _ = std::fs::remove_file(cpu_side_path(&path));
@@ -1747,10 +1803,13 @@ mod tests {
         let mut mem = MemRing::new(size);
         mem.load(&fake);
         let rings = vec![(5, mem.ring_map())];
-        let mut job = raw_job(&path, SinkConfig::default());
-        assert_eq!(drain_rings(&mut job, &rings).unwrap(), 3);
-        job.flush().unwrap();
-        assert_eq!(job.records, 2);
+        let mut job = Draining {
+            job: raw_job(&path, SinkConfig::default()),
+            rings,
+        };
+        assert_eq!(drain_all(&mut job).unwrap(), 3);
+        job.job.flush().unwrap();
+        assert_eq!(job.job.records, 2);
         let file = std::fs::read(&path).unwrap();
         assert_eq!(file.len(), 4 * raw::stride(len));
         let kinds: Vec<_> = raw::frames(&file, len)
@@ -1783,15 +1842,18 @@ mod tests {
         let mut mem = MemRing::new(size);
         mem.load(&fake);
         let rings = vec![(0, mem.ring_map())];
-        let mut job = raw_job(&path, SinkConfig::default());
-        let err = drain_rings(&mut job, &rings).unwrap_err();
+        let mut job = Draining {
+            job: raw_job(&path, SinkConfig::default()),
+            rings,
+        };
+        let err = drain_all(&mut job).unwrap_err();
         assert!(
             matches!(err, JobError::Ring(WalkError::Length { len: 16, .. })),
             "{err}"
         );
         assert_eq!(mem.consumer_pos(), 0);
-        assert_eq!(job.records, 0);
-        job.flush().unwrap();
+        assert_eq!(job.job.records, 0);
+        job.job.flush().unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(cpu_side_path(&path));
     }
@@ -1810,17 +1872,20 @@ mod tests {
         let mut mem = MemRing::new(size);
         mem.load(&fake);
         let rings = vec![(0, mem.ring_map())];
-        let mut job = raw_job(&path, SinkConfig::default());
+        let mut job = Draining {
+            job: raw_job(&path, SinkConfig::default()),
+            rings,
+        };
         thread::scope(|scope| {
             scope.spawn(|| {
                 thread::sleep(Duration::from_millis(20));
                 fake.commit(busy);
                 mem.load(&fake);
             });
-            drain_at_shutdown(&mut job, &rings, Duration::from_secs(5)).unwrap();
+            drain_at_shutdown(&mut job, Duration::from_secs(5)).unwrap();
         });
-        assert_eq!(job.records, 3);
-        job.flush().unwrap();
+        assert_eq!(job.job.records, 3);
+        job.job.flush().unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(cpu_side_path(&path));
     }
@@ -1838,12 +1903,15 @@ mod tests {
         let mut mem = MemRing::new(size);
         mem.load(&fake);
         let rings = vec![(0, mem.ring_map())];
-        let mut job = raw_job(&path, SinkConfig::default());
+        let mut job = Draining {
+            job: raw_job(&path, SinkConfig::default()),
+            rings,
+        };
         let start = Instant::now();
-        drain_at_shutdown(&mut job, &rings, Duration::from_millis(30)).unwrap();
+        drain_at_shutdown(&mut job, Duration::from_millis(30)).unwrap();
         assert!(start.elapsed() >= Duration::from_millis(30));
-        assert_eq!(job.records, 1);
-        job.flush().unwrap();
+        assert_eq!(job.job.records, 1);
+        job.job.flush().unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(cpu_side_path(&path));
     }
@@ -1852,15 +1920,18 @@ mod tests {
     fn raw_observer_sees_the_records() {
         let path = env::temp_dir().join(format!("tcbee-raw-observer-{}", std::process::id()));
         let (rings, _mems, _fakes) = raw_rings(&[5], 2 * page());
-        let mut job = raw_job(&path, SinkConfig::default());
+        let mut job = Draining {
+            job: raw_job(&path, SinkConfig::default()),
+            rings,
+        };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        job.observer = Some(Box::new(move |entry: &[u8]| {
+        job.job.observer = Some(Box::new(move |entry: &[u8]| {
             assert_eq!(entry.len(), mem::size_of::<tcp4_packet_trace>());
             sink.lock().unwrap().push(entry[0]);
         }));
-        drain_rings(&mut job, &rings).unwrap();
-        job.flush().unwrap();
+        drain_all(&mut job).unwrap();
+        job.job.flush().unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(cpu_side_path(&path));
         assert_eq!(*seen.lock().unwrap(), [0, 1, 2, 3, 4]);
