@@ -265,6 +265,24 @@ fn write_behind(file: &File, offset: u64, len: usize) {
     }
 }
 
+/// Where the I/O of a file runs: on `io_cpus`, or with the file helpers, which it then
+/// follows as the writers move
+fn io_placement(
+    io_cpus: &[usize],
+    helpers: Option<&HelperPlacement>,
+) -> (Option<HelperPlacement>, Option<libc::cpu_set_t>) {
+    if io_cpus.is_empty() {
+        (helpers.cloned(), helpers.and_then(HelperPlacement::cpu_set))
+    } else {
+        (None, Some(cpu_set(io_cpus)))
+    }
+}
+
+/// Whether the I/O has to move to `new` from where it runs
+fn moved(new: &libc::cpu_set_t, old: Option<&libc::cpu_set_t>) -> bool {
+    old.is_none_or(|old| unsafe { !libc::CPU_EQUAL(new, old) })
+}
+
 /// The I/O threads of one file. Dropping them lets every queued write finish first.
 struct IoThreads {
     jobs: Option<mpsc::Sender<IoJob>>,
@@ -284,13 +302,7 @@ impl IoThreads {
         let (jobs_tx, jobs_rx) = mpsc::channel::<IoJob>();
         let (done_tx, done_rx) = mpsc::channel();
         let jobs_rx = Arc::new(Mutex::new(jobs_rx));
-        // Placed with the file helpers, the threads follow them while they run
-        let follow = helpers.filter(|_| io_cpus.is_empty()).cloned();
-        let cpus = if io_cpus.is_empty() {
-            helpers.and_then(HelperPlacement::cpu_set)
-        } else {
-            Some(cpu_set(io_cpus))
-        };
+        let (follow, cpus) = io_placement(io_cpus, helpers);
         let mut handles = Vec::with_capacity(threads);
         for _ in 0..threads.max(1) {
             let (file, jobs, done) = (file.clone(), jobs_rx.clone(), done_tx.clone());
@@ -375,15 +387,13 @@ impl IoUpkeep {
         }
         self.last = Instant::now();
         self.report();
-        let cpus = self.helpers.as_ref().and_then(HelperPlacement::cpu_set);
-        let moved = match (&cpus, &self.cpus) {
-            (Some(new), Some(old)) => unsafe { !libc::CPU_EQUAL(new, old) },
-            (new, old) => new.is_some() != old.is_some(),
+        let Some(set) = self.helpers.as_ref().and_then(HelperPlacement::cpu_set) else {
+            return;
         };
-        if let (true, Some(set)) = (moved, cpus) {
-            if unsafe { libc::sched_setaffinity(0, mem::size_of_val(&set), &set) } == 0 {
-                self.cpus = Some(set);
-            }
+        if moved(&set, self.cpus.as_ref())
+            && unsafe { libc::sched_setaffinity(0, mem::size_of_val(&set), &set) } == 0
+        {
+            self.cpus = Some(set);
         }
     }
 
@@ -495,12 +505,7 @@ impl UringIo {
         } else {
             info!("Cannot register the trace buffers with the io_uring, writing without");
         }
-        let follow = helpers.filter(|_| io_cpus.is_empty()).cloned();
-        let cpus = if io_cpus.is_empty() {
-            helpers.and_then(HelperPlacement::cpu_set)
-        } else {
-            Some(cpu_set(io_cpus))
-        };
+        let (follow, cpus) = io_placement(io_cpus, helpers);
         if let Some(set) = &cpus {
             if let Err(err) = ring.submitter().register_iowq_aff(set) {
                 info!("Cannot place the io_uring's workers: {}", err);
@@ -658,10 +663,8 @@ impl UringIo {
         }
         self.upkeep_at = Instant::now();
         let Some(set) = helpers.cpu_set() else { return };
-        let moved = self
-            .cpus
-            .is_none_or(|old| unsafe { !libc::CPU_EQUAL(&set, &old) });
-        if moved && self.ring.submitter().register_iowq_aff(&set).is_ok() {
+        if moved(&set, self.cpus.as_ref()) && self.ring.submitter().register_iowq_aff(&set).is_ok()
+        {
             self.cpus = Some(set);
         }
     }
