@@ -1,6 +1,7 @@
 pub mod name_list;
 pub mod onchange;
 pub mod owners;
+pub mod raw;
 pub mod sock_hooks;
 
 use std::{
