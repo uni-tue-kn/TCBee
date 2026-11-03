@@ -66,6 +66,23 @@ pub enum WriterFormat {
     Raw,
 }
 
+impl WriterFormat {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "records" => Some(WriterFormat::Records),
+            "raw" => Some(WriterFormat::Raw),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WriterFormat::Records => "records",
+            WriterFormat::Raw => "raw",
+        }
+    }
+}
+
 /// Raw format: the most bytes one span copies before the ring gets them back. Producers
 /// see the ring as full until then, and the pooled sinks take at most this much at once.
 const RAW_SPAN_BYTES: usize = 64 << 10;
@@ -245,6 +262,7 @@ impl Writer {
         let report = WriterReport {
             rb,
             file: job.file_path.clone(),
+            format: self.format,
             records: 0,
             error: None,
             sink: None,
@@ -1401,6 +1419,7 @@ impl CpuRuns {
 pub struct WriterReport {
     pub rb: u32,
     pub file: PathBuf,
+    pub format: WriterFormat,
     pub records: u64,
     pub error: Option<String>,
     /// What a pooled sink did, None for the memory-mapped file

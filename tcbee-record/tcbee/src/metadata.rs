@@ -87,6 +87,8 @@ pub struct Recorder {
     /// Hooks that were requested but are not recorded, with the reason
     pub skipped: Vec<String>,
     pub interface: Option<String>,
+    /// How the trace files were written, `records` or `raw` (`--writer-format`)
+    pub writer_format: &'static str,
     /// Ring buffer bytes per CPU by map name, for the created ring buffers
     pub ringbuf_sizes: BTreeMap<String, u32>,
 }

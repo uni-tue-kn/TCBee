@@ -598,6 +598,7 @@ impl EbpfRunner {
             groups,
             skipped: self.skipped.clone(),
             interface: c.headers.then(|| c.iface.clone()),
+            writer_format: c.writer_format.name(),
             ringbuf_sizes: RINGBUFS
                 .iter()
                 .zip(&self.ringbuf_sizes)
@@ -913,7 +914,8 @@ impl EbpfRunner {
                     self.config.writer_cpus.clone(),
                     self.config.writer_placement,
                 )
-                .with_sink(self.config.writer_sink.clone()),
+                .with_sink(self.config.writer_sink.clone())
+                .with_format(self.config.writer_format),
         );
         self.started = Some(Instant::now());
         let dir = self.config.dir.as_str();

@@ -77,6 +77,8 @@ pub struct RingBufMetrics {
     pub writer_error: Option<String>,
     /// What the writer's pooled sink did, None for a memory-mapped file
     pub writer_sink: Option<SinkStats>,
+    /// Format of the trace file, `records` or `raw`; None without a writer
+    pub writer_format: Option<&'static str>,
     /// Sum of the last hook_seq of every flow direction at this ring buffer's hook. Equals
     /// handled + dropped + the errors after hook_seq was taken (after the filter in the
     /// default mode), so it also covers drops at the end of a flow, which leave no gap.
@@ -174,6 +176,7 @@ impl Metrics {
                     records_written: report.map(|r| r.records),
                     writer_error: report.and_then(|r| r.error.clone()),
                     writer_sink: report.and_then(|r| r.sink.clone()),
+                    writer_format: report.map(|r| r.format.name()),
                     hook_seq_issued: hook_seq
                         .filter(|_| rb != RB_OWNERS)
                         .map(|totals| totals.issued[rb as usize]),

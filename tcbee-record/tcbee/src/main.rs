@@ -24,7 +24,7 @@ use eBPF::ebpf_runner_config::{
 use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
 use tcbee_trace::TCBeeTrace;
-use writer::{Placement, PollMode, SinkConfig, SinkKind};
+use writer::{Placement, PollMode, SinkConfig, SinkKind, WriterFormat};
 
 // Error handling
 use log::info;
@@ -119,6 +119,7 @@ fn main() -> anyhow::Result<()> {
     let mut writer_cpus: String = String::new();
     let mut writer_placement: String = "balanced".to_string();
     let mut writer_sink: String = "mmap".to_string();
+    let mut writer_format: String = "records".to_string();
     let mut writer_io_cpus: String = String::new();
     let mut writer_no_prealloc: bool = false;
     let mut on_change: String = String::new();
@@ -265,6 +266,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "How writers write the trace files: 'mmap' maps them, 'direct' copies records into large buffers that I/O threads write with O_DIRECT, 'uring' submits those writes to an io_uring, 'buffered' writes the buffers through the page cache and pushes them to the disk at once. The file bytes are the same. Default is mmap.",
         );
+        argparser.refer(&mut writer_format).add_option(
+            &["--writer-format"],
+            Store,
+            "How records get into the trace files: 'records' hands each record to the writer, which packs it and appends a delimiter, 'raw' copies the ring buffers' committed bytes in spans of up to 64 KiB, each record with its ring buffer header and padding. tcbee-process reads both. Default is records.",
+        );
         argparser.refer(&mut writer_io_cpus).add_option(
             &["--writer-io-cpus"],
             Store,
@@ -401,6 +407,12 @@ fn main() -> anyhow::Result<()> {
         preallocate: !writer_no_prealloc,
         ..SinkConfig::default()
     };
+    let Some(writer_format) = WriterFormat::from_name(&writer_format) else {
+        return Err(anyhow!(
+            "Unknown --writer-format '{}', use records or raw",
+            writer_format
+        ));
+    };
     let writer_placement = match writer_placement.as_str() {
         "balanced" => Placement::Balanced,
         "round-robin" => Placement::RoundRobin,
@@ -490,6 +502,7 @@ fn main() -> anyhow::Result<()> {
         .writer_cpus(writer_cpus.clone())
         .writer_placement(writer_placement)
         .writer_sink(writer_sink)
+        .writer_format(writer_format)
         .on_change(on_change)
         .sock_hooks(sock_hooks)
         .owners(!no_owners)

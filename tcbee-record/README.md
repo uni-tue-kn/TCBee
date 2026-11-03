@@ -84,6 +84,7 @@ At least one metric source is required.
 | `--writer-cpus LIST` | | CPU ids to pin the writer threads to; they start round-robin |
 | `--writer-placement balanced\|round-robin` | `balanced` | Move busy writers apart on the writer CPUs by their CPU time and grow files on the least loaded one, or keep each writer on its start CPU |
 | `--writer-sink mmap\|direct\|uring\|buffered` | `mmap` | How the trace files are written: memory-mapped, or from large buffers that I/O threads write with O_DIRECT (`direct`), that the writer submits to an io_uring (`uring`), or that go through the page cache and are written back right away (`buffered`). Same file bytes; `metrics.json` reports the writers' waits for buffers |
+| `--writer-format records\|raw` | `records` | How records get into the trace files: one by one, packed and followed by a delimiter, or as the ring buffers' bytes copied in spans (`raw`, see [Raw trace files](#raw-trace-files)). tcbee-process reads both |
 | `--writer-no-prealloc` | | Do not allocate the trace files of the `direct` and `uring` sinks ahead of the writes |
 | `--writer-io-cpus LIST` | | CPU ids for the I/O threads or io_uring workers of the `direct`, `uring` and `buffered` sinks; by default they run on the writer CPUs |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
@@ -120,6 +121,18 @@ holds the number of records; without it the file was cut short. With the per-CPU
 of `metrics.json`, it places a gap in a flow's `hook_seq` on the CPU whose ring was full.
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
+
+### Raw trace files
+
+With `--writer-format raw` a writer maps its ring buffers itself and copies the records that
+are committed in spans of up to 64 KiB, instead of handling each record. A raw file is a
+sequence of frames of one fixed size: the kernel's 8-byte ring buffer header, then the record
+as the eBPF program wrote it (the C struct with its padding), rounded up to 8 bytes. The
+first frame is a header (marked discarded, so it is skipped like a discarded record) with
+the magic `TCBEERAW`, the format version, the codec, the record length and a byte order
+marker; zeros after the last frame are unused space. The `.cpu` side file counts frames after
+the header. Frames are larger than packed records (sock 288 instead of 262 bytes). The
+format is described in `tcbee-trace/src/raw.rs`.
 
 ## Terminal UI
 
