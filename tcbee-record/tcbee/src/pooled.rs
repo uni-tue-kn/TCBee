@@ -1000,7 +1000,8 @@ impl PooledFile {
     /// crosses the buffer's end are moved to the next buffer at the next call, once written.
     #[inline]
     pub fn reserve(&mut self, len: usize) -> io::Result<&mut [u8]> {
-        if self.cur_len >= self.buf_size {
+        // A buffer smaller than the slack can hold more than one buffer after a long record
+        while self.cur_len >= self.buf_size {
             let rotated = self.rotate();
             self.fail_on(rotated)?;
         }
@@ -1741,6 +1742,28 @@ pub(crate) mod tests {
         let kept = fs::read(&path).unwrap();
         assert_eq!(kept.len() as u64, written * 100);
         assert_eq!(kept[..], expected[..kept.len()]);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// Buffers smaller than the slack take records up to the slack: the writer rotates until
+    /// the current buffer is below its size again
+    #[test]
+    fn small_buffers_take_records_up_to_the_slack() {
+        let path = temp("small-buffers");
+        let config = SinkConfig {
+            buffer_bytes: PAGE,
+            ..SinkConfig::of(SinkKind::Sync)
+        };
+        let mut file = PooledFile::new(&path, config).unwrap();
+        let mut total = 0;
+        for i in 0..200 {
+            let len = SLACK - (i % 7) * 77;
+            file.reserve(len).unwrap().fill(1);
+            total += len;
+        }
+        let (written, _, result) = file.finish(1);
+        result.unwrap();
+        assert_eq!(written, total as u64);
         fs::remove_file(&path).unwrap();
     }
 

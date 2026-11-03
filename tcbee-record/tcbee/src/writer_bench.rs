@@ -103,8 +103,10 @@ impl Config {
             max_bytes: (num("TCBEE_BENCH_MAX_GB", 0.0) * 1e9) as u64,
             sink: SinkConfig {
                 kind,
-                buffer_bytes: (num("TCBEE_BENCH_BUF_MB", (defaults.buffer_bytes >> 20) as f64)
-                    * (1 << 20) as f64) as usize,
+                buffer_bytes: (num(
+                    "TCBEE_BENCH_BUF_MB",
+                    defaults.buffer_bytes as f64 / (1 << 20) as f64,
+                ) * (1 << 20) as f64) as usize,
                 buffers: num("TCBEE_BENCH_BUFFERS", defaults.buffers as f64) as usize,
                 io_threads: num("TCBEE_BENCH_IO_THREADS", defaults.io_threads as f64) as usize,
                 preallocate: num("TCBEE_BENCH_PREALLOC", 1.0) != 0.0,
