@@ -22,7 +22,7 @@ use tcbee_common::{
 
 use crate::{
     stats::Snapshot,
-    writer::{SinkStats, WriterReport},
+    writer::{SinkStats, WriterReport, WriterThreadStats},
 };
 
 /// Kernel statistics of one loaded eBPF program
@@ -136,6 +136,8 @@ pub struct Metrics {
     pub ingress_calls: u64,
     pub egress_calls: u64,
     pub ringbufs: Vec<RingBufMetrics>,
+    /// The threads of the writer CPUs (empty without --writer-cpus), by CPU
+    pub writer_threads: Vec<WriterThreadStats>,
     pub programs: Vec<ProgramStats>,
     /// Entries in use and capacity of the hook_seq counter map. A full map turns the
     /// events of new flows into errors.
@@ -184,6 +186,11 @@ impl Metrics {
             })
             .collect();
 
+        let mut writer_threads: Vec<WriterThreadStats> =
+            reports.iter().filter_map(|r| r.thread.clone()).collect();
+        writer_threads.sort_by_key(|t| t.cpu);
+        writer_threads.dedup_by_key(|t| t.cpu);
+
         Metrics {
             duration_s,
             ring_cpus,
@@ -200,6 +207,7 @@ impl Metrics {
             ingress_calls: attempts(&[RB_SOCK_RECV, RB_CWND_RECV, RB_SOCK_INGRESS]),
             egress_calls: attempts(&[RB_SOCK_SEND, RB_CWND_SEND]),
             ringbufs,
+            writer_threads,
             programs,
             hook_seq_keys: hook_seq.map(|totals| totals.keys),
             hook_seq_capacity: hook_seq.map(|totals| totals.capacity),

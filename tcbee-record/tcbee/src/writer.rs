@@ -26,8 +26,8 @@ pub use crate::pooled::{SinkConfig, SinkKind, SinkStats};
 use crate::{
     config::WRITER_BUFFER_SIZE,
     placement::{
-        balance_loop, pin_to_cpu, report_helper_time, Follower, HelperPlacement, WriterCpus,
-        WriterSlot,
+        balance_loop, pin_to_cpu, report_helper_time, thread_cpu_ns, Follower, HelperPlacement,
+        WriterCpus, WriterSlot,
     },
     pooled::PooledFile,
     rawring::{walk, RingMap, RingWaiter, Stop, WalkError},
@@ -128,7 +128,7 @@ pub struct Writer {
     poll_mode: PollMode,
     running: Arc<AtomicBool>,
     bytes_written: Arc<AtomicU64>,
-    handles: Vec<(Vec<WriterReport>, JoinHandle<Vec<JobResult>>)>,
+    handles: Vec<(Vec<WriterReport>, JoinHandle<ThreadResult>)>,
     /// With writer CPUs: the writer CPU of each enabled ring buffer
     assignment: Vec<(u32, usize)>,
     /// With writer CPUs: the jobs registered but not started yet, per writer CPU
@@ -304,9 +304,8 @@ impl Writer {
         // worked, so a broken map fails here and not only at shutdown
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let handle = thread::spawn(move || {
-            vec![ring_loop(
-                job, maps, running, cpu, follow, poll_mode, ready_tx,
-            )]
+            let result = ring_loop(job, maps, running, cpu, follow, poll_mode, ready_tx);
+            (vec![result], None)
         });
         let result = match ready_rx.recv() {
             Ok(Ok(())) => {
@@ -335,6 +334,7 @@ impl Writer {
             records: 0,
             error: None,
             sink: None,
+            thread: None,
         }
     }
 
@@ -443,7 +443,7 @@ impl Writer {
         cpu: usize,
         slot: Arc<WriterSlot>,
         jobs: CpuJobList,
-    ) -> Result<JoinHandle<Vec<JobResult>>, (io::Error, CpuJobList)> {
+    ) -> Result<JoinHandle<ThreadResult>, (io::Error, CpuJobList)> {
         let waiter = match self.poll_mode {
             PollMode::Busy => None,
             PollMode::Wait => {
@@ -464,8 +464,11 @@ impl Writer {
         let spawned = thread::Builder::new()
             .name(format!("tcbee-w{cpu}"))
             .spawn(move || match rx.recv() {
-                Ok(jobs) => cpu_loop(jobs, running, cpu, follow, waiter),
-                Err(_) => Vec::new(),
+                Ok(jobs) => {
+                    let (results, stats) = cpu_loop(jobs, running, cpu, follow, waiter);
+                    (results, Some(stats))
+                }
+                Err(_) => (Vec::new(), None),
             });
         match spawned {
             Ok(handle) => {
@@ -527,11 +530,12 @@ impl Writer {
             .drain(..)
             .flat_map(|(mut reports, handle)| {
                 match handle.join() {
-                    Ok(results) => {
+                    Ok((results, thread)) => {
                         for (report, (records, stats, result)) in reports.iter_mut().zip(results) {
                             report.records = records;
                             report.sink = stats;
                             report.error = result.err().map(|err| err.to_string());
+                            report.thread.clone_from(&thread);
                         }
                     }
                     // A panic marks the jobs of its thread
@@ -740,14 +744,20 @@ impl IdleLadder {
 /// ring cannot hold up the others, and sleeps as `IdleLadder` says, or until a ring has
 /// records with a `waiter` (`PollMode::Wait`). Without a waiter, `rare` jobs are drained
 /// every `RARE_INTERVAL` only. A job that fails is finished at once, the others go on.
-/// Returns the result of each job.
+/// Returns the result of each job and what the thread did.
 fn cpu_loop(
     jobs: CpuJobList,
     running: Arc<AtomicBool>,
     cpu: usize,
     follow: Option<(Arc<WriterCpus>, Arc<WriterSlot>)>,
     waiter: Option<RingWaiter>,
-) -> Vec<JobResult> {
+) -> (Vec<JobResult>, WriterThreadStats) {
+    let started = Instant::now();
+    let mut stats = WriterThreadStats {
+        cpu,
+        files: jobs.len(),
+        ..WriterThreadStats::default()
+    };
     set_timer_slack(WRITER_TIMER_SLACK_NS);
     let mut follower = pin_and_follow(Some(cpu), follow);
     let mut results: Vec<Option<JobResult>> = jobs.iter().map(|_| None).collect();
@@ -785,10 +795,15 @@ fn cpu_loop(
                 }
             }
         }
+        stats.passes += 1;
         match &waiter {
-            None if pass.more || pass.bytes >= backlog_bytes => ladder.backlog(),
+            None if pass.more || pass.bytes >= backlog_bytes => {
+                stats.backlog_passes += 1;
+                ladder.backlog()
+            }
             None => {
                 if let Some(sleep) = ladder.quiet() {
+                    stats.sleeps += 1;
                     thread::sleep(sleep);
                 } else {
                     std::hint::spin_loop();
@@ -825,10 +840,13 @@ fn cpu_loop(
             results[k] = Some(job.finish(result));
         }
     }
-    results
+    stats.wall_ns = started.elapsed().as_nanos() as u64;
+    stats.cpu_ns = thread_cpu_ns().unwrap_or(0);
+    let results = results
         .into_iter()
         .map(|result| result.expect("every job finished"))
-        .collect()
+        .collect();
+    (results, stats)
 }
 
 /// Copies at most one span of each ring of `job`
@@ -1029,6 +1047,24 @@ fn remove_if_empty(path: &Path) {
 
 /// Records a writer thread wrote, what its pooled sink did, and the error that stopped it
 type JobResult = (u64, Option<SinkStats>, Result<(), JobError>);
+
+/// The results of a writer thread's jobs, and what the thread did if it is a writer CPU's
+type ThreadResult = (Vec<JobResult>, Option<WriterThreadStats>);
+
+/// What the thread of a writer CPU did, for metrics.json
+#[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct WriterThreadStats {
+    pub cpu: usize,
+    /// Trace files it wrote
+    pub files: usize,
+    /// Its CPU time and lifetime, ns
+    pub cpu_ns: u64,
+    pub wall_ns: u64,
+    /// Passes over its rings, those that found a backlog, and its sleeps
+    pub passes: u64,
+    pub backlog_passes: u64,
+    pub sleeps: u64,
+}
 
 /// Sees every record a writer wrote, see `Writer::register_observed`
 pub type Observer = Box<dyn FnMut(&[u8]) + Send>;
@@ -1783,6 +1819,8 @@ pub struct WriterReport {
     pub error: Option<String>,
     /// What a pooled sink did, None for the memory-mapped file
     pub sink: Option<SinkStats>,
+    /// What the writer CPU's thread that wrote it did, None for a thread per file
+    pub thread: Option<WriterThreadStats>,
 }
 
 #[derive(Debug)]
@@ -2317,6 +2355,10 @@ mod tests {
             stop.store(false, Ordering::Relaxed);
             handle.join().unwrap()
         });
+        let (results, stats) = results;
+        assert_eq!((stats.cpu, stats.files), (cpu, counts.len()));
+        assert!(stats.passes > stats.backlog_passes && stats.backlog_passes >= 2);
+        assert!(stats.cpu_ns > 0 && stats.wall_ns >= stats.cpu_ns / 2);
         assert_eq!(results.len(), counts.len());
         for ((records, _, result), &n) in results.iter().zip(&counts) {
             assert!(result.is_ok());
@@ -2366,7 +2408,7 @@ mod tests {
             let handle = scope.spawn(|| cpu_loop(jobs, running, cpu, None, None));
             thread::sleep(Duration::from_millis(20));
             stop.store(false, Ordering::Relaxed);
-            handle.join().unwrap()
+            handle.join().unwrap().0
         });
         assert!(matches!(
             results[0].2,

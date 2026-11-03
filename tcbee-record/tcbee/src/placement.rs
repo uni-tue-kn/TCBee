@@ -491,7 +491,7 @@ pub fn cpu_set(cpus: &[usize]) -> libc::cpu_set_t {
 }
 
 /// CPU time of the calling thread, ns
-fn thread_cpu_ns() -> Option<u64> {
+pub(crate) fn thread_cpu_ns() -> Option<u64> {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
