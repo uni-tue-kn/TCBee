@@ -1733,6 +1733,69 @@ mod tests {
         assert!(write(SinkKind::Uring, "uring") == mmap);
     }
 
+    /// A discarded record is copied as a frame: the side file counts frames, the job records
+    #[test]
+    fn raw_discards_count_as_frames() {
+        let len = mem::size_of::<tcp4_packet_trace>();
+        let size = 2 * page();
+        let path = env::temp_dir().join(format!("tcbee-raw-discard-{}", std::process::id()));
+        let mut fake = FakeRing::new(size, len);
+        fake.push(1);
+        let pos = fake.reserve(2);
+        fake.discard(pos);
+        fake.push(3);
+        let mut mem = MemRing::new(size);
+        mem.load(&fake);
+        let rings = vec![(5, mem.ring_map())];
+        let mut job = raw_job(&path, SinkConfig::default());
+        assert_eq!(drain_rings(&mut job, &rings).unwrap(), 3);
+        job.flush().unwrap();
+        assert_eq!(job.records, 2);
+        let file = std::fs::read(&path).unwrap();
+        assert_eq!(file.len(), 4 * raw::stride(len));
+        let kinds: Vec<_> = raw::frames(&file, len)
+            .map(|frame| match frame {
+                raw::Frame::Record(record) => record[0],
+                raw::Frame::Discarded => 0,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, [0, 1, 0, 3]);
+        let side = std::fs::read(cpu_side_path(&path)).unwrap();
+        assert_eq!(side.len(), 24);
+        assert_eq!(u64::from_le_bytes(side[12..20].try_into().unwrap()), 3);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(cpu_side_path(&path)).unwrap();
+    }
+
+    /// A record of another length stops the writer at it: nothing behind it is copied or
+    /// given back to the producers
+    #[test]
+    fn raw_writer_stops_at_a_foreign_record() {
+        let len = mem::size_of::<tcp4_packet_trace>();
+        let size = 2 * page();
+        let path = env::temp_dir().join(format!("tcbee-raw-foreign-{}", std::process::id()));
+        let mut fake = FakeRing::new(size, len);
+        fake.push(1);
+        let bad = fake.push(2);
+        fake.put(bad, &16u32.to_ne_bytes());
+        fake.push(3);
+        let mut mem = MemRing::new(size);
+        mem.load(&fake);
+        let rings = vec![(0, mem.ring_map())];
+        let mut job = raw_job(&path, SinkConfig::default());
+        let err = drain_rings(&mut job, &rings).unwrap_err();
+        assert!(
+            matches!(err, JobError::Ring(WalkError::Length { len: 16, .. })),
+            "{err}"
+        );
+        assert_eq!(mem.consumer_pos(), 0);
+        assert_eq!(job.records, 0);
+        job.flush().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(cpu_side_path(&path));
+    }
+
     /// The final drain waits for a record that is still being written and takes the
     /// committed ones behind it too
     #[test]

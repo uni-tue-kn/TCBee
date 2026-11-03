@@ -367,7 +367,7 @@ pub(crate) mod tests {
         }
 
         /// Writes `bytes` at ring position `pos` into both mappings
-        fn put(&mut self, pos: u64, bytes: &[u8]) {
+        pub fn put(&mut self, pos: u64, bytes: &[u8]) {
             let size = self.data.len() / 2;
             for (i, b) in bytes.iter().enumerate() {
                 let at = (pos as usize + i) % size;
