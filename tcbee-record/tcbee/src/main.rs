@@ -7,6 +7,7 @@ mod owners;
 mod placement;
 mod pooled;
 mod rawring;
+mod ring_groups;
 mod stats;
 mod viz;
 mod writer;
