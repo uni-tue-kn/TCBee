@@ -17,7 +17,7 @@ use std::{
     path::Path,
     ptr::NonNull,
     sync::{mpsc, Arc, Mutex},
-    thread::JoinHandle,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -44,6 +44,9 @@ const IO_UPKEEP: Duration = Duration::from_secs(1);
 /// A buffer that has been filling for this long is written as it is, so that a quiet ring
 /// does not keep its records in memory only. The full buffer is written again later.
 const IDLE_WRITE: Duration = Duration::from_secs(1);
+
+/// io_uring submissions refused for lack of kernel memory are retried for about a second
+const ENTER_RETRIES: u32 = 1000;
 
 /// How the trace file is written
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -320,8 +323,20 @@ impl IoThreads {
         self.jobs
             .as_ref()
             .and_then(|jobs| jobs.send(job).ok())
-            .ok_or_else(|| io::Error::other("the file's I/O threads stopped"))
+            .ok_or_else(threads_stopped)
     }
+
+    fn reap(&self) -> Vec<IoDone> {
+        self.done.try_iter().collect()
+    }
+
+    fn wait(&self) -> io::Result<IoDone> {
+        self.done.recv().map_err(|_| threads_stopped())
+    }
+}
+
+fn threads_stopped() -> io::Error {
+    io::Error::other("the file's I/O threads stopped")
 }
 
 /// An I/O thread placed as a file helper: reports its CPU time to the balancer, and moves
@@ -372,6 +387,40 @@ impl IoUpkeep {
 enum Io {
     Threads(IoThreads),
     Uring(Box<UringIo>),
+}
+
+impl Io {
+    /// Hands a write over. The I/O threads drop it if they are gone, the io_uring keeps it
+    /// even if it cannot submit it now.
+    fn submit(&mut self, job: IoJob) -> io::Result<()> {
+        match self {
+            Io::Threads(threads) => threads.submit(job),
+            Io::Uring(uring) => uring.submit(job),
+        }
+    }
+
+    /// The writes that completed, without waiting
+    fn reap(&mut self) -> io::Result<Vec<IoDone>> {
+        match self {
+            Io::Threads(threads) => Ok(threads.reap()),
+            Io::Uring(uring) => uring.reap(),
+        }
+    }
+
+    /// Waits until at least one write completed
+    fn wait(&mut self) -> io::Result<Vec<IoDone>> {
+        match self {
+            Io::Threads(threads) => threads.wait().map(|done| vec![done]),
+            Io::Uring(uring) => uring.wait(),
+        }
+    }
+
+    /// Moves the kernel's I/O workers with the writer. I/O threads move themselves.
+    fn upkeep(&mut self) {
+        if let Io::Uring(uring) = self {
+            uring.upkeep();
+        }
+    }
 }
 
 /// An io_uring the writer thread submits the file's writes to and reaps them from. It is set
@@ -516,11 +565,17 @@ impl UringIo {
 
     /// Submits the queued entries and, with `want > 0`, waits for that many completions
     fn enter(&mut self, want: usize) -> io::Result<()> {
+        let mut retries = 0;
         loop {
             match self.ring.submit_and_wait(want) {
                 Ok(_) => return Ok(()),
                 Err(err) => match err.raw_os_error() {
                     Some(libc::EINTR) => continue,
+                    // The kernel is short of memory for the requests for now
+                    Some(libc::EAGAIN | libc::ENOMEM) if retries < ENTER_RETRIES => {
+                        retries += 1;
+                        thread::sleep(Duration::from_millis(1));
+                    }
                     // Completions wait for room in the completion queue: reap them
                     Some(libc::EBUSY) => return Ok(()),
                     _ => return Err(err),
@@ -770,7 +825,8 @@ impl PooledFile {
     #[inline]
     pub fn reserve(&mut self, len: usize) -> io::Result<&mut [u8]> {
         if self.cur_len >= self.buf_size {
-            self.rotate()?;
+            let rotated = self.rotate();
+            self.fail_on(rotated)?;
         }
         if len > SLACK {
             return Err(io::Error::new(
@@ -860,9 +916,14 @@ impl PooledFile {
     /// Called regularly by the writer: takes back finished buffers, fails with a write error,
     /// and writes the current buffer as it is once it has been filling for `IDLE_WRITE`
     pub fn tick(&mut self) -> io::Result<()> {
+        let ticked = self.idle_write();
+        self.fail_on(ticked)
+    }
+
+    fn idle_write(&mut self) -> io::Result<()> {
         self.reap()?;
-        if let Some(Io::Uring(uring)) = &mut self.io {
-            uring.upkeep();
+        if let Some(io) = &mut self.io {
+            io.upkeep();
         }
         if self.cur_len > self.partial_len
             && self.cur_len < self.buf_size
@@ -910,13 +971,14 @@ impl PooledFile {
             len,
             partial,
         };
-        match self.io.as_mut().expect("just started") {
-            Io::Threads(threads) => threads.submit(job)?,
-            Io::Uring(uring) => uring.submit(job)?,
+        let io = self.io.as_mut().expect("just started");
+        let submitted = io.submit(job);
+        // An io_uring keeps a write it could not submit yet: it still comes back
+        if submitted.is_ok() || matches!(io, Io::Uring(_)) {
+            self.in_flight += 1;
+            self.stats.writes += 1;
         }
-        self.in_flight += 1;
-        self.stats.writes += 1;
-        Ok(())
+        submitted
     }
 
     /// Sets up the io_uring or the I/O threads, on the writer's thread. `taken` is the buffer
@@ -986,9 +1048,8 @@ impl PooledFile {
     /// Takes back the buffers of finished writes without waiting. Fails with the first
     /// write error.
     fn reap(&mut self) -> io::Result<()> {
-        let finished: Vec<IoDone> = match &mut self.io {
-            Some(Io::Threads(threads)) => threads.done.try_iter().collect(),
-            Some(Io::Uring(uring)) => uring.reap()?,
+        let finished = match &mut self.io {
+            Some(io) => io.reap()?,
             None => Vec::new(),
         };
         for done in finished {
@@ -1000,11 +1061,7 @@ impl PooledFile {
     /// Waits for one write to finish
     fn wait_one(&mut self) -> io::Result<()> {
         let finished = match &mut self.io {
-            Some(Io::Threads(threads)) if self.in_flight > 0 => vec![threads
-                .done
-                .recv()
-                .map_err(|_| io::Error::other("the file's I/O threads stopped"))?],
-            Some(Io::Uring(uring)) if self.in_flight > 0 => uring.wait()?,
+            Some(io) if self.in_flight > 0 => io.wait()?,
             _ => return Err(io::Error::other("no write in flight to wait for")),
         };
         for done in finished {
@@ -1045,6 +1102,15 @@ impl PooledFile {
         }
     }
 
+    /// After an error the file's state may be half updated: nothing more is written, and
+    /// `finish` keeps only the records before the first failed write
+    fn fail_on<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
     fn take_error(&mut self) -> io::Result<()> {
         if let Some(err) = self.error.take() {
             self.failed = true;
@@ -1061,7 +1127,8 @@ impl PooledFile {
     /// or after a failed write the prefix before it, to which the file is then cut.
     pub fn finish(mut self, record_len: usize) -> (u64, SinkStats, io::Result<()>) {
         let end = self.cur_offset + self.cur_len as u64;
-        let mut result = self.write_rest();
+        let rest = self.write_rest();
+        let mut result = self.fail_on(rest);
         // Every write must be back before the file is cut, whatever failed
         while self.in_flight > 0 {
             if let Err(err) = self.wait_one() {
@@ -1070,6 +1137,8 @@ impl PooledFile {
             }
         }
         result = result.and_then(|()| self.take_error());
+        // Writes still queued or in flight after an error end before the file is cut
+        drop(self.io.take());
         // A running preallocation must not extend the file after it is cut
         if let Some(rx) = self.prealloc.take() {
             let _ = rx.recv();
@@ -1291,6 +1360,38 @@ pub(crate) mod tests {
         result.unwrap();
         assert_eq!(written, 5000);
         assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// A write that cannot be handed over stops the file, even if the I/O works again
+    /// later: the buffers are half rotated, and writing on would put stale bytes in the file
+    #[test]
+    fn failed_hand_over_stops_the_file() {
+        let path = temp("handover");
+        let mut file = PooledFile::new(&path, config(SinkKind::Buffered)).unwrap();
+        let (jobs, _) = mpsc::channel();
+        let (_, done) = mpsc::channel();
+        file.io = Some(Io::Threads(IoThreads {
+            jobs: Some(jobs),
+            done,
+            handles: Vec::new(),
+        }));
+        let failed = (0..300).any(|i| match file.reserve(100) {
+            Ok(buf) => {
+                buf.fill(i as u8);
+                false
+            }
+            Err(_) => true,
+        });
+        assert!(failed);
+        file.io = Some(Io::Threads(
+            IoThreads::start(&file.file, 1, true, &[], None).unwrap(),
+        ));
+        assert!(file.reserve(100).is_err());
+        let (written, _, result) = file.finish(100);
+        assert!(result.is_err());
+        assert_eq!(written, 0);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
         fs::remove_file(&path).unwrap();
     }
 
