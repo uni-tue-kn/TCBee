@@ -1333,6 +1333,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn lengths_at_the_block_and_buffer_ends_are_kept() {
+        for kind in POOLED {
+            for len in [511, 512, 513, 4095, 4096, 4097, 8191, 8192, 8193] {
+                let path = temp("edges");
+                let mut file = PooledFile::new(&path, config(kind)).unwrap();
+                let expected = fill(&mut file, len, 1);
+                let (written, _, result) = file.finish(1);
+                result.unwrap();
+                assert_eq!(written, len as u64);
+                assert_eq!(fs::read(&path).unwrap(), expected, "{:?} {}", kind, len);
+                fs::remove_file(&path).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn pooled_file_appends() {
         for kind in POOLED {
             let path = temp("append");
