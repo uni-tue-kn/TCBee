@@ -59,6 +59,15 @@ where
         .collect()
 }
 
+/// CPU ids for a CPU set
+fn parse_cpu_list(arg: &str, name: &str) -> anyhow::Result<Vec<usize>> {
+    let cpus: Vec<usize> = parse_csv(arg, name)?;
+    if let Some(cpu) = cpus.iter().find(|cpu| **cpu >= libc::CPU_SETSIZE as usize) {
+        return Err(anyhow!("Invalid {} {}", name, cpu));
+    }
+    Ok(cpus)
+}
+
 fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
     let mut keys: Vec<[u8; 16]> = parse_csv::<IpAddr>(arg, name)?
         .into_iter()
@@ -361,38 +370,26 @@ fn main() -> anyhow::Result<()> {
     };
 
     let ringbuf_sizes = parse_ringbuf_sizes(&ringbuf_size)?;
-    let writer_cpus: Vec<usize> = parse_csv(&writer_cpus, "CPU id")?;
-    if let Some(cpu) = writer_cpus
-        .iter()
-        .find(|cpu| **cpu >= libc::CPU_SETSIZE as usize)
-    {
-        return Err(anyhow!("Invalid writer CPU id {}", cpu));
-    }
+    let writer_cpus = parse_cpu_list(&writer_cpus, "writer CPU id")?;
     let poll_mode = match poll.as_str() {
         "busy" => PollMode::Busy,
         "wait" => PollMode::Wait,
         other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
     };
-    let writer_io_cpus: Vec<usize> = parse_csv(&writer_io_cpus, "CPU id")?;
-    if let Some(cpu) = writer_io_cpus
-        .iter()
-        .find(|cpu| **cpu >= libc::CPU_SETSIZE as usize)
-    {
-        return Err(anyhow!("Invalid writer I/O CPU id {}", cpu));
+    let writer_io_cpus = parse_cpu_list(&writer_io_cpus, "writer I/O CPU id")?;
+    let Some(kind) = SinkKind::from_name(&writer_sink) else {
+        return Err(anyhow!(
+            "Unknown --writer-sink '{}', use mmap, direct, uring or buffered",
+            writer_sink
+        ));
+    };
+    if kind == SinkKind::Mmap && !writer_io_cpus.is_empty() {
+        return Err(anyhow!(
+            "--writer-io-cpus needs --writer-sink direct, uring or buffered"
+        ));
     }
     let writer_sink = SinkConfig {
-        kind: match writer_sink.as_str() {
-            "mmap" => SinkKind::Mmap,
-            "direct" => SinkKind::Direct,
-            "uring" => SinkKind::Uring,
-            "buffered" => SinkKind::Buffered,
-            other => {
-                return Err(anyhow!(
-                    "Unknown --writer-sink '{}', use mmap, direct, uring or buffered",
-                    other
-                ))
-            }
-        },
+        kind,
         io_cpus: writer_io_cpus,
         ..SinkConfig::default()
     };

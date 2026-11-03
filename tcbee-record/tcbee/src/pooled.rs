@@ -64,6 +64,13 @@ pub enum SinkKind {
 }
 
 impl SinkKind {
+    pub const ALL: [SinkKind; 4] = [
+        SinkKind::Mmap,
+        SinkKind::Direct,
+        SinkKind::Uring,
+        SinkKind::Buffered,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             SinkKind::Mmap => "mmap",
@@ -71,6 +78,10 @@ impl SinkKind {
             SinkKind::Buffered => "buffered",
             SinkKind::Uring => "uring",
         }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 }
 

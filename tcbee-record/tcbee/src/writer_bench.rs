@@ -73,13 +73,11 @@ impl Config {
                 .unwrap_or_default()
         };
         let defaults = SinkConfig::default();
-        let kind = match var("TCBEE_BENCH_SINK").as_deref() {
-            None | Some("mmap") => SinkKind::Mmap,
-            Some("direct") => SinkKind::Direct,
-            Some("buffered") => SinkKind::Buffered,
-            Some("uring") => SinkKind::Uring,
-            Some(other) => panic!("TCBEE_BENCH_SINK {other}: mmap, direct, buffered or uring"),
-        };
+        let kind = var("TCBEE_BENCH_SINK").map_or(SinkKind::Mmap, |name| {
+            SinkKind::from_name(&name).unwrap_or_else(|| {
+                panic!("TCBEE_BENCH_SINK {name}: mmap, direct, uring or buffered")
+            })
+        });
         Config {
             dir: var("TCBEE_BENCH_DIR").expect("set TCBEE_BENCH_DIR").into(),
             secs: num("TCBEE_BENCH_SECS", 20.0),
