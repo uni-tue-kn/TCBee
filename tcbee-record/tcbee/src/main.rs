@@ -265,7 +265,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut writer_sink).add_option(
             &["--writer-sink"],
             Store,
-            "How writers write the trace files: 'mmap' maps them, 'direct' copies records into large buffers that I/O threads write with O_DIRECT, 'uring' submits those writes to an io_uring, 'buffered' writes the buffers through the page cache and pushes them to the disk at once, 'sync' writes a few small buffers itself through the page cache, without I/O threads, and pushes the pages to the disk every 8 MiB. The file bytes are the same. Default is mmap.",
+            "How writers write the trace files: 'mmap' maps them, 'direct' copies records into large buffers that I/O threads write with O_DIRECT, 'uring' submits those writes to an io_uring, 'buffered' writes the buffers through the page cache and pushes them to the disk at once, 'sync' writes two 256 KiB buffers itself through the page cache, without I/O threads, and pushes the pages to the disk every 8 MiB. The file bytes are the same. Default is mmap.",
         );
         argparser.refer(&mut writer_format).add_option(
             &["--writer-format"],

@@ -1,8 +1,9 @@
-//! A trace file written from a pool of large aligned buffers. The writer copies records into
-//! the current buffer; full buffers go to I/O threads, which write them with `pwrite`, by
-//! default with `O_DIRECT`, or the writer submits them to an io_uring, or writes them itself
-//! through the page cache (`SinkKind::Sync`). The writer never takes a page fault or a file system lock for a
-//! record. It only waits when every buffer is still being written, and that wait is counted.
+//! A trace file written from a pool of aligned buffers. The writer copies records into the
+//! current buffer; full buffers go to I/O threads, which write them with `pwrite`, by default
+//! with `O_DIRECT`, or the writer submits them to an io_uring. The writer never takes a page
+//! fault or a file system lock for a record. It only waits when every buffer is still being
+//! written, and that wait is counted. With `SinkKind::Sync` the writer writes the buffers
+//! itself through the page cache instead, and waits for those writes and the write-behind.
 //!
 //! The file bytes are the same as from the memory-mapped file: records back to back, cut to
 //! their exact length at the end. `O_DIRECT` needs aligned offsets and lengths, so the last
@@ -56,9 +57,9 @@ const ENTER_RETRIES: u32 = 1000;
 /// for the window two before the current one, so the dirty pages stay at a few windows and
 /// the writes never run into the kernel's dirty throttling
 const WRITE_BEHIND_WINDOW: u64 = 8 << 20;
-/// Sync sink: bytes from at least this long a run of the caller's memory are written from
-/// there, not copied into a buffer first
-pub(crate) const DIRECT_WRITE_BYTES: usize = 16 << 10;
+/// Sync sink: a run of at least this many bytes is written from the caller's memory instead of
+/// being copied into a buffer first
+pub(crate) const WRITE_THROUGH_BYTES: usize = 16 << 10;
 
 /// How the trace file is written
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -141,7 +142,7 @@ impl Default for SinkConfig {
 }
 
 impl SinkConfig {
-    /// The defaults of `kind`: the sync sink writes small buffers that stay in the cache
+    /// The defaults of `kind`: the sync sink writes small buffers that stay in the CPU cache
     pub fn of(kind: SinkKind) -> Self {
         match kind {
             SinkKind::Sync => Self {
@@ -276,34 +277,41 @@ fn pwrite_all(file: &File, data: &[u8], offset: u64) -> (usize, io::Result<()>) 
 /// Write-behind for buffered writes: starts writeback of the range just written, then waits
 /// for the range two buffers before it and drops it from the page cache. So the dirty pages
 /// stay at a few buffers, and the writes never run into the kernel's dirty throttling.
+///
+/// The I/O threads write buffers out of order, so errors are left to the final sync; the sync
+/// sink's `WriteBehind` writes in order and fails the file at once.
 fn write_behind(file: &File, offset: u64, len: usize) {
     let fd = file.as_raw_fd();
-    unsafe {
-        libc::sync_file_range(
-            fd,
-            offset as libc::off64_t,
-            len as libc::off64_t,
-            libc::SYNC_FILE_RANGE_WRITE,
-        );
-    }
+    let _ = sync_range(fd, offset, len as u64, libc::SYNC_FILE_RANGE_WRITE);
     let Some(older) = offset.checked_sub(2 * len as u64) else {
         return;
     };
+    let _ = sync_range(fd, older, len as u64, WAIT_AND_WRITE);
+    drop_cached(fd, older, len as u64);
+}
+
+/// Waits for writeback that runs in a range, writes what is dirty and waits for that too
+const WAIT_AND_WRITE: libc::c_uint = libc::SYNC_FILE_RANGE_WAIT_BEFORE
+    | libc::SYNC_FILE_RANGE_WRITE
+    | libc::SYNC_FILE_RANGE_WAIT_AFTER;
+
+/// Drops the clean pages of a range from the page cache
+fn drop_cached(fd: RawFd, offset: u64, len: u64) {
     unsafe {
-        libc::sync_file_range(
-            fd,
-            older as libc::off64_t,
-            len as libc::off64_t,
-            libc::SYNC_FILE_RANGE_WAIT_BEFORE
-                | libc::SYNC_FILE_RANGE_WRITE
-                | libc::SYNC_FILE_RANGE_WAIT_AFTER,
-        );
         libc::posix_fadvise(
             fd,
-            older as libc::off_t,
+            offset as libc::off_t,
             len as libc::off_t,
             libc::POSIX_FADV_DONTNEED,
         );
+    }
+}
+
+/// Writes of a file in flight at once: the sync sink writes one at a time itself
+fn writes_at_once(kind: SinkKind, config: &SinkConfig) -> usize {
+    match kind {
+        SinkKind::Sync => 1,
+        _ => config.io_threads.max(1),
     }
 }
 
@@ -465,12 +473,18 @@ impl InlineIo {
         }
     }
 
-    fn submit(&mut self, job: IoJob) {
-        let (written, mut result) =
-            pwrite_all(&self.file, &job.buf.as_slice()[..job.len], job.offset);
+    /// Writes `data` at `offset` and keeps the write-behind going. Returns the bytes written
+    /// and the error that stopped it, a writeback error of an earlier window too.
+    fn write(&mut self, data: &[u8], offset: u64) -> (usize, io::Result<()>) {
+        let (written, mut result) = pwrite_all(&self.file, data, offset);
         if result.is_ok() {
-            result = self.behind.written(&self.file, job.offset + written as u64);
+            result = self.behind.written(&self.file, offset + written as u64);
         }
+        (written, result)
+    }
+
+    fn submit(&mut self, job: IoJob) {
+        let (written, result) = self.write(&job.buf.as_slice()[..job.len], job.offset);
         self.done.push(IoDone {
             buf: job.buf,
             offset: job.offset,
@@ -518,25 +532,11 @@ impl WriteBehind {
         }
         let (older, len) = self.started.pop_front().expect("more than two");
         let waited = Instant::now();
-        let synced = sync_range(
-            fd,
-            older,
-            len,
-            libc::SYNC_FILE_RANGE_WAIT_BEFORE
-                | libc::SYNC_FILE_RANGE_WRITE
-                | libc::SYNC_FILE_RANGE_WAIT_AFTER,
-        );
+        let synced = sync_range(fd, older, len, WAIT_AND_WRITE);
         self.wait_ns += waited.elapsed().as_nanos() as u64;
         synced?;
         // Only clean pages are dropped, so after the wait all of the window's
-        unsafe {
-            libc::posix_fadvise(
-                fd,
-                older as libc::off_t,
-                len as libc::off_t,
-                libc::POSIX_FADV_DONTNEED,
-            );
-        }
+        drop_cached(fd, older, len);
         Ok(())
     }
 }
@@ -968,11 +968,7 @@ impl PooledFile {
             buffers,
             buf_size >> 10,
             kind.name(),
-            if kind == SinkKind::Sync {
-                1
-            } else {
-                config.io_threads.max(1)
-            }
+            writes_at_once(kind, &config)
         );
         Ok(Self {
             file: Arc::new(file),
@@ -1032,7 +1028,7 @@ impl PooledFile {
     /// span of a ring buffer's mapping, say), after the bytes in the current buffer; the
     /// others copy it into the buffer.
     pub fn write_bytes(&mut self, data: &[u8]) -> io::Result<()> {
-        if self.config.kind != SinkKind::Sync || self.direct || data.len() < DIRECT_WRITE_BYTES {
+        if self.config.kind != SinkKind::Sync || data.len() < WRITE_THROUGH_BYTES {
             self.reserve(data.len())?.copy_from_slice(data);
             return Ok(());
         }
@@ -1047,23 +1043,28 @@ impl PooledFile {
             self.reap()?;
         }
         let offset = self.cur_offset;
-        let inline = match self
-            .io
-            .get_or_insert_with(|| Io::Inline(InlineIo::new(&self.file, offset)))
-        {
-            Io::Inline(inline) => inline,
-            _ => unreachable!("the sync sink writes inline"),
-        };
-        let (written, mut result) = pwrite_all(&inline.file, data, offset);
-        if result.is_ok() {
-            result = inline.behind.written(&inline.file, offset + written as u64);
-        }
+        let (written, result) = self.inline_io().write(data, offset);
         self.stats.writes += 1;
         self.note_written(offset, written);
         self.cur_offset += data.len() as u64;
         self.partial_len = 0;
         self.partial_at = Instant::now();
         result
+    }
+
+    /// The sync sink's I/O, started with its first write
+    fn inline_io(&mut self) -> &mut InlineIo {
+        let offset = self.cur_offset;
+        let io = self
+            .io
+            .get_or_insert_with(|| Io::Inline(InlineIo::new(&self.file, offset)));
+        match io {
+            Io::Inline(inline) => inline,
+            _ => panic!(
+                "the sync sink writes inline, not through {}",
+                self.stats.sink
+            ),
+        }
     }
 
     /// Hands the full buffer to the I/O threads and continues in a free one
@@ -1812,7 +1813,7 @@ pub(crate) mod tests {
         file.partial_at -= IDLE_WRITE;
         file.tick().unwrap();
         let run: Vec<u8> = (0..300 * 100).map(|i| (i / 100) as u8 ^ 0x5a).collect();
-        assert!(run.len() >= DIRECT_WRITE_BYTES);
+        assert!(run.len() >= WRITE_THROUGH_BYTES);
         let writes = file.stats.writes;
         file.write_bytes(&run).unwrap();
         assert!(file.stats.writes >= writes + 2, "buffer and run written");
@@ -1870,6 +1871,40 @@ pub(crate) mod tests {
         let (written, _, result) = file.finish(1);
         result.unwrap();
         assert_eq!(written, total as u64);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// A long run after a buffer filled past its end: the whole buffer goes first
+    #[test]
+    fn long_run_after_a_full_buffer() {
+        let path = temp("sync-full-then-run");
+        let mut file = PooledFile::new(&path, config(SinkKind::Sync)).unwrap();
+        let per_buffer = file.buf_size / 100 + 1;
+        let mut expected = fill(&mut file, per_buffer, 100);
+        assert!(file.cur_len > file.buf_size);
+        let run = vec![3u8; 200 * 100];
+        file.write_bytes(&run).unwrap();
+        expected.extend_from_slice(&run);
+        let (written, _, result) = file.finish(100);
+        result.unwrap();
+        assert_eq!(written, (per_buffer + 200) as u64);
+        assert!(fs::read(&path).unwrap() == expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// When the buffered bytes before a long run fail to reach the file, the run is not written
+    #[test]
+    fn failed_flush_before_a_run_keeps_the_run_out() {
+        let path = temp("sync-flush-fail");
+        let mut file = PooledFile::new(&path, config(SinkKind::Sync)).unwrap();
+        fill(&mut file, 20, 100);
+        let read_only = Arc::new(File::open(&path).unwrap());
+        file.io = Some(Io::Inline(InlineIo::new(&read_only, 0)));
+        assert!(file.write_bytes(&vec![4u8; 300 * 100]).is_err());
+        let (written, _, result) = file.finish(100);
+        assert!(result.is_err());
+        assert_eq!(written, 0);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
         fs::remove_file(&path).unwrap();
     }
 

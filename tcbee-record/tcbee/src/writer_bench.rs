@@ -14,10 +14,10 @@
 //! (sock, tcp4 or cwnd, default sock), `TCBEE_BENCH_RATE` (records/s per file, 0 = as fast
 //! as possible), `TCBEE_BENCH_CPUS` (cores to pin the writers to, round robin),
 //! `TCBEE_BENCH_IDLE_SECS` (host CPU measured before the run as a baseline, default 2),
-//! `TCBEE_BENCH_SINK` (mmap, direct, buffered or uring, default mmap; `null` packs or copies into
+//! `TCBEE_BENCH_SINK` (mmap, direct, buffered, uring or sync, default mmap; `null` packs or copies into
 //! a scratch buffer and writes no file: the CPU ceiling), `TCBEE_BENCH_FORMAT` (records or raw:
 //! raw feeds spans of `RAW_SPAN_BYTES` of ring frames through `write_span`, as the raw drain
-//! does), `TCBEE_BENCH_BUF_MB`,
+//! does), `TCBEE_BENCH_BUF_MB` (fractions allowed),
 //! `TCBEE_BENCH_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled sinks' buffers, and their
 //! I/O threads or io_uring writes at once, per file), `TCBEE_BENCH_PREALLOC=0` (O_DIRECT without preallocation),
 //! `TCBEE_BENCH_IO_CPUS` (cores for the file helpers and I/O threads of all
@@ -327,6 +327,10 @@ where
     // Raw: the pool as ring frames, cut into spans of whole frames as a drain copies them
     let stride = raw::stride(size);
     let span_records = RAW_SPAN_BYTES / stride;
+    assert!(
+        span_records < POOL,
+        "a span holds fewer frames than the pool"
+    );
     let frames: Vec<u8> = pool.chunks(size).flat_map(raw::record_frame).collect();
     let mut scratch = vec![0u8; RAW_SPAN_BYTES.max(job.record_size + RECORD_DELIMITER.len())];
     let layout = PackedLayout::of::<T>().expect("bench records have a packed layout");
@@ -589,7 +593,7 @@ where
         "max_bytes": cfg.max_bytes, "size_capped": results.iter().any(|r| r.size_capped),
         "sink": if cfg.null { "null" } else { cfg.sink.kind.name() }, "format": cfg.format.name(), "buffer_bytes": cfg.sink.buffer_bytes, "buffers": cfg.sink.buffers,
         "io_threads": cfg.sink.io_threads, "io_cpus": cfg.io_cpus, "preallocate": cfg.sink.preallocate,
-        "effective_sinks": results.iter().map(|r| r.sink.as_ref().map_or("mmap", |s| s.sink)).collect::<Vec<_>>(),
+        "effective_sinks": results.iter().map(|r| r.sink.as_ref().map_or(if cfg.null { "null" } else { "mmap" }, |s| s.sink)).collect::<Vec<_>>(),
         "stalls": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stalls).sum::<u64>(),
         "stall_secs": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_ns).sum::<u64>() as f64 / 1e9,
         "stall_max_ms": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_max_ns).max().unwrap_or(0) as f64 / 1e6,
