@@ -642,22 +642,6 @@ impl MmapBackedFile {
             .checked_add(additional)
             .ok_or_else(|| io::Error::new(ErrorKind::Other, "file size overflow"))?;
 
-        // Take over a finished background growth without waiting for it
-        if let Some(rx) = &self.pending {
-            match rx.try_recv() {
-                Ok(grown) => {
-                    self.pending = None;
-                    let (map, capacity) = grown?;
-                    self.adopt(map, capacity);
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.pending = None;
-                    return Err(io::Error::new(ErrorKind::Other, "file growth thread died"));
-                }
-            }
-        }
-
         if required > self.capacity {
             // Out of room: the helper was too slow or not started, wait for it
             if let Some(rx) = self.pending.take() {
@@ -682,6 +666,27 @@ impl MmapBackedFile {
         }
 
         Ok(())
+    }
+
+    /// Takes over a finished background growth without waiting for it. Runs between polls,
+    /// not per record: until then the old mapping still has room, see `starts_growth`.
+    fn adopt_finished_growth(&mut self) -> io::Result<()> {
+        let Some(rx) = &self.pending else {
+            return Ok(());
+        };
+        match rx.try_recv() {
+            Ok(grown) => {
+                self.pending = None;
+                let (map, capacity) = grown?;
+                self.adopt(map, capacity);
+                Ok(())
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                Err(io::Error::new(ErrorKind::Other, "file growth thread died"))
+            }
+        }
     }
 
     /// Returns the next `len` bytes of the file for writing
@@ -749,7 +754,7 @@ impl Sink {
     #[inline]
     fn tick(&mut self) -> io::Result<()> {
         match self {
-            Sink::Mmap(_) => Ok(()),
+            Sink::Mmap(file) => file.adopt_finished_growth(),
             Sink::Pooled(file) => file.tick(),
         }
     }
@@ -1302,6 +1307,29 @@ mod tests {
         let written = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(written == expected);
+    }
+
+    /// A finished background growth is taken over between polls, without another reserve
+    #[test]
+    fn tick_adopts_finished_growth() {
+        let path = env::temp_dir().join(format!("tcbee-adopt-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut file = MmapBackedFile::new(&path, 1000).unwrap();
+        while file.pending.is_none() {
+            file.reserve(1000).unwrap().fill(1);
+        }
+        let before = file.capacity;
+        for _ in 0..1000 {
+            file.adopt_finished_growth().unwrap();
+            if file.pending.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(file.pending.is_none());
+        assert!(file.capacity > before);
+        file.finish().unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     /// The free space ahead of the writer stays within a few growth steps, also for large files
