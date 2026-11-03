@@ -119,6 +119,7 @@ fn main() -> anyhow::Result<()> {
     let mut writer_placement: String = "balanced".to_string();
     let mut writer_sink: String = "mmap".to_string();
     let mut writer_io_cpus: String = String::new();
+    let mut writer_no_prealloc: bool = false;
     let mut on_change: String = String::new();
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
@@ -268,6 +269,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "Comma-separated CPU ids for the I/O threads (or io_uring workers) of the direct, uring and buffered sinks. By default they run on the --writer-cpus like the file growth helpers.",
         );
+        argparser.refer(&mut writer_no_prealloc).add_option(
+            &["--writer-no-prealloc"],
+            StoreTrue,
+            "With the direct and uring sinks, do not allocate the trace files ahead of the writes. Allocating takes the file's lock and, on tmpfs, zeroes the memory, which the writes then wait for.",
+        );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
@@ -391,6 +397,7 @@ fn main() -> anyhow::Result<()> {
     let writer_sink = SinkConfig {
         kind,
         io_cpus: writer_io_cpus,
+        preallocate: !writer_no_prealloc,
         ..SinkConfig::default()
     };
     let writer_placement = match writer_placement.as_str() {
