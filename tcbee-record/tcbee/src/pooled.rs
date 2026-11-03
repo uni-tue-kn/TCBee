@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// Room after a buffer's end for the record that crosses it. A record never exceeds it.
-const SLACK: usize = 64 << 10;
+pub(crate) const SLACK: usize = 64 << 10;
 /// Alignment of the buffers in memory, and the offset alignment if the file system does
 /// not report its own
 const PAGE: usize = 4096;

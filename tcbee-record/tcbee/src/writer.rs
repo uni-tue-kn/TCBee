@@ -86,6 +86,7 @@ impl WriterFormat {
 /// Raw format: the most bytes one span copies before the ring gets them back. Producers
 /// see the ring as full until then, and the pooled sinks take at most this much at once.
 const RAW_SPAN_BYTES: usize = 64 << 10;
+const _: () = assert!(RAW_SPAN_BYTES <= crate::pooled::SLACK);
 
 /// Raw format: how long the final drain waits for records that are still being written
 const SHUTDOWN_BUSY_WAIT: Duration = Duration::from_millis(100);
