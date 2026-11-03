@@ -65,6 +65,11 @@ impl RingMap {
         self.fd.as_fd()
     }
 
+    /// Data bytes of the ring
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
     fn mask(&self) -> u64 {
         self.size as u64 - 1
     }
@@ -518,6 +523,38 @@ pub(crate) mod tests {
         fake.commit(busy);
         mem.load(&fake);
         assert!(mem.ring_map().has_committed());
+    }
+
+    /// Cost of checking many rings for records, as a writer thread that owns many jobs does
+    /// once per pass: `cargo test --release -- --ignored --nocapture rawring::tests::scan_cost`
+    /// (`TCBEE_SCAN_RINGS`, default 448 = 14 jobs × 32 CPUs; two fds per ring).
+    #[test]
+    #[ignore]
+    fn scan_cost() {
+        let rings: usize = std::env::var("TCBEE_SCAN_RINGS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(448);
+        let mems: Vec<MemRing> = (0..rings).map(|_| MemRing::new(2 * page())).collect();
+        let maps: Vec<RingMap> = mems.iter().map(MemRing::ring_map).collect();
+        for (label, subset) in [
+            ("all", rings),
+            ("per-packet share", rings.min(17 * rings / 24)),
+        ] {
+            let passes = 20_000;
+            let start = std::time::Instant::now();
+            let mut found = 0;
+            for _ in 0..passes {
+                for ring in &maps[..subset] {
+                    found += usize::from(std::hint::black_box(ring.producer() != ring.consumer()));
+                }
+            }
+            let ns = start.elapsed().as_nanos() as f64 / passes as f64;
+            println!(
+                "scan {label}: {subset} rings, {ns:.0} ns per pass, {:.1} ns per ring ({found})",
+                ns / subset as f64
+            );
+        }
     }
 
     #[test]

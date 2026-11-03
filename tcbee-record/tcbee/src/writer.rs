@@ -31,6 +31,7 @@ use crate::{
     },
     pooled::PooledFile,
     rawring::{walk, RingMap, RingWaiter, Stop, WalkError},
+    ring_groups::{assign, HookGroup},
 };
 
 /// How writer threads wait for new records
@@ -100,17 +101,40 @@ const BACKLOG_RECORDS: i32 = 256;
 /// to fill, so it costs no records, and writer threads sharing a core leave it to the loaded one.
 const IDLE_SLEEP: Duration = Duration::from_micros(50);
 
+/// A writer CPU's thread: passes that found (almost) nothing before it starts to sleep
+const SPIN_PASSES: u32 = 512;
+/// A writer CPU's thread: its first sleep, doubled up to `MAX_IDLE_SLEEP` while idle
+const MIN_IDLE_SLEEP: Duration = Duration::from_micros(1);
+/// Far below the time a per-CPU ring takes to fill at the highest rates measured
+const MAX_IDLE_SLEEP: Duration = Duration::from_micros(100);
+/// A pass that copied this many bytes means a backlog: the thread keeps polling at once
+const BACKLOG_BYTES: u64 = RAW_SPAN_BYTES as u64 / 2;
+/// A writer CPU's thread drains the rings of the rare hooks this often, not in every pass
+const RARE_INTERVAL: Duration = Duration::from_micros(50);
+/// Timer slack of a writer CPU's thread, in ns: the default 50 µs would stretch its short
+/// sleeps many times over
+const WRITER_TIMER_SLACK_NS: libc::c_ulong = 1_000;
+/// The kernel's default timer slack, in ns, for the helpers a writer thread starts
+const DEFAULT_TIMER_SLACK_NS: libc::c_ulong = 50_000;
+
 /// Serializes entries pulled from eBPF maps and writes them to files.
 ///
-/// Each output file gets its own dedicated OS thread so that a busy probe cannot starve
-/// others. The thread reads all ring buffers of its file (one per CPU) through one libbpf
-/// ring buffer manager. `BPF_MAP_TYPE_RINGBUF` is single-consumer, so a ring buffer is never
-/// shared between threads.
+/// Without writer CPUs, each output file gets its own dedicated OS thread so that a busy
+/// probe cannot starve others. With writer CPUs, one thread per writer CPU drains the files
+/// that `ring_groups::assign` gives it, from `start` on. A thread reads all ring buffers of
+/// its files (one per CPU) through their mapping. `BPF_MAP_TYPE_RINGBUF` is single-consumer,
+/// so a ring buffer is never shared between threads.
 pub struct Writer {
     poll_mode: PollMode,
     running: Arc<AtomicBool>,
     bytes_written: Arc<AtomicU64>,
-    handles: Vec<(WriterReport, JoinHandle<JobResult>)>,
+    handles: Vec<(Vec<WriterReport>, JoinHandle<Vec<JobResult>>)>,
+    /// With writer CPUs: the writer CPU of each enabled ring buffer
+    assignment: Vec<(u32, usize)>,
+    /// With writer CPUs: the jobs registered but not started yet, per writer CPU
+    pending: Vec<CpuJobs>,
+    /// Jobs whose thread could not start, finished
+    failed: Vec<WriterReport>,
     /// The CPUs to pin writer threads to, assigned round-robin at the start, and the writers.
     /// Requires `isolcpus=<ids>` in the kernel boot parameters for full isolation.
     cpus: Arc<WriterCpus>,
@@ -129,6 +153,9 @@ impl Writer {
             running: Arc::new(AtomicBool::new(true)),
             bytes_written: Arc::new(AtomicU64::new(0)),
             handles: Vec::new(),
+            assignment: Vec::new(),
+            pending: Vec::new(),
+            failed: Vec::new(),
             cpus: Arc::new(WriterCpus::default()),
             next_cpu: 0,
             balancer: None,
@@ -149,10 +176,18 @@ impl Writer {
         self
     }
 
-    /// Pin each writer thread to one of the given CPU IDs, round-robin at the start and then
-    /// as `placement` says. For full isolation, also boot with `isolcpus=<ids>` so the kernel
-    /// scheduler never places other tasks on those cores.
-    pub fn with_cpu_affinity(mut self, cpus: Vec<usize>, placement: Placement) -> Self {
+    /// Drain the ring buffers `rbs` (the enabled ones) on the given CPU IDs, one thread per
+    /// CPU, the rings of each CPU as `ring_groups::assign` says. A ring registered but not in
+    /// `rbs` goes round-robin. For full isolation, also boot with `isolcpus=<ids>` so the
+    /// kernel scheduler never places other tasks on those cores. `placement` decides where
+    /// file helpers run, the threads do not move.
+    pub fn with_cpu_affinity(
+        mut self,
+        cpus: Vec<usize>,
+        placement: Placement,
+        rbs: &[u32],
+    ) -> Self {
+        self.assignment = assign(rbs, &cpus);
         self.cpus = Arc::new(WriterCpus::new(cpus, placement));
         self
     }
@@ -233,6 +268,9 @@ impl Writer {
             self.format,
         )?;
         job.observer = observer;
+        if !self.cpus.pool.is_empty() {
+            return self.add_to_cpu(rb, job, maps);
+        }
         let running = self.running.clone();
 
         let pool = &self.cpus.pool;
@@ -260,27 +298,19 @@ impl Writer {
             cpu
         );
 
-        let report = WriterReport {
-            rb,
-            file: job.file_path.clone(),
-            format: self.format,
-            records: 0,
-            error: None,
-            sink: None,
-        };
+        let report = self.report(rb, &job);
         let poll_mode = self.poll_mode;
-        let format = self.format;
         // The ring buffers are set up inside the thread, which then reports whether that
         // worked, so a broken map fails here and not only at shutdown
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let handle = thread::spawn(move || match format {
-            WriterFormat::Records | WriterFormat::Raw => {
-                ring_loop(job, maps, running, cpu, follow, poll_mode, ready_tx)
-            }
+        let handle = thread::spawn(move || {
+            vec![ring_loop(
+                job, maps, running, cpu, follow, poll_mode, ready_tx,
+            )]
         });
         let result = match ready_rx.recv() {
             Ok(Ok(())) => {
-                self.handles.push((report, handle));
+                self.handles.push((vec![report], handle));
                 self.start_balancer();
                 return Ok(());
             }
@@ -292,6 +322,158 @@ impl Writer {
             self.cpus.remove_writer(&slot);
         }
         result
+    }
+
+    fn report<T>(&self, rb: u32, job: &MapWriterJob<T>) -> WriterReport
+    where
+        T: Serialize + Copy + Send + 'static,
+    {
+        WriterReport {
+            rb,
+            file: job.file_path.clone(),
+            format: self.format,
+            records: 0,
+            error: None,
+            sink: None,
+        }
+    }
+
+    /// Maps the rings of `job` and adds it to the jobs of its writer CPU, see `start`
+    fn add_to_cpu<T>(
+        &mut self,
+        rb: u32,
+        mut job: MapWriterJob<T>,
+        maps: Vec<(u32, MapHandle)>,
+    ) -> Result<(), WriterError>
+    where
+        T: Serialize + Copy + Send + 'static,
+    {
+        let rings = match maps
+            .into_iter()
+            .map(|(cpu, map)| RingMap::new(map).map(|ring| (cpu, ring)))
+            .collect::<io::Result<Vec<_>>>()
+        {
+            Ok(rings) => rings,
+            Err(err) => {
+                if let Err(flush) = abandon(&mut job) {
+                    error!("Failed to finish {}: {}", job.file_path.display(), flush);
+                }
+                return Err(WriterError::Io(err));
+            }
+        };
+        let pool = &self.cpus.pool;
+        let cpu = match self.assignment.iter().find(|(r, _)| *r == rb) {
+            Some(&(_, cpu)) => cpu,
+            None => {
+                self.next_cpu += 1;
+                pool[(self.next_cpu - 1) % pool.len()]
+            }
+        };
+        let k = match self.pending.iter().position(|jobs| jobs.cpu == cpu) {
+            Some(k) => k,
+            None => {
+                let slot = self.cpus.add_writer(cpu, &format!("writer CPU {cpu}"));
+                self.pending.push(CpuJobs {
+                    cpu,
+                    slot,
+                    jobs: Vec::new(),
+                });
+                self.pending.len() - 1
+            }
+        };
+        let report = self.report(rb, &job);
+        let jobs = &mut self.pending[k];
+        let job = job.with_helpers(HelperPlacement {
+            cpus: self.cpus.clone(),
+            writer: Some(jobs.slot.clone()),
+        });
+        debug!(
+            "Writer job for {} on writer CPU {}",
+            job.file_path.display(),
+            cpu
+        );
+        jobs.jobs.push(CpuJob {
+            rare: HookGroup::of(rb) == HookGroup::Rare,
+            report,
+            job: Box::new(Draining { job, rings }),
+        });
+        Ok(())
+    }
+
+    /// Starts the threads of the writer CPUs with the jobs registered so far. Without writer
+    /// CPUs, the threads run from their registration on and this does nothing.
+    /// A writer CPU whose thread cannot start finishes its jobs with the error at once, and
+    /// the first such error is returned; the other CPUs start anyway.
+    pub fn start(&mut self) -> Result<(), WriterError> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let mut first_err = None;
+        for CpuJobs { cpu, slot, jobs } in mem::take(&mut self.pending) {
+            let (reports, jobs): (Vec<_>, Vec<_>) = jobs
+                .into_iter()
+                .map(|job| (job.report, (job.rare, job.job)))
+                .unzip();
+            info!("Writer CPU {} drains {} files", cpu, jobs.len());
+            let started = self.start_cpu(cpu, slot, jobs);
+            match started {
+                Ok(handle) => self.handles.push((reports, handle)),
+                Err((err, jobs)) => {
+                    error!("Cannot start the writer thread of CPU {}: {}", cpu, err);
+                    for (mut report, (_, job)) in reports.into_iter().zip(jobs) {
+                        let (records, stats, result) = job.finish(Err(JobError::Io(
+                            io::Error::new(err.kind(), err.to_string()),
+                        )));
+                        report.records = records;
+                        report.sink = stats;
+                        report.error = result.err().map(|err| err.to_string());
+                        self.failed.push(report);
+                    }
+                    first_err.get_or_insert(WriterError::Io(err));
+                }
+            }
+        }
+        self.start_balancer();
+        first_err.map_or(Ok(()), Err)
+    }
+
+    /// Starts the thread of writer CPU `cpu`, or hands its jobs back with the error
+    fn start_cpu(
+        &self,
+        cpu: usize,
+        slot: Arc<WriterSlot>,
+        jobs: CpuJobList,
+    ) -> Result<JoinHandle<Vec<JobResult>>, (io::Error, CpuJobList)> {
+        let waiter = match self.poll_mode {
+            PollMode::Busy => None,
+            PollMode::Wait => {
+                let rings = jobs
+                    .iter()
+                    .flat_map(|(_, job)| job.rings().iter().map(|(_, ring)| ring));
+                match RingWaiter::new(rings) {
+                    Ok(waiter) => Some(waiter),
+                    Err(err) => return Err((err, jobs)),
+                }
+            }
+        };
+        let running = self.running.clone();
+        // Round-robin keeps the slot too: helpers avoid the CPUs with writers
+        let follow = self.cpus.balanced().then(|| (self.cpus.clone(), slot));
+        // The jobs go to the thread once it runs, so that they are still here if it cannot start
+        let (tx, rx) = mpsc::channel::<CpuJobList>();
+        let spawned = thread::Builder::new()
+            .name(format!("tcbee-w{cpu}"))
+            .spawn(move || match rx.recv() {
+                Ok(jobs) => cpu_loop(jobs, running, cpu, follow, waiter),
+                Err(_) => Vec::new(),
+            });
+        match spawned {
+            Ok(handle) => {
+                tx.send(jobs).expect("the thread waits for its jobs");
+                Ok(handle)
+            }
+            Err(err) => Err((err, jobs)),
+        }
     }
 
     /// Starts the balancer with the first writer, if writers are balanced over several CPUs
@@ -329,6 +511,8 @@ impl Writer {
     /// join them. The eBPF programs must be detached before, otherwise records that are
     /// submitted after the final drain are lost.
     pub fn shutdown(mut self) -> Vec<WriterReport> {
+        // Jobs that never started still finish their files
+        let _ = self.start();
         self.stop_balancer();
         self.signal_stop();
         self.join_all()
@@ -341,17 +525,25 @@ impl Writer {
     fn join_all(&mut self) -> Vec<WriterReport> {
         self.handles
             .drain(..)
-            .map(|(mut report, handle)| {
+            .flat_map(|(mut reports, handle)| {
                 match handle.join() {
-                    Ok((records, stats, result)) => {
-                        report.records = records;
-                        report.sink = stats;
-                        report.error = result.err().map(|err| err.to_string());
+                    Ok(results) => {
+                        for (report, (records, stats, result)) in reports.iter_mut().zip(results) {
+                            report.records = records;
+                            report.sink = stats;
+                            report.error = result.err().map(|err| err.to_string());
+                        }
                     }
-                    Err(_) => report.error = Some(WriterError::WorkerPanicked.to_string()),
+                    // A panic marks the jobs of its thread
+                    Err(_) => {
+                        for report in &mut reports {
+                            report.error = Some(WriterError::WorkerPanicked.to_string());
+                        }
+                    }
                 }
-                report
+                reports
             })
+            .chain(self.failed.drain(..))
             .collect()
     }
 }
@@ -365,6 +557,8 @@ pub(crate) fn spawn_helper(
     work: impl FnOnce() + Send + 'static,
 ) -> io::Result<JoinHandle<()>> {
     thread::Builder::new().name(name.into()).spawn(move || {
+        // Not the low slack of a writer thread that starts it
+        set_timer_slack(DEFAULT_TIMER_SLACK_NS);
         if let Some(set) = cpus {
             let ret = unsafe { libc::sched_setaffinity(0, mem::size_of_val(&set), &set) };
             if ret != 0 {
@@ -379,6 +573,13 @@ pub(crate) fn spawn_helper(
             report_helper_time(&sink);
         }
     })
+}
+
+/// Sets the calling thread's timer slack, in ns
+fn set_timer_slack(ns: libc::c_ulong) {
+    if unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, ns) } != 0 {
+        debug!("Cannot set the timer slack: {}", io::Error::last_os_error());
+    }
 }
 
 /// Logs the error that stopped a writer and finishes its file
@@ -478,9 +679,165 @@ where
                 follower.tick();
             }
         }
-        drain_at_shutdown(&mut *job, SHUTDOWN_BUSY_WAIT)
+        drain_at_shutdown(&mut *job, Instant::now() + SHUTDOWN_BUSY_WAIT)
     })();
     job.finish(result)
+}
+
+/// A writer CPU thread's jobs, each with whether it belongs to the rare hooks
+type CpuJobList = Vec<(bool, Box<dyn RingJob>)>;
+
+/// The jobs of one writer CPU until `Writer::start`
+struct CpuJobs {
+    cpu: usize,
+    slot: Arc<WriterSlot>,
+    jobs: Vec<CpuJob>,
+}
+
+struct CpuJob {
+    /// The job's rings belong to the rare hooks
+    rare: bool,
+    report: WriterReport,
+    job: Box<dyn RingJob>,
+}
+
+/// When a writer CPU's thread sleeps: it polls at once while there is a backlog, spins for
+/// `SPIN_PASSES` passes without one, then sleeps from `MIN_IDLE_SLEEP` on, twice as long each
+/// time up to `MAX_IDLE_SLEEP`. Only a backlog starts over: rings that get a few records now
+/// and then do not keep the thread awake.
+#[derive(Debug)]
+struct IdleLadder {
+    quiet: u32,
+    sleep: Duration,
+}
+
+impl IdleLadder {
+    fn new() -> Self {
+        IdleLadder {
+            quiet: 0,
+            sleep: MIN_IDLE_SLEEP,
+        }
+    }
+
+    /// After a pass with a backlog
+    fn backlog(&mut self) {
+        *self = IdleLadder::new();
+    }
+
+    /// After a pass without one: how long to sleep, None to poll again at once
+    fn quiet(&mut self) -> Option<Duration> {
+        if self.quiet < SPIN_PASSES {
+            self.quiet += 1;
+            return None;
+        }
+        let sleep = self.sleep;
+        self.sleep = (self.sleep * 2).min(MAX_IDLE_SLEEP);
+        Some(sleep)
+    }
+}
+
+/// The thread of a writer CPU: drains its jobs one span per ring and pass, so that a loaded
+/// ring cannot hold up the others, and sleeps as `IdleLadder` says, or until a ring has
+/// records with a `waiter` (`PollMode::Wait`). Without a waiter, `rare` jobs are drained
+/// every `RARE_INTERVAL` only. A job that fails is finished at once, the others go on.
+/// Returns the result of each job.
+fn cpu_loop(
+    jobs: CpuJobList,
+    running: Arc<AtomicBool>,
+    cpu: usize,
+    follow: Option<(Arc<WriterCpus>, Arc<WriterSlot>)>,
+    waiter: Option<RingWaiter>,
+) -> Vec<JobResult> {
+    set_timer_slack(WRITER_TIMER_SLACK_NS);
+    let mut follower = pin_and_follow(Some(cpu), follow);
+    let mut results: Vec<Option<JobResult>> = jobs.iter().map(|_| None).collect();
+    let (rare, mut jobs): (Vec<bool>, Vec<Option<Box<dyn RingJob>>>) = jobs
+        .into_iter()
+        .map(|(rare, job)| (rare, Some(job)))
+        .unzip();
+    // A pass that copied a quarter of the smallest ring counts as a backlog too, so that the
+    // thread does not sleep while a small ring fills
+    let backlog_bytes = jobs
+        .iter()
+        .flatten()
+        .flat_map(|job| job.rings().iter().map(|(_, ring)| ring.size() as u64 / 4))
+        .fold(BACKLOG_BYTES, u64::min);
+    let mut failed: Option<io::Error> = None;
+    let mut ladder = IdleLadder::new();
+    let mut last_rare = Instant::now();
+    while running.load(Ordering::Relaxed) {
+        let rare_due = last_rare.elapsed() >= RARE_INTERVAL;
+        if rare_due {
+            last_rare = Instant::now();
+        }
+        let mut pass = Drained::default();
+        for (k, slot) in jobs.iter_mut().enumerate() {
+            let Some(job) = slot else { continue };
+            // A waiter wakes for the rare rings too: drain them at once
+            if rare[k] && !rare_due && waiter.is_none() {
+                continue;
+            }
+            match drain_once(&mut **job).and_then(|drained| job.tick().map(|()| drained)) {
+                Ok(drained) => pass.add(drained),
+                Err(err) => {
+                    let job = slot.take().expect("checked above");
+                    results[k] = Some(job.finish(Err(err)));
+                }
+            }
+        }
+        match &waiter {
+            None if pass.more || pass.bytes >= backlog_bytes => ladder.backlog(),
+            None => {
+                if let Some(sleep) = ladder.quiet() {
+                    thread::sleep(sleep);
+                } else {
+                    std::hint::spin_loop();
+                }
+            }
+            Some(waiter) if pass.copied == 0 => {
+                let rings = jobs
+                    .iter()
+                    .flatten()
+                    .flat_map(|job| job.rings().iter().map(|(_, ring)| ring));
+                if let Err(err) = waiter.wait(rings, WAIT_TIMEOUT) {
+                    error!("Writer CPU {}: waiting for records failed: {}", cpu, err);
+                    failed = Some(err);
+                    break;
+                }
+            }
+            Some(_) => {}
+        }
+        if let Some(follower) = &mut follower {
+            follower.tick();
+        }
+    }
+
+    // One deadline for all jobs of the thread, so that the shutdown takes as long as with
+    // one job
+    let deadline = Instant::now() + SHUTDOWN_BUSY_WAIT;
+    for (k, slot) in jobs.into_iter().enumerate() {
+        if let Some(mut job) = slot {
+            let result = match &failed {
+                // Drained before the wait failed, and stopped with it
+                Some(err) => Err(JobError::Io(io::Error::new(err.kind(), err.to_string()))),
+                None => drain_at_shutdown(&mut *job, deadline),
+            };
+            results[k] = Some(job.finish(result));
+        }
+    }
+    results
+        .into_iter()
+        .map(|result| result.expect("every job finished"))
+        .collect()
+}
+
+/// Copies at most one span of each ring of `job`
+fn drain_once(job: &mut dyn RingJob) -> Result<Drained, JobError> {
+    let mut drained = Drained::default();
+    for index in 0..job.rings().len() {
+        drained.add(job.drain(index)?);
+    }
+    Ok(drained)
 }
 
 /// A writer job together with its rings, one per CPU, as a writer thread drives it. Object
@@ -498,12 +855,22 @@ trait RingJob: Send {
 }
 
 /// What one `RingJob::drain` did
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Drained {
     /// Records and discarded records copied
     pub copied: u64,
+    /// Bytes of the ring copied
+    pub bytes: u64,
     /// The span ended at its size limit: the ring may hold more
     pub more: bool,
+}
+
+impl Drained {
+    fn add(&mut self, other: Drained) {
+        self.copied += other.copied;
+        self.bytes += other.bytes;
+        self.more |= other.more;
+    }
 }
 
 /// The `RingJob` of a `MapWriterJob`
@@ -542,10 +909,7 @@ where
         )
         .map_err(JobError::Ring)?;
         if span.end == consumer {
-            return Ok(Drained {
-                copied: 0,
-                more: false,
-            });
+            return Ok(Drained::default());
         }
         let bytes = ring.span(consumer, span.end);
         if self.job.raw.is_some() {
@@ -567,6 +931,7 @@ where
         ring.release(span.end);
         Ok(Drained {
             copied: span.records + span.discards,
+            bytes: span.end - consumer,
             more: span.stop == Stop::Cap,
         })
     }
@@ -601,9 +966,8 @@ fn drain_all(job: &mut dyn RingJob) -> Result<u64, JobError> {
 
 /// Drains what was submitted before the programs were detached. A program that still runs
 /// (detaching does not wait for it) leaves its record busy, and the committed records behind
-/// it wait for it too: retry for up to `busy_wait`, then give up on what is left.
-fn drain_at_shutdown(job: &mut dyn RingJob, busy_wait: Duration) -> Result<(), JobError> {
-    let deadline = Instant::now() + busy_wait;
+/// it wait for it too: retry until `deadline`, then give up on what is left.
+fn drain_at_shutdown(job: &mut dyn RingJob, deadline: Instant) -> Result<(), JobError> {
     loop {
         while drain_all(job)? > 0 {}
         let left: u64 = job
@@ -635,13 +999,22 @@ fn fail_start<T>(
 where
     T: Serialize + Copy + Send + 'static,
 {
+    let flushed = abandon(job);
+    let _ = ready.send(Err(err));
+    (0, None, flushed)
+}
+
+/// Finishes the file of a job that has no rings
+fn abandon<T>(job: &mut MapWriterJob<T>) -> Result<(), JobError>
+where
+    T: Serialize + Copy + Send + 'static,
+{
     let flushed = job.flush();
     // Without a ring buffer there is no trace, so don't leave an empty file
     if flushed.is_ok() {
         remove_if_empty(&job.file_path);
     }
-    let _ = ready.send(Err(err));
-    (0, None, flushed)
+    flushed
 }
 
 /// Removes a file that has no data. A file that had data before is kept.
@@ -965,6 +1338,8 @@ impl Sink {
 
 impl Drop for Writer {
     fn drop(&mut self) {
+        // Jobs that never started still finish their files
+        let _ = self.start();
         self.stop_balancer();
         if self.handles.is_empty() {
             return;
@@ -1847,7 +2222,7 @@ mod tests {
                 fake.commit(busy);
                 mem.load(&fake);
             });
-            drain_at_shutdown(&mut job, Duration::from_secs(5)).unwrap();
+            drain_at_shutdown(&mut job, Instant::now() + Duration::from_secs(5)).unwrap();
         });
         assert_eq!(job.job.records, 3);
         job.job.flush().unwrap();
@@ -1873,12 +2248,135 @@ mod tests {
             rings,
         };
         let start = Instant::now();
-        drain_at_shutdown(&mut job, Duration::from_millis(30)).unwrap();
+        drain_at_shutdown(&mut job, Instant::now() + Duration::from_millis(30)).unwrap();
         assert!(start.elapsed() >= Duration::from_millis(30));
         assert_eq!(job.job.records, 1);
         job.job.flush().unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(cpu_side_path(&path));
+    }
+
+    #[test]
+    fn idle_ladder_spins_then_sleeps_longer() {
+        let mut ladder = IdleLadder::new();
+        for _ in 0..SPIN_PASSES {
+            assert_eq!(ladder.quiet(), None);
+        }
+        let sleeps: Vec<Duration> = (0..9).map(|_| ladder.quiet().unwrap()).collect();
+        assert_eq!(sleeps[0], MIN_IDLE_SLEEP);
+        assert_eq!(sleeps[1], 2 * MIN_IDLE_SLEEP);
+        assert!(sleeps.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(*sleeps.last().unwrap(), MAX_IDLE_SLEEP);
+        ladder.backlog();
+        assert_eq!(ladder.quiet(), None);
+    }
+
+    /// Rings of one CPU's jobs, each filled with `n` records, as a raw job each
+    fn cpu_jobs(
+        name: &str,
+        records: &[usize],
+        ring_size: usize,
+    ) -> (CpuJobList, Vec<MemRing>, Vec<PathBuf>) {
+        let mut jobs: CpuJobList = Vec::new();
+        let mut all_mems = Vec::new();
+        let mut paths = Vec::new();
+        for (i, &n) in records.iter().enumerate() {
+            let path = env::temp_dir().join(format!("tcbee-cpu-{name}-{i}-{}", std::process::id()));
+            let (rings, mems, _fakes) = raw_rings(&[n], ring_size);
+            let job = raw_job(&path, SinkConfig::default());
+            // The last job stands for the rare hooks
+            jobs.push((i + 1 == records.len(), Box::new(Draining { job, rings })));
+            all_mems.extend(mems);
+            paths.push(path);
+        }
+        (jobs, all_mems, paths)
+    }
+
+    fn remove(paths: &[PathBuf]) {
+        for path in paths {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(cpu_side_path(path));
+        }
+    }
+
+    /// One thread drains a loaded job and trickle jobs: each file gets each record once
+    #[test]
+    fn cpu_thread_drains_all_its_jobs() {
+        let Some(&cpu) = allowed_cpus().first() else {
+            return;
+        };
+        let len = mem::size_of::<tcp4_packet_trace>();
+        let loaded = 3 * RAW_SPAN_BYTES / raw::stride(len);
+        let counts = [loaded, 3, 1, 7];
+        let (jobs, mems, paths) = cpu_jobs("all", &counts, 256 << 10);
+        let running = Arc::new(AtomicBool::new(true));
+        let stop = running.clone();
+        let results = thread::scope(|scope| {
+            let handle = scope.spawn(|| cpu_loop(jobs, running, cpu, None, None));
+            thread::sleep(Duration::from_millis(30));
+            stop.store(false, Ordering::Relaxed);
+            handle.join().unwrap()
+        });
+        assert_eq!(results.len(), counts.len());
+        for ((records, _, result), &n) in results.iter().zip(&counts) {
+            assert!(result.is_ok());
+            assert_eq!(*records, n as u64);
+        }
+        for (path, &n) in paths.iter().zip(&counts) {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().len(),
+                ((n + 1) * raw::stride(len)) as u64
+            );
+        }
+        drop(mems);
+        remove(&paths);
+    }
+
+    /// A job that fails is finished alone, the others of its thread go on
+    #[test]
+    fn cpu_thread_retires_a_failed_job_alone() {
+        let Some(&cpu) = allowed_cpus().first() else {
+            return;
+        };
+        let len = mem::size_of::<tcp4_packet_trace>();
+        let size = 2 * page();
+        let (mut jobs, mems, mut paths) = cpu_jobs("fail", &[5, 2], size);
+        let path = env::temp_dir().join(format!("tcbee-cpu-fail-bad-{}", std::process::id()));
+        let mut fake = FakeRing::new(size, len);
+        fake.push(1);
+        let bad = fake.push(2);
+        fake.put(bad, &16u32.to_ne_bytes());
+        let mut mem = MemRing::new(size);
+        mem.load(&fake);
+        let job = raw_job(&path, SinkConfig::default());
+        jobs.insert(
+            0,
+            (
+                false,
+                Box::new(Draining {
+                    job,
+                    rings: vec![(0, mem.ring_map())],
+                }),
+            ),
+        );
+        paths.push(path);
+        let running = Arc::new(AtomicBool::new(true));
+        let stop = running.clone();
+        let results = thread::scope(|scope| {
+            let handle = scope.spawn(|| cpu_loop(jobs, running, cpu, None, None));
+            thread::sleep(Duration::from_millis(20));
+            stop.store(false, Ordering::Relaxed);
+            handle.join().unwrap()
+        });
+        assert!(matches!(
+            results[0].2,
+            Err(JobError::Ring(WalkError::Length { len: 16, .. }))
+        ));
+        assert_eq!(results[1].0, 5);
+        assert_eq!(results[2].0, 2);
+        assert!(results[1].2.is_ok() && results[2].2.is_ok());
+        drop((mems, mem));
+        remove(&paths);
     }
 
     #[test]

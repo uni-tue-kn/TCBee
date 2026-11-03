@@ -913,6 +913,7 @@ impl EbpfRunner {
                 .with_cpu_affinity(
                     self.config.writer_cpus.clone(),
                     self.config.writer_placement,
+                    &enabled,
                 )
                 .with_sink(self.config.writer_sink.clone())
                 .with_format(self.config.writer_format),
@@ -1085,6 +1086,7 @@ impl EbpfRunner {
             }
         }
         // Every program is attached and every writer runs: all probes start recording now
+        writer.start()?;
         set_running(skel, true)?;
 
         // The connections that exist already, now that the owner programs see the new ones.
