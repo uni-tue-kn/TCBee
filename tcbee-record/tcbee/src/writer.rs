@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, ErrorKind, Write},
@@ -15,7 +14,7 @@ use std::{
 };
 
 use bincode::ErrorKind as BincodeErrorKind;
-use libbpf_rs::{MapHandle, RingBufferBuilder};
+use libbpf_rs::MapHandle;
 use log::{debug, error, info, trace, warn};
 use memmap2::MmapMut;
 use serde::Serialize;
@@ -275,8 +274,9 @@ impl Writer {
         // worked, so a broken map fails here and not only at shutdown
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let handle = thread::spawn(move || match format {
-            WriterFormat::Records => job_loop(job, maps, running, cpu, follow, poll_mode, ready_tx),
-            WriterFormat::Raw => raw_loop(job, maps, running, cpu, follow, poll_mode, ready_tx),
+            WriterFormat::Records | WriterFormat::Raw => {
+                ring_loop(job, maps, running, cpu, follow, poll_mode, ready_tx)
+            }
         });
         let result = match ready_rx.recv() {
             Ok(Ok(())) => {
@@ -381,76 +381,6 @@ pub(crate) fn spawn_helper(
     })
 }
 
-fn job_loop<T>(
-    job: MapWriterJob<T>,
-    maps: Vec<(u32, MapHandle)>,
-    running: Arc<AtomicBool>,
-    cpu: Option<usize>,
-    follow: Option<(Arc<WriterCpus>, Arc<WriterSlot>)>,
-    poll_mode: PollMode,
-    ready: mpsc::SyncSender<Result<(), WriterError>>,
-) -> JobResult
-where
-    T: Serialize + Copy + Send + 'static,
-{
-    let mut follower = pin_and_follow(cpu, follow);
-
-    // libbpf calls the callback for every record while consuming the ring buffers. The
-    // loop below needs the job too, so the callbacks only borrow it.
-    let job = RefCell::new(job);
-    let result = {
-        let rb = (|| {
-            let mut builder = RingBufferBuilder::new();
-            let job = &job;
-            for (cpu, map) in &maps {
-                let cpu = *cpu;
-                builder.add(map, move |data| job.borrow_mut().write_from(cpu, data))?;
-            }
-            builder.build()
-        })();
-        let rb = match rb {
-            Ok(rb) => {
-                let _ = ready.send(Ok(()));
-                rb
-            }
-            Err(err) => {
-                return fail_start(&mut job.borrow_mut(), &ready, WriterError::RingBuffer(err))
-            }
-        };
-
-        let result = (|| {
-            while running.load(Ordering::Relaxed) {
-                match poll_mode {
-                    PollMode::Busy => {
-                        // consume drains the rings. Poll again at once (no syscall) while there is a
-                        // backlog, otherwise sleep briefly so other writers on the same core get it.
-                        if check(&job, rb.consume_raw())? >= BACKLOG_RECORDS {
-                            std::hint::spin_loop();
-                        } else {
-                            thread::sleep(IDLE_SLEEP);
-                        }
-                    }
-                    PollMode::Wait => {
-                        check(&job, rb.poll_raw(WAIT_TIMEOUT))?;
-                    }
-                }
-                job.borrow_mut().tick()?;
-                if let Some(follower) = &mut follower {
-                    follower.tick();
-                }
-            }
-            // Drain what was submitted before the programs were detached
-            while check(&job, rb.consume_raw())? > 0 {}
-            job.borrow_mut().count_bytes();
-            Ok(())
-        })();
-        // A callback can fail after earlier records in the same consume batch were written.
-        job.borrow_mut().count_bytes();
-        result
-    };
-    finish_job(job.into_inner(), result)
-}
-
 /// Logs the error that stopped a writer and finishes its file
 fn finish_job<T>(mut job: MapWriterJob<T>, result: Result<(), JobError>) -> JobResult
 where
@@ -496,9 +426,9 @@ fn pin_and_follow(
     })
 }
 
-/// The writer thread of the raw format: maps the rings itself and copies the committed
-/// records of each in spans, see `RingJob`
-fn raw_loop<T>(
+/// A writer thread: maps the rings itself and drains the committed records of each in
+/// spans, see `RingJob`
+fn ring_loop<T>(
     mut job: MapWriterJob<T>,
     maps: Vec<(u32, MapHandle)>,
     running: Arc<AtomicBool>,
@@ -535,7 +465,7 @@ where
         while running.load(Ordering::Relaxed) {
             let copied = drain_all(&mut *job)?;
             match &waiter {
-                // As the record format: poll again at once while there is a backlog
+                // Poll again at once while there is a backlog
                 None if copied >= BACKLOG_RECORDS as u64 => std::hint::spin_loop(),
                 None => thread::sleep(IDLE_SLEEP),
                 Some(waiter) if copied == 0 => {
@@ -598,7 +528,8 @@ where
     }
 
     /// Copies the span up to the producer position, a record that is still being written,
-    /// or `RAW_SPAN_BYTES`, and gives it back to the producers once it is copied
+    /// or `RAW_SPAN_BYTES`, as it is (raw format) or record by record (records format), and
+    /// gives it back to the producers once it is copied
     fn drain(&mut self, index: usize) -> Result<Drained, JobError> {
         let (cpu, ring) = &self.rings[index];
         let consumer = ring.consumer();
@@ -616,12 +547,23 @@ where
                 more: false,
             });
         }
-        self.job.write_span(
-            *cpu,
-            ring.span(consumer, span.end),
-            span.records,
-            span.discards,
-        )?;
+        let bytes = ring.span(consumer, span.end);
+        if self.job.raw.is_some() {
+            self.job
+                .write_span(*cpu, bytes, span.records, span.discards)?;
+        } else {
+            for frame in raw::frames(bytes, mem::size_of::<T>()) {
+                if let raw::Frame::Record(record) = frame {
+                    if self.job.write_from(*cpu, record) != 0 {
+                        return Err(self
+                            .job
+                            .error
+                            .take()
+                            .expect("a failed write keeps its error"));
+                    }
+                }
+            }
+        }
         ring.release(span.end);
         Ok(Drained {
             copied: span.records + span.discards,
@@ -728,25 +670,6 @@ pub fn observe_all(mut observers: Vec<Observer>) -> Option<Observer> {
                 observer(entry);
             }
         })),
-    }
-}
-
-/// Turns the return value of `ring_buffer__consume`/`ring_buffer__poll` into the number
-/// of records read or the error that stopped the callback
-fn check<T>(job: &RefCell<MapWriterJob<T>>, ret: i32) -> Result<i32, JobError>
-where
-    T: Serialize + Copy + Send + 'static,
-{
-    if ret >= 0 {
-        return Ok(ret);
-    }
-    if let Some(err) = job.borrow_mut().error.take() {
-        return Err(err);
-    }
-    match -ret {
-        // A signal interrupted the wait, try again
-        libc::EINTR => Ok(0),
-        errno => Err(JobError::Io(io::Error::from_raw_os_error(errno))),
     }
 }
 
@@ -1490,7 +1413,6 @@ pub struct WriterReport {
 #[derive(Debug)]
 pub enum WriterError {
     Io(io::Error),
-    RingBuffer(libbpf_rs::Error),
     WorkerPanicked,
 }
 
@@ -1498,7 +1420,6 @@ impl fmt::Display for WriterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             WriterError::Io(err) => write!(f, "I/O error: {}", err),
-            WriterError::RingBuffer(err) => write!(f, "ring buffer error: {}", err),
             WriterError::WorkerPanicked => write!(f, "writer worker thread panicked"),
         }
     }
@@ -1508,7 +1429,6 @@ impl std::error::Error for WriterError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             WriterError::Io(err) => Some(err),
-            WriterError::RingBuffer(err) => Some(err),
             WriterError::WorkerPanicked => None,
         }
     }
@@ -1753,6 +1673,51 @@ mod tests {
         assert_eq!(entries, [(0, 0), (100, 3), (140, CPU_SIDE_END)]);
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_file(cpu_side_path(&path)).unwrap();
+    }
+
+    /// The records format drained from the ring mapping writes the same file as record by
+    /// record writes (what the libbpf callback did), also across the wrap and in spans
+    #[test]
+    fn records_from_rings_match_record_writes() {
+        let len = mem::size_of::<tcp4_packet_trace>();
+        let records = 2 * RAW_SPAN_BYTES / raw::stride(len);
+        let (rings, _mems, fakes) = raw_rings(&[records, 7], 256 << 10);
+        let ring_path = env::temp_dir().join(format!("tcbee-rec-ring-{}", std::process::id()));
+        let _ = std::fs::remove_file(&ring_path);
+        let mut job = Draining {
+            job: MapWriterJob::<tcp4_packet_trace>::new(
+                ring_path.clone(),
+                Arc::new(AtomicU64::new(0)),
+            )
+            .unwrap(),
+            rings,
+        };
+        assert_eq!(drain_all(&mut job).unwrap(), records as u64 + 7);
+        job.job.flush().unwrap();
+
+        let direct_path = env::temp_dir().join(format!("tcbee-rec-direct-{}", std::process::id()));
+        let _ = std::fs::remove_file(&direct_path);
+        let mut direct = MapWriterJob::<tcp4_packet_trace>::new(
+            direct_path.clone(),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .unwrap();
+        for fake in &fakes {
+            let span = fake.span(fake.consumer, fake.producer);
+            for frame in raw::frames(span, len) {
+                if let raw::Frame::Record(record) = frame {
+                    assert_eq!(direct.write(record), 0);
+                }
+            }
+        }
+        direct.flush().unwrap();
+        let from_rings = std::fs::read(&ring_path).unwrap();
+        assert_eq!(from_rings.len(), (records + 7) * (direct.record_size + 4));
+        assert!(from_rings == std::fs::read(&direct_path).unwrap());
+        for path in [&ring_path, &direct_path] {
+            std::fs::remove_file(path).unwrap();
+            let _ = std::fs::remove_file(cpu_side_path(path));
+        }
     }
 
     /// Spans longer than RAW_SPAN_BYTES are copied in several pieces, the same in every sink
