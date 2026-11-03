@@ -64,11 +64,6 @@ impl RingMap {
         self.fd.as_fd()
     }
 
-    /// Bytes of data the ring holds at most
-    pub fn size(&self) -> usize {
-        self.size
-    }
-
     fn mask(&self) -> u64 {
         self.size as u64 - 1
     }
@@ -128,7 +123,7 @@ impl Drop for RingMap {
 /// offset 0, the producer page and the twice-mapped data read-only from offset page size
 fn map_ring(fd: BorrowedFd<'_>, size: usize) -> io::Result<(NonNull<u8>, NonNull<u8>, usize)> {
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
-    if !size.is_power_of_two() || size % page != 0 {
+    if !size.is_power_of_two() || !size.is_multiple_of(page) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("ring buffer of {} bytes is no power of two of pages", size),
@@ -345,20 +340,20 @@ pub(crate) mod tests {
 
     const LEN: usize = 24; // stride 32
 
-    fn page() -> usize {
+    pub(crate) fn page() -> usize {
         unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
     }
 
     /// A file laid out like a mapped ring buffer: consumer page, producer page, then the
     /// data twice. Holds a writable mapping of all of it for the test to play the kernel.
-    struct MemRing {
+    pub(crate) struct MemRing {
         fd: OwnedFd,
         map: memmap2::MmapMut,
         size: usize,
     }
 
     impl MemRing {
-        fn new(size: usize) -> Self {
+        pub fn new(size: usize) -> Self {
             let name = std::ffi::CString::new("tcbee-ring-test").unwrap();
             let raw = unsafe { libc::memfd_create(name.as_ptr(), 0) };
             assert!(raw >= 0, "memfd_create: {}", io::Error::last_os_error());
@@ -370,17 +365,17 @@ pub(crate) mod tests {
         }
 
         /// Copies the fake ring's data (both mappings) and producer position in
-        fn load(&mut self, ring: &FakeRing) {
+        pub fn load(&mut self, ring: &FakeRing) {
             let page = page();
             self.map[page..page + 8].copy_from_slice(&ring.producer.to_ne_bytes());
             self.map[2 * page..2 * page + 2 * self.size].copy_from_slice(&ring.data);
         }
 
-        fn consumer_pos(&self) -> u64 {
+        pub fn consumer_pos(&self) -> u64 {
             u64::from_ne_bytes(self.map[..8].try_into().unwrap())
         }
 
-        fn ring_map(&self) -> RingMap {
+        pub fn ring_map(&self) -> RingMap {
             RingMap::from_fd(self.fd.try_clone().unwrap(), self.size).unwrap()
         }
     }
@@ -442,7 +437,7 @@ pub(crate) mod tests {
         let ring = RingMap::new(map).unwrap();
         // RingMap keeps its own fd, the map's closes with the handle
         let fd = ring.fd().as_raw_fd();
-        assert_eq!(ring.size(), size as usize);
+        assert_eq!(ring.size, size as usize);
         assert_eq!((ring.consumer(), ring.producer()), (0, 0));
         // More than the consumer page writable is refused
         let rw = unsafe {
