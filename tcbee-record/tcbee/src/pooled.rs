@@ -914,7 +914,8 @@ impl PooledFile {
     }
 
     /// Called regularly by the writer: takes back finished buffers, fails with a write error,
-    /// and writes the current buffer as it is once it has been filling for `IDLE_WRITE`
+    /// writes the current buffer when it is full, and as it is once it has been filling for
+    /// `IDLE_WRITE`
     pub fn tick(&mut self) -> io::Result<()> {
         let ticked = self.idle_write();
         self.fail_on(ticked)
@@ -924,6 +925,10 @@ impl PooledFile {
         self.reap()?;
         if let Some(io) = &mut self.io {
             io.upkeep();
+        }
+        // A full buffer waits for the next record otherwise
+        if self.cur_len >= self.buf_size {
+            return self.rotate();
         }
         if self.cur_len > self.partial_len
             && self.cur_len < self.buf_size
@@ -1359,6 +1364,20 @@ pub(crate) mod tests {
         let (written, _, result) = file.finish(100);
         result.unwrap();
         assert_eq!(written, 5000);
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn full_buffer_is_written_without_more_records() {
+        let path = temp("full");
+        let mut file = PooledFile::new(&path, config(SinkKind::Buffered)).unwrap();
+        let expected = fill(&mut file, 8192 / 64, 64);
+        file.tick().unwrap();
+        assert_eq!(file.stats.writes, 1);
+        let (written, _, result) = file.finish(64);
+        result.unwrap();
+        assert_eq!(written, 8192 / 64);
         assert_eq!(fs::read(&path).unwrap(), expected);
         fs::remove_file(&path).unwrap();
     }
