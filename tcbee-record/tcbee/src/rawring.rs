@@ -6,7 +6,8 @@ use std::{
     io,
     os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd},
     ptr::{self, NonNull},
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{fence, AtomicU32, AtomicU64, Ordering},
+    time::Duration,
 };
 
 use libbpf_rs::{MapCore, MapHandle, MapType};
@@ -107,6 +108,87 @@ impl RingMap {
     /// happens before the producers may overwrite it.
     pub fn release(&self, pos: u64) {
         self.consumer_pos().store(pos, Ordering::Release);
+    }
+
+    /// Whether the record at the consumer position is committed, so a drain gets something
+    pub fn has_committed(&self) -> bool {
+        let consumer = self.consumer();
+        self.producer() > consumer && self.header(consumer) & BUSY_BIT == 0
+    }
+}
+
+/// Blocks until one of a writer's rings has new records, for `--poll wait`.
+///
+/// The kernel wakes a waiter only when a record is committed at the consumer position, so
+/// records committed while the writer copied a span (with the consumer position still in
+/// front of them) wake nobody. Before blocking, `wait` therefore looks at the rings once
+/// more, after a full fence: it pairs with the full barrier of the commit, which reads the
+/// consumer position after it marks the record committed. Either the commit sees the new
+/// consumer position and wakes the waiter, or the writer sees the committed record.
+pub(crate) struct RingWaiter {
+    epoll: OwnedFd,
+    events: usize,
+}
+
+impl RingWaiter {
+    pub fn new<'a>(rings: impl IntoIterator<Item = &'a RingMap>) -> io::Result<Self> {
+        let raw = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let epoll = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) };
+        let mut events = 0;
+        for ring in rings {
+            // Level-triggered: a ring that still holds records stays ready
+            let mut event = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: events as u64,
+            };
+            let ret = unsafe {
+                libc::epoll_ctl(
+                    epoll.as_raw_fd(),
+                    libc::EPOLL_CTL_ADD,
+                    ring.fd().as_raw_fd(),
+                    &mut event,
+                )
+            };
+            if ret < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            events += 1;
+        }
+        Ok(Self {
+            epoll,
+            events: events.max(1),
+        })
+    }
+
+    /// Waits up to `timeout` unless a ring already has committed records
+    pub fn wait<'a>(
+        &self,
+        rings: impl IntoIterator<Item = &'a RingMap>,
+        timeout: Duration,
+    ) -> io::Result<()> {
+        fence(Ordering::SeqCst);
+        if rings.into_iter().any(RingMap::has_committed) {
+            return Ok(());
+        }
+        let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; self.events];
+        let ret = unsafe {
+            libc::epoll_wait(
+                self.epoll.as_raw_fd(),
+                events.as_mut_ptr(),
+                events.len() as libc::c_int,
+                timeout.as_millis().min(i32::MAX as u128) as libc::c_int,
+            )
+        };
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -416,6 +498,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn has_committed_waits_for_the_record_at_the_consumer() {
+        let size = 2 * page();
+        let mut fake = FakeRing::new(size, LEN);
+        let mut mem = MemRing::new(size);
+        mem.load(&fake);
+        assert!(!mem.ring_map().has_committed());
+        let busy = fake.reserve(1);
+        fake.push(2);
+        mem.load(&fake);
+        // A committed record behind a busy one cannot be drained yet
+        assert!(!mem.ring_map().has_committed());
+        fake.commit(busy);
+        mem.load(&fake);
+        assert!(mem.ring_map().has_committed());
+    }
+
+    #[test]
     fn ring_map_rejects_odd_sizes() {
         let mem = MemRing::new(2 * page());
         assert!(RingMap::from_fd(mem.fd.try_clone().unwrap(), 3 * page()).is_err());
@@ -439,6 +538,11 @@ pub(crate) mod tests {
         let fd = ring.fd().as_raw_fd();
         assert_eq!(ring.size, size as usize);
         assert_eq!((ring.consumer(), ring.producer()), (0, 0));
+        // An empty ring lets the waiter time out
+        let waiter = RingWaiter::new([&ring]).unwrap();
+        let start = std::time::Instant::now();
+        waiter.wait([&ring], Duration::from_millis(20)).unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(15));
         // More than the consumer page writable is refused
         let rw = unsafe {
             libc::mmap(

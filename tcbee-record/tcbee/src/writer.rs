@@ -31,7 +31,7 @@ use crate::{
         WriterSlot,
     },
     pooled::PooledFile,
-    rawring::{walk, RingMap, Stop, WalkError},
+    rawring::{walk, RingMap, RingWaiter, Stop, WalkError},
 };
 
 /// How writer threads wait for new records
@@ -206,12 +206,6 @@ impl Writer {
         T: Serialize + Copy + Send + 'static,
     {
         let file_path = trace_dir.as_ref().join(file.filename());
-        if self.format == WriterFormat::Raw && self.poll_mode == PollMode::Wait {
-            return Err(WriterError::Io(io::Error::new(
-                ErrorKind::Unsupported,
-                "the raw writer format polls busily only",
-            )));
-        }
         let mut job =
             MapWriterJob::<T>::with_sink(file_path, self.bytes_written.clone(), self.sink.clone())?;
         job.observer = observer;
@@ -259,7 +253,7 @@ impl Writer {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let handle = thread::spawn(move || match format {
             WriterFormat::Records => job_loop(job, maps, running, cpu, follow, poll_mode, ready_tx),
-            WriterFormat::Raw => raw_loop(job, maps, running, cpu, follow, ready_tx),
+            WriterFormat::Raw => raw_loop(job, maps, running, cpu, follow, poll_mode, ready_tx),
         });
         let result = match ready_rx.recv() {
             Ok(Ok(())) => {
@@ -494,17 +488,25 @@ fn raw_loop<T>(
     running: Arc<AtomicBool>,
     cpu: Option<usize>,
     follow: Option<(Arc<WriterCpus>, Arc<WriterSlot>)>,
+    poll_mode: PollMode,
     ready: mpsc::SyncSender<Result<(), WriterError>>,
 ) -> JobResult
 where
     T: Serialize + Copy + Send + 'static,
 {
     let mut follower = pin_and_follow(cpu, follow);
-    let rings: io::Result<Vec<(u32, RingMap)>> = maps
-        .into_iter()
-        .map(|(cpu, map)| RingMap::new(map).map(|ring| (cpu, ring)))
-        .collect();
-    let rings = match rings {
+    let rings = (|| {
+        let rings = maps
+            .into_iter()
+            .map(|(cpu, map)| RingMap::new(map).map(|ring| (cpu, ring)))
+            .collect::<io::Result<Vec<_>>>()?;
+        let waiter = match poll_mode {
+            PollMode::Busy => None,
+            PollMode::Wait => Some(RingWaiter::new(rings.iter().map(|(_, ring)| ring))?),
+        };
+        Ok::<_, io::Error>((rings, waiter))
+    })();
+    let (rings, waiter) = match rings {
         Ok(rings) => {
             let _ = ready.send(Ok(()));
             rings
@@ -521,10 +523,15 @@ where
 
     let result = (|| {
         while running.load(Ordering::Relaxed) {
-            if drain_rings(&mut job, &rings)? >= BACKLOG_RECORDS as u64 {
-                std::hint::spin_loop();
-            } else {
-                thread::sleep(IDLE_SLEEP);
+            let copied = drain_rings(&mut job, &rings)?;
+            match &waiter {
+                // As the record format: poll again at once while there is a backlog
+                None if copied >= BACKLOG_RECORDS as u64 => std::hint::spin_loop(),
+                None => thread::sleep(IDLE_SLEEP),
+                Some(waiter) if copied == 0 => {
+                    waiter.wait(rings.iter().map(|(_, ring)| ring), WAIT_TIMEOUT)?
+                }
+                Some(_) => {}
             }
             job.tick()?;
             if let Some(follower) = &mut follower {
