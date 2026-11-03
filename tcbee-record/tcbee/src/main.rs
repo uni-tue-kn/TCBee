@@ -265,7 +265,7 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut writer_sink).add_option(
             &["--writer-sink"],
             Store,
-            "How writers write the trace files: 'mmap' maps them, 'direct' copies records into large buffers that I/O threads write with O_DIRECT, 'uring' submits those writes to an io_uring, 'buffered' writes the buffers through the page cache and pushes them to the disk at once. The file bytes are the same. Default is mmap.",
+            "How writers write the trace files: 'mmap' maps them, 'direct' copies records into large buffers that I/O threads write with O_DIRECT, 'uring' submits those writes to an io_uring, 'buffered' writes the buffers through the page cache and pushes them to the disk at once, 'sync' writes a few small buffers itself through the page cache, without I/O threads, and pushes the pages to the disk every 8 MiB. The file bytes are the same. Default is mmap.",
         );
         argparser.refer(&mut writer_format).add_option(
             &["--writer-format"],
@@ -393,20 +393,20 @@ fn main() -> anyhow::Result<()> {
     let writer_io_cpus = parse_cpu_list(&writer_io_cpus, "writer I/O CPU id")?;
     let Some(kind) = SinkKind::from_name(&writer_sink) else {
         return Err(anyhow!(
-            "Unknown --writer-sink '{}', use mmap, direct, uring or buffered",
-            writer_sink
+            "Unknown --writer-sink '{}', use {}",
+            writer_sink,
+            SinkKind::names()
         ));
     };
-    if kind == SinkKind::Mmap && !writer_io_cpus.is_empty() {
+    if matches!(kind, SinkKind::Mmap | SinkKind::Sync) && !writer_io_cpus.is_empty() {
         return Err(anyhow!(
             "--writer-io-cpus needs --writer-sink direct, uring or buffered"
         ));
     }
     let writer_sink = SinkConfig {
-        kind,
         io_cpus: writer_io_cpus,
         preallocate: !writer_no_prealloc,
-        ..SinkConfig::default()
+        ..SinkConfig::of(kind)
     };
     let Some(writer_format) = WriterFormat::from_name(&writer_format) else {
         return Err(anyhow!(

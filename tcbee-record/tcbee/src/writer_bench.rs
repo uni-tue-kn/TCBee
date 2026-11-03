@@ -78,15 +78,15 @@ impl Config {
                 .map(|v| v.split(',').map(|c| c.trim().parse().expect(k)).collect())
                 .unwrap_or_default()
         };
-        let defaults = SinkConfig::default();
         let null = var("TCBEE_BENCH_SINK").as_deref() == Some("null");
         let kind = var("TCBEE_BENCH_SINK")
             .filter(|_| !null)
             .map_or(SinkKind::Mmap, |name| {
                 SinkKind::from_name(&name).unwrap_or_else(|| {
-                    panic!("TCBEE_BENCH_SINK {name}: mmap, direct, uring, buffered or null")
+                    panic!("TCBEE_BENCH_SINK {name}: {} or null", SinkKind::names())
                 })
             });
+        let defaults = SinkConfig::of(kind);
         let format = var("TCBEE_BENCH_FORMAT").map_or(WriterFormat::Records, |name| {
             WriterFormat::from_name(&name)
                 .unwrap_or_else(|| panic!("TCBEE_BENCH_FORMAT {name}: records or raw"))

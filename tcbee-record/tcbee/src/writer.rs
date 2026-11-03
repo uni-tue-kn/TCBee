@@ -1327,7 +1327,7 @@ impl Sink {
     fn open(path: &Path, chunk_bytes: usize, config: SinkConfig) -> io::Result<Self> {
         Ok(match config.kind {
             SinkKind::Mmap => Sink::Mmap(MmapBackedFile::new(path, chunk_bytes)?),
-            SinkKind::Direct | SinkKind::Buffered | SinkKind::Uring => {
+            SinkKind::Direct | SinkKind::Buffered | SinkKind::Uring | SinkKind::Sync => {
                 Sink::Pooled(Box::new(PooledFile::new(path, config)?))
             }
         })
@@ -2165,6 +2165,7 @@ mod tests {
         assert!(write(SinkKind::Direct, "direct") == mmap);
         assert!(write(SinkKind::Buffered, "buffered") == mmap);
         assert!(write(SinkKind::Uring, "uring") == mmap);
+        assert!(write(SinkKind::Sync, "sync") == mmap);
     }
 
     /// A discarded record is copied as a frame: the side file counts frames, the job records
@@ -2651,6 +2652,7 @@ mod tests {
         assert!(write(SinkKind::Direct, "direct") == mmap);
         assert!(write(SinkKind::Buffered, "buffered") == mmap);
         assert!(write(SinkKind::Uring, "uring") == mmap);
+        assert!(write(SinkKind::Sync, "sync") == mmap);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! A trace file written from a pool of large aligned buffers. The writer copies records into
 //! the current buffer; full buffers go to I/O threads, which write them with `pwrite`, by
-//! default with `O_DIRECT`, or the writer submits them to an io_uring. The writer never takes a page fault or a file system lock for a
+//! default with `O_DIRECT`, or the writer submits them to an io_uring, or writes them itself
+//! through the page cache (`SinkKind::Sync`). The writer never takes a page fault or a file system lock for a
 //! record. It only waits when every buffer is still being written, and that wait is counted.
 //!
 //! The file bytes are the same as from the memory-mapped file: records back to back, cut to
@@ -51,6 +52,11 @@ const IDLE_WRITE: Duration = Duration::from_secs(1);
 /// io_uring submissions refused for lack of kernel memory are retried for about a second
 const ENTER_RETRIES: u32 = 1000;
 
+/// Sync sink: the file is pushed to the disk in windows of this many bytes; the writer waits
+/// for the window two before the current one, so the dirty pages stay at a few windows and
+/// the writes never run into the kernel's dirty throttling
+const WRITE_BEHIND_WINDOW: u64 = 8 << 20;
+
 /// How the trace file is written
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SinkKind {
@@ -64,14 +70,18 @@ pub enum SinkKind {
     Buffered,
     /// Buffer pool, the writer submits O_DIRECT writes to an io_uring
     Uring,
+    /// A few small buffers the writer writes itself through the page cache, no I/O threads;
+    /// written pages go to the disk in windows of `WRITE_BEHIND_WINDOW`
+    Sync,
 }
 
 impl SinkKind {
-    pub const ALL: [SinkKind; 4] = [
+    pub const ALL: [SinkKind; 5] = [
         SinkKind::Mmap,
         SinkKind::Direct,
         SinkKind::Uring,
         SinkKind::Buffered,
+        SinkKind::Sync,
     ];
 
     pub fn name(self) -> &'static str {
@@ -80,7 +90,13 @@ impl SinkKind {
             SinkKind::Direct => "direct",
             SinkKind::Buffered => "buffered",
             SinkKind::Uring => "uring",
+            SinkKind::Sync => "sync",
         }
+    }
+
+    /// The names of all kinds, for messages
+    pub fn names() -> String {
+        Self::ALL.map(SinkKind::name).join(", ")
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -121,6 +137,24 @@ impl Default for SinkConfig {
     }
 }
 
+impl SinkConfig {
+    /// The defaults of `kind`: the sync sink writes small buffers that stay in the cache
+    pub fn of(kind: SinkKind) -> Self {
+        match kind {
+            SinkKind::Sync => Self {
+                kind,
+                buffer_bytes: 256 << 10,
+                buffers: 2,
+                ..Self::default()
+            },
+            _ => Self {
+                kind,
+                ..Self::default()
+            },
+        }
+    }
+}
+
 /// What a pooled sink did, for the writer report
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SinkStats {
@@ -136,6 +170,8 @@ pub struct SinkStats {
     pub preallocs: u64,
     pub prealloc_failures: u64,
     pub prealloc_stall_ns: u64,
+    /// Sync sink: time the writer waited for earlier windows to reach the disk
+    pub writeback_wait_ns: u64,
 }
 
 /// A page-aligned anonymous mapping, owned by whoever holds it: the writer or, while it is
@@ -407,10 +443,112 @@ impl IoUpkeep {
     }
 }
 
+/// The writer thread writes the buffers itself through the page cache (`SinkKind::Sync`);
+/// a write is complete when `submit` returns
+struct InlineIo {
+    file: Arc<File>,
+    done: Vec<IoDone>,
+    /// Pushes the written pages to the disk, window by window
+    behind: WriteBehind,
+}
+
+impl InlineIo {
+    fn submit(&mut self, job: IoJob) {
+        let (written, mut result) =
+            pwrite_all(&self.file, &job.buf.as_slice()[..job.len], job.offset);
+        if result.is_ok() {
+            result = self.behind.written(&self.file, job.offset + written as u64);
+        }
+        self.done.push(IoDone {
+            buf: job.buf,
+            offset: job.offset,
+            written,
+            partial: job.partial,
+            result,
+        });
+    }
+}
+
+/// Write-behind of a file written front to back through the page cache: starts writeback of
+/// each `window` bytes once they are written, waits for the window two before and drops it
+/// from the page cache. A file system without writeback (tmpfs) returns at once.
+struct WriteBehind {
+    window: u64,
+    /// Start of the window being written, and the windows whose writeback was started
+    open_from: u64,
+    started: VecDeque<(u64, u64)>,
+    wait_ns: u64,
+}
+
+impl WriteBehind {
+    fn new(from: u64, window: u64) -> Self {
+        Self {
+            window,
+            open_from: from,
+            started: VecDeque::new(),
+            wait_ns: 0,
+        }
+    }
+
+    /// Everything before `end` is written. Fails with the error writeback reported for an
+    /// earlier window.
+    fn written(&mut self, file: &File, end: u64) -> io::Result<()> {
+        if end < self.open_from + self.window {
+            return Ok(());
+        }
+        let fd = file.as_raw_fd();
+        let (from, len) = (self.open_from, end - self.open_from);
+        sync_range(fd, from, len, libc::SYNC_FILE_RANGE_WRITE)?;
+        self.started.push_back((from, len));
+        self.open_from = end;
+        if self.started.len() <= 2 {
+            return Ok(());
+        }
+        let (older, len) = self.started.pop_front().expect("more than two");
+        let waited = Instant::now();
+        let synced = sync_range(
+            fd,
+            older,
+            len,
+            libc::SYNC_FILE_RANGE_WAIT_BEFORE
+                | libc::SYNC_FILE_RANGE_WRITE
+                | libc::SYNC_FILE_RANGE_WAIT_AFTER,
+        );
+        self.wait_ns += waited.elapsed().as_nanos() as u64;
+        synced?;
+        // Only clean pages are dropped, so after the wait all of the window's
+        unsafe {
+            libc::posix_fadvise(
+                fd,
+                older as libc::off_t,
+                len as libc::off_t,
+                libc::POSIX_FADV_DONTNEED,
+            );
+        }
+        Ok(())
+    }
+}
+
+fn sync_range(fd: RawFd, offset: u64, len: u64, flags: libc::c_uint) -> io::Result<()> {
+    loop {
+        let ret = unsafe {
+            libc::sync_file_range(fd, offset as libc::off64_t, len as libc::off64_t, flags)
+        };
+        if ret == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
 /// Where the writes of a file go
 enum Io {
     Threads(IoThreads),
     Uring(Box<UringIo>),
+    Inline(InlineIo),
 }
 
 impl Io {
@@ -420,6 +558,10 @@ impl Io {
         match self {
             Io::Threads(threads) => threads.submit(job),
             Io::Uring(uring) => uring.submit(job),
+            Io::Inline(inline) => {
+                inline.submit(job);
+                Ok(())
+            }
         }
     }
 
@@ -429,6 +571,7 @@ impl Io {
         match self {
             Io::Threads(threads) => (threads.reap(), Ok(())),
             Io::Uring(uring) => uring.reap(),
+            Io::Inline(inline) => (mem::take(&mut inline.done), Ok(())),
         }
     }
 
@@ -440,6 +583,8 @@ impl Io {
                 Err(err) => (Vec::new(), Err(err)),
             },
             Io::Uring(uring) => uring.wait(),
+            // Its writes are complete: one in flight is in `done`
+            Io::Inline(inline) => (mem::take(&mut inline.done), Ok(())),
         }
     }
 
@@ -797,10 +942,12 @@ impl PooledFile {
         if direct {
             direct = enable_direct(&file, &cur, cur_offset, align, path)?;
         }
-        // io_uring writes O_DIRECT only, the page cache path uses the I/O threads
+        // io_uring writes O_DIRECT only, the page cache path uses the I/O threads unless the
+        // writer writes itself
         let kind = match (direct, config.kind) {
             (true, SinkKind::Uring) => SinkKind::Uring,
             (true, _) => SinkKind::Direct,
+            (false, SinkKind::Sync) => SinkKind::Sync,
             (false, _) => SinkKind::Buffered,
         };
         info!(
@@ -809,7 +956,11 @@ impl PooledFile {
             buffers,
             buf_size >> 10,
             kind.name(),
-            config.io_threads.max(1)
+            if kind == SinkKind::Sync {
+                1
+            } else {
+                config.io_threads.max(1)
+            }
         );
         Ok(Self {
             file: Arc::new(file),
@@ -1018,6 +1169,13 @@ impl PooledFile {
     /// Sets up the io_uring or the I/O threads, on the writer's thread. `taken` is the buffer
     /// about to be written, the others are in the pool.
     fn start_io(&mut self, taken: &mut AlignedBuf) -> io::Result<Io> {
+        if self.config.kind == SinkKind::Sync {
+            return Ok(Io::Inline(InlineIo {
+                file: self.file.clone(),
+                done: Vec::new(),
+                behind: WriteBehind::new(self.cur_offset, WRITE_BEHIND_WINDOW),
+            }));
+        }
         if self.config.kind == SinkKind::Uring && self.direct {
             let mut buffers: Vec<&mut AlignedBuf> = self.free.iter_mut().collect();
             buffers.push(&mut self.cur);
@@ -1172,6 +1330,9 @@ impl PooledFile {
             }
         }
         result = result.and_then(|()| self.take_error());
+        if let Some(Io::Inline(inline)) = &self.io {
+            self.stats.writeback_wait_ns = inline.behind.wait_ns;
+        }
         // Writes still queued or in flight after an error end before the file is cut
         drop(self.io.take());
         // A running preallocation must not extend the file after it is cut
@@ -1326,7 +1487,12 @@ pub(crate) mod tests {
         expected
     }
 
-    const POOLED: [SinkKind; 3] = [SinkKind::Direct, SinkKind::Buffered, SinkKind::Uring];
+    const POOLED: [SinkKind; 4] = [
+        SinkKind::Direct,
+        SinkKind::Buffered,
+        SinkKind::Uring,
+        SinkKind::Sync,
+    ];
 
     #[test]
     fn pooled_file_keeps_all_bytes() {
@@ -1548,6 +1714,54 @@ pub(crate) mod tests {
         let kept = fs::read(&path).unwrap();
         assert_eq!(kept.len() as u64, written * 100);
         assert_eq!(kept[..], expected[..kept.len()]);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// The sync sink writes on the writer's thread: a failed write fails the next reserve, and
+    /// the file keeps the whole records before it
+    #[test]
+    fn failed_sync_write_keeps_the_records_before_it() {
+        let path = temp("sync-fail");
+        let mut file = PooledFile::new(&path, config(SinkKind::Sync)).unwrap();
+        let expected = fill(&mut file, 100, 100);
+        assert!(matches!(file.io, Some(Io::Inline(_))));
+        file.reap().unwrap();
+        assert_eq!(file.in_flight, 0);
+        let durable = file.durable_end;
+        let read_only = Arc::new(File::open(&path).unwrap());
+        file.io = Some(Io::Inline(InlineIo {
+            file: read_only,
+            done: Vec::new(),
+            behind: WriteBehind::new(durable, WRITE_BEHIND_WINDOW),
+        }));
+        let failed = (0..1000).any(|_| file.reserve(100).is_err());
+        let (written, _, result) = file.finish(100);
+        assert!(failed && result.is_err());
+        assert_eq!(written, durable / 100);
+        let kept = fs::read(&path).unwrap();
+        assert_eq!(kept.len() as u64, written * 100);
+        assert_eq!(kept[..], expected[..kept.len()]);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// Write-behind starts each window once it is written and waits for the one two before
+    #[test]
+    fn write_behind_keeps_two_windows_open() {
+        let path = temp("behind");
+        let file = File::create(&path).unwrap();
+        file.write_all_at(&vec![7u8; 10 << 10], 0).unwrap();
+        let mut behind = WriteBehind::new(0, 1024);
+        behind.written(&file, 1000).unwrap();
+        assert!(behind.started.is_empty());
+        for end in [1024, 3000, 4100, 9000] {
+            behind.written(&file, end).unwrap();
+        }
+        assert_eq!(behind.open_from, 9000);
+        // Started: [0, 1024), [1024, 3000), [3000, 4100), [4100, 9000); the first two waited for
+        assert_eq!(
+            behind.started.iter().copied().collect::<Vec<_>>(),
+            [(3000, 1100), (4100, 4900)]
+        );
         fs::remove_file(&path).unwrap();
     }
 }
