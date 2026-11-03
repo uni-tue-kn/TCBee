@@ -423,18 +423,22 @@ impl Io {
         }
     }
 
-    /// The writes that completed, without waiting
-    fn reap(&mut self) -> io::Result<Vec<IoDone>> {
+    /// The writes that completed, without waiting, and an error on the way. The completed
+    /// writes come back even then: their buffers return and their bytes count.
+    fn reap(&mut self) -> (Vec<IoDone>, io::Result<()>) {
         match self {
-            Io::Threads(threads) => Ok(threads.reap()),
+            Io::Threads(threads) => (threads.reap(), Ok(())),
             Io::Uring(uring) => uring.reap(),
         }
     }
 
-    /// Waits until at least one write completed
-    fn wait(&mut self) -> io::Result<Vec<IoDone>> {
+    /// Waits until at least one write completed, as `reap`
+    fn wait(&mut self) -> (Vec<IoDone>, io::Result<()>) {
         match self {
-            Io::Threads(threads) => threads.wait().map(|done| vec![done]),
+            Io::Threads(threads) => match threads.wait() {
+                Ok(done) => (vec![done], Ok(())),
+                Err(err) => (Vec::new(), Err(err)),
+            },
             Io::Uring(uring) => uring.wait(),
         }
     }
@@ -604,26 +608,30 @@ impl UringIo {
     }
 
     /// The writes that completed, without waiting
-    fn reap(&mut self) -> io::Result<Vec<IoDone>> {
+    fn reap(&mut self) -> (Vec<IoDone>, io::Result<()>) {
         // Deferred completions are posted only by an enter that asks for events. The kernel
         // flags when there are any, so an idle ring costs no system call.
-        if self.ring.submission().taskrun() {
-            self.enter(0)?;
-        }
+        let entered = if self.ring.submission().taskrun() {
+            self.enter(0)
+        } else {
+            Ok(())
+        };
         let done = self.completed();
-        self.pump()?;
-        Ok(done)
+        let pumped = entered.and_then(|()| self.pump());
+        (done, pumped)
     }
 
     /// Waits until at least one write completed
-    fn wait(&mut self) -> io::Result<Vec<IoDone>> {
+    fn wait(&mut self) -> (Vec<IoDone>, io::Result<()>) {
         loop {
             let done = self.completed();
             if !done.is_empty() {
-                self.pump()?;
-                return Ok(done);
+                let pumped = self.pump();
+                return (done, pumped);
             }
-            self.enter(1)?;
+            if let Err(err) = self.enter(1) {
+                return (done, Err(err));
+            }
         }
     }
 
@@ -966,11 +974,15 @@ impl PooledFile {
         let len = self.cur_len.next_multiple_of(self.align);
         copy.as_mut_slice()[..self.cur_len].copy_from_slice(&self.cur.as_slice()[..self.cur_len]);
         copy.as_mut_slice()[self.cur_len..len].fill(0);
-        self.submit(copy, self.cur_offset, len, true)?;
-        self.partial_in_flight = true;
-        self.partial_len = self.cur_len;
-        self.partial_at = Instant::now();
-        Ok(())
+        let in_flight = self.in_flight;
+        let submitted = self.submit(copy, self.cur_offset, len, true);
+        // A copy the io_uring kept is written even if submitting it failed
+        if self.in_flight > in_flight {
+            self.partial_in_flight = true;
+            self.partial_len = self.cur_len;
+            self.partial_at = Instant::now();
+        }
+        submitted
     }
 
     fn submit(
@@ -1070,26 +1082,27 @@ impl PooledFile {
     /// Takes back the buffers of finished writes without waiting. Fails with the first
     /// write error.
     fn reap(&mut self) -> io::Result<()> {
-        let finished = match &mut self.io {
-            Some(io) => io.reap()?,
-            None => Vec::new(),
+        let Some(io) = &mut self.io else {
+            return self.take_error();
         };
+        let (finished, result) = io.reap();
         for done in finished {
             self.finished(done);
         }
+        result?;
         self.take_error()
     }
 
     /// Waits for one write to finish
     fn wait_one(&mut self) -> io::Result<()> {
-        let finished = match &mut self.io {
-            Some(io) if self.in_flight > 0 => io.wait()?,
+        let (finished, result) = match &mut self.io {
+            Some(io) if self.in_flight > 0 => io.wait(),
             _ => return Err(io::Error::other("no write in flight to wait for")),
         };
         for done in finished {
             self.finished(done);
         }
-        Ok(())
+        result
     }
 
     fn finished(&mut self, done: IoDone) {
@@ -1181,6 +1194,7 @@ impl PooledFile {
 
     /// Submits the full buffer, if any, and the partial last one, padded for O_DIRECT
     fn write_rest(&mut self) -> io::Result<()> {
+        self.take_error()?;
         if self.cur_len >= self.buf_size {
             self.rotate()?;
         }
