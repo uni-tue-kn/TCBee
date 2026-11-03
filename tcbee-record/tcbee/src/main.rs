@@ -250,17 +250,17 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut poll).add_option(
             &["--poll"],
             Store,
-            "How writer threads wait for records: 'busy' polls the rings and sleeps 50 µs when a poll returns fewer than 256 records, 'wait' blocks until the kernel signals new records. Default is busy.",
+            "How writer threads wait for records: 'busy' polls the rings and sleeps when they are idle (50 µs per thread per file; with --writer-cpus spins, then sleeps 1 µs growing to 100 µs), 'wait' blocks until the kernel signals new records. Default is busy.",
         );
         argparser.refer(&mut writer_cpus).add_option(
             &["--writer-cpus"],
             Store,
-            "Comma-separated CPU ids to pin the writer threads to. One thread runs per output file. They start round-robin, see --writer-placement.",
+            "Comma-separated CPU ids for the writer threads: one thread per CPU drains the rings it gets by hook, each pair of per-packet hooks (ingress and egress) on a CPU of its own where possible and the rare hooks' rings together. Without, one unpinned thread runs per output file.",
         );
         argparser.refer(&mut writer_placement).add_option(
             &["--writer-placement"],
             Store,
-            "How writer threads use the --writer-cpus: 'balanced' moves busy writers apart by their CPU time and runs file growth on the least loaded writer CPU, 'round-robin' leaves each writer on the CPU it started on. Default is balanced.",
+            "Where file helpers run on the --writer-cpus: 'balanced' runs file growth on the least loaded writer CPU, 'round-robin' on the writer CPUs without a writer thread (all if none is free). Writer threads do not move. Default is balanced.",
         );
         argparser.refer(&mut writer_sink).add_option(
             &["--writer-sink"],

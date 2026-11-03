@@ -80,9 +80,9 @@ At least one metric source is required.
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
 | `--tui-observation-window-s N` | `0` | Start the TUI charts with a window of N seconds, rounded up to 10 s, 30 s, 1, 2, 5, 10 or 30 min (at most what the update rate keeps); 0 starts with the whole recording, see [Terminal UI](#terminal-ui) |
-| `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
-| `--writer-cpus LIST` | | CPU ids to pin the writer threads to; they start round-robin |
-| `--writer-placement balanced\|round-robin` | `balanced` | Move busy writers apart on the writer CPUs by their CPU time and grow files on the least loaded one, or keep each writer on its start CPU |
+| `--poll busy\|wait` | `busy` | Writer threads poll and sleep when the rings are idle (50 µs for a thread per file; with `--writer-cpus` they spin, then sleep from 1 µs up to 100 µs), or block until the kernel signals records |
+| `--writer-cpus LIST` | | CPU ids for the writer threads: one thread per CPU drains the rings it gets by hook, each pair of per-packet hooks (ingress and egress) on a CPU of its own where possible and the rare hooks' rings together; `metrics.json` lists the threads (`writer_threads`). Without, one unpinned thread runs per output file |
+| `--writer-placement balanced\|round-robin` | `balanced` | Grow files on the least loaded writer CPU, or on the writer CPUs without a writer thread; writer threads do not move |
 | `--writer-sink mmap\|direct\|uring\|buffered` | `mmap` | How the trace files are written: memory-mapped, or from large buffers that I/O threads write with O_DIRECT (`direct`), that the writer submits to an io_uring (`uring`), or that go through the page cache and are written back right away (`buffered`). Same file bytes; `metrics.json` reports the writers' waits for buffers |
 | `--writer-format records\|raw` | `records` | How records get into the trace files: one by one, packed and followed by a delimiter, or as the ring buffers' bytes copied in spans (`raw`, see [Raw trace files](#raw-trace-files)). tcbee-process reads both |
 | `--writer-no-prealloc` | | Do not allocate the trace files of the `direct` and `uring` sinks ahead of the writes |
