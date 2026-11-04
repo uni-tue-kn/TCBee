@@ -188,7 +188,8 @@ fn plan(
     let mut files = Vec::new();
     let mut units = Vec::new();
     // The layouts of field-selected files; read again for the sampling metadata
-    let manifest = Manifest::read(trace.dir()).ok().flatten();
+    let manifest_read = Manifest::read(trace.dir());
+    let manifest = manifest_read.as_ref().ok().and_then(Option::as_ref);
     for file in trace.available_traces() {
         // Not an event table, read after the workers (owners.rs)
         if file == TraceFile::FlowOwners {
@@ -196,10 +197,15 @@ fn plan(
         }
         let path = trace.path_for(file);
         let name = file.filename().to_string();
+        if let (true, Err(err)) = (file.field_selected(), &manifest_read) {
+            return Err(anyhow!(
+                "cannot read the manifest.json that describes {name}: {err}"
+            ));
+        }
         let len = std::fs::metadata(&path)
             .with_context(|| format!("cannot stat {}", path.display()))?
             .len();
-        let binding = binding_for(file, &path, manifest.as_ref())
+        let binding = binding_for(file, &path, manifest)
             .with_context(|| format!("cannot read {}", path.display()))?;
         let Some(binding) = binding else {
             info!("Skipping {name}: {NO_DECODER}");

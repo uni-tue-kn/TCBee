@@ -381,6 +381,16 @@ mod tests {
             ..meta.clone()
         };
         assert!(other.shape().is_err());
+        let renamed = SockFieldsMeta {
+            groups: vec!["cwnd".into(), "cc".into()],
+            ..meta.clone()
+        };
+        assert!(renamed.shape().is_err());
+        let unknown = SockFieldsMeta {
+            mask: meta.mask | 1 << 15,
+            ..meta.clone()
+        };
+        assert!(unknown.shape().is_err());
         // A source without the field reads as None (manifests before version 3)
         let old = r#"{"file":"send_sock_oc.tcp","sampling":{"mode":"every_run"},"shadow":false,"recv_hook":""}"#;
         assert_eq!(

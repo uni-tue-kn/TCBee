@@ -135,3 +135,76 @@ pub fn decode(
         },
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use tcbee_trace::{
+        onchange::{Sampling, SockFieldsMeta, SourceMeta, SOCK_FIELDS_VERSION},
+        sockfields::SockFields,
+    };
+
+    use super::*;
+
+    fn manifest(file: TraceFile, shape: &SockShape) -> Manifest {
+        Manifest {
+            format_version: SOCK_FIELDS_VERSION,
+            sources: vec![SourceMeta {
+                file: file.filename().into(),
+                sampling: Sampling::EveryRun,
+                shadow: false,
+                recv_hook: String::new(),
+                hooks: Vec::new(),
+                sock_fields: Some(SockFieldsMeta::of(shape)),
+            }],
+        }
+    }
+
+    #[test]
+    fn files_go_to_the_tables_of_their_full_counterparts() {
+        let shape = SockShape::of(SockFields::parse("cwnd,rtt").unwrap());
+        for (file, source, dir) in [
+            (TraceFile::SendSockSel, "sock", Dir::Send),
+            (TraceFile::RecvSockSel, "sock", Dir::Recv),
+            (TraceFile::TimerSockSel, "sock_timer", Dir::None),
+        ] {
+            let b = binding_for(file, Some(&manifest(file, &shape)), None).unwrap();
+            assert_eq!((b.table.source, b.dir), (source, dir));
+            assert_eq!(b.entry_size, shape.file_len + RECORD_DELIMITER.len());
+            assert!(!b.raw);
+            assert!(b.missing_columns.contains(&"pacing_rate"));
+            assert!(!b.missing_columns.contains(&"snd_cwnd"));
+        }
+    }
+
+    #[test]
+    fn layout_comes_from_the_manifest_and_must_match_a_raw_header() {
+        let file = TraceFile::SendSockSel;
+        let shape = SockShape::of(SockFields::parse("cwnd").unwrap());
+        assert!(binding_for(file, None, None).is_err());
+        // The manifest lists another file only
+        let other = manifest(TraceFile::RecvSockSel, &shape);
+        assert!(binding_for(file, Some(&other), None).is_err());
+        let m = manifest(file, &shape);
+        let header = Header {
+            version: raw::VERSION,
+            codec: raw::CODEC_ONE_RECORD,
+            record_len: shape.ring_len as u32,
+            layout: shape.layout_id(LAYOUT_ID),
+        };
+        let b = binding_for(file, Some(&m), Some(header)).unwrap();
+        assert!(b.raw);
+        assert_eq!(b.entry_size, raw::stride(shape.ring_len));
+        for wrong in [
+            Header {
+                layout: LAYOUT_ID,
+                ..header
+            },
+            Header {
+                record_len: shape.ring_len as u32 + 8,
+                ..header
+            },
+        ] {
+            assert!(binding_for(file, Some(&m), Some(wrong)).is_err());
+        }
+    }
+}

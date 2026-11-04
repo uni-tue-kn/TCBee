@@ -1460,6 +1460,16 @@ fn field_selected_sock_records_read_like_full_ones() {
             assert!(!sel.contains_key("pacing_rate"), "raw {raw}");
             assert!(sel.keys().all(|name| full_series.contains_key(name)));
 
+            // With a broken manifest the file cannot be read, and the error says why
+            fs::write(trace.join("manifest.json"), "{").unwrap();
+            let mut args = Args::new(&trace, work.join(format!("broken.{ext}")), engine);
+            args.threads = None;
+            let err = run(args).expect_err("broken manifest");
+            assert!(
+                format!("{err:#}").contains("cannot read the manifest"),
+                "{err:#}"
+            );
+
             // Without the manifest the file cannot be read
             fs::remove_file(trace.join("manifest.json")).unwrap();
             let mut args = Args::new(&trace, work.join(format!("none.{ext}")), engine);
