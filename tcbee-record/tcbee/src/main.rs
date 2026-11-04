@@ -41,7 +41,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 // Commandline arguments
-use argparse::{ArgumentParser, Store, StoreTrue};
+use argparse::{ArgumentParser, Store, StoreOption, StoreTrue};
 
 fn parse_csv<T>(arg: &str, name: &str) -> anyhow::Result<Vec<T>>
 where
@@ -124,6 +124,7 @@ fn main() -> anyhow::Result<()> {
     let mut writer_format: String = "records".to_string();
     let mut writer_io_cpus: String = String::new();
     let mut writer_no_prealloc: bool = false;
+    let mut writer_max_buffers: Option<usize> = None;
     let mut on_change: String = String::new();
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
@@ -284,6 +285,11 @@ fn main() -> anyhow::Result<()> {
             StoreTrue,
             "With the direct and uring sinks, do not allocate the trace files ahead of the writes. Allocating takes the file's lock and, on tmpfs, zeroes the memory, which the writes then wait for.",
         );
+        argparser.refer(&mut writer_max_buffers).add_option(
+            &["--writer-max-buffers"],
+            StoreOption,
+            "With the direct and buffered sinks, how many 2 MiB buffers a trace file may hold while the disk is slow, instead of the writer waiting for it. Default 256 (512 MiB); quiet files keep 8.",
+        );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
             Store,
@@ -413,6 +419,7 @@ fn main() -> anyhow::Result<()> {
     let writer_sink = SinkConfig {
         io_cpus: writer_io_cpus,
         preallocate: !writer_no_prealloc,
+        max_buffers: writer_max_buffers.unwrap_or(SinkConfig::default().max_buffers),
         ..SinkConfig::of(kind)
     };
     let Some(writer_format) = WriterFormat::from_name(&writer_format) else {

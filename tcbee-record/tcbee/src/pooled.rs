@@ -139,7 +139,7 @@ impl Default for SinkConfig {
             kind: SinkKind::Mmap,
             buffer_bytes: 2 << 20,
             buffers: 8,
-            max_buffers: 64,
+            max_buffers: 256,
             io_threads: 2,
             preallocate: true,
             io_cpus: Vec::new(),
