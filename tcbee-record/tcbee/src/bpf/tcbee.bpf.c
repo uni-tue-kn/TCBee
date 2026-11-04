@@ -16,6 +16,7 @@
 #include "flow.h"
 #include "hook_seq.h"
 #include "cc_structs.h"
+#include "sockfields.h"
 
 char LICENSE[] SEC("license") = "Dual MIT/GPL";
 
@@ -673,36 +674,122 @@ struct sock___sndbuf {
 /*
  * The fields of a sock record after rcv_wscale, which on-change mode does not watch: the
  * congestion state, the delivery rate sample, the time spent limited, the rest of TCP_INFO,
- * the send buffer and the MPTCP connection (mptcp.h). Stored in record order after the ones
- * above.
+ * the send buffer and the MPTCP connection (mptcp.h). Read by sock_extra(), so that full and
+ * field-selected records (sockfields.h) read them the same way.
  */
+enum sock_extra_field {
+	SX_ca_state,
+	SX_packets_out,
+	SX_delivered,
+	SX_delivered_ce,
+	SX_app_limited,
+	SX_chrono_type,
+	SX_chrono_busy,
+	SX_chrono_rwnd_limited,
+	SX_chrono_sndbuf_limited,
+	SX_srtt,
+	SX_mdev,
+	SX_min_rtt,
+	SX_snd_una,
+	SX_snd_nxt,
+	SX_lost_out,
+	SX_rate_delivered,
+	SX_rate_interval_us,
+	SX_wstamp_ns,
+	SX_reord_seen,
+	SX_dsack_dups,
+	SX_wmem_queued,
+	SX_sndbuf,
+	SX_notsent,
+	SX_conn_id,
+};
+
+/* The value of a field after rcv_wscale; field is a constant at every call, as in sock_field() */
+static __always_inline __u64 sock_extra(struct sock *sk, struct tcp_sock *tp,
+					enum sock_extra_field field)
+{
+	switch (field) {
+	case SX_ca_state:
+		return BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+	case SX_packets_out:
+		return tp->packets_out;
+	case SX_delivered:
+		return tp->delivered;
+	case SX_delivered_ce:
+		return tp->delivered_ce;
+	case SX_app_limited:
+		return tp->app_limited;
+	case SX_chrono_type:
+		return BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
+	case SX_chrono_busy:
+		return tp->chrono_stat[0];
+	case SX_chrono_rwnd_limited:
+		return tp->chrono_stat[1];
+	case SX_chrono_sndbuf_limited:
+		return tp->chrono_stat[2];
+	case SX_srtt:
+		return tp->srtt_us >> 3;
+	case SX_mdev:
+		return tp->mdev_us >> 2;
+	case SX_min_rtt:
+		return tp->rtt_min.s[0].v;
+	case SX_snd_una:
+		return tp->snd_una;
+	case SX_snd_nxt:
+		return tp->snd_nxt;
+	case SX_lost_out:
+		return tp->lost_out;
+	case SX_rate_delivered:
+		return tp->rate_delivered;
+	case SX_rate_interval_us:
+		return tp->rate_interval_us;
+	case SX_wstamp_ns:
+		return tp->tcp_wstamp_ns;
+	case SX_reord_seen:
+		return tp->reord_seen;
+	case SX_dsack_dups:
+		return tp->dsack_dups;
+	case SX_wmem_queued:
+		return ((struct sock___sndbuf *)sk)->sk_wmem_queued;
+	case SX_sndbuf:
+		return ((struct sock___sndbuf *)sk)->sk_sndbuf;
+	case SX_notsent:
+		return tp->write_seq - tp->snd_nxt;
+	case SX_conn_id:
+		return mptcp_conn_id(tp);
+	default:
+		return 0;
+	}
+}
+
+/* The fields above, stored in record order after the ones of fill_sock_fields() */
 static __always_inline void fill_sock_extra(struct sock_trace_entry *rec, struct sock *sk,
 					    struct tcp_sock *tp)
 {
-	rec->ca_state = BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
-	rec->packets_out = tp->packets_out;
-	rec->delivered = tp->delivered;
-	rec->delivered_ce = tp->delivered_ce;
-	rec->app_limited = tp->app_limited;
-	rec->chrono_type = BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
-	rec->chrono_busy = tp->chrono_stat[0];
-	rec->chrono_rwnd_limited = tp->chrono_stat[1];
-	rec->chrono_sndbuf_limited = tp->chrono_stat[2];
-	rec->srtt = tp->srtt_us >> 3;
-	rec->mdev = tp->mdev_us >> 2;
-	rec->min_rtt = tp->rtt_min.s[0].v;
-	rec->snd_una = tp->snd_una;
-	rec->snd_nxt = tp->snd_nxt;
-	rec->lost_out = tp->lost_out;
-	rec->rate_delivered = tp->rate_delivered;
-	rec->rate_interval_us = tp->rate_interval_us;
-	rec->wstamp_ns = tp->tcp_wstamp_ns;
-	rec->reord_seen = tp->reord_seen;
-	rec->dsack_dups = tp->dsack_dups;
-	rec->wmem_queued = ((struct sock___sndbuf *)sk)->sk_wmem_queued;
-	rec->sndbuf = ((struct sock___sndbuf *)sk)->sk_sndbuf;
-	rec->notsent = tp->write_seq - tp->snd_nxt;
-	rec->conn_id = mptcp_conn_id(tp);
+	rec->ca_state = sock_extra(sk, tp, SX_ca_state);
+	rec->packets_out = sock_extra(sk, tp, SX_packets_out);
+	rec->delivered = sock_extra(sk, tp, SX_delivered);
+	rec->delivered_ce = sock_extra(sk, tp, SX_delivered_ce);
+	rec->app_limited = sock_extra(sk, tp, SX_app_limited);
+	rec->chrono_type = sock_extra(sk, tp, SX_chrono_type);
+	rec->chrono_busy = sock_extra(sk, tp, SX_chrono_busy);
+	rec->chrono_rwnd_limited = sock_extra(sk, tp, SX_chrono_rwnd_limited);
+	rec->chrono_sndbuf_limited = sock_extra(sk, tp, SX_chrono_sndbuf_limited);
+	rec->srtt = sock_extra(sk, tp, SX_srtt);
+	rec->mdev = sock_extra(sk, tp, SX_mdev);
+	rec->min_rtt = sock_extra(sk, tp, SX_min_rtt);
+	rec->snd_una = sock_extra(sk, tp, SX_snd_una);
+	rec->snd_nxt = sock_extra(sk, tp, SX_snd_nxt);
+	rec->lost_out = sock_extra(sk, tp, SX_lost_out);
+	rec->rate_delivered = sock_extra(sk, tp, SX_rate_delivered);
+	rec->rate_interval_us = sock_extra(sk, tp, SX_rate_interval_us);
+	rec->wstamp_ns = sock_extra(sk, tp, SX_wstamp_ns);
+	rec->reord_seen = sock_extra(sk, tp, SX_reord_seen);
+	rec->dsack_dups = sock_extra(sk, tp, SX_dsack_dups);
+	rec->wmem_queued = sock_extra(sk, tp, SX_wmem_queued);
+	rec->sndbuf = sock_extra(sk, tp, SX_sndbuf);
+	rec->notsent = sock_extra(sk, tp, SX_notsent);
+	rec->conn_id = sock_extra(sk, tp, SX_conn_id);
 }
 
 /*
@@ -809,6 +896,155 @@ int BPF_PROG(sock_timer, struct sock *sk)
 	TCBEE_GATE(0);
 	return trace_sock(sk, NULL, &TCP_TIMER_SOCK_EVENTS, RB_SOCK_TIMER,
 			  SOCK_HOOK_TIMER << SOCK_HOOK_SHIFT);
+}
+
+/*
+ * Field-selected sock records (--sock-fields, sockfields.h): the core and the groups that
+ * SOCK_SEL_OFF places. Each present group is zeroed through its struct and filled; the core
+ * and the groups cover the record up to SOCK_SEL_LEN but for padding, which the zeroing
+ * covers.
+ */
+#define SOCK_SEL_GROUP(rec, group)                                                         \
+	({                                                                                 \
+		struct sock_sel_##group *__g = NULL;                                       \
+		if (SOCK_SEL_OFF[SG_##group] != SOCK_SEL_ABSENT) {                         \
+			__g = (void *)(rec) + SOCK_SEL_OFF[SG_##group];                    \
+			__builtin_memset(__g, 0, sizeof(*__g));                            \
+		}                                                                          \
+		__g;                                                                       \
+	})
+
+static __always_inline void fill_sock_sel(void *rec, struct sock *sk, struct tcp_sock *tp)
+{
+	struct sock_sel_pacing *pacing = SOCK_SEL_GROUP(rec, pacing);
+	struct sock_sel_icsk *icsk = SOCK_SEL_GROUP(rec, icsk);
+	struct sock_sel_cwnd *cwnd = SOCK_SEL_GROUP(rec, cwnd);
+	struct sock_sel_cc *cc = SOCK_SEL_GROUP(rec, cc);
+	struct sock_sel_rcv *rcv = SOCK_SEL_GROUP(rec, rcv);
+	struct sock_sel_rtt *rtt = SOCK_SEL_GROUP(rec, rtt);
+	struct sock_sel_delivery *delivery = SOCK_SEL_GROUP(rec, delivery);
+	struct sock_sel_chrono *chrono = SOCK_SEL_GROUP(rec, chrono);
+	struct sock_sel_seq *seq = SOCK_SEL_GROUP(rec, seq);
+	struct sock_sel_sndbuf *sndbuf = SOCK_SEL_GROUP(rec, sndbuf);
+
+	if (pacing) {
+		pacing->pacing_rate = sock_field(sk, tp, SF_pacing_rate);
+		pacing->max_pacing_rate = sock_field(sk, tp, SF_max_pacing_rate);
+		pacing->wstamp_ns = sock_extra(sk, tp, SX_wstamp_ns);
+	}
+	if (icsk) {
+		icsk->rto = sock_field(sk, tp, SF_rto);
+		icsk->rcv_mss = sock_field(sk, tp, SF_rcv_mss);
+		icsk->backoff = sock_field(sk, tp, SF_backoff);
+	}
+	if (cwnd)
+		cwnd->snd_cwnd = sock_field(sk, tp, SF_snd_cwnd);
+	if (cc) {
+		cc->bytes_acked = sock_field(sk, tp, SF_bytes_acked);
+		cc->snd_ssthresh = sock_field(sk, tp, SF_snd_ssthresh);
+		cc->total_retrans = sock_field(sk, tp, SF_total_retrans);
+		cc->lost = sock_field(sk, tp, SF_lost);
+		cc->sacked_out = sock_field(sk, tp, SF_sacked_out);
+		cc->retrans = sock_field(sk, tp, SF_retrans);
+		cc->reordering = sock_field(sk, tp, SF_reordering);
+		cc->segs_out = sock_field(sk, tp, SF_segs_out);
+		cc->probes = sock_field(sk, tp, SF_probes);
+	}
+	if (rcv) {
+		rcv->bytes_received = sock_field(sk, tp, SF_bytes_received);
+		rcv->rcv_ssthresh = sock_field(sk, tp, SF_rcv_ssthresh);
+		rcv->rcv_rtt = sock_field(sk, tp, SF_rcv_rtt);
+		rcv->rcv_space = sock_field(sk, tp, SF_rcv_space);
+		rcv->segs_in = sock_field(sk, tp, SF_segs_in);
+		rcv->advmss = sock_field(sk, tp, SF_advmss);
+	}
+	if (rtt) {
+		rtt->srtt = sock_extra(sk, tp, SX_srtt);
+		rtt->mdev = sock_extra(sk, tp, SX_mdev);
+		rtt->min_rtt = sock_extra(sk, tp, SX_min_rtt);
+		rtt->rttvar = sock_field(sk, tp, SF_rttvar);
+	}
+	if (delivery) {
+		delivery->packets_out = sock_extra(sk, tp, SX_packets_out);
+		delivery->delivered = sock_extra(sk, tp, SX_delivered);
+		delivery->delivered_ce = sock_extra(sk, tp, SX_delivered_ce);
+		delivery->app_limited = sock_extra(sk, tp, SX_app_limited);
+		delivery->rate_delivered = sock_extra(sk, tp, SX_rate_delivered);
+		delivery->rate_interval_us = sock_extra(sk, tp, SX_rate_interval_us);
+		delivery->lost_out = sock_extra(sk, tp, SX_lost_out);
+		delivery->ca_state = sock_extra(sk, tp, SX_ca_state);
+	}
+	if (chrono) {
+		chrono->chrono_busy = sock_extra(sk, tp, SX_chrono_busy);
+		chrono->chrono_rwnd_limited = sock_extra(sk, tp, SX_chrono_rwnd_limited);
+		chrono->chrono_sndbuf_limited = sock_extra(sk, tp, SX_chrono_sndbuf_limited);
+		chrono->chrono_type = sock_extra(sk, tp, SX_chrono_type);
+	}
+	if (seq) {
+		seq->snd_una = sock_extra(sk, tp, SX_snd_una);
+		seq->snd_nxt = sock_extra(sk, tp, SX_snd_nxt);
+		seq->reord_seen = sock_extra(sk, tp, SX_reord_seen);
+		seq->dsack_dups = sock_extra(sk, tp, SX_dsack_dups);
+	}
+	if (sndbuf) {
+		sndbuf->wmem_queued = sock_extra(sk, tp, SX_wmem_queued);
+		sndbuf->sndbuf = sock_extra(sk, tp, SX_sndbuf);
+		sndbuf->notsent = sock_extra(sk, tp, SX_notsent);
+	}
+}
+
+/* trace_sock() with a field-selected record */
+static __always_inline int trace_sock_sel(struct sock *sk, void *ringbufs, __u32 rb,
+					  __u32 hook_tag)
+{
+	struct sock_sel_core *core;
+	struct tcp_sock *tp;
+	__u16 sport, dport;
+	__u64 hook_seq;
+
+	sk_ports(sk, &sport, &dport);
+	if (!filter_sock(sk, sport, dport))
+		return 0;
+	if (!hook_seq_sk(sk, sport, dport, rb, &hook_seq))
+		return 0;
+
+	tp = bpf_skc_to_tcp_sock(sk);
+	if (!tp) {
+		count_error(rb);
+	} else if ((core = reserve_record(ringbufs, rb, SOCK_SEL_LEN))) {
+		__builtin_memset(core, 0, sizeof(*core));
+		fill_header(core, sk, sport, dport, hook_seq);
+		core->ato = hook_tag;
+		core->conn_id = sock_extra(sk, tp, SX_conn_id);
+		fill_sock_sel(core, sk, tp);
+		commit(core, rb);
+	}
+
+	flow_track_sk(sk, sport, dport);
+	return 0;
+}
+
+/* sock_sendmsg, sock_recvmsg and sock_timer with field-selected records */
+SEC("?fentry/__tcp_transmit_skb")
+int BPF_PROG(sock_sel_sendmsg, struct sock *sk)
+{
+	TCBEE_GATE(0);
+	return trace_sock_sel(sk, &TCP_SEND_SOCK_EVENTS, RB_SOCK_SEND, 0);
+}
+
+SEC("?fentry/tcp_rcv_established")
+int BPF_PROG(sock_sel_recvmsg, struct sock *sk)
+{
+	TCBEE_GATE(0);
+	return trace_sock_sel(sk, &TCP_RECV_SOCK_EVENTS, RB_SOCK_RECV, 0);
+}
+
+SEC("?fexit/tcp_write_timer_handler")
+int BPF_PROG(sock_sel_timer, struct sock *sk)
+{
+	TCBEE_GATE(0);
+	return trace_sock_sel(sk, &TCP_TIMER_SOCK_EVENTS, RB_SOCK_TIMER,
+			      SOCK_HOOK_TIMER << SOCK_HOOK_SHIFT);
 }
 
 /*
