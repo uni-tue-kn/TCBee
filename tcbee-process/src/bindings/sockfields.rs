@@ -21,7 +21,8 @@ use crate::{
     raw::read_raw_records,
 };
 
-/// The layout of one field-selected file, kept for as long as the process runs
+/// The layout of one field-selected file. `binding_for` leaks it, once per file and run, so
+/// that `Binding` stays `Copy`.
 pub struct SockSel {
     shape: SockShape,
     /// Copy runs from a packed record into a packed full record
@@ -57,7 +58,7 @@ pub fn binding_for(
     };
     let raw = match raw_header {
         Some(header) => {
-            let layout = raw::sock_fields_layout_id(LAYOUT_ID, shape.fields.mask());
+            let layout = shape.layout_id(LAYOUT_ID);
             if header.layout != layout || header.record_len as usize != shape.ring_len {
                 return Err(invalid(format!(
                     "{name}: raw trace of {} byte records in layout {:08x}, the manifest says {} \
@@ -101,8 +102,7 @@ pub fn decode(
     full[full_len..].copy_from_slice(&RECORD_DELIMITER);
     let mut packed = vec![0u8; sel.shape.file_len];
     let mut emit = |index: u64, offset: u64, packed: &[u8]| {
-        sel.shape
-            .expand(&sel.expansion, packed, &mut full[..full_len]);
+        SockShape::expand(&sel.expansion, packed, &mut full[..full_len]);
         let event = sock_trace_entry::decode(&full)
             .map_err(|source| RangeError::Decode { offset, source })?;
         f(index, &event).map_err(RangeError::Callback)

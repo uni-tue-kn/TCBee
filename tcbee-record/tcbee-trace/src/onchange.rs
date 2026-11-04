@@ -180,8 +180,10 @@ impl WatchSet {
 /// field-selected sock records. A trace directory without it is format version 1: every source
 /// writes one full record per hook run.
 pub const MANIFEST_FILE: &str = "manifest.json";
-/// The newest format version; manifests without field-selected sources are written as 2
-pub const MANIFEST_VERSION: u16 = 3;
+/// The newest format version
+pub const MANIFEST_VERSION: u16 = SOCK_FIELDS_VERSION;
+/// The format of manifests without field-selected sources (on-change mode)
+pub const ON_CHANGE_VERSION: u16 = 2;
 /// The format version that added `SourceMeta::sock_fields`
 pub const SOCK_FIELDS_VERSION: u16 = 3;
 

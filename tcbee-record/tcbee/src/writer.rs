@@ -1440,6 +1440,8 @@ pub struct RecordShape {
     pub ring_len: usize,
     /// (offset, length) ranges of a ring record that make up its file record, in order
     pub runs: Vec<(usize, usize)>,
+    /// Bytes of a file record without the delimiter, the sum of the runs
+    pub file_len: usize,
     /// Layout id in the header of a raw trace
     pub layout_id: u32,
 }
@@ -1450,10 +1452,8 @@ impl RecordShape {
         RecordShape {
             ring_len: shape.ring_len,
             runs: shape.runs(),
-            layout_id: tcbee_trace::raw::sock_fields_layout_id(
-                tcbee_common::records::LAYOUT_ID,
-                shape.fields.mask(),
-            ),
+            file_len: shape.file_len,
+            layout_id: shape.layout_id(tcbee_common::records::LAYOUT_ID),
         }
     }
 }
@@ -1604,7 +1604,7 @@ where
         // A shaped record is shorter than T, so it is copied by its runs, never deserialized
         let (record_size, layout, layout_id) = match shape {
             Some(shape) => (
-                shape.runs.iter().map(|(_, len)| len).sum(),
+                shape.file_len,
                 Some(PackedLayout { runs: shape.runs }),
                 shape.layout_id,
             ),

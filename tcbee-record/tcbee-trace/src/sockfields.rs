@@ -416,8 +416,15 @@ impl SockShape {
             .collect()
     }
 
-    /// Writes the packed full record of the packed record `packed` to `full` (zeroed first)
-    pub fn expand(&self, expansion: &[(usize, usize, usize)], packed: &[u8], full: &mut [u8]) {
+    /// Layout id of the raw traces of these records, in a build whose record layouts are
+    /// `layout` (`tcbee_common::records::LAYOUT_ID`)
+    pub fn layout_id(&self, layout: u32) -> u32 {
+        crate::raw::sock_fields_layout_id(layout, self.fields.mask())
+    }
+
+    /// Writes the packed full record of the packed record `packed` to `full` (zeroed first),
+    /// with the copy runs of `expansion`
+    pub fn expand(expansion: &[(usize, usize, usize)], packed: &[u8], full: &mut [u8]) {
         full.fill(0);
         for &(from, to, len) in expansion {
             full[to..to + len].copy_from_slice(&packed[from..from + len]);
@@ -484,6 +491,7 @@ mod tests {
                 "{group:?} sorted by size"
             );
         }
+        // The full packed record, without the trace file's 4 byte delimiter
         assert_eq!(full_bytes(), 262 - 4);
     }
 
@@ -504,7 +512,12 @@ mod tests {
         assert_eq!(cwnd.runs(), [(0, 62), (64, 8), (72, 4)]);
 
         let all = SockShape::of(SockFields::ALL);
-        assert_eq!(all.file_len, full_bytes() - 4);
+        let never: usize = FULL
+            .iter()
+            .filter(|(name, _)| NEVER.contains(name))
+            .map(|(_, size)| size)
+            .sum();
+        assert_eq!(all.file_len, full_bytes() - never);
         assert_eq!(all.missing(), NEVER);
         for (i, group) in Group::ALL.into_iter().enumerate() {
             let at = all.offsets[i] as usize;
@@ -562,7 +575,7 @@ mod tests {
                     .collect();
                 assert_eq!(packed.len(), shape.file_len);
                 let mut back = vec![0xaa; full_bytes()];
-                shape.expand(&shape.expansion(), &packed, &mut back);
+                SockShape::expand(&shape.expansion(), &packed, &mut back);
                 let missing = shape.missing();
                 for (name, at) in &full_at {
                     let size = FULL.iter().find(|(n, _)| n == name).unwrap().1;

@@ -12,7 +12,8 @@ use crate::{
 use tcbee_common::{filter::*, stats::RINGBUFS};
 use tcbee_trace::{
     onchange::{
-        Manifest, Sampling, SockField, SockFieldsMeta, SourceMeta, WatchSet, SOCK_FIELDS_VERSION,
+        Manifest, Sampling, SockField, SockFieldsMeta, SourceMeta, WatchSet, ON_CHANGE_VERSION,
+        SOCK_FIELDS_VERSION,
     },
     sock_hooks::{Hook, HookSet},
     sockfields::{SockFields, SockShape},
@@ -311,11 +312,16 @@ fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSet> {
     Ok(hooks)
 }
 
-/// The hooks whose sock records can be field-selected: the default -k programs
-pub const SOCK_FIELDS_HOOKS: [Hook; 3] = [Hook::Egress, Hook::IngressEntry, Hook::Timer];
+/// The hooks whose sock records can be field-selected (the default -k programs) and their
+/// files
+pub const SOCK_FIELDS_FILES: [(Hook, TraceFile); 3] = [
+    (Hook::Egress, TraceFile::SendSockSel),
+    (Hook::IngressEntry, TraceFile::RecvSockSel),
+    (Hook::Timer, TraceFile::TimerSockSel),
+];
 
 /// `--sock-fields GROUPS`: the layout of the field-selected sock records, None without the
-/// flag. Only for -k in full mode at the hooks of `SOCK_FIELDS_HOOKS` (`full`, see
+/// flag. Only for -k in full mode at the hooks of `SOCK_FIELDS_FILES` (`full`, see
 /// `HookFlags`).
 pub fn parse_sock_fields(
     spec: &str,
@@ -331,11 +337,17 @@ pub fn parse_sock_fields(
     let Some(hooks) = full else {
         return Err(anyhow!("--sock-fields needs -k"));
     };
-    if let Some(hook) = hooks.hooks().find(|h| !SOCK_FIELDS_HOOKS.contains(h)) {
+    let selectable: Vec<&str> = SOCK_FIELDS_FILES.iter().map(|(h, _)| h.name()).collect();
+    if let Some(hook) = hooks
+        .hooks()
+        .find(|h| !SOCK_FIELDS_FILES.iter().any(|(s, _)| s == h))
+    {
         return Err(anyhow!(
-            "--sock-fields records only at the hooks egress, ingress-entry and timer, not at {}: \
-             give them with --sock-hooks, e.g. --sock-hooks egress,ingress-entry,timer",
-            hook.name()
+            "--sock-fields records only at the hooks {}, not at {}: give them with \
+             --sock-hooks, e.g. --sock-hooks {}",
+            selectable.join(", "),
+            hook.name(),
+            selectable.join(",")
         ));
     }
     let fields = SockFields::parse(spec).map_err(|e| anyhow!("--sock-fields: {}", e))?;
@@ -498,8 +510,7 @@ pub fn on_change_manifest(on_change: OnChange, kernel: bool, cwnd: bool) -> Mani
         ));
     }
     Manifest {
-        // The version before field-selected sources: these manifests did not change
-        format_version: SOCK_FIELDS_VERSION - 1,
+        format_version: ON_CHANGE_VERSION,
         sources,
     }
 }
@@ -515,15 +526,11 @@ pub fn sock_fields_manifest(shape: &SockShape, hooks: HookSet) -> Manifest {
         hooks: hook.kernel_hooks().iter().map(|k| k.to_string()).collect(),
         sock_fields: Some(SockFieldsMeta::of(shape)),
     };
-    let sources = [
-        (Hook::Egress, TraceFile::SendSockSel),
-        (Hook::IngressEntry, TraceFile::RecvSockSel),
-        (Hook::Timer, TraceFile::TimerSockSel),
-    ]
-    .into_iter()
-    .filter(|(hook, _)| hooks.contains(*hook))
-    .map(|(hook, file)| source(file, hook))
-    .collect();
+    let sources = SOCK_FIELDS_FILES
+        .into_iter()
+        .filter(|(hook, _)| hooks.contains(*hook))
+        .map(|(hook, file)| source(file, hook))
+        .collect();
     Manifest {
         format_version: SOCK_FIELDS_VERSION,
         sources,
@@ -759,19 +766,19 @@ mod tests {
         assert_eq!(ip_filter_keys(v6).len(), 1);
     }
 
-    /// `all` in an on-change list names the hooks on-change mode can use
     #[test]
     fn sock_fields_only_at_the_default_programs() {
-        let paper = Some(HookSet::of(&SOCK_FIELDS_HOOKS));
-        let shape = parse_sock_fields("cwnd,rtt", paper, false)
+        let hooks: Vec<Hook> = SOCK_FIELDS_FILES.iter().map(|(h, _)| *h).collect();
+        let sel_hooks = Some(HookSet::of(&hooks));
+        let shape = parse_sock_fields("cwnd,rtt", sel_hooks, false)
             .unwrap()
             .unwrap();
         assert_eq!(shape.fields.names(), ["cwnd", "rtt"]);
-        assert_eq!(parse_sock_fields("", paper, false).unwrap(), None);
+        assert_eq!(parse_sock_fields("", sel_hooks, false).unwrap(), None);
         assert!(parse_sock_fields("cwnd", None, false).is_err());
-        assert!(parse_sock_fields("cwnd", paper, true).is_err());
+        assert!(parse_sock_fields("cwnd", sel_hooks, true).is_err());
         assert!(parse_sock_fields("cwnd", Some(HookSet::FULL_DEFAULT), false).is_err());
-        assert!(parse_sock_fields("cwnd,ttl", paper, false).is_err());
+        assert!(parse_sock_fields("cwnd,ttl", sel_hooks, false).is_err());
         let egress = Some(HookSet::of(&[Hook::Egress]));
         assert!(parse_sock_fields("all", egress, false).is_ok());
     }
@@ -789,6 +796,7 @@ mod tests {
             .all(|s| s.sock_fields.as_ref().unwrap().shape().unwrap() == shape));
     }
 
+    /// `all` in an on-change list names the hooks on-change mode can use
     #[test]
     fn on_change_lists_know_only_their_hooks() {
         let oc = parse_on_change("cc", "all", false, true, false)

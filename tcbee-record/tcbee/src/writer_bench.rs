@@ -78,9 +78,8 @@ impl Config {
     fn record_bytes<T: Serialize + Copy>(&self) -> (usize, usize) {
         match &self.shape {
             Some(shape) => {
-                let file: usize = shape.runs.iter().map(|(_, len)| len).sum();
                 let file = match self.format {
-                    WriterFormat::Records => file + RECORD_DELIMITER.len(),
+                    WriterFormat::Records => shape.file_len + RECORD_DELIMITER.len(),
                     WriterFormat::Raw => raw::stride(shape.ring_len),
                 };
                 (shape.ring_len, file)
@@ -88,9 +87,7 @@ impl Config {
             None => (mem::size_of::<T>(), file_record_bytes::<T>(self.format)),
         }
     }
-}
 
-impl Config {
     fn from_env() -> Self {
         let var = |k: &str| env::var(k).ok().filter(|v| !v.is_empty());
         let num = |k: &str, d: f64| var(k).map(|v| v.parse().expect(k)).unwrap_or(d);
