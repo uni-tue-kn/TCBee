@@ -150,6 +150,8 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum | TraceFile::FlowOwners => {
             return None
         }
+        // Not read yet
+        TraceFile::SendSockSel | TraceFile::RecvSockSel | TraceFile::TimerSockSel => return None,
     })
 }
 

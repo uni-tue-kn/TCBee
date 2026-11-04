@@ -11,8 +11,11 @@ use crate::{
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
 use tcbee_trace::{
-    onchange::{Manifest, Sampling, SockField, SourceMeta, WatchSet, MANIFEST_VERSION},
+    onchange::{
+        Manifest, Sampling, SockField, SockFieldsMeta, SourceMeta, WatchSet, SOCK_FIELDS_VERSION,
+    },
     sock_hooks::{Hook, HookSet},
+    sockfields::SockShape,
     TraceFile,
 };
 
@@ -429,6 +432,7 @@ fn on_change_sources(
             .flat_map(|h| h.kernel_hooks())
             .map(|k| k.to_string())
             .collect(),
+        sock_fields: None,
     };
     let mut sources = Vec::new();
     if hooks.send() {
@@ -463,7 +467,34 @@ pub fn on_change_manifest(on_change: OnChange, kernel: bool, cwnd: bool) -> Mani
         ));
     }
     Manifest {
-        format_version: MANIFEST_VERSION,
+        // The version before field-selected sources: these manifests did not change
+        format_version: SOCK_FIELDS_VERSION - 1,
+        sources,
+    }
+}
+
+/// The files of field-selected sock records (`--sock-fields`) at `hooks`: the send file
+/// (egress), the receive file (ingress-entry) and the timer file
+pub fn sock_fields_manifest(shape: &SockShape, hooks: HookSet) -> Manifest {
+    let source = |file: TraceFile, hook: Hook| SourceMeta {
+        file: file.filename().into(),
+        sampling: Sampling::EveryRun,
+        shadow: false,
+        recv_hook: String::new(),
+        hooks: hook.kernel_hooks().iter().map(|k| k.to_string()).collect(),
+        sock_fields: Some(SockFieldsMeta::of(shape)),
+    };
+    let sources = [
+        (Hook::Egress, TraceFile::SendSockSel),
+        (Hook::IngressEntry, TraceFile::RecvSockSel),
+        (Hook::Timer, TraceFile::TimerSockSel),
+    ]
+    .into_iter()
+    .filter(|(hook, _)| hooks.contains(*hook))
+    .map(|(hook, file)| source(file, hook))
+    .collect();
+    Manifest {
+        format_version: SOCK_FIELDS_VERSION,
         sources,
     }
 }

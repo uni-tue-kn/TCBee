@@ -278,8 +278,14 @@ mod checks {
     #[test]
     fn small_fixture() {
         let trace = TCBeeTrace::open(dir("tcbee_small")).unwrap();
-        assert_eq!(trace.available_traces().len(), TraceFile::all().len());
-        let total: u64 = TraceFile::all()
+        // Recorded before the field-selected files existed
+        let files: Vec<TraceFile> = TraceFile::all()
+            .iter()
+            .copied()
+            .filter(|f| !f.field_selected())
+            .collect();
+        assert_eq!(trace.available_traces().len(), files.len());
+        let total: u64 = files
             .iter()
             .map(|&f| fs::metadata(trace.path_for(f)).unwrap().len())
             .sum();

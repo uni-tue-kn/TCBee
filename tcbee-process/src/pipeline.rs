@@ -721,6 +721,7 @@ mod tests {
             shadow,
             recv_hook: "fexit/tcp_rcv_established".into(),
             hooks: Vec::new(),
+            sock_fields: None,
         }
     }
 

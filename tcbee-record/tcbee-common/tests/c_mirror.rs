@@ -123,8 +123,8 @@ fn programs_use_the_map_of_each_ring_buffer_id() {
 }
 
 /// Every trace file is written by exactly one ring buffer, and the direction in the file name
-/// matches the map name. The on-change files (`*_oc.tcp`) are written by the ring buffer of
-/// their full counterpart, in on-change mode instead of it.
+/// matches the map name. The on-change files (`*_oc.tcp`) and the field-selected ones
+/// (`*_sel.tcp`) are written by the ring buffer of their full counterpart instead of it.
 #[test]
 fn every_trace_file_has_one_ring_buffer() {
     let mut files: Vec<&str> = RINGBUFS.iter().map(|r| r.file.filename()).collect();
@@ -132,11 +132,11 @@ fn every_trace_file_has_one_ring_buffer() {
     let (on_change, mut all): (Vec<&str>, Vec<&str>) = TraceFile::all()
         .iter()
         .map(|f| f.filename())
-        .partition(|name| name.ends_with("_oc.tcp"));
+        .partition(|name| name.ends_with("_oc.tcp") || name.ends_with("_sel.tcp"));
     all.sort_unstable();
     assert_eq!(files, all);
     for name in on_change {
-        let full = name.replace("_oc.tcp", ".tcp");
+        let full = name.replace("_oc.tcp", ".tcp").replace("_sel.tcp", ".tcp");
         assert!(
             files.contains(&full.as_str()),
             "{name} has no full counterpart"
