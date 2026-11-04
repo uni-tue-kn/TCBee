@@ -19,8 +19,9 @@
 //! a scratch buffer and writes no file: the CPU ceiling), `TCBEE_BENCH_FORMAT` (records or raw:
 //! raw feeds spans of `RAW_SPAN_BYTES` of ring frames through `write_span`, as the raw drain
 //! does), `TCBEE_BENCH_BUF_MB` (fractions allowed),
-//! `TCBEE_BENCH_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled sinks' buffers, and their
-//! I/O threads or io_uring writes at once, per file), `TCBEE_BENCH_PREALLOC=0` (O_DIRECT without preallocation),
+//! `TCBEE_BENCH_BUFFERS`, `TCBEE_BENCH_MAX_BUFFERS` and `TCBEE_BENCH_IO_THREADS` (the pooled
+//! sinks' buffers, how many they may grow to, and their I/O threads or io_uring writes at
+//! once, per file), `TCBEE_BENCH_PREALLOC=0` (O_DIRECT without preallocation),
 //! `TCBEE_BENCH_IO_CPUS` (cores for the file helpers and I/O threads of all
 //! sinks; by default they inherit the writer's core), `TCBEE_BENCH_STEADY_GB` (the steady state
 //! of a disk run starts once this much was written, default the size of the memory),
@@ -126,6 +127,7 @@ impl Config {
                     defaults.buffer_bytes as f64 / (1 << 20) as f64,
                 ) * (1 << 20) as f64) as usize,
                 buffers: num("TCBEE_BENCH_BUFFERS", defaults.buffers as f64) as usize,
+                max_buffers: num("TCBEE_BENCH_MAX_BUFFERS", defaults.max_buffers as f64) as usize,
                 io_threads: num("TCBEE_BENCH_IO_THREADS", defaults.io_threads as f64) as usize,
                 preallocate: num("TCBEE_BENCH_PREALLOC", 1.0) != 0.0,
                 io_cpus: Vec::new(),
@@ -620,8 +622,9 @@ where
         "devices": devs, "tmpfs": on_tmpfs(&cfg.dir), "rate_per_file": cfg.rate, "cpus": cfg.cpus, "secs": cfg.secs,
         "max_bytes": cfg.max_bytes, "size_capped": results.iter().any(|r| r.size_capped),
         "sink": if cfg.null { "null" } else { cfg.sink.kind.name() }, "format": cfg.format.name(), "buffer_bytes": cfg.sink.buffer_bytes, "buffers": cfg.sink.buffers,
-        "io_threads": cfg.sink.io_threads, "io_cpus": cfg.io_cpus, "preallocate": cfg.sink.preallocate,
+        "max_buffers": cfg.sink.max_buffers, "io_threads": cfg.sink.io_threads, "io_cpus": cfg.io_cpus, "preallocate": cfg.sink.preallocate,
         "effective_sinks": results.iter().map(|r| r.sink.as_ref().map_or(if cfg.null { "null" } else { "mmap" }, |s| s.sink)).collect::<Vec<_>>(),
+        "buffers_peak": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.buffers_peak).max().unwrap_or(0),
         "stalls": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stalls).sum::<u64>(),
         "stall_secs": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_ns).sum::<u64>() as f64 / 1e9,
         "stall_max_ms": results.iter().filter_map(|r| r.sink.as_ref()).map(|s| s.stall_max_ns).max().unwrap_or(0) as f64 / 1e6,

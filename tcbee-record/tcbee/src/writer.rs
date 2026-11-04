@@ -1804,10 +1804,12 @@ where
             }
             if let Some(stats) = &stats {
                 info!(
-                    "Finished {} ({}): {} writes, the writer waited {} times for {} ms",
+                    "Finished {} ({}): {} writes, up to {} buffers, the writer waited {} times \
+                     for {} ms",
                     self.file_path.display(),
                     stats.sink,
                     stats.writes,
+                    stats.buffers_peak,
                     stats.stalls,
                     stats.stall_ns / 1_000_000
                 );

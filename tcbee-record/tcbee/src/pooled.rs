@@ -116,6 +116,11 @@ pub struct SinkConfig {
     pub buffer_bytes: usize,
     /// Buffers per file, at least 2
     pub buffers: usize,
+    /// While every buffer is being written, the I/O thread sinks (direct, buffered) add
+    /// buffers up to this many instead of waiting, so a slow write (a disk's latency spike)
+    /// holds records in memory rather than stopping the writer. The pool shrinks back as the
+    /// writes catch up. No growth if not above `buffers`.
+    pub max_buffers: usize,
     /// Writes running at once per file: I/O threads, or io_uring writes in flight. At most
     /// `buffers - 1` can run.
     pub io_threads: usize,
@@ -134,6 +139,7 @@ impl Default for SinkConfig {
             kind: SinkKind::Mmap,
             buffer_bytes: 2 << 20,
             buffers: 8,
+            max_buffers: 64,
             io_threads: 2,
             preallocate: true,
             io_cpus: Vec::new(),
@@ -166,6 +172,8 @@ pub struct SinkStats {
     pub sink: &'static str,
     /// Buffers handed to the I/O threads
     pub writes: u64,
+    /// Most buffers the file had at once, after growing the pool
+    pub buffers_peak: u64,
     /// Times the writer waited for a free buffer, and how long in total and at most
     pub stalls: u64,
     pub stall_ns: u64,
@@ -995,6 +1003,7 @@ impl PooledFile {
             prealloc: None,
             stats: SinkStats {
                 sink: kind.name(),
+                buffers_peak: buffers as u64,
                 ..SinkStats::default()
             },
         })
@@ -1258,8 +1267,19 @@ impl PooledFile {
         .map(Io::Threads)
     }
 
-    /// A free buffer, waiting for a write to finish if there is none
+    /// A free buffer: a new one while the I/O threads' pool may grow (and memory is left),
+    /// else waiting for a write to finish if there is none
     fn free_buffer(&mut self) -> io::Result<AlignedBuf> {
+        if self.free.is_empty()
+            && matches!(self.io, Some(Io::Threads(_)))
+            && self.buffers() < self.config.max_buffers
+        {
+            if let Ok(added) = AlignedBuf::new(self.buf_size + SLACK) {
+                // The current buffer goes to the I/O threads, the new one takes its place
+                self.stats.buffers_peak = self.stats.buffers_peak.max(self.buffers() as u64 + 1);
+                return Ok(added);
+            }
+        }
         if self.free.is_empty() {
             self.stall(|file| file.free.is_empty())?;
         }
@@ -1318,7 +1338,10 @@ impl PooledFile {
 
     fn finished(&mut self, done: IoDone) {
         self.in_flight -= 1;
-        self.free.push(done.buf);
+        // A buffer added in a slow phase is dropped once another one is free
+        if self.free.is_empty() || self.buffers() < self.config.buffers.max(2) {
+            self.free.push(done.buf);
+        }
         if done.partial {
             self.partial_in_flight = false;
         }
@@ -1523,6 +1546,7 @@ pub(crate) mod tests {
             kind,
             buffer_bytes: 8192,
             buffers: 3,
+            max_buffers: 3,
             io_threads: 2,
             preallocate: true,
             io_cpus: Vec::new(),
@@ -1625,13 +1649,70 @@ pub(crate) mod tests {
         let path = temp("stall");
         let mut config = config(SinkKind::Buffered);
         config.buffers = 2;
+        config.max_buffers = 2;
         config.io_threads = 1;
         let mut file = PooledFile::new(&path, config).unwrap();
         let expected = fill(&mut file, 5000, 100);
-        let (written, _, result) = file.finish(100);
+        let (written, stats, result) = file.finish(100);
         result.unwrap();
         assert_eq!(written, 5000);
+        assert_eq!(stats.buffers_peak, 2);
         assert_eq!(fs::read(&path).unwrap(), expected);
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn pool_grows_up_to_its_limit() {
+        for kind in [SinkKind::Direct, SinkKind::Buffered] {
+            let path = temp(&format!("grow-{}", kind.name()));
+            let mut config = config(kind);
+            config.buffers = 2;
+            config.max_buffers = 5;
+            config.io_threads = 1;
+            let mut file = PooledFile::new(&path, config).unwrap();
+            let expected = fill(&mut file, 50_000, 100);
+            let (written, stats, result) = file.finish(100);
+            result.unwrap();
+            assert_eq!(written, 50_000);
+            assert!((2..=5).contains(&stats.buffers_peak));
+            assert_eq!(fs::read(&path).unwrap(), expected);
+            fs::remove_file(&path).unwrap();
+        }
+    }
+
+    /// While no write finishes the writer goes on in new buffers up to the limit, and the
+    /// pool shrinks back when the writes come back
+    #[test]
+    fn stuck_writes_grow_the_pool_and_finished_ones_shrink_it() {
+        let path = temp("stuck");
+        let mut config = config(SinkKind::Buffered);
+        config.buffers = 2;
+        config.max_buffers = 5;
+        let mut file = PooledFile::new(&path, config).unwrap();
+        let (jobs, queued) = mpsc::channel();
+        let (finish, done) = mpsc::channel();
+        file.io = Some(Io::Threads(IoThreads {
+            jobs: Some(jobs),
+            done,
+            handles: Vec::new(),
+        }));
+        // Four full buffers go to the stuck I/O, the fifth takes the records after them
+        fill(&mut file, 4 * 8192 / 64 + 1, 64);
+        assert_eq!((file.in_flight, file.buffers()), (4, 5));
+        assert_eq!((file.stats.buffers_peak, file.stats.stalls), (5, 0));
+        for job in queued.try_iter() {
+            finish
+                .send(IoDone {
+                    buf: job.buf,
+                    offset: job.offset,
+                    written: job.len,
+                    partial: false,
+                    result: Ok(()),
+                })
+                .unwrap();
+        }
+        file.tick().unwrap();
+        assert_eq!((file.in_flight, file.buffers()), (0, 2));
         fs::remove_file(&path).unwrap();
     }
 
