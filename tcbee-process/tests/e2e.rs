@@ -1353,3 +1353,119 @@ fn raw_traces_read_like_record_traces() {
         assert_eq!(raw, records, "{engine:?}");
     }
 }
+
+/// Field-selected sock records (`--sock-fields`), in both formats, read as the full records
+/// they came from with the unselected series left out; without the manifest they are refused
+#[test]
+fn field_selected_sock_records_read_like_full_ones() {
+    use tcbee_common::records::sock_trace_entry;
+    use tcbee_trace::{
+        onchange::{Manifest, Sampling, SockFieldsMeta, SourceMeta, SOCK_FIELDS_VERSION},
+        raw::{header_frame, record_frame, sock_fields_layout_id},
+        sockfields::{SockFields, SockShape},
+    };
+    let recs: Vec<_> = (0..6u64)
+        .map(|i| sock_trace_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: 0x0200_000A_0100_000A,
+            sport: 40000,
+            dport: 5201,
+            family: 2,
+            snd_cwnd: 10 + i as u32,
+            srtt: 100 + i as u32,
+            min_rtt: 90,
+            pacing_rate: 1 << 30,
+            ..Default::default()
+        })
+        .collect();
+    let shape = SockShape::of(SockFields::parse("cwnd,rtt").unwrap());
+    // The packed records of the shape, cut out of the full ones
+    let packed: Vec<Vec<u8>> = recs
+        .iter()
+        .map(|r| {
+            let full = bincode::serialize(r).unwrap();
+            let mut out = vec![0; shape.file_len];
+            for (from, to, len) in shape.expansion() {
+                out[from..from + len].copy_from_slice(&full[to..to + len]);
+            }
+            out
+        })
+        .collect();
+    let manifest = Manifest {
+        format_version: SOCK_FIELDS_VERSION,
+        sources: vec![SourceMeta {
+            file: "send_sock_sel.tcp".into(),
+            sampling: Sampling::EveryRun,
+            shadow: false,
+            recv_hook: String::new(),
+            hooks: vec!["fentry/__tcp_transmit_skb".into()],
+            sock_fields: Some(SockFieldsMeta::of(&shape)),
+        }],
+    };
+    let series_of = |out: &Path| -> BTreeMap<String, (i64, Option<f64>)> {
+        let store = ts_storage::open(out).unwrap();
+        store
+            .series(1)
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.source == "sock")
+            .map(|s| (s.name, (s.n, s.v_max)))
+            .collect()
+    };
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let full = tmp.path().join("full");
+        fs::create_dir_all(&full).unwrap();
+        write_records(&full, "send_sock.tcp", &recs);
+        let work = tmp.path().join("f");
+        fs::create_dir_all(&work).unwrap();
+        let (out, _) = process(engine, ext, &work, &full, None);
+        let full_series = series_of(&out);
+
+        for raw in [false, true] {
+            let trace = tmp.path().join(format!("sel-{raw}"));
+            fs::create_dir_all(&trace).unwrap();
+            let bytes: Vec<u8> = if raw {
+                let layout =
+                    sock_fields_layout_id(tcbee_common::records::LAYOUT_ID, shape.fields.mask());
+                let mut bytes = header_frame(shape.ring_len, layout);
+                for p in &packed {
+                    let mut ring = vec![0u8; shape.ring_len];
+                    let mut at = 0;
+                    for (off, len) in shape.runs() {
+                        ring[off..off + len].copy_from_slice(&p[at..at + len]);
+                        at += len;
+                    }
+                    bytes.extend_from_slice(&record_frame(&ring));
+                }
+                bytes
+            } else {
+                packed
+                    .iter()
+                    .flat_map(|p| [&p[..], &tcbee_common::records::RECORD_DELIMITER].concat())
+                    .collect()
+            };
+            fs::write(trace.join("send_sock_sel.tcp"), &bytes).unwrap();
+            manifest.write(&trace).unwrap();
+            let work = tmp.path().join(format!("o-{raw}"));
+            fs::create_dir_all(&work).unwrap();
+            let (out, summary) = process(engine, ext, &work, &trace, None);
+            assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+            let sel = series_of(&out);
+            for name in ["snd_cwnd", "srtt", "min_rtt"] {
+                assert_eq!(sel.get(name), full_series.get(name), "{name}, raw {raw}");
+            }
+            assert!(sel.contains_key("snd_cwnd"));
+            assert!(!sel.contains_key("pacing_rate"), "raw {raw}");
+            assert!(sel.keys().all(|name| full_series.contains_key(name)));
+
+            // Without the manifest the file cannot be read
+            fs::remove_file(trace.join("manifest.json")).unwrap();
+            let mut args = Args::new(&trace, work.join(format!("none.{ext}")), engine);
+            args.threads = None;
+            let err = run(args).expect_err("no manifest");
+            assert!(format!("{err:#}").contains("manifest"), "{err:#}");
+        }
+    }
+}

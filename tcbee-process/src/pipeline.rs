@@ -187,6 +187,8 @@ fn plan(
 ) -> Result<(Vec<FilePlan>, Vec<Unit>)> {
     let mut files = Vec::new();
     let mut units = Vec::new();
+    // The layouts of field-selected files; read again for the sampling metadata
+    let manifest = Manifest::read(trace.dir()).ok().flatten();
     for file in trace.available_traces() {
         // Not an event table, read after the workers (owners.rs)
         if file == TraceFile::FlowOwners {
@@ -197,8 +199,8 @@ fn plan(
         let len = std::fs::metadata(&path)
             .with_context(|| format!("cannot stat {}", path.display()))?
             .len();
-        let binding =
-            binding_for(file, &path).with_context(|| format!("cannot read {}", path.display()))?;
+        let binding = binding_for(file, &path, manifest.as_ref())
+            .with_context(|| format!("cannot read {}", path.display()))?;
         let Some(binding) = binding else {
             info!("Skipping {name}: {NO_DECODER}");
             if len > 0 {
@@ -232,7 +234,7 @@ fn plan(
         }
         if !binding.missing_columns.is_empty() {
             info!(
-                "{name}: older record layout without {}; their series are left out",
+                "{name}: records without {}; their series are left out",
                 binding.missing_columns.join(", ")
             );
         }
@@ -398,7 +400,7 @@ fn worker(shared: &Shared<'_>) -> Result<WorkerOutput> {
             .with_context(|| format!("cannot open {}", file_plan.path.display()))?;
         let mut batch = EventBatch::new(binding.table, BATCH_ROWS);
 
-        let res = (binding.decode)(&file, unit.records.clone(), &mut |index, row| {
+        let res = binding.decode_records(&file, unit.records.clone(), &mut |index, row| {
             if index % ABORT_CHECK_RECORDS == 0 && shared.aborted() {
                 return Err(Box::new(Aborted) as RowError);
             }

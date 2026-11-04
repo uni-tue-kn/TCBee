@@ -7,22 +7,23 @@ pub mod legacy;
 pub mod mptcp_pm;
 pub mod reno;
 pub mod sock;
+pub mod sockfields;
 pub mod tcp4_packet;
 pub mod tcp6_packet;
 pub mod tcp_event;
 pub mod tcp_probe;
 
-use std::{io, path::Path};
+use std::{fs::File, io, ops::Range, path::Path};
 
 use tcbee_common::records::{
     bbr_trace_entry, cubic_trace_entry, cwnd_trace_entry, mptcp_pm_entry, reno_trace_entry,
     sock_trace_entry, tcp4_packet_trace, tcp6_packet_trace, tcp_event_entry, tcp_probe_entry,
     LAYOUT_ID,
 };
-use tcbee_trace::TraceFile;
+use tcbee_trace::{onchange::Manifest, TraceFile};
 use ts_storage::{Dir, EventTable};
 
-use crate::decode::{decode_dyn, DecodeFn};
+use crate::decode::{decode_dyn, DecodeFn, RangeError, RowError, RowFn};
 use crate::event::Event;
 use crate::raw::{self, decode_raw_dyn};
 
@@ -43,6 +44,9 @@ pub struct Binding {
     /// Columns the records of this file do not have; their rows hold 0 there and their series
     /// are left out of the catalog
     pub missing_columns: &'static [&'static str],
+    /// The layout of a file of field-selected sock records, decoded by `sockfields::decode`
+    /// instead of `decode`
+    pub sock_sel: Option<&'static sockfields::SockSel>,
     /// Size of the record's bincode encoding, to check `entry_size` against
     #[cfg(test)]
     pub encoded_size: fn() -> usize,
@@ -101,6 +105,7 @@ fn binding_of<E: Event + Default + Copy + serde::Serialize>(dir: Dir) -> Binding
         record_len: std::mem::size_of::<E>(),
         raw_decode: decode_raw_dyn::<E>,
         missing_columns: &[],
+        sock_sel: None,
         #[cfg(test)]
         encoded_size: || bincode::serialized_size(&E::default()).unwrap() as usize,
     }
@@ -150,7 +155,7 @@ pub fn binding(file: TraceFile) -> Option<Binding> {
         TraceFile::TcpRetransmitSynack | TraceFile::TcpBadCsum | TraceFile::FlowOwners => {
             return None
         }
-        // Not read yet
+        // Their layout is in the manifest, see `binding_for`
         TraceFile::SendSockSel | TraceFile::RecvSockSel | TraceFile::TimerSockSel => return None,
     })
 }
@@ -160,12 +165,38 @@ impl Binding {
     pub fn first(&self) -> u64 {
         u64::from(self.raw)
     }
+
+    /// Decodes records (frames of a raw trace) `records` of `file`, see `DecodeFn`
+    pub fn decode_records(
+        &self,
+        file: &File,
+        records: Range<u64>,
+        f: &mut RowFn<'_>,
+    ) -> Result<u64, RangeError<RowError>> {
+        match self.sock_sel {
+            Some(sel) => sockfields::decode(sel, self.raw, file, records, f),
+            None => (self.decode)(file, records, f),
+        }
+    }
 }
 
 /// The binding of the trace file at `path`: `binding(file)`, its raw variant for a raw trace,
 /// or the binding of an older record layout of the same table (`legacy`) if the file was
-/// written in one.
-pub fn binding_for(file: TraceFile, path: &Path) -> io::Result<Option<Binding>> {
+/// written in one. Files of field-selected sock records take their layout from `manifest`,
+/// the recording's manifest.json.
+pub fn binding_for(
+    file: TraceFile,
+    path: &Path,
+    manifest: Option<&Manifest>,
+) -> io::Result<Option<Binding>> {
+    if file.field_selected() {
+        let header = match raw::probe(path)? {
+            Some(Ok(header)) => Some(header),
+            Some(Err(err)) => return Err(io::Error::new(io::ErrorKind::InvalidData, err)),
+            None => None,
+        };
+        return sockfields::binding_for(file, manifest, header).map(Some);
+    }
     let Some(current) = binding(file) else {
         return Ok(None);
     };

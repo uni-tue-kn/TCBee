@@ -195,7 +195,9 @@ pub mod tests {
 
         let records: Vec<_> = (10..20).map(packet).collect();
         let (_file, path) = temp_file("binding", &raw_bytes(&records));
-        let binding = binding_for(TraceFile::Tcp4Send, &path).unwrap().unwrap();
+        let binding = binding_for(TraceFile::Tcp4Send, &path, None)
+            .unwrap()
+            .unwrap();
         assert!(binding.raw);
         assert_eq!(binding.first(), 1);
         assert_eq!(
@@ -214,7 +216,7 @@ pub mod tests {
         assert_eq!(seen[0].0, 1);
 
         // A raw file of another record type is an error, not garbage
-        let err = binding_for(TraceFile::SendSock, &path).err().unwrap();
+        let err = binding_for(TraceFile::SendSock, &path, None).err().unwrap();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         fs::remove_file(path).unwrap();
 
@@ -223,7 +225,7 @@ pub mod tests {
         other[raw::RINGBUF_HEADER_LEN + 20..raw::RINGBUF_HEADER_LEN + 24]
             .copy_from_slice(&(tcbee_common::records::LAYOUT_ID ^ 1).to_ne_bytes());
         let (_file, path) = temp_file("layout", &other);
-        let err = binding_for(TraceFile::Tcp4Send, &path).err().unwrap();
+        let err = binding_for(TraceFile::Tcp4Send, &path, None).err().unwrap();
         assert!(err.to_string().contains("record layouts"), "{err}");
         fs::remove_file(path).unwrap();
     }
