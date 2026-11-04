@@ -61,7 +61,7 @@ impl HookGroup {
 /// rare hooks.
 /// The per-packet hooks run about once per segment each, so this is what a writer has to copy
 /// per segment for the ring.
-fn record_bytes(rb: u32) -> usize {
+fn record_bytes(rb: u32, sock: usize) -> usize {
     let record = match rb {
         RB_TCP4_EGRESS | RB_TCP4_INGRESS | RB_TCP4_DRIVER_INGRESS | RB_TCP4_DRIVER_EGRESS => {
             size_of::<tcp4_packet_trace>()
@@ -69,7 +69,7 @@ fn record_bytes(rb: u32) -> usize {
         RB_TCP6_EGRESS | RB_TCP6_INGRESS | RB_TCP6_DRIVER_INGRESS | RB_TCP6_DRIVER_EGRESS => {
             size_of::<tcp6_packet_trace>()
         }
-        RB_SOCK_SEND | RB_SOCK_RECV | RB_SOCK_INGRESS => size_of::<sock_trace_entry>(),
+        RB_SOCK_SEND | RB_SOCK_RECV | RB_SOCK_INGRESS => sock,
         RB_CWND_SEND | RB_CWND_RECV => size_of::<cwnd_trace_entry>(),
         RB_CUBIC => size_of::<cubic_trace_entry>(),
         RB_BBR => size_of::<bbr_trace_entry>(),
@@ -105,6 +105,11 @@ fn hook_of(rb: u32) -> u32 {
 ///
 /// Empty without CPUs.
 pub(crate) fn assign(rbs: &[u32], cpus: &[usize]) -> Vec<(u32, usize)> {
+    assign_with(rbs, cpus, size_of::<sock_trace_entry>())
+}
+
+/// As `assign`, with sock records of `sock` bytes in the ring (field-selected records)
+pub(crate) fn assign_with(rbs: &[u32], cpus: &[usize], sock: usize) -> Vec<(u32, usize)> {
     if cpus.is_empty() {
         return Vec::new();
     }
@@ -118,8 +123,8 @@ pub(crate) fn assign(rbs: &[u32], cpus: &[usize]) -> Vec<(u32, usize)> {
         let mut hooks: Vec<(u32, usize)> = Vec::new();
         for &rb in rbs.iter().filter(|&&rb| HookGroup::of(rb) == group) {
             match hooks.iter_mut().find(|(hook, _)| *hook == hook_of(rb)) {
-                Some((_, bytes)) => *bytes = (*bytes).max(record_bytes(rb)),
-                None => hooks.push((hook_of(rb), record_bytes(rb))),
+                Some((_, bytes)) => *bytes = (*bytes).max(record_bytes(rb, sock)),
+                None => hooks.push((hook_of(rb), record_bytes(rb, sock))),
             }
         }
         hooks.iter().map(|&(_, bytes)| bytes).sum()
@@ -257,6 +262,31 @@ mod tests {
         ] {
             assert_eq!(cpu(&assigned, rb), 27, "{}", RINGBUFS[rb as usize].map);
         }
+    }
+
+    /// Field-selected sock records weigh their length: short ones no longer need a CPU alone
+    #[test]
+    fn short_sock_records_share_a_cpu() {
+        let rbs = [
+            RB_TCP4_EGRESS,
+            RB_TCP4_INGRESS,
+            RB_SOCK_SEND,
+            RB_SOCK_RECV,
+            RB_CWND_SEND,
+            RB_CWND_RECV,
+            RB_CUBIC,
+            RB_TCP_PROBE,
+        ];
+        let assigned = assign_with(&rbs, &[26, 27], 80);
+        let sock_cpu = cpu(&assigned, RB_SOCK_SEND);
+        assert!(rbs
+            .iter()
+            .filter(|&&rb| rb != RB_SOCK_SEND && rb != RB_SOCK_RECV)
+            .any(|&rb| cpu(&assigned, rb) == sock_cpu));
+        assert_eq!(
+            assign_with(&rbs, &[26, 27], size_of::<sock_trace_entry>()),
+            assign(&rbs, &[26, 27])
+        );
     }
 
     /// The eval's all-probe set (-h -k -t -w -a, IPv4 and IPv6 rings, all three congestion

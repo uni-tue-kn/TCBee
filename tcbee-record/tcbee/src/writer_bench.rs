@@ -11,7 +11,8 @@
 //!
 //! Environment: `TCBEE_BENCH_DIR` (required), `TCBEE_BENCH_SECS` (default 20),
 //! `TCBEE_BENCH_FILES` (writer threads, one file each, default 1), `TCBEE_BENCH_RECORD`
-//! (sock, tcp4 or cwnd, default sock), `TCBEE_BENCH_RATE` (records/s per file, 0 = as fast
+//! (sock, tcp4 or cwnd, default sock), `TCBEE_BENCH_SOCK_FIELDS` (sock records with only
+//! these field groups, as `--sock-fields`), `TCBEE_BENCH_RATE` (records/s per file, 0 = as fast
 //! as possible), `TCBEE_BENCH_CPUS` (cores to pin the writers to, round robin),
 //! `TCBEE_BENCH_IDLE_SECS` (host CPU measured before the run as a baseline, default 2),
 //! `TCBEE_BENCH_SINK` (mmap, direct, buffered, uring or sync, default mmap; `null` packs or copies into
@@ -43,6 +44,7 @@ use std::{collections::BTreeMap, env, os::unix::fs::MetadataExt, sync::Mutex, ti
 
 use serde_json::{json, Value};
 use tcbee_common::records::*;
+use tcbee_trace::sockfields::{SockFields, SockShape};
 
 use super::*;
 
@@ -67,6 +69,25 @@ struct Config {
     format: WriterFormat,
     io_cpus: Vec<usize>,
     steady_bytes: u64,
+    /// Field-selected sock records
+    shape: Option<RecordShape>,
+}
+
+impl Config {
+    /// Bytes of a ring record and of a record (or frame) in the file
+    fn record_bytes<T: Serialize + Copy>(&self) -> (usize, usize) {
+        match &self.shape {
+            Some(shape) => {
+                let file: usize = shape.runs.iter().map(|(_, len)| len).sum();
+                let file = match self.format {
+                    WriterFormat::Records => file + RECORD_DELIMITER.len(),
+                    WriterFormat::Raw => raw::stride(shape.ring_len),
+                };
+                (shape.ring_len, file)
+            }
+            None => (mem::size_of::<T>(), file_record_bytes::<T>(self.format)),
+        }
+    }
 }
 
 impl Config {
@@ -116,6 +137,10 @@ impl Config {
             format,
             io_cpus: cpus("TCBEE_BENCH_IO_CPUS"),
             steady_bytes: (num("TCBEE_BENCH_STEADY_GB", 0.0) * 1e9) as u64,
+            shape: var("TCBEE_BENCH_SOCK_FIELDS").map(|spec| {
+                let fields = SockFields::parse(&spec).expect("TCBEE_BENCH_SOCK_FIELDS");
+                RecordShape::of_sock(&SockShape::of(fields))
+            }),
         }
     }
 }
@@ -307,6 +332,7 @@ where
         Arc::new(AtomicU64::new(0)),
         cfg.sink.clone(),
         cfg.format,
+        cfg.shape.clone(),
     )
     .unwrap();
     if cfg.null {
@@ -320,8 +346,8 @@ where
             writer: None,
         });
     }
-    let size = mem::size_of::<T>();
-    let limit = cfg.max_bytes / cfg.files as u64 / file_record_bytes::<T>(cfg.format) as u64;
+    let (size, file_bytes) = cfg.record_bytes::<T>();
+    let limit = cfg.max_bytes / cfg.files as u64 / file_bytes as u64;
     let mut rng = tests::Rng(0x2545_F491 ^ idx as u64);
     let pool = rng.bytes(size * POOL);
     // Raw: the pool as ring frames, cut into spans of whole frames as a drain copies them
@@ -333,7 +359,12 @@ where
     );
     let frames: Vec<u8> = pool.chunks(size).flat_map(raw::record_frame).collect();
     let mut scratch = vec![0u8; RAW_SPAN_BYTES.max(job.record_size + RECORD_DELIMITER.len())];
-    let layout = PackedLayout::of::<T>().expect("bench records have a packed layout");
+    let layout = match &cfg.shape {
+        Some(shape) => PackedLayout {
+            runs: shape.runs.clone(),
+        },
+        None => PackedLayout::of::<T>().expect("bench records have a packed layout"),
+    };
 
     let cpu0 = cpu_ns(libc::RUSAGE_THREAD);
     let start = Instant::now();
@@ -407,7 +438,7 @@ fn run<T>(cfg: &Config) -> Value
 where
     T: Serialize + Copy + Send + 'static,
 {
-    let record_bytes = file_record_bytes::<T>(cfg.format);
+    let (_, record_bytes) = cfg.record_bytes::<T>();
     let devs = devices(&cfg.dir);
     let vm_num = |k: &str| -> u64 {
         fs::read_to_string(format!("/proc/sys/vm/{k}"))

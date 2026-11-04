@@ -78,6 +78,13 @@ impl std::fmt::Display for HeaderError {
 
 impl std::error::Error for HeaderError {}
 
+/// The layout id of field-selected sock records (`--sock-fields`) with the groups `mask`
+/// (`sockfields::SockFields::mask`), in a build whose record layouts are `layout`. Differs
+/// from `layout` for every mask, so a reader that does not know the groups refuses the file.
+pub fn sock_fields_layout_id(layout: u32, mask: u16) -> u32 {
+    layout ^ (u32::from(mask) | 1 << 16).wrapping_mul(0x9e37_79b1)
+}
+
 /// The header frame for records of `record_len` bytes in the record layouts `layout`, one
 /// stride long
 pub fn header_frame(record_len: usize, layout: u32) -> Vec<u8> {

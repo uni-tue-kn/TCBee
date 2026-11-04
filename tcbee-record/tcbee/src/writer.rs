@@ -31,7 +31,7 @@ use crate::{
     },
     pooled::PooledFile,
     rawring::{walk, RingMap, RingWaiter, Stop, WalkError},
-    ring_groups::{assign, HookGroup},
+    ring_groups::{assign, assign_with, HookGroup},
 };
 
 /// How writer threads wait for new records
@@ -144,6 +144,8 @@ pub struct Writer {
     /// How the trace files are written
     sink: SinkConfig,
     format: WriterFormat,
+    /// Ring bytes of field-selected sock records, for the placement
+    sock_record: Option<usize>,
 }
 
 impl Writer {
@@ -161,6 +163,7 @@ impl Writer {
             balancer: None,
             sink: SinkConfig::default(),
             format: WriterFormat::default(),
+            sock_record: None,
         }
     }
 
@@ -176,6 +179,13 @@ impl Writer {
         self
     }
 
+    /// Field-selected sock records of `ring_len` bytes: `with_cpu_affinity` weighs the sock
+    /// rings by them. Call it before that.
+    pub fn with_sock_record(mut self, ring_len: usize) -> Self {
+        self.sock_record = Some(ring_len);
+        self
+    }
+
     /// Drain the ring buffers `rbs` (the enabled ones) on the given CPU IDs, one thread per
     /// CPU, the rings of each CPU as `ring_groups::assign` says. A ring registered but not in
     /// `rbs` goes round-robin. For full isolation, also boot with `isolcpus=<ids>` so the
@@ -187,7 +197,10 @@ impl Writer {
         placement: Placement,
         rbs: &[u32],
     ) -> Self {
-        self.assignment = assign(rbs, &cpus);
+        self.assignment = match self.sock_record {
+            Some(len) => assign_with(rbs, &cpus, len),
+            None => assign(rbs, &cpus),
+        };
         self.cpus = Arc::new(WriterCpus::new(cpus, placement));
         self
     }
@@ -210,7 +223,7 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
-        self.spawn::<T>(rb, maps, RINGBUFS[rb as usize].file, trace_dir, None)
+        self.spawn::<T>(rb, maps, RINGBUFS[rb as usize].file, trace_dir, None, None)
     }
 
     /// As `register`, but into `file` instead of the ring buffer's own file (on-change mode
@@ -225,7 +238,23 @@ impl Writer {
     where
         T: Serialize + Copy + Send + 'static,
     {
-        self.spawn::<T>(rb, maps, file, trace_dir, None)
+        self.spawn::<T>(rb, maps, file, trace_dir, None, None)
+    }
+
+    /// As `register_as`, for records of `shape` instead of whole `T`s (field-selected sock
+    /// records)
+    pub fn register_shaped<T>(
+        &mut self,
+        rb: u32,
+        maps: Vec<(u32, MapHandle)>,
+        file: TraceFile,
+        trace_dir: impl AsRef<Path>,
+        shape: RecordShape,
+    ) -> Result<(), WriterError>
+    where
+        T: Serialize + Copy + Send + 'static,
+    {
+        self.spawn::<T>(rb, maps, file, trace_dir, None, Some(shape))
     }
 
     /// As `register`, and hands every written record (its ring buffer bytes) to `observer`
@@ -246,6 +275,7 @@ impl Writer {
             RINGBUFS[rb as usize].file,
             trace_dir,
             Some(observer),
+            None,
         )
     }
 
@@ -256,6 +286,7 @@ impl Writer {
         file: TraceFile,
         trace_dir: impl AsRef<Path>,
         observer: Option<Observer>,
+        shape: Option<RecordShape>,
     ) -> Result<(), WriterError>
     where
         T: Serialize + Copy + Send + 'static,
@@ -266,6 +297,7 @@ impl Writer {
             self.bytes_written.clone(),
             self.sink.clone(),
             self.format,
+            shape,
         )?;
         job.observer = observer;
         if !self.cpus.pool.is_empty() {
@@ -922,7 +954,7 @@ where
             |pos| ring.header(pos),
             consumer,
             ring.producer(),
-            mem::size_of::<T>(),
+            self.job.ring_len,
             RAW_SPAN_BYTES,
         )
         .map_err(JobError::Ring)?;
@@ -934,7 +966,7 @@ where
             self.job
                 .write_span(*cpu, bytes, span.records, span.discards)?;
         } else {
-            for frame in raw::frames(bytes, mem::size_of::<T>()) {
+            for frame in raw::frames(bytes, self.job.ring_len) {
                 if let raw::Frame::Record(record) = frame {
                     if self.job.write_from(*cpu, record) != 0 {
                         return Err(self
@@ -1398,6 +1430,32 @@ impl Drop for Writer {
     }
 }
 
+/// The record layout of a ring whose records are shorter than its record type, the
+/// field-selected sock records (`--sock-fields`, `tcbee_trace::sockfields`)
+#[derive(Debug, Clone)]
+pub struct RecordShape {
+    /// Bytes of a record in the ring buffer
+    pub ring_len: usize,
+    /// (offset, length) ranges of a ring record that make up its file record, in order
+    pub runs: Vec<(usize, usize)>,
+    /// Layout id in the header of a raw trace
+    pub layout_id: u32,
+}
+
+impl RecordShape {
+    /// The shape of the field-selected sock records `shape`
+    pub fn of_sock(shape: &tcbee_trace::sockfields::SockShape) -> Self {
+        RecordShape {
+            ring_len: shape.ring_len,
+            runs: shape.runs(),
+            layout_id: tcbee_trace::raw::sock_fields_layout_id(
+                tcbee_common::records::LAYOUT_ID,
+                shape.fields.mask(),
+            ),
+        }
+    }
+}
+
 /// The file format of a record is its bincode 1 encoding: the fields of the `#[repr(C)]`
 /// struct back to back in little endian, without padding. On a little endian host that
 /// is the record's memory with the padding cut out, so it can be copied as a few byte
@@ -1450,7 +1508,7 @@ impl PackedLayout {
         Some(Self { runs })
     }
 
-    /// Writes the file bytes of one record. `entry` is at least `size_of::<T>()` long and
+    /// Writes the file bytes of one record. `entry` is at least the ring record long and
     /// `out` has the record's encoded size.
     #[inline]
     fn write(&self, entry: &[u8], out: &mut [u8]) {
@@ -1469,6 +1527,11 @@ where
     bytes_written: Arc<AtomicU64>,
     sink: Option<Sink>,
     file_path: PathBuf,
+    /// Bytes of a record in the ring buffer, `size_of::<T>()` unless the job has a
+    /// `RecordShape`
+    ring_len: usize,
+    /// Layout id in the header of a raw trace
+    layout_id: u32,
     /// Size of a record in the file without the delimiter
     record_size: usize,
     /// How the ring buffer bytes become file bytes, None to serialize with bincode
@@ -1510,6 +1573,7 @@ where
             bytes_written,
             SinkConfig::default(),
             WriterFormat::Records,
+            None,
         )
     }
 
@@ -1518,8 +1582,12 @@ where
         bytes_written: Arc<AtomicU64>,
         sink: SinkConfig,
         format: WriterFormat,
+        shape: Option<RecordShape>,
     ) -> Result<Self, WriterError> {
-        let entry_size = std::mem::size_of::<T>().max(1);
+        let ring_len = shape
+            .as_ref()
+            .map_or(std::mem::size_of::<T>(), |shape| shape.ring_len);
+        let entry_size = ring_len.max(1);
         let chunk_bytes = entry_size
             .checked_mul(WRITER_BUFFER_SIZE)
             .unwrap_or(WRITER_BUFFER_SIZE * 128)
@@ -1531,7 +1599,19 @@ where
         let record_size = bincode::serialized_size(&zero)
             .map_err(|err| io::Error::new(ErrorKind::InvalidInput, err))?
             as usize;
-        let layout = PackedLayout::of::<T>();
+        // A shaped record is shorter than T, so it is copied by its runs, never deserialized
+        let (record_size, layout, layout_id) = match shape {
+            Some(shape) => (
+                shape.runs.iter().map(|(_, len)| len).sum(),
+                Some(PackedLayout { runs: shape.runs }),
+                shape.layout_id,
+            ),
+            None => (
+                record_size,
+                PackedLayout::of::<T>(),
+                tcbee_common::records::LAYOUT_ID,
+            ),
+        };
         if layout.is_none() {
             info!(
                 "No packed layout for {}, serializing with bincode",
@@ -1552,6 +1632,8 @@ where
             bytes_written,
             sink: Some(sink),
             file_path,
+            ring_len,
+            layout_id,
             record_size,
             layout,
             records: 0,
@@ -1600,7 +1682,7 @@ where
         };
         let state = self.raw.as_mut().expect("raw format");
         if !state.header {
-            let header = raw::header_frame(mem::size_of::<T>(), tcbee_common::records::LAYOUT_ID);
+            let header = raw::header_frame(self.ring_len, self.layout_id);
             sink.reserve(header.len())?.copy_from_slice(&header);
             state.header = true;
         }
@@ -1612,7 +1694,7 @@ where
         state.frames += records + discards;
         self.records += records;
         if let Some(observer) = &mut self.observer {
-            for frame in raw::frames(span, mem::size_of::<T>()) {
+            for frame in raw::frames(span, self.ring_len) {
                 if let raw::Frame::Record(record) = frame {
                     observer(record);
                 }
@@ -1624,7 +1706,7 @@ where
     /// Bytes of one record (or frame) in the file
     fn frame_len(&self) -> usize {
         match self.raw {
-            Some(_) => raw::stride(mem::size_of::<T>()),
+            Some(_) => raw::stride(self.ring_len),
             None => self.record_size + RECORD_DELIMITER.len(),
         }
     }
@@ -1661,7 +1743,7 @@ where
             None => return Ok(()),
         };
 
-        if entry.len() < mem::size_of::<T>() {
+        if entry.len() < self.ring_len {
             return Err(JobError::ShortRecord(entry.len()));
         }
 
@@ -2009,7 +2091,15 @@ mod tests {
         records: &[usize],
         ring_size: usize,
     ) -> (Vec<(u32, RingMap)>, Vec<MemRing>, Vec<FakeRing>) {
-        let len = mem::size_of::<tcp4_packet_trace>();
+        raw_rings_of(mem::size_of::<tcp4_packet_trace>(), records, ring_size)
+    }
+
+    /// As `raw_rings`, with records of `len` bytes
+    fn raw_rings_of(
+        len: usize,
+        records: &[usize],
+        ring_size: usize,
+    ) -> (Vec<(u32, RingMap)>, Vec<MemRing>, Vec<FakeRing>) {
         let mut rings = Vec::new();
         let mut mems = Vec::new();
         let mut fakes = Vec::new();
@@ -2042,6 +2132,7 @@ mod tests {
             Arc::new(AtomicU64::new(0)),
             sink,
             WriterFormat::Raw,
+            None,
         )
         .unwrap()
     }
@@ -2143,6 +2234,83 @@ mod tests {
         for path in [&ring_path, &direct_path] {
             std::fs::remove_file(path).unwrap();
             let _ = std::fs::remove_file(cpu_side_path(path));
+        }
+    }
+
+    /// Field-selected sock records: the ring records are the shape's length, the file records
+    /// its packed runs, in both formats
+    #[test]
+    fn shaped_records_hold_every_record_once() {
+        use tcbee_trace::sockfields::{Group, SockFields, SockShape};
+        let sock = SockShape::of(SockFields::of(&[Group::Cwnd, Group::Rtt]));
+        let shape = RecordShape::of_sock(&sock);
+        let records = 2 * RAW_SPAN_BYTES / raw::stride(shape.ring_len);
+        for format in [WriterFormat::Records, WriterFormat::Raw] {
+            let path = env::temp_dir().join(format!(
+                "tcbee-shaped-{}-{}",
+                format.name(),
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&path);
+            let (rings, _mems, fakes) = raw_rings_of(shape.ring_len, &[records, 7], 256 << 10);
+            let mut job = Draining {
+                job: MapWriterJob::<sock_trace_entry>::with_sink(
+                    path.clone(),
+                    Arc::new(AtomicU64::new(0)),
+                    SinkConfig::default(),
+                    format,
+                    Some(shape.clone()),
+                )
+                .unwrap(),
+                rings,
+            };
+            assert_eq!(drain_all(&mut job).unwrap(), records as u64 + 7);
+            assert_eq!(job.job.records, records as u64 + 7);
+            job.job.flush().unwrap();
+            let file = std::fs::read(&path).unwrap();
+            // The bytes of each ring record, in ring order
+            let expected: Vec<Vec<u8>> = fakes
+                .iter()
+                .flat_map(|fake| {
+                    raw::frames(fake.span(fake.consumer, fake.producer), shape.ring_len)
+                        .filter_map(|frame| match frame {
+                            raw::Frame::Record(record) => Some(record.to_vec()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            match format {
+                WriterFormat::Records => {
+                    let stride = sock.file_len + RECORD_DELIMITER.len();
+                    assert_eq!(file.len(), expected.len() * stride);
+                    for (record, written) in expected.iter().zip(file.chunks(stride)) {
+                        let packed: Vec<u8> = shape
+                            .runs
+                            .iter()
+                            .flat_map(|&(off, len)| record[off..off + len].to_vec())
+                            .collect();
+                        assert_eq!(&written[..sock.file_len], &packed[..]);
+                        assert_eq!(&written[sock.file_len..], &RECORD_DELIMITER);
+                    }
+                }
+                WriterFormat::Raw => {
+                    let header = raw::parse_header(&file).unwrap().unwrap();
+                    assert_eq!(header.record_len as usize, shape.ring_len);
+                    assert_eq!(header.layout, shape.layout_id);
+                    assert_ne!(header.layout, tcbee_common::records::LAYOUT_ID);
+                    let frames: Vec<Vec<u8>> =
+                        raw::frames(&file[raw::stride(shape.ring_len)..], shape.ring_len)
+                            .filter_map(|frame| match frame {
+                                raw::Frame::Record(record) => Some(record.to_vec()),
+                                _ => None,
+                            })
+                            .collect();
+                    assert_eq!(frames, expected);
+                }
+            }
+            std::fs::remove_file(&path).unwrap();
+            let _ = std::fs::remove_file(cpu_side_path(&path));
         }
     }
 
@@ -2638,6 +2806,7 @@ mod tests {
                     Arc::new(AtomicU64::new(0)),
                     sink.clone(),
                     WriterFormat::Records,
+                    None,
                 )
                 .unwrap();
                 let records = thread::scope(|scope| {
