@@ -95,11 +95,12 @@ At least one metric source is required.
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress`; the list works as described below the table |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
 | `--sock-hooks LIST` | `timer,state,ca-state,retransmit,restart,rcvbuf` | With `-k`: the kernel hooks to record the socket at. Per packet: `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`) and `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). Not per packet: `timer` (`timer_sock.tcp`) and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). The list works as described below the table, e.g. `+ingress` on a sender. With `--on-change` and `-k` the same as `--on-change-hooks` |
+| `--sock-fields LIST` | | With `-k` at `egress`, `ingress-entry` and `timer` only: record only these groups of socket fields, see [Field-selected sock records](#field-selected-sock-records) |
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 | `--no-owners` | | Do not record the processes of the connections (`flow_owners.tcp`, `flow_owners.json`), see [Flow owners](#flow-owners) |
 | `--owners-no-cmdline` | | Record the owners without the command lines of their processes |
 
-`--tp`, `--sock-hooks` and `--on-change-hooks` take the same kind of list: comma-separated
+`--tp`, `--sock-hooks`, `--sock-fields` and `--on-change-hooks` take the same kind of list: comma-separated
 names form the set; `+name` and `-name` items add to or remove from the plain names of the
 list, or from the option's default when the list has no plain names (`--tp +drops,-probe`,
 `--sock-hooks +ingress`); `all` and `default` name those sets (`--tp all,-drops`); `_` and `-`
@@ -280,6 +281,41 @@ dropped records. The default mode is unchanged.
   1 suppressed, 2 a watched field changed, 3 first run or after a drop, 4 socket state
   changed, 5 no socket storage. A replay of such a trace checks the decisions record by
   record (`testing/onchange_smoke.sh`).
+
+## Field-selected sock records
+
+A sock record holds about 50 fields, 262 bytes in a trace file. At the per-packet hooks that
+is most of what the writer and the disk move, and the record rate where the first records
+are dropped falls with the record size. `--sock-fields LIST` records only some groups of
+fields:
+
+| Group | Fields |
+|---|---|
+| `pacing` | `pacing_rate`, `max_pacing_rate`, `wstamp_ns` |
+| `icsk` | `rto`, `rcv_mss`, `backoff` |
+| `cwnd` | `snd_cwnd` |
+| `cc` | `bytes_acked`, `snd_ssthresh`, `total_retrans`, `lost`, `sacked_out`, `retrans`, `reordering`, `segs_out`, `probes` |
+| `rcv` | `bytes_received`, `rcv_ssthresh`, `rcv_rtt`, `rcv_space`, `segs_in`, `advmss` |
+| `rtt` | `srtt`, `mdev`, `min_rtt`, `rttvar` |
+| `delivery` | `packets_out`, `delivered`, `delivered_ce`, `app_limited`, `rate_delivered`, `rate_interval_us`, `lost_out`, `ca_state` |
+| `chrono` | `chrono_busy`, `chrono_rwnd_limited`, `chrono_sndbuf_limited`, `chrono_type` |
+| `seq` | `snd_una`, `snd_nxt`, `reord_seen`, `dsack_dups` |
+| `sndbuf` | `wmem_queued`, `sndbuf`, `notsent` |
+
+- The header (time, `hook_seq`, addresses, ports), `ato` and `conn_id` are always recorded.
+  With the delimiter, a record of `--sock-fields cwnd` is 78 bytes in the file (the cwnd
+  probe's record, `-w`, is 74; `ato` is the difference) and one of `cwnd,cc,rtt` 131.
+- Only the default programs of `-k` have a field-selected variant: give the hooks with
+  `--sock-hooks egress,ingress-entry,timer` (or a part of them). Not with `--on-change`.
+- The records go to `send_sock_sel.tcp`, `recv_sock_sel.tcp` and `timer_sock_sel.tcp`, and
+  `manifest.json` (format 3, written before the first record) lists the groups and the record
+  lengths of each. It lists the files of all given hooks, also `timer_sock_sel.tcp` when the
+  timer hook then fails to load. Older readers skip these files. Raw trace files carry a
+  layout id that includes the groups.
+- The BPF programs get the offset of each group and the record length before they are
+  loaded, so the verifier drops the code of the groups not recorded.
+- tcbee-process reads the files into the same tables as the full ones (`sock`,
+  `sock_timer`), without the series of the fields not recorded.
 
 ## Write timer records
 
