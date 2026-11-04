@@ -337,11 +337,11 @@ pub fn parse_sock_fields(
     let Some(hooks) = full else {
         return Err(anyhow!("--sock-fields needs -k"));
     };
-    let selectable: Vec<&str> = SOCK_FIELDS_FILES.iter().map(|(h, _)| h.name()).collect();
     if let Some(hook) = hooks
         .hooks()
         .find(|h| !SOCK_FIELDS_FILES.iter().any(|(s, _)| s == h))
     {
+        let selectable: Vec<&str> = SOCK_FIELDS_FILES.iter().map(|(h, _)| h.name()).collect();
         return Err(anyhow!(
             "--sock-fields records only at the hooks {}, not at {}: give them with \
              --sock-hooks, e.g. --sock-hooks {}",

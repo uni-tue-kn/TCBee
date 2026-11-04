@@ -387,7 +387,7 @@ mod tests {
         };
         assert!(renamed.shape().is_err());
         let unknown = SockFieldsMeta {
-            mask: meta.mask | 1 << 15,
+            mask: meta.mask | 1 << crate::sockfields::Group::ALL.len(),
             ..meta.clone()
         };
         assert!(unknown.shape().is_err());

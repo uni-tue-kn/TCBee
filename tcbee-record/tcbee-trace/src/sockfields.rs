@@ -1,15 +1,15 @@
 //! The field groups of a sock record that `--sock-fields` selects, and the layout of the
 //! records that hold only some of them.
 //!
-//! A field-selected record starts with the core (the sock record header, `ato` and
-//! `conn_id`, which tcbee-process needs for the flow, the hook and the connection), followed
-//! by the selected groups in `Group::PLACEMENT` order. In the ring buffer each group is a C
-//! struct of `bpf/sockfields.h`; its fields are sorted by size, so no group has padding
-//! between its fields, and every struct is a multiple of 4 bytes. The groups with 8 byte
-//! fields come first, so each group starts aligned right after the one before it. The record
-//! length is rounded up to 8 bytes, the kernel's ring buffer stride; the 4 bytes this may add
-//! are the record's only padding outside the structs (`SockShape::tail`), which the BPF
-//! programs zero. Trace files hold the packed fields in the same order: `SockShape::runs` copies them out of a ring record, and `SockShape::expand` turns a
+//! A field-selected record starts with the core (the sock record header, `ato` and `conn_id`, which
+//! tcbee-process needs for the flow, the hook and the connection), followed by the selected groups
+//! in `Group::PLACEMENT` order. In the ring buffer each group is a C struct of `bpf/sockfields.h`;
+//! its fields are sorted by size, so no group has padding between its fields, and every struct is a
+//! multiple of 4 bytes. The groups with 8 byte fields come first, so each group starts aligned
+//! right after the one before it. The record length is rounded up to 8 bytes, the kernel's ring
+//! buffer stride; the 4 bytes this may add are the record's only padding outside the structs
+//! (`SockShape::tail`), which the BPF programs zero. Trace files hold the packed fields in the same
+//! order: `SockShape::runs` copies them out of a ring record, and `SockShape::expand` turns a
 //! packed record into a packed full `sock_trace_entry` with the unselected fields zero.
 
 use crate::name_list::{self, ListError, NamedSet};
@@ -607,6 +607,6 @@ mod tests {
             SockFields::from_mask(SockFields::ALL.mask()),
             Some(SockFields::ALL)
         );
-        assert_eq!(SockFields::from_mask(1 << 15), None);
+        assert_eq!(SockFields::from_mask(1 << Group::ALL.len()), None);
     }
 }

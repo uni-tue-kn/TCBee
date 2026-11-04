@@ -197,10 +197,12 @@ fn plan(
         }
         let path = trace.path_for(file);
         let name = file.filename().to_string();
-        if let (true, Err(err)) = (file.field_selected(), &manifest_read) {
-            return Err(anyhow!(
-                "cannot read the manifest.json that describes {name}: {err}"
-            ));
+        if file.field_selected() {
+            if let Err(err) = &manifest_read {
+                return Err(anyhow!(
+                    "cannot read the manifest.json that describes {name}: {err}"
+                ));
+            }
         }
         let len = std::fs::metadata(&path)
             .with_context(|| format!("cannot stat {}", path.display()))?
