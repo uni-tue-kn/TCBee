@@ -677,6 +677,10 @@ impl EbpfRunner {
             rodata.HEADERS_NETNS = DriverTracer::netns()?;
             rodata.HEADERS_MTU = DriverTracer::mtu(&self.config.iface)?;
         }
+        if let Some(shape) = &self.config.sock_fields {
+            rodata.SOCK_SEL_OFF = shape.offsets;
+            rodata.SOCK_SEL_LEN = shape.ring_len as u32;
+        }
         if let Some(on_change) = self.config.on_change {
             rodata.SOCK_WATCH_MASK = on_change.watch.mask();
             rodata.ONCHG_SHADOW = on_change.shadow as u8;
@@ -720,6 +724,7 @@ impl EbpfRunner {
             on_change,
             self.config.sock_hooks,
             timer,
+            self.config.sock_fields.is_some(),
         );
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
@@ -908,8 +913,12 @@ impl EbpfRunner {
         // This is the backend writer thread that reads and writes data to files. It is
         // kept in self right away, so that stop() detaches the programs before draining
         // the writers if starting fails below.
+        let mut writer = Writer::new(self.config.poll_mode);
+        if let Some(shape) = &self.config.sock_fields {
+            writer = writer.with_sock_record(shape.ring_len);
+        }
         let writer = self.writer.insert(
-            Writer::new(self.config.poll_mode)
+            writer
                 .with_cpu_affinity(
                     self.config.writer_cpus.clone(),
                     self.config.writer_placement,
@@ -939,6 +948,7 @@ impl EbpfRunner {
                 links,
                 self.config.on_change.map(|o| o.hooks),
                 self.config.sock_hooks,
+                self.config.sock_fields.as_ref(),
             )?;
         }
         // Performance variant of above hook
@@ -1035,7 +1045,8 @@ impl EbpfRunner {
         // Last, so the other writers keep their writer CPUs. Fails softly like BBR.
         if optional.contains(&OptionalGroup::SockTimer) {
             let attached = links.len();
-            if let Err(err) = KernelTracer::spawn_timer(skel, dir, writer, links) {
+            let shape = self.config.sock_fields.as_ref();
+            if let Err(err) = KernelTracer::spawn_timer(skel, dir, writer, links, shape) {
                 links.truncate(attached);
                 optional.remove(&OptionalGroup::SockTimer);
                 // Its ring exists but holds nothing, the metadata lists only the rings in use

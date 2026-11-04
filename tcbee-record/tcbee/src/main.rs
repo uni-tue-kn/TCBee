@@ -19,8 +19,9 @@ use std::{
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_filter_keys, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
-    FilterConfig, HookFlags, MptcpModes, FILTER_MAX_ENTRIES,
+    ip_filter_keys, on_change_manifest, parse_ringbuf_sizes, parse_sock_fields,
+    sock_fields_manifest, tracepoint_set, EbpfRunnerConfig, FilterConfig, HookFlags, MptcpModes,
+    FILTER_MAX_ENTRIES,
 };
 use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
@@ -128,6 +129,7 @@ fn main() -> anyhow::Result<()> {
     let mut on_change_shadow: bool = false;
     let mut no_timer_hook: bool = false;
     let mut sock_hooks: String = String::new();
+    let mut sock_fields: String = String::new();
     let mut no_owners: bool = false;
     let mut owners_no_cmdline: bool = false;
 
@@ -312,6 +314,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. The list works as in --tp (all, default, +name, -name), e.g. +ingress on a sender. With --on-change and -k it is the same as --on-change-hooks (with -w alone, use --on-change-hooks).",
         );
+        argparser.refer(&mut sock_fields).add_option(
+            &["--sock-fields"],
+            Store,
+            "With -k at the hooks egress, ingress-entry and timer (give them with --sock-hooks): record only these groups of socket fields, into *_sock_sel.tcp files with a manifest.json. Smaller records let more of them through the writer and the disk without loss. Groups: pacing, icsk, cwnd, cc (the rest of the congestion and loss state), rcv, rtt, delivery, chrono, seq, sndbuf. The header, ato and conn_id are always recorded. The list works as in --tp, e.g. cwnd,rtt or all,-chrono.",
+        );
         argparser.refer(&mut no_owners).add_option(
             &["--no-owners"],
             StoreTrue,
@@ -461,6 +468,7 @@ fn main() -> anyhow::Result<()> {
         no_timer_hook,
     }
     .resolve()?;
+    let sock_fields = parse_sock_fields(&sock_fields, sock_hooks, on_change.is_some())?;
     // A hint for plain -k only, not for a list someone chose
     if !chose_sock_hooks && sock_hooks.is_some_and(|hooks| hooks.hooks().all(|h| !h.per_packet())) {
         eprintln!(
@@ -506,9 +514,17 @@ fn main() -> anyhow::Result<()> {
         .writer_format(writer_format)
         .on_change(on_change)
         .sock_hooks(sock_hooks)
+        .sock_fields(sock_fields.clone())
         .owners(!no_owners)
         .owner_cmdlines(!owners_no_cmdline)
         .dir(trace_dir);
+
+    // Before any record: a field-selected file cannot be read without it
+    if let (Some(shape), Some(hooks)) = (&sock_fields, sock_hooks) {
+        sock_fields_manifest(shape, hooks)
+            .write(trace.dir())
+            .map_err(|e| anyhow!("Failed to write the manifest: {e}"))?;
+    }
 
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!
