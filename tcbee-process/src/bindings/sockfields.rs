@@ -8,7 +8,7 @@ use std::{fs::File, io, ops::Range};
 use tcbee_common::records::{sock_trace_entry, LAYOUT_ID, RECORD_DELIMITER};
 use tcbee_trace::{
     onchange::Manifest,
-    raw::{self, Frame, Header},
+    raw::{self, Header},
     sockfields::{self, SockShape},
     TraceFile,
 };
@@ -18,6 +18,7 @@ use super::{binding_into, Binding, SOCK_TIMER};
 use crate::{
     decode::{read_entries, RangeError, RowError, RowFn},
     event::{DecodeError, Event},
+    raw::read_raw_records,
 };
 
 /// The layout of one field-selected file, kept for as long as the process runs
@@ -120,30 +121,17 @@ pub fn decode(
         })?;
         return Ok(0);
     }
-    let len = sel.shape.ring_len;
-    let mut skipped = 0;
-    read_entries(file, records, raw::stride(len), |index, offset, bytes| {
-        let decode = |source| RangeError::Decode { offset, source };
-        match raw::frame(bytes, len) {
-            Frame::Record(record) => {
-                let mut at = 0;
-                for &(off, run) in &sel.runs {
-                    packed[at..at + run].copy_from_slice(&record[off..off + run]);
-                    at += run;
-                }
-                emit(index, offset, &packed)
+    read_raw_records(
+        file,
+        records,
+        sel.shape.ring_len,
+        |index, offset, record| {
+            let mut at = 0;
+            for &(off, run) in &sel.runs {
+                packed[at..at + run].copy_from_slice(&record[off..off + run]);
+                at += run;
             }
-            Frame::Discarded => {
-                skipped += 1;
-                Ok(())
-            }
-            Frame::Busy => Err(decode(DecodeError::Busy)),
-            Frame::End => Err(decode(DecodeError::DataEnded)),
-            Frame::Length(got) => Err(decode(DecodeError::Size {
-                expected: len,
-                got: got as usize,
-            })),
-        }
-    })?;
-    Ok(skipped)
+            emit(index, offset, &packed)
+        },
+    )
 }

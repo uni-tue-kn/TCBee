@@ -54,12 +54,24 @@ pub fn decode_raw_range<E: Event + Copy, Err>(
     frames: Range<u64>,
     mut f: impl FnMut(u64, E) -> Result<(), Err>,
 ) -> Result<u64, RangeError<Err>> {
-    let len = mem::size_of::<E>();
+    read_raw_records(file, frames, mem::size_of::<E>(), |index, _, record| {
+        f(index, read_record(record)).map_err(RangeError::Callback)
+    })
+}
+
+/// Calls `f(index, offset, record)` for the records of `len` bytes in frames `frames` of a
+/// raw file; discarded frames are skipped, returns how many
+pub fn read_raw_records<Err>(
+    file: &File,
+    frames: Range<u64>,
+    len: usize,
+    mut f: impl FnMut(u64, u64, &[u8]) -> Result<(), RangeError<Err>>,
+) -> Result<u64, RangeError<Err>> {
     let mut skipped = 0;
     read_entries(file, frames, raw::stride(len), |index, offset, bytes| {
         let decode = |source| RangeError::Decode { offset, source };
         match raw::frame(bytes, len) {
-            Frame::Record(record) => f(index, read_record(record)).map_err(RangeError::Callback),
+            Frame::Record(record) => f(index, offset, record),
             Frame::Discarded => {
                 skipped += 1;
                 Ok(())
