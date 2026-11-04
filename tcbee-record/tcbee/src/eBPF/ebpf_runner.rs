@@ -680,6 +680,7 @@ impl EbpfRunner {
         if let Some(shape) = &self.config.sock_fields {
             rodata.SOCK_SEL_OFF = shape.offsets;
             rodata.SOCK_SEL_LEN = shape.ring_len as u32;
+            rodata.SOCK_SEL_TAIL = shape.tail;
         }
         if let Some(on_change) = self.config.on_change {
             rodata.SOCK_WATCH_MASK = on_change.watch.mask();

@@ -900,9 +900,8 @@ int BPF_PROG(sock_timer, struct sock *sk)
 
 /*
  * Field-selected sock records (--sock-fields, sockfields.h): the core and the groups that
- * SOCK_SEL_OFF places. Each present group is zeroed through its struct and filled; the core
- * and the groups cover the record up to SOCK_SEL_LEN but for padding, which the zeroing
- * covers.
+ * SOCK_SEL_OFF places. Each present group is zeroed through its struct and filled, and the
+ * tail after the last one is zeroed, so every byte up to SOCK_SEL_LEN is written.
  */
 #define SOCK_SEL_GROUP(rec, group)                                                         \
 	({                                                                                 \
@@ -926,6 +925,9 @@ static __always_inline void fill_sock_sel(void *rec, struct sock *sk, struct tcp
 	struct sock_sel_chrono *chrono = SOCK_SEL_GROUP(rec, chrono);
 	struct sock_sel_seq *seq = SOCK_SEL_GROUP(rec, seq);
 	struct sock_sel_sndbuf *sndbuf = SOCK_SEL_GROUP(rec, sndbuf);
+
+	if (SOCK_SEL_TAIL != SOCK_SEL_ABSENT)
+		*(__u32 *)(rec + SOCK_SEL_TAIL) = 0;
 
 	if (pacing) {
 		pacing->pacing_rate = sock_field(sk, tp, SF_pacing_rate);

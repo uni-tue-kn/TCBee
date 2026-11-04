@@ -7,7 +7,8 @@
  * default record layouts in raw traces.
  *
  * Each group's fields are sorted by size, so a group has no padding between its fields, and
- * it starts at an offset aligned to its widest field.
+ * every struct is a multiple of 4 bytes. The groups with 8 byte fields come first in a record
+ * (Group::PLACEMENT), so each group starts aligned right after the one before it.
  */
 #ifndef __TCBEE_SOCKFIELDS_H
 #define __TCBEE_SOCKFIELDS_H
@@ -109,7 +110,7 @@ _Static_assert(sizeof(struct sock_sel_chrono) == 16, "sock_sel_chrono size");
 _Static_assert(sizeof(struct sock_sel_seq) == 16, "sock_sel_seq size");
 _Static_assert(sizeof(struct sock_sel_sndbuf) == 12, "sock_sel_sndbuf size");
 
-/* Index of a group in SOCK_SEL_OFF, the order of Group::ALL */
+/* Index of a group in SOCK_SEL_OFF, the order of Group::ALL (not the order in a record) */
 enum sock_sel_group {
 	SG_pacing,
 	SG_icsk,
@@ -129,14 +130,17 @@ enum sock_sel_group {
 
 /*
  * Set by userspace before the object is loaded (SockShape in tcbee-trace): the offset of
- * each group in a record, and the record length, a multiple of 8 so that no byte of a
- * record in the ring is left unwritten. As frozen rodata both are constants to the
- * verifier, which drops the stores of absent groups.
+ * each group in a record, the record length (a multiple of 8, the ring buffer's stride) and
+ * the offset of the 4 bytes after the last group that round the record up to it. The core,
+ * the groups and the tail cover the whole record, so no byte of an earlier record in the
+ * ring stays in it. As frozen rodata they are constants to the verifier, which drops the
+ * stores of absent groups.
  */
 const volatile __u16 SOCK_SEL_OFF[SG_COUNT] = {
 	SOCK_SEL_ABSENT, SOCK_SEL_ABSENT, SOCK_SEL_ABSENT, SOCK_SEL_ABSENT, SOCK_SEL_ABSENT,
 	SOCK_SEL_ABSENT, SOCK_SEL_ABSENT, SOCK_SEL_ABSENT, SOCK_SEL_ABSENT, SOCK_SEL_ABSENT,
 };
 const volatile __u32 SOCK_SEL_LEN = sizeof(struct sock_sel_core);
+const volatile __u16 SOCK_SEL_TAIL = SOCK_SEL_ABSENT;
 
 #endif /* __TCBEE_SOCKFIELDS_H */

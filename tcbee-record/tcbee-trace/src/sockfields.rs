@@ -3,11 +3,13 @@
 //!
 //! A field-selected record starts with the core (the sock record header, `ato` and
 //! `conn_id`, which tcbee-process needs for the flow, the hook and the connection), followed
-//! by the selected groups in `Group::ALL` order. In the ring buffer each group is a C struct
-//! of `bpf/sockfields.h` at an offset aligned to its widest field; its fields are sorted by
-//! size, so no group has padding between its fields. The record length is rounded up to 8
-//! bytes, the kernel's ring buffer stride. Trace files hold the packed fields in the same
-//! order: `SockShape::runs` copies them out of a ring record, and `SockShape::expand` turns a
+//! by the selected groups in `Group::PLACEMENT` order. In the ring buffer each group is a C
+//! struct of `bpf/sockfields.h`; its fields are sorted by size, so no group has padding
+//! between its fields, and every struct is a multiple of 4 bytes. The groups with 8 byte
+//! fields come first, so each group starts aligned right after the one before it. The record
+//! length is rounded up to 8 bytes, the kernel's ring buffer stride; the 4 bytes this may add
+//! are the record's only padding outside the structs (`SockShape::tail`), which the BPF
+//! programs zero. Trace files hold the packed fields in the same order: `SockShape::runs` copies them out of a ring record, and `SockShape::expand` turns a
 //! packed record into a packed full `sock_trace_entry` with the unselected fields zero.
 
 use crate::name_list::{self, ListError, NamedSet};
@@ -131,6 +133,21 @@ impl Group {
         Group::Cwnd,
         Group::Cc,
         Group::Rcv,
+        Group::Rtt,
+        Group::Delivery,
+        Group::Chrono,
+        Group::Seq,
+        Group::Sndbuf,
+    ];
+
+    /// The order of the groups in a record: those with 8 byte fields first, otherwise as in
+    /// `ALL`
+    pub const PLACEMENT: [Group; 10] = [
+        Group::Pacing,
+        Group::Cc,
+        Group::Rcv,
+        Group::Icsk,
+        Group::Cwnd,
         Group::Rtt,
         Group::Delivery,
         Group::Chrono,
@@ -320,6 +337,9 @@ pub struct SockShape {
     pub offsets: [u16; Group::ALL.len()],
     /// Bytes of a ring record, a multiple of 8
     pub ring_len: usize,
+    /// Offset of the 4 bytes after the last group that round the record up to `ring_len`,
+    /// `ABSENT` if there are none
+    pub tail: u16,
     /// Bytes of a packed record (without the trace file's delimiter)
     pub file_len: usize,
 }
@@ -329,18 +349,20 @@ impl SockShape {
         let mut offsets = [ABSENT; Group::ALL.len()];
         let mut end = CORE_RING_BYTES;
         let mut file_len = HEADER_BYTES + packed(CORE_TAIL);
-        for (i, group) in Group::ALL.into_iter().enumerate() {
+        for group in Group::PLACEMENT {
             if fields.contains(group) {
-                let at = round_up(end, group.align());
-                offsets[i] = at as u16;
-                end = at + group.ring_bytes();
+                debug_assert_eq!(end % group.align(), 0, "{group:?} starts aligned");
+                offsets[group as usize] = end as u16;
+                end += group.ring_bytes();
                 file_len += group.packed_bytes();
             }
         }
+        let ring_len = round_up(end, 8);
         SockShape {
             fields,
             offsets,
-            ring_len: round_up(end, 8),
+            ring_len,
+            tail: if ring_len > end { end as u16 } else { ABSENT },
             file_len,
         }
     }
@@ -349,9 +371,10 @@ impl SockShape {
     /// order
     pub fn runs(&self) -> Vec<(usize, usize)> {
         let mut runs = vec![(0, HEADER_BYTES), (HEADER_RING_BYTES, packed(CORE_TAIL))];
-        for (i, group) in Group::ALL.into_iter().enumerate() {
-            if self.offsets[i] != ABSENT {
-                runs.push((self.offsets[i] as usize, group.packed_bytes()));
+        for group in Group::PLACEMENT {
+            let at = self.offsets[group as usize];
+            if at != ABSENT {
+                runs.push((at as usize, group.packed_bytes()));
             }
         }
         runs
@@ -360,7 +383,10 @@ impl SockShape {
     /// The fields of a packed record in order
     pub fn packed_fields(&self) -> Vec<Field> {
         let mut fields: Vec<Field> = HEADER.iter().chain(CORE_TAIL).copied().collect();
-        for group in self.fields.groups() {
+        for group in Group::PLACEMENT
+            .into_iter()
+            .filter(|g| self.fields.contains(*g))
+        {
             fields.extend_from_slice(group.fields());
         }
         fields
@@ -472,11 +498,9 @@ mod tests {
     fn shapes() {
         let cwnd = SockShape::of(SockFields::of(&[Group::Cwnd]));
         assert_eq!(cwnd.ring_len, 80);
+        assert_eq!(cwnd.tail, 76);
         assert_eq!(cwnd.file_len, 74);
-        assert_eq!(
-            cwnd.offsets[Group::ALL.iter().position(|g| *g == Group::Cwnd).unwrap()],
-            72
-        );
+        assert_eq!(cwnd.offsets[Group::Cwnd as usize], 72);
         assert_eq!(cwnd.runs(), [(0, 62), (64, 8), (72, 4)]);
 
         let all = SockShape::of(SockFields::ALL);
@@ -490,6 +514,34 @@ mod tests {
         assert_eq!(all.ring_len % 8, 0);
         let packed: usize = all.runs().iter().map(|(_, len)| len).sum();
         assert_eq!(packed, all.file_len);
+    }
+
+    /// The core, the groups and the tail cover every byte of a ring record, so nothing of an
+    /// earlier record stays in it
+    #[test]
+    fn records_have_no_gaps() {
+        assert!(Group::ALL.iter().all(|g| Group::PLACEMENT.contains(g)));
+        for mask in 0..=SockFields::ALL.mask() {
+            let shape = SockShape::of(SockFields::from_mask(mask).unwrap());
+            let mut covered = vec![(0, CORE_RING_BYTES)];
+            for group in Group::ALL {
+                let at = shape.offsets[group as usize];
+                if at != ABSENT {
+                    assert_eq!(at as usize % group.align(), 0, "{group:?} in {mask:#x}");
+                    covered.push((at as usize, group.ring_bytes()));
+                }
+            }
+            if shape.tail != ABSENT {
+                covered.push((shape.tail as usize, 4));
+            }
+            covered.sort();
+            let mut end = 0;
+            for (at, len) in covered {
+                assert_eq!(at, end, "gap before {at} in {mask:#x}");
+                end = at + len;
+            }
+            assert_eq!(end, shape.ring_len, "{mask:#x}");
+        }
     }
 
     #[test]
