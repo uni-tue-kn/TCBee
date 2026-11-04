@@ -1214,3 +1214,268 @@ fn binary_exit_codes() {
     assert_eq!(trunc.status.code(), Some(0));
     assert!(stderr_of(&trunc).contains("warning"));
 }
+
+/// Writes `recs` as the raw trace file `file` (`--writer-format raw`): the header frame, then
+/// each record with its ring buffer header and padding, and `zeros` unused frames at the end.
+fn write_raw<T: Copy>(trace: &Path, file: &str, recs: &[T], zeros: usize) {
+    use tcbee_trace::raw::{header_frame, record_frame, stride};
+    let len = std::mem::size_of::<T>();
+    let mut bytes = header_frame(len, tcbee_common::records::LAYOUT_ID);
+    for r in recs {
+        let raw = unsafe { std::slice::from_raw_parts(r as *const T as *const u8, len) };
+        bytes.extend_from_slice(&record_frame(raw));
+    }
+    bytes.resize(bytes.len() + zeros * stride(len), 0);
+    fs::write(trace.join(file), bytes).unwrap();
+}
+
+/// The same records written record by record and raw give the same tables, connections and
+/// owners
+#[test]
+fn raw_traces_read_like_record_traces() {
+    use tcbee_common::records::{
+        cwnd_trace_entry, flow_owner_entry, mptcp_pm_entry, sock_trace_entry, tcp4_packet_trace,
+        TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED, TCBEE_OWNER_CONNECT,
+    };
+    const AF_INET: u16 = 2;
+    let addr_v4 = |local: [u8; 4], remote: [u8; 4]| {
+        ((u32::from_le_bytes(local) as u64) << 32) | u32::from_le_bytes(remote) as u64
+    };
+    let (client, server) = ([10, 0, 0, 1], [10, 0, 0, 2]);
+    let n = 3000u64;
+    let packets: Vec<_> = (0..n)
+        .map(|i| tcp4_packet_trace {
+            time: 1_000 + i,
+            hook_seq: i / 2 + 1,
+            saddr: u32::from_le_bytes(client),
+            daddr: u32::from_le_bytes(server),
+            sport: 40000 + (i % 2) as u16,
+            dport: 5201,
+            seq: i as u32 * 1448,
+            window: 512,
+            ..Default::default()
+        })
+        .collect();
+    let socks: Vec<_> = (0..n)
+        .map(|i| sock_trace_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: addr_v4(client, server),
+            sport: 40000,
+            dport: 5201,
+            family: AF_INET,
+            conn_id: 0x1000,
+            snd_cwnd: 10 + i as u32 % 7,
+            srtt: 100 + i as u32,
+            ..Default::default()
+        })
+        .collect();
+    let cwnds: Vec<_> = (0..n / 3)
+        .map(|i| cwnd_trace_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: addr_v4(client, server),
+            sport: 40001,
+            dport: 5201,
+            family: AF_INET,
+            snd_cwnd: 20 + i as u32 % 5,
+            ..Default::default()
+        })
+        .collect();
+    let pm: Vec<_> = [TCBEE_MPTCP_CREATED, TCBEE_MPTCP_ESTABLISHED]
+        .iter()
+        .enumerate()
+        .map(|(i, event)| mptcp_pm_entry {
+            time: 900 + i as u64,
+            hook_seq: i as u64 + 1,
+            addr_v4: addr_v4(client, server),
+            sport: 40000,
+            dport: 5201,
+            family: AF_INET,
+            token: 0x1000,
+            subflow_id: u32::from(i == 0),
+            event: *event as u8,
+            ..Default::default()
+        })
+        .collect();
+    let owners = [flow_owner_entry {
+        time: 800,
+        hook_seq: 1,
+        addr_v4: addr_v4(client, server),
+        sport: 40000,
+        dport: 5201,
+        family: AF_INET,
+        kind: TCBEE_OWNER_CONNECT as u8,
+        pid: 42,
+        ..Default::default()
+    }];
+
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let records = tmp.path().join("tcbee_records");
+        let raw = tmp.path().join("tcbee_raw");
+        fs::create_dir_all(&records).unwrap();
+        fs::create_dir_all(&raw).unwrap();
+        write_records(&records, "tcp4_send.tcp", &packets);
+        write_records(&records, "send_sock.tcp", &socks);
+        write_records(&records, "send_cwnd.tcp", &cwnds);
+        write_records(&records, "mptcp_pm.tcp", &pm);
+        write_records(&records, "flow_owners.tcp", &owners);
+        write_raw(&raw, "tcp4_send.tcp", &packets, 0);
+        write_raw(&raw, "send_sock.tcp", &socks, 17);
+        write_raw(&raw, "send_cwnd.tcp", &cwnds, 1);
+        write_raw(&raw, "mptcp_pm.tcp", &pm, 0);
+        write_raw(&raw, "flow_owners.tcp", &owners, 3);
+
+        let out_dir = |name: &str| {
+            let dir = tmp.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let (out_records, sum_records) =
+            process(engine, ext, &out_dir("out_records"), &records, Some(3));
+        let (out_raw, sum_raw) = process(engine, ext, &out_dir("out_raw"), &raw, Some(3));
+        assert_eq!(sum_raw.records, 2 * n + n / 3 + 2, "{engine:?}");
+        assert_eq!(
+            (sum_raw.records, sum_raw.rows, sum_raw.discarded),
+            (sum_records.records, sum_records.rows, 0),
+            "{engine:?}"
+        );
+        assert_eq!(
+            (sum_raw.connections, sum_raw.owners),
+            (sum_records.connections, sum_records.owners),
+            "{engine:?}"
+        );
+        assert!(sum_raw.owners > 0, "{engine:?}");
+        let records = dump(&*ts_storage::open(&out_records).unwrap());
+        let raw = dump(&*ts_storage::open(&out_raw).unwrap());
+        assert!(!records.series.is_empty());
+        assert_eq!(raw, records, "{engine:?}");
+    }
+}
+
+/// Field-selected sock records (`--sock-fields`), in both formats, read as the full records
+/// they came from with the unselected series left out; without the manifest they are refused
+#[test]
+fn field_selected_sock_records_read_like_full_ones() {
+    use tcbee_common::records::sock_trace_entry;
+    use tcbee_trace::{
+        onchange::{Manifest, Sampling, SockFieldsMeta, SourceMeta, SOCK_FIELDS_VERSION},
+        raw::{header_frame, record_frame, sock_fields_layout_id},
+        sockfields::{SockFields, SockShape},
+    };
+    let recs: Vec<_> = (0..6u64)
+        .map(|i| sock_trace_entry {
+            time: 1_000 + i,
+            hook_seq: i + 1,
+            addr_v4: 0x0200_000A_0100_000A,
+            sport: 40000,
+            dport: 5201,
+            family: 2,
+            snd_cwnd: 10 + i as u32,
+            srtt: 100 + i as u32,
+            min_rtt: 90,
+            pacing_rate: 1 << 30,
+            ..Default::default()
+        })
+        .collect();
+    let shape = SockShape::of(SockFields::parse("cwnd,rtt").unwrap());
+    // The packed records of the shape, cut out of the full ones
+    let packed: Vec<Vec<u8>> = recs
+        .iter()
+        .map(|r| {
+            let full = bincode::serialize(r).unwrap();
+            let mut out = vec![0; shape.file_len];
+            for (from, to, len) in shape.expansion() {
+                out[from..from + len].copy_from_slice(&full[to..to + len]);
+            }
+            out
+        })
+        .collect();
+    let manifest = Manifest {
+        format_version: SOCK_FIELDS_VERSION,
+        sources: vec![SourceMeta {
+            file: "send_sock_sel.tcp".into(),
+            sampling: Sampling::EveryRun,
+            shadow: false,
+            recv_hook: String::new(),
+            hooks: vec!["fentry/__tcp_transmit_skb".into()],
+            sock_fields: Some(SockFieldsMeta::of(&shape)),
+        }],
+    };
+    let series_of = |out: &Path| -> BTreeMap<String, (i64, Option<f64>)> {
+        let store = ts_storage::open(out).unwrap();
+        store
+            .series(1)
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.source == "sock")
+            .map(|s| (s.name, (s.n, s.v_max)))
+            .collect()
+    };
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let full = tmp.path().join("full");
+        fs::create_dir_all(&full).unwrap();
+        write_records(&full, "send_sock.tcp", &recs);
+        let work = tmp.path().join("f");
+        fs::create_dir_all(&work).unwrap();
+        let (out, _) = process(engine, ext, &work, &full, None);
+        let full_series = series_of(&out);
+
+        for raw in [false, true] {
+            let trace = tmp.path().join(format!("sel-{raw}"));
+            fs::create_dir_all(&trace).unwrap();
+            let bytes: Vec<u8> = if raw {
+                let layout =
+                    sock_fields_layout_id(tcbee_common::records::LAYOUT_ID, shape.fields.mask());
+                let mut bytes = header_frame(shape.ring_len, layout);
+                for p in &packed {
+                    let mut ring = vec![0u8; shape.ring_len];
+                    let mut at = 0;
+                    for (off, len) in shape.runs() {
+                        ring[off..off + len].copy_from_slice(&p[at..at + len]);
+                        at += len;
+                    }
+                    bytes.extend_from_slice(&record_frame(&ring));
+                }
+                bytes
+            } else {
+                packed
+                    .iter()
+                    .flat_map(|p| [&p[..], &tcbee_common::records::RECORD_DELIMITER].concat())
+                    .collect()
+            };
+            fs::write(trace.join("send_sock_sel.tcp"), &bytes).unwrap();
+            manifest.write(&trace).unwrap();
+            let work = tmp.path().join(format!("o-{raw}"));
+            fs::create_dir_all(&work).unwrap();
+            let (out, summary) = process(engine, ext, &work, &trace, None);
+            assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
+            let sel = series_of(&out);
+            for name in ["snd_cwnd", "srtt", "min_rtt"] {
+                assert_eq!(sel.get(name), full_series.get(name), "{name}, raw {raw}");
+            }
+            assert!(sel.contains_key("snd_cwnd"));
+            assert!(!sel.contains_key("pacing_rate"), "raw {raw}");
+            assert!(sel.keys().all(|name| full_series.contains_key(name)));
+
+            // With a broken manifest the file cannot be read, and the error says why
+            fs::write(trace.join("manifest.json"), "{").unwrap();
+            let mut args = Args::new(&trace, work.join(format!("broken.{ext}")), engine);
+            args.threads = None;
+            let err = run(args).expect_err("broken manifest");
+            assert!(
+                format!("{err:#}").contains("cannot read the manifest"),
+                "{err:#}"
+            );
+
+            // Without the manifest the file cannot be read
+            fs::remove_file(trace.join("manifest.json")).unwrap();
+            let mut args = Args::new(&trace, work.join(format!("none.{ext}")), engine);
+            args.threads = None;
+            let err = run(args).expect_err("no manifest");
+            assert!(format!("{err:#}").contains("manifest"), "{err:#}");
+        }
+    }
+}

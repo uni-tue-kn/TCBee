@@ -176,10 +176,16 @@ impl WatchSet {
     }
 }
 
-/// Written next to the trace files when any probe runs in on-change mode. A trace directory
-/// without it is format version 1: every source writes one record per hook run.
+/// Written next to the trace files when any probe runs in on-change mode or writes
+/// field-selected sock records. A trace directory without it is format version 1: every source
+/// writes one full record per hook run.
 pub const MANIFEST_FILE: &str = "manifest.json";
-pub const MANIFEST_VERSION: u16 = 2;
+/// The newest format version
+pub const MANIFEST_VERSION: u16 = SOCK_FIELDS_VERSION;
+/// The format of manifests without field-selected sources (on-change mode)
+pub const ON_CHANGE_VERSION: u16 = 2;
+/// The format version that added `SourceMeta::sock_fields`
+pub const SOCK_FIELDS_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -203,6 +209,52 @@ pub struct SourceMeta {
     /// from `recv_hook`.
     #[serde(default)]
     pub hooks: Vec<String>,
+    /// The layout of a file of field-selected sock records (format version 3)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sock_fields: Option<SockFieldsMeta>,
+}
+
+/// What a file of field-selected sock records holds (`--sock-fields`, `sockfields`)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SockFieldsMeta {
+    /// The selected groups, `sockfields::Group::name`
+    pub groups: Vec<String>,
+    /// The groups as `sockfields::SockFields::mask`
+    pub mask: u16,
+    /// Bytes of a record in the ring buffer (and of a raw frame's record)
+    pub ring_len: usize,
+    /// Bytes of a packed record in a records file, without the delimiter
+    pub file_len: usize,
+}
+
+impl SockFieldsMeta {
+    pub fn of(shape: &crate::sockfields::SockShape) -> Self {
+        SockFieldsMeta {
+            groups: shape.fields.names().into_iter().map(String::from).collect(),
+            mask: shape.fields.mask(),
+            ring_len: shape.ring_len,
+            file_len: shape.file_len,
+        }
+    }
+
+    /// The shape it describes; an error if the groups and the lengths disagree with this
+    /// version's group table
+    pub fn shape(&self) -> io::Result<crate::sockfields::SockShape> {
+        let invalid = |what: String| io::Error::new(io::ErrorKind::InvalidData, what);
+        let fields = crate::sockfields::SockFields::from_mask(self.mask)
+            .ok_or_else(|| invalid(format!("unknown sock field groups {:#x}", self.mask)))?;
+        let shape = crate::sockfields::SockShape::of(fields);
+        if shape.fields.names() != self.groups
+            || shape.ring_len != self.ring_len
+            || shape.file_len != self.file_len
+        {
+            return Err(invalid(format!(
+                "sock field groups {:?} of {} / {} bytes, this version lays them out in {} / {}",
+                self.groups, self.ring_len, self.file_len, shape.ring_len, shape.file_len
+            )));
+        }
+        Ok(shape)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +357,7 @@ mod tests {
                 shadow: false,
                 recv_hook: "fexit/tcp_rcv_established".into(),
                 hooks: vec!["fentry/__tcp_transmit_skb".into()],
+                sock_fields: None,
             }],
         };
         m.write(&dir).unwrap();
@@ -312,5 +365,37 @@ mod tests {
         assert!(m.source("send_sock_oc.tcp").is_some());
         assert!(m.source("send_sock.tcp").is_none());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sock_fields_meta_names_its_shape() {
+        use crate::sockfields::{Group, SockFields, SockShape};
+        let shape = SockShape::of(SockFields::of(&[Group::Cwnd, Group::Rtt]));
+        let meta = SockFieldsMeta::of(&shape);
+        assert_eq!(meta.groups, ["cwnd", "rtt"]);
+        assert_eq!(meta.shape().unwrap(), shape);
+        let json = serde_json::to_string(&meta).unwrap();
+        assert_eq!(serde_json::from_str::<SockFieldsMeta>(&json).unwrap(), meta);
+        let other = SockFieldsMeta {
+            ring_len: meta.ring_len + 8,
+            ..meta.clone()
+        };
+        assert!(other.shape().is_err());
+        let renamed = SockFieldsMeta {
+            groups: vec!["cwnd".into(), "cc".into()],
+            ..meta.clone()
+        };
+        assert!(renamed.shape().is_err());
+        let unknown = SockFieldsMeta {
+            mask: meta.mask | 1 << crate::sockfields::Group::ALL.len(),
+            ..meta.clone()
+        };
+        assert!(unknown.shape().is_err());
+        // A source without the field reads as None (manifests before version 3)
+        let old = r#"{"file":"send_sock_oc.tcp","sampling":{"mode":"every_run"},"shadow":false,"recv_hook":""}"#;
+        assert_eq!(
+            serde_json::from_str::<SourceMeta>(old).unwrap().sock_fields,
+            None
+        );
     }
 }

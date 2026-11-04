@@ -255,6 +255,18 @@ fn algorithms_left(
 }
 
 /// Ring buffers that the enabled probe groups write to
+/// Starts or stops recording in every program at once (TCBEE_RUNNING in config.h). The
+/// programs read the flag from the mapped .bss on every run.
+fn set_running(skel: &mut TcbeeSkel<'_>, running: bool) -> Result<(), Box<dyn Error>> {
+    let bss = skel
+        .maps
+        .bss_data
+        .as_deref_mut()
+        .ok_or("eBPF object has no .bss section")?;
+    bss.TCBEE_RUNNING = u32::from(running);
+    Ok(())
+}
+
 fn enabled_ringbufs(config: &EbpfRunnerConfig, optional: &BTreeSet<OptionalGroup>) -> Vec<u32> {
     let tcp_events = optional.iter().any(|group| group.is_tcp_event());
     let sock_events = optional.iter().any(|group| group.is_sock_event());
@@ -371,9 +383,14 @@ impl EbpfRunner {
             .map(|started| started.elapsed().as_secs_f64())
             .unwrap_or_default();
 
-        // Detach all programs so no new records arrive while draining. The writer, the
-        // stats and the TUI hold their own map handles, so the maps stay open after the
-        // object is closed.
+        // All probes stop recording at the same moment, then the programs are detached so no
+        // new records arrive while draining. The writer, the stats and the TUI hold their own
+        // map handles, so the maps stay open after the object is closed.
+        if let Some(skel) = self.skel.as_mut() {
+            if let Err(err) = set_running(skel, false) {
+                warn!("Could not stop the probes before detaching them: {}", err);
+            }
+        }
         self.links.clear();
         if let Some(tc) = self.tc.take() {
             tc.detach();
@@ -581,6 +598,7 @@ impl EbpfRunner {
             groups,
             skipped: self.skipped.clone(),
             interface: c.headers.then(|| c.iface.clone()),
+            writer_format: c.writer_format.name(),
             ringbuf_sizes: RINGBUFS
                 .iter()
                 .zip(&self.ringbuf_sizes)
@@ -659,6 +677,11 @@ impl EbpfRunner {
             rodata.HEADERS_NETNS = DriverTracer::netns()?;
             rodata.HEADERS_MTU = DriverTracer::mtu(&self.config.iface)?;
         }
+        if let Some(shape) = &self.config.sock_fields {
+            rodata.SOCK_SEL_OFF = shape.offsets;
+            rodata.SOCK_SEL_LEN = shape.ring_len as u32;
+            rodata.SOCK_SEL_TAIL = shape.tail;
+        }
         if let Some(on_change) = self.config.on_change {
             rodata.SOCK_WATCH_MASK = on_change.watch.mask();
             rodata.ONCHG_SHADOW = on_change.shadow as u8;
@@ -702,6 +725,7 @@ impl EbpfRunner {
             on_change,
             self.config.sock_hooks,
             timer,
+            self.config.sock_fields.is_some(),
         );
         CwndTracer::configure(&mut open.progs, self.config.cwnd, on_change);
         TracepointTracer::configure(&mut open.progs, self.config.tracepoints);
@@ -890,8 +914,19 @@ impl EbpfRunner {
         // This is the backend writer thread that reads and writes data to files. It is
         // kept in self right away, so that stop() detaches the programs before draining
         // the writers if starting fails below.
+        let mut writer = Writer::new(self.config.poll_mode);
+        if let Some(shape) = &self.config.sock_fields {
+            writer = writer.with_sock_record(shape.ring_len);
+        }
         let writer = self.writer.insert(
-            Writer::new(self.config.poll_mode).with_cpu_affinity(self.config.writer_cpus.clone()),
+            writer
+                .with_cpu_affinity(
+                    self.config.writer_cpus.clone(),
+                    self.config.writer_placement,
+                    &enabled,
+                )
+                .with_sink(self.config.writer_sink.clone())
+                .with_format(self.config.writer_format),
         );
         self.started = Some(Instant::now());
         let dir = self.config.dir.as_str();
@@ -914,6 +949,7 @@ impl EbpfRunner {
                 links,
                 self.config.on_change.map(|o| o.hooks),
                 self.config.sock_hooks,
+                self.config.sock_fields.as_ref(),
             )?;
         }
         // Performance variant of above hook
@@ -1010,7 +1046,8 @@ impl EbpfRunner {
         // Last, so the other writers keep their writer CPUs. Fails softly like BBR.
         if optional.contains(&OptionalGroup::SockTimer) {
             let attached = links.len();
-            if let Err(err) = KernelTracer::spawn_timer(skel, dir, writer, links) {
+            let shape = self.config.sock_fields.as_ref();
+            if let Err(err) = KernelTracer::spawn_timer(skel, dir, writer, links, shape) {
                 links.truncate(attached);
                 optional.remove(&OptionalGroup::SockTimer);
                 // Its ring exists but holds nothing, the metadata lists only the rings in use
@@ -1060,6 +1097,10 @@ impl EbpfRunner {
                 self.ringbuf_sizes[RB_OWNERS as usize] = None;
             }
         }
+        // Every program is attached and every writer runs: all probes start recording now
+        writer.start()?;
+        set_running(skel, true)?;
+
         // The connections that exist already, now that the owner programs see the new ones.
         // It reads all of /proc, so it runs on a thread of its own and writes its file when done.
         if host_pids {

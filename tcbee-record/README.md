@@ -80,8 +80,13 @@ At least one metric source is required.
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |
 | `--tui-observation-window-s N` | `0` | Start the TUI charts with a window of N seconds, rounded up to 10 s, 30 s, 1, 2, 5, 10 or 30 min (at most what the update rate keeps); 0 starts with the whole recording, see [Terminal UI](#terminal-ui) |
-| `--poll busy\|wait` | `busy` | Writer threads poll and sleep 50 µs when a poll returns fewer than 256 records, or block until the kernel signals records |
-| `--writer-cpus LIST` | | CPU ids to pin the writer threads to, round-robin |
+| `--poll busy\|wait` | `busy` | Writer threads poll and sleep when the rings are idle (50 µs for a thread per file; with `--writer-cpus` they spin, then sleep from 1 µs up to 100 µs), or block until the kernel signals records |
+| `--writer-cpus LIST` | | CPU ids for the writer threads: one thread per CPU drains the rings it gets by hook, each pair of per-packet hooks (ingress and egress) on a CPU of its own where possible and the rare hooks' rings together; with more pairs than CPUs the heaviest pairs by bytes per segment go first to the least loaded CPU, so with all probes on two CPUs the sock rings get one alone; `metrics.json` lists the threads (`writer_threads`). Without, one unpinned thread runs per output file |
+| `--writer-placement balanced\|round-robin` | `balanced` | Grow files on the least loaded writer CPU, or on the writer CPUs without a writer thread; writer threads do not move |
+| `--writer-sink mmap\|direct\|uring\|buffered\|sync` | `mmap` | How the trace files are written: memory-mapped, or from large buffers that I/O threads write with O_DIRECT (`direct`), that the writer submits to an io_uring (`uring`), or that go through the page cache and are written back right away (`buffered`), or from two 256 KiB buffers the writer writes itself through the page cache, without I/O threads, pushing the pages to the disk every 8 MiB (`sync`; raw spans of 16 KiB or more go straight from the ring buffer to the file). Same file bytes; `metrics.json` reports the writers' waits for buffers and for write-behind. On tmpfs `sync` costs the least CPU per MB; on a disk O_DIRECT (`direct`, `uring`) does |
+| `--writer-format records\|raw` | `records` | How records get into the trace files: one by one, packed and followed by a delimiter, or as the ring buffers' bytes copied in spans (`raw`, see [Raw trace files](#raw-trace-files)). tcbee-process reads both |
+| `--writer-no-prealloc` | | Do not allocate the trace files of the `direct` and `uring` sinks ahead of the writes |
+| `--writer-io-cpus LIST` | | CPU ids for the I/O threads or io_uring workers of the `direct`, `uring` and `buffered` sinks; by default they run on the writer CPUs |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 | `--headers-at HOOKS` | `tc` | With `-h`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
 | `--yes` | | Do not ask for confirmation (`--headers-at tc,driver`) |
@@ -90,11 +95,12 @@ At least one metric source is required.
 | `--on-change-hooks LIST` | `ingress,timer` | With `--on-change`: the kernel hooks to compare at, `ingress`, `timer`, `egress`; the list works as described below the table |
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
 | `--sock-hooks LIST` | `timer,state,ca-state,retransmit,restart,rcvbuf` | With `-k`: the kernel hooks to record the socket at. Per packet: `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`) and `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). Not per packet: `timer` (`timer_sock.tcp`) and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). The list works as described below the table, e.g. `+ingress` on a sender. With `--on-change` and `-k` the same as `--on-change-hooks` |
+| `--sock-fields LIST` | | With `-k` at `egress`, `ingress-entry` and `timer` only: record only these groups of socket fields, see [Field-selected sock records](#field-selected-sock-records) |
 | `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 | `--no-owners` | | Do not record the processes of the connections (`flow_owners.tcp`, `flow_owners.json`), see [Flow owners](#flow-owners) |
 | `--owners-no-cmdline` | | Record the owners without the command lines of their processes |
 
-`--tp`, `--sock-hooks` and `--on-change-hooks` take the same kind of list: comma-separated
+`--tp`, `--sock-hooks`, `--sock-fields` and `--on-change-hooks` take the same kind of list: comma-separated
 names form the set; `+name` and `-name` items add to or remove from the plain names of the
 list, or from the option's default when the list has no plain names (`--tp +drops,-probe`,
 `--sock-hooks +ingress`); `all` and `default` name those sets (`--tp all,-drops`); `_` and `-`
@@ -116,6 +122,18 @@ holds the number of records; without it the file was cut short. With the per-CPU
 of `metrics.json`, it places a gap in a flow's `hook_seq` on the CPU whose ring was full.
 
 Raw data is written as `*.tcp` files to the recording directory. Filter flags are described under [Filtering](#filtering).
+
+### Raw trace files
+
+With `--writer-format raw` a writer maps its ring buffers itself and copies the records that
+are committed in spans of up to 64 KiB, instead of handling each record. A raw file is a
+sequence of frames of one fixed size: the kernel's 8-byte ring buffer header, then the record
+as the eBPF program wrote it (the C struct with its padding), rounded up to 8 bytes. The
+first frame is a header (marked discarded, so it is skipped like a discarded record) with
+the magic `TCBEERAW`, the format version, the codec, the record length, a byte order
+marker and the id of the record layouts (tcbee-process refuses raw traces of other layouts); zeros after the last frame are unused space. The `.cpu` side file counts frames after
+the header. Frames are larger than packed records (sock 288 instead of 262 bytes). The
+format is described in `tcbee-trace/src/raw.rs`.
 
 ## Terminal UI
 
@@ -263,6 +281,41 @@ dropped records. The default mode is unchanged.
   1 suppressed, 2 a watched field changed, 3 first run or after a drop, 4 socket state
   changed, 5 no socket storage. A replay of such a trace checks the decisions record by
   record (`testing/onchange_smoke.sh`).
+
+## Field-selected sock records
+
+A sock record holds about 50 fields, 262 bytes in a trace file. At the per-packet hooks that
+is most of what the writer and the disk move, and the record rate where the first records
+are dropped falls with the record size. `--sock-fields LIST` records only some groups of
+fields:
+
+| Group | Fields |
+|---|---|
+| `pacing` | `pacing_rate`, `max_pacing_rate`, `wstamp_ns` |
+| `icsk` | `rto`, `rcv_mss`, `backoff` |
+| `cwnd` | `snd_cwnd` |
+| `cc` | `bytes_acked`, `snd_ssthresh`, `total_retrans`, `lost`, `sacked_out`, `retrans`, `reordering`, `segs_out`, `probes` |
+| `rcv` | `bytes_received`, `rcv_ssthresh`, `rcv_rtt`, `rcv_space`, `segs_in`, `advmss` |
+| `rtt` | `srtt`, `mdev`, `min_rtt`, `rttvar` |
+| `delivery` | `packets_out`, `delivered`, `delivered_ce`, `app_limited`, `rate_delivered`, `rate_interval_us`, `lost_out`, `ca_state` |
+| `chrono` | `chrono_busy`, `chrono_rwnd_limited`, `chrono_sndbuf_limited`, `chrono_type` |
+| `seq` | `snd_una`, `snd_nxt`, `reord_seen`, `dsack_dups` |
+| `sndbuf` | `wmem_queued`, `sndbuf`, `notsent` |
+
+- The header (time, `hook_seq`, addresses, ports), `ato` and `conn_id` are always recorded.
+  With the delimiter, a record of `--sock-fields cwnd` is 78 bytes in the file (the cwnd
+  probe's record, `-w`, is 74; `ato` is the difference) and one of `cwnd,cc,rtt` 131.
+- Only the default programs of `-k` have a field-selected variant: give the hooks with
+  `--sock-hooks egress,ingress-entry,timer` (or a part of them). Not with `--on-change`.
+- The records go to `send_sock_sel.tcp`, `recv_sock_sel.tcp` and `timer_sock_sel.tcp`, and
+  `manifest.json` (format 3, written before the first record) lists the groups and the record
+  lengths of each. It lists the files of all given hooks, also `timer_sock_sel.tcp` when the
+  timer hook then fails to load. Older readers skip these files. Raw trace files carry a
+  layout id that includes the groups.
+- The BPF programs get the offset of each group and the record length before they are
+  loaded, so the verifier drops the code of the groups not recorded.
+- tcbee-process reads the files into the same tables as the full ones (`sock`,
+  `sock_timer`), without the series of the fields not recorded.
 
 ## Write timer records
 

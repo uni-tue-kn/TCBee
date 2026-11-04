@@ -4,6 +4,10 @@ mod eBPF;
 mod metadata;
 mod metrics;
 mod owners;
+mod placement;
+mod pooled;
+mod rawring;
+mod ring_groups;
 mod stats;
 mod viz;
 mod writer;
@@ -15,13 +19,14 @@ use std::{
 use anyhow::anyhow;
 use eBPF::ebpf_runner::EbpfRunner;
 use eBPF::ebpf_runner_config::{
-    ip_filter_keys, on_change_manifest, parse_ringbuf_sizes, tracepoint_set, EbpfRunnerConfig,
-    FilterConfig, HookFlags, MptcpModes, FILTER_MAX_ENTRIES,
+    ip_filter_keys, on_change_manifest, parse_ringbuf_sizes, parse_sock_fields,
+    sock_fields_manifest, tracepoint_set, EbpfRunnerConfig, FilterConfig, HookFlags, MptcpModes,
+    FILTER_MAX_ENTRIES,
 };
 use eBPF::probes::headers::{check_offloads, HeadersAt};
 use metadata::Offloads;
 use tcbee_trace::TCBeeTrace;
-use writer::PollMode;
+use writer::{Placement, PollMode, SinkConfig, SinkKind, WriterFormat};
 
 // Error handling
 use log::info;
@@ -36,7 +41,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 // Commandline arguments
-use argparse::{ArgumentParser, Store, StoreTrue};
+use argparse::{ArgumentParser, Store, StoreOption, StoreTrue};
 
 fn parse_csv<T>(arg: &str, name: &str) -> anyhow::Result<Vec<T>>
 where
@@ -55,6 +60,15 @@ where
                 .map_err(|err| anyhow!("Invalid {} '{}': {}", name, value, err))
         })
         .collect()
+}
+
+/// CPU ids for a CPU set
+fn parse_cpu_list(arg: &str, name: &str) -> anyhow::Result<Vec<usize>> {
+    let cpus: Vec<usize> = parse_csv(arg, name)?;
+    if let Some(cpu) = cpus.iter().find(|cpu| **cpu >= libc::CPU_SETSIZE as usize) {
+        return Err(anyhow!("Invalid {} {}", name, cpu));
+    }
+    Ok(cpus)
 }
 
 fn parse_ip_csv(arg: &str, name: &str) -> anyhow::Result<Vec<[u8; 16]>> {
@@ -105,11 +119,18 @@ fn main() -> anyhow::Result<()> {
     let mut ringbuf_size: String = String::new();
     let mut poll: String = "busy".to_string();
     let mut writer_cpus: String = String::new();
+    let mut writer_placement: String = "balanced".to_string();
+    let mut writer_sink: String = "mmap".to_string();
+    let mut writer_format: String = "records".to_string();
+    let mut writer_io_cpus: String = String::new();
+    let mut writer_no_prealloc: bool = false;
+    let mut writer_max_buffers: Option<usize> = None;
     let mut on_change: String = String::new();
     let mut on_change_hooks: String = String::new();
     let mut on_change_shadow: bool = false;
     let mut no_timer_hook: bool = false;
     let mut sock_hooks: String = String::new();
+    let mut sock_fields: String = String::new();
     let mut no_owners: bool = false;
     let mut owners_no_cmdline: bool = false;
 
@@ -232,12 +253,42 @@ fn main() -> anyhow::Result<()> {
         argparser.refer(&mut poll).add_option(
             &["--poll"],
             Store,
-            "How writer threads wait for records: 'busy' polls the rings and sleeps 50 µs when a poll returns fewer than 256 records, 'wait' blocks until the kernel signals new records. Default is busy.",
+            "How writer threads wait for records: 'busy' polls the rings and sleeps when they are idle (50 µs per thread per file; with --writer-cpus spins, then sleeps 1 µs growing to 100 µs), 'wait' blocks until the kernel signals new records. Default is busy.",
         );
         argparser.refer(&mut writer_cpus).add_option(
             &["--writer-cpus"],
             Store,
-            "Comma-separated CPU ids to pin the writer threads to, assigned round-robin. One thread runs per output file.",
+            "Comma-separated CPU ids for the writer threads: one thread per CPU drains the rings it gets by hook, each pair of per-packet hooks (ingress and egress) on a CPU of its own where possible and the rare hooks' rings together. Without, one unpinned thread runs per output file.",
+        );
+        argparser.refer(&mut writer_placement).add_option(
+            &["--writer-placement"],
+            Store,
+            "Where file helpers run on the --writer-cpus: 'balanced' runs file growth on the least loaded writer CPU, 'round-robin' on the writer CPUs without a writer thread (all if none is free). Writer threads do not move. Default is balanced.",
+        );
+        argparser.refer(&mut writer_sink).add_option(
+            &["--writer-sink"],
+            Store,
+            "How writers write the trace files: 'mmap' maps them, 'direct' copies records into large buffers that I/O threads write with O_DIRECT, 'uring' submits those writes to an io_uring, 'buffered' writes the buffers through the page cache and pushes them to the disk at once, 'sync' writes two 256 KiB buffers itself through the page cache, without I/O threads, and pushes the pages to the disk every 8 MiB. The file bytes are the same. Default is mmap.",
+        );
+        argparser.refer(&mut writer_format).add_option(
+            &["--writer-format"],
+            Store,
+            "How records get into the trace files: 'records' hands each record to the writer, which packs it and appends a delimiter, 'raw' copies the ring buffers' committed bytes in spans of up to 64 KiB, each record with its ring buffer header and padding. tcbee-process reads both. Default is records.",
+        );
+        argparser.refer(&mut writer_io_cpus).add_option(
+            &["--writer-io-cpus"],
+            Store,
+            "Comma-separated CPU ids for the I/O threads (or io_uring workers) of the direct, uring and buffered sinks. By default they run on the --writer-cpus like the file growth helpers.",
+        );
+        argparser.refer(&mut writer_no_prealloc).add_option(
+            &["--writer-no-prealloc"],
+            StoreTrue,
+            "With the direct and uring sinks, do not allocate the trace files ahead of the writes. Allocating takes the file's lock and, on tmpfs, zeroes the memory, which the writes then wait for.",
+        );
+        argparser.refer(&mut writer_max_buffers).add_option(
+            &["--writer-max-buffers"],
+            StoreOption,
+            "With the direct and buffered sinks, how many 2 MiB buffers a trace file may hold while the disk is slow, instead of the writer waiting for it. Default 256 (512 MiB); quiet files keep 8.",
         );
         argparser.refer(&mut ringbuf_size).add_option(
             &["--ringbuf-size"],
@@ -268,6 +319,11 @@ fn main() -> anyhow::Result<()> {
             &["--sock-hooks"],
             Store,
             "Comma-separated kernel hooks at which -k records the socket. Per packet: ingress = after each received segment (fexit/tcp_rcv_established and tcp_rcv_state_process, ingress_sock.tcp), egress = before each transmitted segment (fentry/__tcp_transmit_skb, send_sock.tcp), ingress-entry = before each received segment in ESTABLISHED (fentry/tcp_rcv_established, recv_sock.tcp). Not per packet: timer = after each write timer run (fexit/tcp_write_timer_handler, timer_sock.tcp); state, ca-state, retransmit, restart, rcvbuf = at TCP state and congestion state changes, retransmissions, cwnd restarts after idle and receive buffer growth (event_sock.tcp). Default: the ones not per packet. The list works as in --tp (all, default, +name, -name), e.g. +ingress on a sender. With --on-change and -k it is the same as --on-change-hooks (with -w alone, use --on-change-hooks).",
+        );
+        argparser.refer(&mut sock_fields).add_option(
+            &["--sock-fields"],
+            Store,
+            "With -k at the hooks egress, ingress-entry and timer (give them with --sock-hooks): record only these groups of socket fields, into *_sock_sel.tcp files with a manifest.json. Smaller records let more of them through the writer and the disk without loss. Groups: pacing, icsk, cwnd, cc (the rest of the congestion and loss state), rcv, rtt, delivery, chrono, seq, sndbuf. The header, ato and conn_id are always recorded. The list works as in --tp, e.g. cwnd,rtt or all,-chrono.",
         );
         argparser.refer(&mut no_owners).add_option(
             &["--no-owners"],
@@ -341,17 +397,46 @@ fn main() -> anyhow::Result<()> {
     };
 
     let ringbuf_sizes = parse_ringbuf_sizes(&ringbuf_size)?;
-    let writer_cpus: Vec<usize> = parse_csv(&writer_cpus, "CPU id")?;
-    if let Some(cpu) = writer_cpus
-        .iter()
-        .find(|cpu| **cpu >= libc::CPU_SETSIZE as usize)
-    {
-        return Err(anyhow!("Invalid writer CPU id {}", cpu));
-    }
+    let writer_cpus = parse_cpu_list(&writer_cpus, "writer CPU id")?;
     let poll_mode = match poll.as_str() {
         "busy" => PollMode::Busy,
         "wait" => PollMode::Wait,
         other => return Err(anyhow!("Unknown --poll mode '{}', use busy or wait", other)),
+    };
+    let writer_io_cpus = parse_cpu_list(&writer_io_cpus, "writer I/O CPU id")?;
+    let Some(kind) = SinkKind::from_name(&writer_sink) else {
+        return Err(anyhow!(
+            "Unknown --writer-sink '{}', use {}",
+            writer_sink,
+            SinkKind::names()
+        ));
+    };
+    if matches!(kind, SinkKind::Mmap | SinkKind::Sync) && !writer_io_cpus.is_empty() {
+        return Err(anyhow!(
+            "--writer-io-cpus needs --writer-sink direct, uring or buffered"
+        ));
+    }
+    let writer_sink = SinkConfig {
+        io_cpus: writer_io_cpus,
+        preallocate: !writer_no_prealloc,
+        max_buffers: writer_max_buffers.unwrap_or(SinkConfig::default().max_buffers),
+        ..SinkConfig::of(kind)
+    };
+    let Some(writer_format) = WriterFormat::from_name(&writer_format) else {
+        return Err(anyhow!(
+            "Unknown --writer-format '{}', use records or raw",
+            writer_format
+        ));
+    };
+    let writer_placement = match writer_placement.as_str() {
+        "balanced" => Placement::Balanced,
+        "round-robin" => Placement::RoundRobin,
+        other => {
+            return Err(anyhow!(
+                "Unknown --writer-placement '{}', use balanced or round-robin",
+                other
+            ))
+        }
     };
 
     let mptcp = if !mptcp_modes.is_empty() {
@@ -390,6 +475,7 @@ fn main() -> anyhow::Result<()> {
         no_timer_hook,
     }
     .resolve()?;
+    let sock_fields = parse_sock_fields(&sock_fields, sock_hooks, on_change.is_some())?;
     // A hint for plain -k only, not for a list someone chose
     if !chose_sock_hooks && sock_hooks.is_some_and(|hooks| hooks.hooks().all(|h| !h.per_packet())) {
         eprintln!(
@@ -430,11 +516,22 @@ fn main() -> anyhow::Result<()> {
         .ringbuf_sizes(ringbuf_sizes)
         .poll_mode(poll_mode)
         .writer_cpus(writer_cpus.clone())
+        .writer_placement(writer_placement)
+        .writer_sink(writer_sink)
+        .writer_format(writer_format)
         .on_change(on_change)
         .sock_hooks(sock_hooks)
+        .sock_fields(sock_fields.clone())
         .owners(!no_owners)
         .owner_cmdlines(!owners_no_cmdline)
         .dir(trace_dir);
+
+    // Before any record: a field-selected file cannot be read without it
+    if let (Some(shape), Some(hooks)) = (&sock_fields, sock_hooks) {
+        sock_fields_manifest(shape, hooks)
+            .write(trace.dir())
+            .map_err(|e| anyhow!("Failed to write the manifest: {e}"))?;
+    }
 
     // Main thread that strats all probes/tracepoints
     // If these calls fail, stop program!

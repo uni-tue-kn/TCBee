@@ -7,12 +7,16 @@ use crate::{
         headers::HeadersAt,
         tracepoints::{Tracepoint, TracepointSet},
     },
-    writer::PollMode,
+    writer::{Placement, PollMode, SinkConfig, WriterFormat},
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
 use tcbee_trace::{
-    onchange::{Manifest, Sampling, SockField, SourceMeta, WatchSet, MANIFEST_VERSION},
+    onchange::{
+        Manifest, Sampling, SockField, SockFieldsMeta, SourceMeta, WatchSet, ON_CHANGE_VERSION,
+        SOCK_FIELDS_VERSION,
+    },
     sock_hooks::{Hook, HookSet},
+    sockfields::{SockFields, SockShape},
     TraceFile,
 };
 
@@ -308,6 +312,48 @@ fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSet> {
     Ok(hooks)
 }
 
+/// The hooks whose sock records can be field-selected (the default -k programs) and their
+/// files
+pub const SOCK_FIELDS_FILES: [(Hook, TraceFile); 3] = [
+    (Hook::Egress, TraceFile::SendSockSel),
+    (Hook::IngressEntry, TraceFile::RecvSockSel),
+    (Hook::Timer, TraceFile::TimerSockSel),
+];
+
+/// `--sock-fields GROUPS`: the layout of the field-selected sock records, None without the
+/// flag. Only for -k in full mode at the hooks of `SOCK_FIELDS_FILES` (`full`, see
+/// `HookFlags`).
+pub fn parse_sock_fields(
+    spec: &str,
+    full: Option<HookSet>,
+    on_change: bool,
+) -> anyhow::Result<Option<SockShape>> {
+    if spec.is_empty() {
+        return Ok(None);
+    }
+    if on_change {
+        return Err(anyhow!("--sock-fields does not work with --on-change"));
+    }
+    let Some(hooks) = full else {
+        return Err(anyhow!("--sock-fields needs -k"));
+    };
+    if let Some(hook) = hooks
+        .hooks()
+        .find(|h| !SOCK_FIELDS_FILES.iter().any(|(s, _)| s == h))
+    {
+        let selectable: Vec<&str> = SOCK_FIELDS_FILES.iter().map(|(h, _)| h.name()).collect();
+        return Err(anyhow!(
+            "--sock-fields records only at the hooks {}, not at {}: give them with \
+             --sock-hooks, e.g. --sock-hooks {}",
+            selectable.join(", "),
+            hook.name(),
+            selectable.join(",")
+        ));
+    }
+    let fields = SockFields::parse(spec).map_err(|e| anyhow!("--sock-fields: {}", e))?;
+    Ok(Some(SockShape::of(fields)))
+}
+
 /// `--on-change FIELDS`, `--on-change-hooks HOOKS` (or `--sock-hooks`) and
 /// `--on-change-shadow`, None in the default mode. An empty `hooks` is the default set
 /// (ingress and timer).
@@ -429,6 +475,7 @@ fn on_change_sources(
             .flat_map(|h| h.kernel_hooks())
             .map(|k| k.to_string())
             .collect(),
+        sock_fields: None,
     };
     let mut sources = Vec::new();
     if hooks.send() {
@@ -463,7 +510,29 @@ pub fn on_change_manifest(on_change: OnChange, kernel: bool, cwnd: bool) -> Mani
         ));
     }
     Manifest {
-        format_version: MANIFEST_VERSION,
+        format_version: ON_CHANGE_VERSION,
+        sources,
+    }
+}
+
+/// The files of field-selected sock records (`--sock-fields`) at `hooks`: the send file
+/// (egress), the receive file (ingress-entry) and the timer file
+pub fn sock_fields_manifest(shape: &SockShape, hooks: HookSet) -> Manifest {
+    let source = |file: TraceFile, hook: Hook| SourceMeta {
+        file: file.filename().into(),
+        sampling: Sampling::EveryRun,
+        shadow: false,
+        recv_hook: String::new(),
+        hooks: hook.kernel_hooks().iter().map(|k| k.to_string()).collect(),
+        sock_fields: Some(SockFieldsMeta::of(shape)),
+    };
+    let sources = SOCK_FIELDS_FILES
+        .into_iter()
+        .filter(|(hook, _)| hooks.contains(*hook))
+        .map(|(hook, file)| source(file, hook))
+        .collect();
+    Manifest {
+        format_version: SOCK_FIELDS_VERSION,
         sources,
     }
 }
@@ -488,9 +557,14 @@ pub struct EbpfRunnerConfig {
     pub ringbuf_sizes: Vec<(&'static str, u32)>,
     pub poll_mode: PollMode,
     pub writer_cpus: Vec<usize>,
+    pub writer_placement: Placement,
+    pub writer_sink: SinkConfig,
+    pub writer_format: WriterFormat,
     pub on_change: Option<OnChange>,
     /// The hooks of -k in full mode, None without -k or in on-change mode (`HookFlags`)
     pub sock_hooks: Option<HookSet>,
+    /// Field-selected sock records (`--sock-fields`), None for full ones
+    pub sock_fields: Option<SockShape>,
     /// Record the process that opens each connection (`flow_owners.tcp`), along with
     /// whatever else records; never a reason to record on its own
     pub owners: bool,
@@ -521,8 +595,12 @@ impl EbpfRunnerConfig {
             ringbuf_sizes: Vec::new(),
             poll_mode: PollMode::default(),
             writer_cpus: Vec::new(),
+            writer_placement: Placement::default(),
+            writer_sink: SinkConfig::default(),
+            writer_format: WriterFormat::default(),
             on_change: None,
             sock_hooks: None,
+            sock_fields: None,
             owners: false,
             owner_cmdlines: true,
         }
@@ -628,6 +706,26 @@ impl EbpfRunnerConfig {
         self
     }
 
+    pub fn writer_placement(mut self, placement: Placement) -> EbpfRunnerConfig {
+        self.writer_placement = placement;
+        self
+    }
+
+    pub fn writer_format(mut self, format: WriterFormat) -> EbpfRunnerConfig {
+        self.writer_format = format;
+        self
+    }
+
+    pub fn writer_sink(mut self, sink: SinkConfig) -> EbpfRunnerConfig {
+        self.writer_sink = sink;
+        self
+    }
+
+    pub fn sock_fields(mut self, shape: Option<SockShape>) -> EbpfRunnerConfig {
+        self.sock_fields = shape;
+        self
+    }
+
     pub fn on_change(mut self, on_change: Option<OnChange>) -> EbpfRunnerConfig {
         self.on_change = on_change;
         self
@@ -666,6 +764,36 @@ mod tests {
         assert_eq!(ip_filter_keys(v4).len(), 2);
         let v6: IpAddr = "2001:db8::1".parse().unwrap();
         assert_eq!(ip_filter_keys(v6).len(), 1);
+    }
+
+    #[test]
+    fn sock_fields_only_at_the_default_programs() {
+        let hooks: Vec<Hook> = SOCK_FIELDS_FILES.iter().map(|(h, _)| *h).collect();
+        let sel_hooks = Some(HookSet::of(&hooks));
+        let shape = parse_sock_fields("cwnd,rtt", sel_hooks, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(shape.fields.names(), ["cwnd", "rtt"]);
+        assert_eq!(parse_sock_fields("", sel_hooks, false).unwrap(), None);
+        assert!(parse_sock_fields("cwnd", None, false).is_err());
+        assert!(parse_sock_fields("cwnd", sel_hooks, true).is_err());
+        assert!(parse_sock_fields("cwnd", Some(HookSet::FULL_DEFAULT), false).is_err());
+        assert!(parse_sock_fields("cwnd,ttl", sel_hooks, false).is_err());
+        let egress = Some(HookSet::of(&[Hook::Egress]));
+        assert!(parse_sock_fields("all", egress, false).is_ok());
+    }
+
+    #[test]
+    fn sock_fields_manifest_lists_the_hooked_files() {
+        let shape = SockShape::of(SockFields::parse("cwnd").unwrap());
+        let m = sock_fields_manifest(&shape, HookSet::of(&[Hook::Egress, Hook::Timer]));
+        assert_eq!(m.format_version, SOCK_FIELDS_VERSION);
+        let files: Vec<&str> = m.sources.iter().map(|s| s.file.as_str()).collect();
+        assert_eq!(files, ["send_sock_sel.tcp", "timer_sock_sel.tcp"]);
+        assert!(m
+            .sources
+            .iter()
+            .all(|s| s.sock_fields.as_ref().unwrap().shape().unwrap() == shape));
     }
 
     /// `all` in an on-change list names the hooks on-change mode can use

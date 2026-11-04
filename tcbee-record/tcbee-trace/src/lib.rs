@@ -1,7 +1,9 @@
 pub mod name_list;
 pub mod onchange;
 pub mod owners;
+pub mod raw;
 pub mod sock_hooks;
+pub mod sockfields;
 
 use std::{
     fs,
@@ -56,6 +58,11 @@ pub enum TraceFile {
     RecvSockOc,
     SendCwndOc,
     RecvCwndOc,
+    /// Field-selected sock records (`--sock-fields`): their layout is in the manifest, see
+    /// `sockfields`
+    SendSockSel,
+    RecvSockSel,
+    TimerSockSel,
 }
 
 impl TraceFile {
@@ -89,7 +96,19 @@ impl TraceFile {
             TraceFile::RecvSockOc => "recv_sock_oc.tcp",
             TraceFile::SendCwndOc => "send_cwnd_oc.tcp",
             TraceFile::RecvCwndOc => "recv_cwnd_oc.tcp",
+            TraceFile::SendSockSel => "send_sock_sel.tcp",
+            TraceFile::RecvSockSel => "recv_sock_sel.tcp",
+            TraceFile::TimerSockSel => "timer_sock_sel.tcp",
         }
+    }
+
+    /// A file of field-selected sock records, written by the ring buffer of its full
+    /// counterpart instead of it
+    pub const fn field_selected(self) -> bool {
+        matches!(
+            self,
+            TraceFile::SendSockSel | TraceFile::RecvSockSel | TraceFile::TimerSockSel
+        )
     }
 
     pub const fn all() -> &'static [TraceFile] {
@@ -122,6 +141,9 @@ impl TraceFile {
             TraceFile::RecvSockOc,
             TraceFile::SendCwndOc,
             TraceFile::RecvCwndOc,
+            TraceFile::SendSockSel,
+            TraceFile::RecvSockSel,
+            TraceFile::TimerSockSel,
         ]
     }
 }

@@ -18,6 +18,12 @@ pub enum DecodeError {
     Bincode(String),
     /// The 4 byte divider at the end of the record is wrong: the file is misaligned or corrupt.
     Divider,
+    /// Raw format: the recorder copied a record that was still being written.
+    Busy,
+    /// Raw format: the data ended (a frame of length 0) before the record.
+    DataEnded,
+    /// Raw format: the file's header frame does not fit this reader.
+    RawHeader(String),
 }
 
 impl fmt::Display for DecodeError {
@@ -28,6 +34,9 @@ impl fmt::Display for DecodeError {
             }
             DecodeError::Bincode(e) => write!(f, "cannot decode record: {e}"),
             DecodeError::Divider => write!(f, "record divider mismatch (misaligned trace file)"),
+            DecodeError::Busy => write!(f, "record was still being written when it was copied"),
+            DecodeError::DataEnded => write!(f, "the data ended before the record"),
+            DecodeError::RawHeader(e) => write!(f, "{e}"),
         }
     }
 }

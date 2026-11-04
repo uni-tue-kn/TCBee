@@ -131,6 +131,16 @@ pub fn decode_records(
     json: Option<&FlowOwners>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<Owned>, DecodeError> {
+    let processes = json.map(Processes::new);
+    if let Some(header) = tcbee_trace::raw::parse_header(bytes) {
+        let header = header.map_err(|e| DecodeError::RawHeader(e.to_string()))?;
+        return decode_raw_records(bytes, header, warnings).map(|records| {
+            records
+                .iter()
+                .map(|r| record_owner(r, processes.as_ref()))
+                .collect()
+        });
+    }
     let (records, tail) = bytes.as_chunks::<ENTRY_SIZE>();
     if !tail.is_empty() {
         warnings.push(format!(
@@ -139,7 +149,6 @@ pub fn decode_records(
             tail.len()
         ));
     }
-    let processes = json.map(Processes::new);
     records
         .iter()
         .map(|record| {
@@ -147,6 +156,52 @@ pub fn decode_records(
                 .map(|r| record_owner(&r, processes.as_ref()))
         })
         .collect()
+}
+
+/// The owner records of a raw trace (`tcbee_trace::raw`)
+fn decode_raw_records(
+    bytes: &[u8],
+    header: tcbee_trace::raw::Header,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<flow_owner_entry>, DecodeError> {
+    use tcbee_trace::raw::{frames, stride, Frame};
+    let len = std::mem::size_of::<flow_owner_entry>();
+    if header.layout != tcbee_common::records::LAYOUT_ID {
+        return Err(DecodeError::RawHeader(format!(
+            "raw trace with other record layouts ({:08x})",
+            header.layout
+        )));
+    }
+    if header.record_len as usize != len {
+        return Err(DecodeError::Size {
+            expected: len,
+            got: header.record_len as usize,
+        });
+    }
+    let tail = bytes.len() % stride(len);
+    if tail != 0 {
+        warnings.push(format!(
+            "flow_owners.tcp: {tail} trailing bytes do not form a whole frame and are ignored \
+             (recording stopped mid-write?)"
+        ));
+    }
+    let mut records = Vec::new();
+    // Frame 0 is the header; zeros after the data are unused space
+    for frame in frames(bytes, len).skip(1) {
+        match frame {
+            Frame::Record(record) => records.push(crate::raw::read_record(record)),
+            Frame::Discarded => {}
+            Frame::End => break,
+            Frame::Busy => return Err(DecodeError::Busy),
+            Frame::Length(got) => {
+                return Err(DecodeError::Size {
+                    expected: len,
+                    got: got as usize,
+                })
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// An address of the snapshot, as the event tables write it

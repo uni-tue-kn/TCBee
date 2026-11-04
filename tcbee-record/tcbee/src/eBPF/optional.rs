@@ -128,7 +128,7 @@ impl OptionalGroup {
             OptionalGroup::Cubic => &["cubic_cong_control", "cubic_cwnd_event"],
             OptionalGroup::CubicHook(i) => CUBIC_HOOKS[i].programs,
             OptionalGroup::Reno => RENO_HOOKS[0].programs,
-            OptionalGroup::SockTimer => &["sock_timer"],
+            OptionalGroup::SockTimer => &["sock_timer", "sock_sel_timer"],
             OptionalGroup::MptcpTag => &[
                 "sock_sendmsg",
                 "sock_recvmsg",
@@ -150,6 +150,9 @@ impl OptionalGroup {
                 "sock_event_retransmit",
                 "sock_event_restart",
                 "sock_event_rcvbuf",
+                "sock_sel_sendmsg",
+                "sock_sel_recvmsg",
+                "sock_sel_timer",
             ],
             OptionalGroup::MptcpPm => &MPTCP_PM_PROGRAMS,
             OptionalGroup::TcpEvent(i) => TCP_EVENT_HOOKS[i].programs,

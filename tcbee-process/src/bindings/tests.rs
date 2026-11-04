@@ -594,7 +594,9 @@ fn entry_sizes_match_the_record_encoding() {
 #[test]
 fn decode_fn_fills_a_batch() {
     let path = fixture("send_sock.tcp");
-    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::SendSock, &path, None)
+        .unwrap()
+        .unwrap();
     let file = fs::File::open(&path).unwrap();
     let mut batch = EventBatch::new(b.table, 10);
     let mut keys = Vec::new();
@@ -658,7 +660,7 @@ fn current_sock_record_has_the_added_columns() {
 /// columns it does not have.
 #[test]
 fn sock_layout_is_detected_per_file() {
-    let old = binding_for(TraceFile::SendSock, &fixture("send_sock.tcp"))
+    let old = binding_for(TraceFile::SendSock, &fixture("send_sock.tcp"), None)
         .unwrap()
         .unwrap();
     assert_eq!(old.entry_size, 172);
@@ -679,21 +681,25 @@ fn sock_layout_is_detected_per_file() {
         bytes.extend_from_slice(&RECORD_DELIMITER);
     }
     fs::write(&path, &bytes).unwrap();
-    let current = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    let current = binding_for(TraceFile::SendSock, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(current.entry_size, 262);
     assert!(current.missing_columns.is_empty());
 
     // An empty file gets the current binding
     fs::write(&path, b"").unwrap();
     assert_eq!(
-        binding_for(TraceFile::SendSock, &path)
+        binding_for(TraceFile::SendSock, &path, None)
             .unwrap()
             .unwrap()
             .entry_size,
         262
     );
     // Other files are not looked at
-    assert!(binding_for(TraceFile::TcpBadCsum, &path).unwrap().is_none());
+    assert!(binding_for(TraceFile::TcpBadCsum, &path, None)
+        .unwrap()
+        .is_none());
 }
 
 /// Event labels name the kind and, for state changes, both states.
@@ -893,7 +899,7 @@ fn cc_records_before_the_hook_tag_are_decoded() {
         ..Default::default()
     };
     write_records(&path, &[old; 3], 0);
-    let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Cubic, &path, None).unwrap().unwrap();
     assert_eq!(
         (b.entry_size, b.table.source, b.missing_columns),
         (122, "cubic", legacy::CUBIC122_MISSING)
@@ -915,7 +921,7 @@ fn cc_records_before_the_hook_tag_are_decoded() {
         ..Default::default()
     };
     write_records(&path, &[old; 3], 0);
-    let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Cubic, &path, None).unwrap().unwrap();
     assert_eq!(
         (b.entry_size, b.table.source, b.missing_columns),
         (123, "cubic", legacy::CUBIC123_MISSING)
@@ -939,7 +945,7 @@ fn cc_records_before_the_hook_tag_are_decoded() {
         ..Default::default()
     };
     write_records(&path, &[rec; 3], 0);
-    let b = binding_for(TraceFile::Cubic, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Cubic, &path, None).unwrap().unwrap();
     assert!(b.missing_columns.is_empty());
     let (batch, _) = decode_first(&b, &path);
     assert_eq!(
@@ -959,7 +965,7 @@ fn cc_records_before_the_hook_tag_are_decoded() {
         ..Default::default()
     };
     write_records(&path, &[old; 3], 0);
-    let b = binding_for(TraceFile::Bbr, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Bbr, &path, None).unwrap().unwrap();
     assert_eq!(
         (b.entry_size, b.table.source, b.missing_columns),
         (118, "bbr", legacy::BBR118_MISSING)
@@ -986,7 +992,7 @@ fn cc_records_before_the_hook_tag_are_decoded() {
         ..Default::default()
     };
     write_records(&path, &[rec; 3], 0);
-    let b = binding_for(TraceFile::Bbr, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Bbr, &path, None).unwrap().unwrap();
     assert!(b.missing_columns.is_empty());
     let (batch, _) = decode_first(&b, &path);
     let row: Vec<i128> = [
@@ -1052,7 +1058,9 @@ fn legacy_layouts_are_detected_and_decoded() {
     };
 
     write_records(&path, &[legacy::Sock168Entry { p }; 3], 0);
-    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::SendSock, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (b.entry_size, b.missing_columns),
         (168, legacy::SOCK172_MISSING)
@@ -1076,7 +1084,9 @@ fn legacy_layouts_are_detected_and_decoded() {
         ..Default::default()
     };
     write_records(&path, &[r201; 3], 0);
-    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::SendSock, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (b.entry_size, b.missing_columns),
         (201, legacy::SOCK201_MISSING)
@@ -1095,7 +1105,7 @@ fn legacy_layouts_are_detected_and_decoded() {
     // the on-change files of build 4d3cffb7 hold the same records and keep their table
     let oc_path = dir.path().join("send_sock_oc.tcp");
     write_records(&oc_path, &[r201; 3], 0);
-    let b = binding_for(TraceFile::SendSockOc, &oc_path)
+    let b = binding_for(TraceFile::SendSockOc, &oc_path, None)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1111,7 +1121,9 @@ fn legacy_layouts_are_detected_and_decoded() {
         ..Default::default()
     };
     write_records(&path, &[r202; 3], 0);
-    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::SendSock, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (b.entry_size, b.missing_columns),
         (202, legacy::SOCK202_MISSING)
@@ -1136,7 +1148,9 @@ fn legacy_layouts_are_detected_and_decoded() {
         ..Default::default()
     };
     write_records(&path, &[r226; 3], 0);
-    let b = binding_for(TraceFile::SendSock, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::SendSock, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (b.entry_size, b.missing_columns),
         (226, legacy::SOCK226_MISSING)
@@ -1165,7 +1179,9 @@ fn legacy_layouts_are_detected_and_decoded() {
         }; 2],
         0,
     );
-    let b = binding_for(TraceFile::SendCwnd, &cpath).unwrap().unwrap();
+    let b = binding_for(TraceFile::SendCwnd, &cpath, None)
+        .unwrap()
+        .unwrap();
     assert_eq!((b.entry_size, b.table.source), (70, "cwnd"));
     let (batch, conns) = decode_first(&b, &cpath);
     assert_eq!(col(&batch, b.table, "perf_snd_cwnd"), 21);
@@ -1180,7 +1196,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     let path = dir.path().join("send_sock.tcp");
     fs::write(&path, b"").unwrap();
     assert_eq!(
-        binding_for(TraceFile::SendSock, &path)
+        binding_for(TraceFile::SendSock, &path, None)
             .unwrap()
             .unwrap()
             .entry_size,
@@ -1189,7 +1205,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     // only a partial first record: no complete record in any layout -> the current one
     fs::write(&path, [0u8; 50]).unwrap();
     assert_eq!(
-        binding_for(TraceFile::SendSock, &path)
+        binding_for(TraceFile::SendSock, &path, None)
             .unwrap()
             .unwrap()
             .entry_size,
@@ -1209,7 +1225,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
         17,
     );
     assert_eq!(
-        binding_for(TraceFile::SendSock, &path)
+        binding_for(TraceFile::SendSock, &path, None)
             .unwrap()
             .unwrap()
             .entry_size,
@@ -1218,7 +1234,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     // all 0xFF: dividers at every size; 606 B only divides into 202 B records (a legacy layout)
     fs::write(&path, [0xFFu8; 606]).unwrap();
     assert_eq!(
-        binding_for(TraceFile::SendSock, &path)
+        binding_for(TraceFile::SendSock, &path, None)
             .unwrap()
             .unwrap()
             .entry_size,
@@ -1226,7 +1242,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     );
     // 201 * 202 B of 0xFF divide into both: refused, not guessed
     fs::write(&path, vec![0xFFu8; 201 * 202]).unwrap();
-    assert!(binding_for(TraceFile::SendSock, &path).is_err());
+    assert!(binding_for(TraceFile::SendSock, &path, None).is_err());
     // the same length, the first records 0xFF, then dividers only every 202 B: the later
     // records decide
     let mut data = vec![0u8; 201 * 202];
@@ -1236,7 +1252,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     }
     fs::write(&path, data).unwrap();
     assert_eq!(
-        binding_for(TraceFile::SendSock, &path)
+        binding_for(TraceFile::SendSock, &path, None)
             .unwrap()
             .unwrap()
             .entry_size,
@@ -1248,7 +1264,7 @@ fn layout_probe_handles_empty_cut_and_ambiguous_files() {
     data[..8 * 262].fill(0xFF);
     fs::write(&path, data).unwrap();
     assert_eq!(
-        binding_for(TraceFile::SendSock, &path)
+        binding_for(TraceFile::SendSock, &path, None)
             .unwrap()
             .unwrap()
             .entry_size,
@@ -1279,7 +1295,9 @@ fn timer_records_go_to_their_own_table() {
         ..Default::default()
     };
     write_records(&path, &[rec; 3], 0);
-    let b = binding_for(TraceFile::TimerSock, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::TimerSock, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!((b.table.source, b.dir), ("sock_timer", Dir::None));
     let (batch, _) = decode_first(&b, &path);
     assert_eq!(
@@ -1305,7 +1323,7 @@ fn reno_records_carry_the_algorithm_name() {
         ..Default::default()
     };
     write_records(&path, &[rec; 3], 0);
-    let b = binding_for(TraceFile::Reno, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Reno, &path, None).unwrap().unwrap();
     assert_eq!((b.table.source, b.dir), ("reno", Dir::None));
     let (batch, _) = decode_first(&b, &path);
     let name = col(&batch, b.table, "ca_name") as u64;
@@ -1337,7 +1355,9 @@ fn packet_layouts_are_detected_per_file() {
         }; 3],
         0,
     );
-    let b = binding_for(TraceFile::Tcp4Send, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Tcp4Send, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (b.entry_size, b.missing_columns),
         (43, legacy::PACKET_MISSING)
@@ -1358,7 +1378,9 @@ fn packet_layouts_are_detected_per_file() {
         }; 3],
         0,
     );
-    let b = binding_for(TraceFile::Tcp4Send, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Tcp4Send, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!((b.entry_size, b.missing_columns.len()), (52, 0));
     let (batch, _) = decode_first(&b, &path);
     assert_eq!(
@@ -1377,7 +1399,9 @@ fn packet_layouts_are_detected_per_file() {
         }; 2],
         0,
     );
-    let b = binding_for(TraceFile::Tcp6Receive, &path).unwrap().unwrap();
+    let b = binding_for(TraceFile::Tcp6Receive, &path, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (b.entry_size, b.table.source, b.missing_columns),
         (67, "tcp6", legacy::PACKET_MISSING)

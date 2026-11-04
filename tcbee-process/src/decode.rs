@@ -50,7 +50,21 @@ pub fn decode_range<E: Event, Err>(
     records: Range<u64>,
     mut f: impl FnMut(u64, E) -> Result<(), Err>,
 ) -> Result<(), RangeError<Err>> {
-    let size = E::ENTRY_SIZE;
+    read_entries(file, records, E::ENTRY_SIZE, |index, offset, rec| {
+        let event = E::decode(rec).map_err(|source| RangeError::Decode { offset, source })?;
+        f(index, event).map_err(RangeError::Callback)
+    })
+}
+
+/// Reads entries `entries` (indices) of `size` bytes from `file` in chunks and calls
+/// `f(index, offset, bytes)` for each. If the file ends early, the complete entries before the
+/// end are still delivered, then the error is `Io` with the byte offset of the first missing one.
+pub fn read_entries<Err>(
+    file: &File,
+    records: Range<u64>,
+    size: usize,
+    mut f: impl FnMut(u64, u64, &[u8]) -> Result<(), RangeError<Err>>,
+) -> Result<(), RangeError<Err>> {
     let per_chunk = (CHUNK_BYTES / size).max(1) as u64;
     let total = records.end.saturating_sub(records.start);
     let mut buf = vec![0u8; total.min(per_chunk) as usize * size];
@@ -64,12 +78,7 @@ pub fn decode_range<E: Event, Err>(
         let whole = got / size;
 
         for (i, rec) in bytes[..whole * size].chunks_exact(size).enumerate() {
-            let rec_offset = offset + (i * size) as u64;
-            let event = E::decode(rec).map_err(|source| RangeError::Decode {
-                offset: rec_offset,
-                source,
-            })?;
-            f(next + i as u64, event).map_err(RangeError::Callback)?;
+            f(next + i as u64, offset + (i * size) as u64, rec)?;
         }
         if whole < n {
             return Err(RangeError::Io {
@@ -101,15 +110,16 @@ fn read_at_most(file: &File, buf: &mut [u8], offset: u64) -> (usize, Option<io::
 pub type RowFn<'a> = dyn FnMut(u64, &dyn Row) -> Result<(), RowError> + 'a;
 
 /// `decode_range` with the binding type erased, so the file table can hold one per binding.
-pub type DecodeFn = fn(&File, Range<u64>, &mut RowFn<'_>) -> Result<(), RangeError<RowError>>;
+/// Returns how many records of the range were skipped (discarded records of a raw trace).
+pub type DecodeFn = fn(&File, Range<u64>, &mut RowFn<'_>) -> Result<u64, RangeError<RowError>>;
 
 /// `decode_range::<E>` behind the `DecodeFn` signature; the callback gets the record as `&dyn Row`.
 pub fn decode_dyn<E: Event>(
     file: &File,
     records: Range<u64>,
     f: &mut RowFn<'_>,
-) -> Result<(), RangeError<RowError>> {
-    decode_range::<E, RowError>(file, records, |index, e| f(index, &e))
+) -> Result<u64, RangeError<RowError>> {
+    decode_range::<E, RowError>(file, records, |index, e| f(index, &e)).map(|()| 0)
 }
 
 #[cfg(test)]

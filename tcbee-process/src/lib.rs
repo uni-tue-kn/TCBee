@@ -14,6 +14,7 @@ mod ip;
 mod metadata;
 mod owners;
 mod pipeline;
+mod raw;
 mod registry;
 
 use std::path::PathBuf;

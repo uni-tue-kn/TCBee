@@ -57,4 +57,19 @@ const volatile __u32 HEADERS_MTU = 0;
 #define TCP_NEW_SYN_RECV 12
 #define PF_KTHREAD 0x00200000
 
+/*
+ * Set to 1 by userspace once every program is attached and every writer runs, and to 0
+ * before the programs are detached. Until then every program returns at once, so all probes
+ * start and stop recording at the same moment and no ring fills before its writer runs. In
+ * .bss, so userspace can change it while the programs run.
+ */
+volatile __u32 TCBEE_RUNNING = 0;
+
+/* First statement of every program: return `ret` (the hook's no-op) unless recording */
+#define TCBEE_GATE(ret)                                                                    \
+	do {                                                                               \
+		if (!TCBEE_RUNNING)                                                        \
+			return (ret);                                                      \
+	} while (0)
+
 #endif /* __TCBEE_CONFIG_H */

@@ -7,6 +7,20 @@
 
 include!("records_gen.rs");
 
+/// Id of the record layouts above: a hash of the generated structs, so it changes with every
+/// change of a record. Raw traces carry it, and a reader with other layouts refuses them.
+pub const LAYOUT_ID: u32 = fnv1a(include_bytes!("records_gen.rs"));
+
+const fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash = (hash ^ bytes[i] as u32).wrapping_mul(0x0100_0193);
+        i += 1;
+    }
+    hash
+}
+
 /// Written after every record in a trace file. Readers check it to detect misaligned files.
 pub const RECORD_DELIMITER: [u8; 4] = [0xFF; 4];
 

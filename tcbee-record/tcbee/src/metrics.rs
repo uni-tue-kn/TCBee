@@ -20,7 +20,10 @@ use tcbee_common::{
     },
 };
 
-use crate::{stats::Snapshot, writer::WriterReport};
+use crate::{
+    stats::Snapshot,
+    writer::{SinkStats, WriterReport, WriterThreadStats},
+};
 
 /// Kernel statistics of one loaded eBPF program
 #[derive(Serialize, Clone)]
@@ -72,6 +75,10 @@ pub struct RingBufMetrics {
     /// None if no writer was registered for this ring buffer
     pub records_written: Option<u64>,
     pub writer_error: Option<String>,
+    /// What the writer's pooled sink did, None for a memory-mapped file
+    pub writer_sink: Option<SinkStats>,
+    /// Format of the trace file, `records` or `raw`; None without a writer
+    pub writer_format: Option<&'static str>,
     /// Sum of the last hook_seq of every flow direction at this ring buffer's hook. Equals
     /// handled + dropped + the errors after hook_seq was taken (after the filter in the
     /// default mode), so it also covers drops at the end of a flow, which leave no gap.
@@ -129,6 +136,8 @@ pub struct Metrics {
     pub ingress_calls: u64,
     pub egress_calls: u64,
     pub ringbufs: Vec<RingBufMetrics>,
+    /// The threads of the writer CPUs (empty without --writer-cpus), by CPU
+    pub writer_threads: Vec<WriterThreadStats>,
     pub programs: Vec<ProgramStats>,
     /// Entries in use and capacity of the hook_seq counter map. A full map turns the
     /// events of new flows into errors.
@@ -168,12 +177,19 @@ impl Metrics {
                     counters: RingCounters::of(snapshot, rb),
                     records_written: report.map(|r| r.records),
                     writer_error: report.and_then(|r| r.error.clone()),
+                    writer_sink: report.and_then(|r| r.sink.clone()),
+                    writer_format: report.map(|r| r.format.name()),
                     hook_seq_issued: hook_seq
                         .filter(|_| rb != RB_OWNERS)
                         .map(|totals| totals.issued[rb as usize]),
                 }
             })
             .collect();
+
+        let mut writer_threads: Vec<WriterThreadStats> =
+            reports.iter().filter_map(|r| r.thread.clone()).collect();
+        writer_threads.sort_by_key(|t| t.cpu);
+        writer_threads.dedup_by_key(|t| t.cpu);
 
         Metrics {
             duration_s,
@@ -191,6 +207,7 @@ impl Metrics {
             ingress_calls: attempts(&[RB_SOCK_RECV, RB_CWND_RECV, RB_SOCK_INGRESS]),
             egress_calls: attempts(&[RB_SOCK_SEND, RB_CWND_SEND]),
             ringbufs,
+            writer_threads,
             programs,
             hook_seq_keys: hook_seq.map(|totals| totals.keys),
             hook_seq_capacity: hook_seq.map(|totals| totals.capacity),
