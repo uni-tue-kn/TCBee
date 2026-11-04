@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# Checks that the default eBPF programs compile to the same code as in a baseline commit.
+# Checks that the eBPF programs compile to the same code as in a baseline commit.
 #
 #   testing/bpf_identity.sh BASE [PROG,...]
 #
 # BASE is e.g. the commit a branch started from; the listed programs may differ, for a change
 # that alters them on purpose (a new record field). Builds tcbee-record at BASE (in a temporary
 # worktree) and at the working tree, then compares the disassembly and relocations of the
-# default programs one by one: every program of the baseline object that is not declared with
-# "?" (the opt-in programs). The baseline build uses its own target directory under
-# tcbee-record/target, so only the first run is slow.
+# programs one by one: every program of the baseline object, the opt-in ones declared with "?"
+# included. It also fails if the record layouts changed (records.h and what it includes, or the
+# generated Rust bindings whose hash is LAYOUT_ID). The baseline build uses its own target
+# directory under tcbee-record/target, so only the first run is slow.
 set -euo pipefail
 
 repo=$(git rev-parse --show-toplevel)
 base=${1:?usage: testing/bpf_identity.sh BASE [PROG,...]}
 expected=",${2:-},"
+
+layouts="tcbee-record/tcbee/src/bpf/records.h tcbee-record/tcbee/src/bpf/onchange.h tcbee-record/tcbee-common/src/records_gen.rs"
+# shellcheck disable=SC2086
+if ! git -C "$repo" diff --quiet "$base" -- $layouts; then
+	git -C "$repo" diff --stat "$base" -- $layouts
+	echo "record layouts differ from $base" >&2
+	exit 1
+fi
 
 tmp=$(mktemp -d)
 cleanup() {
@@ -53,7 +62,7 @@ disasm() {
 base_obj=$(object "$repo/tcbee-record/target/bpf-identity")
 new_obj=$(object "$repo/tcbee-record/target/release")
 # Function symbols: address, binding, F, section, size, name
-progs=$(llvm-objdump -t "$base_obj" | awk '$3 == "F" && $4 !~ /^\?/ { print $6 }')
+progs=$(llvm-objdump -t "$base_obj" | awk '$3 == "F" { print $6 }')
 same=0 instructions=0 failed=0
 for prog in $progs; do
 	disasm "$base_obj" "$prog" >"$tmp/base.txt"
@@ -72,4 +81,4 @@ done
 if ((failed)); then
 	exit 1
 fi
-echo "default programs identical to $base ($same programs, $instructions lines)"
+echo "programs and record layouts identical to $base ($same programs, $instructions lines)"
