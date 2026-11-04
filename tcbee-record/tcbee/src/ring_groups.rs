@@ -100,16 +100,11 @@ fn hook_of(rb: u32) -> u32 {
 ///   rare rings the next one; the CPUs after that get no rings.
 /// - G >= N: the groups go, heaviest first, to the CPU with the fewest bytes per segment so far
 ///   (the first of those on a tie), then the rare rings. A group weighs, per hook and direction,
-///   the `record_bytes` of its heaviest enabled ring: with all probes on two CPUs the sock rings
-///   get a CPU of their own.
+///   the `record_bytes` of its heaviest enabled ring, with sock records of `sock` bytes: with
+///   all probes on two CPUs the full sock rings get a CPU of their own.
 ///
 /// Empty without CPUs.
-pub(crate) fn assign(rbs: &[u32], cpus: &[usize]) -> Vec<(u32, usize)> {
-    assign_with(rbs, cpus, size_of::<sock_trace_entry>())
-}
-
-/// As `assign`, with sock records of `sock` bytes in the ring (field-selected records)
-pub(crate) fn assign_with(rbs: &[u32], cpus: &[usize], sock: usize) -> Vec<(u32, usize)> {
+pub(crate) fn assign(rbs: &[u32], cpus: &[usize], sock: usize) -> Vec<(u32, usize)> {
     if cpus.is_empty() {
         return Vec::new();
     }
@@ -178,6 +173,9 @@ fn argmin(values: &[usize]) -> usize {
 mod tests {
     use super::*;
 
+    /// Ring bytes of a full sock record
+    const SOCK: usize = size_of::<sock_trace_entry>();
+
     fn cpu(assigned: &[(u32, usize)], rb: u32) -> usize {
         assigned.iter().find(|(r, _)| *r == rb).unwrap().1
     }
@@ -218,7 +216,7 @@ mod tests {
             RB_OWNERS,
             RB_TCP_EVENTS,
         ];
-        let assigned = assign(&rbs, &[26, 27]);
+        let assigned = assign(&rbs, &[26, 27], SOCK);
         for rb in [
             RB_TCP4_EGRESS,
             RB_TCP4_INGRESS,
@@ -246,7 +244,7 @@ mod tests {
             RB_SOCK_TIMER,
             RB_OWNERS,
         ];
-        let assigned = assign(&rbs, &[26, 27]);
+        let assigned = assign(&rbs, &[26, 27], SOCK);
         assert_eq!(cpu(&assigned, RB_SOCK_SEND), 26);
         // A pair stays together
         assert_eq!(cpu(&assigned, RB_SOCK_RECV), 26);
@@ -277,16 +275,12 @@ mod tests {
             RB_CUBIC,
             RB_TCP_PROBE,
         ];
-        let assigned = assign_with(&rbs, &[26, 27], 80);
+        let assigned = assign(&rbs, &[26, 27], 80);
         let sock_cpu = cpu(&assigned, RB_SOCK_SEND);
         assert!(rbs
             .iter()
             .filter(|&&rb| rb != RB_SOCK_SEND && rb != RB_SOCK_RECV)
             .any(|&rb| cpu(&assigned, rb) == sock_cpu));
-        assert_eq!(
-            assign_with(&rbs, &[26, 27], size_of::<sock_trace_entry>()),
-            assign(&rbs, &[26, 27])
-        );
     }
 
     /// The eval's all-probe set (-h -k -t -w -a, IPv4 and IPv6 rings, all three congestion
@@ -311,7 +305,7 @@ mod tests {
             RB_RETRANSMIT_SYNACK,
             RB_BAD_CSUM,
         ];
-        let assigned = assign(&rbs, &[26, 27]);
+        let assigned = assign(&rbs, &[26, 27], SOCK);
         let on_26: Vec<&str> = assigned
             .iter()
             .filter(|&&(_, cpu)| cpu == 26)
@@ -345,7 +339,7 @@ mod tests {
             RB_CWND_RECV,
             RB_TCP_PROBE,
         ];
-        let assigned = assign(&rbs, &[1, 2, 3]);
+        let assigned = assign(&rbs, &[1, 2, 3], SOCK);
         assert_eq!(cpu(&assigned, RB_SOCK_RECV), 1);
         assert_eq!(cpu(&assigned, RB_SOCK_INGRESS), 1);
         // Headers (4 rings) next, then cwnd and tcp_probe on the least loaded CPU
@@ -363,7 +357,7 @@ mod tests {
             RB_TCP4_DRIVER_INGRESS,
             RB_OWNERS,
         ];
-        let assigned = assign(&rbs, &[1, 2, 3]);
+        let assigned = assign(&rbs, &[1, 2, 3], SOCK);
         assert_eq!(cpu(&assigned, RB_TCP4_EGRESS), 1);
         assert_eq!(cpu(&assigned, RB_TCP4_DRIVER_EGRESS), 2);
         assert_eq!(cpu(&assigned, RB_OWNERS), 3);
@@ -373,7 +367,7 @@ mod tests {
     #[test]
     fn as_many_groups_as_cpus_without_rare_rings() {
         let rbs = [RB_TCP4_EGRESS, RB_CWND_SEND, RB_SOCK_SEND];
-        let assigned = assign(&rbs, &[1, 2, 3]);
+        let assigned = assign(&rbs, &[1, 2, 3], SOCK);
         assert_eq!(cpu(&assigned, RB_SOCK_SEND), 1);
         assert_eq!(cpu(&assigned, RB_CWND_SEND), 2);
         assert_eq!(cpu(&assigned, RB_TCP4_EGRESS), 3);
@@ -382,7 +376,7 @@ mod tests {
     #[test]
     fn as_many_pairs_as_cpus() {
         let rbs = [RB_TCP4_EGRESS, RB_SOCK_SEND, RB_OWNERS];
-        let assigned = assign(&rbs, &[1, 2]);
+        let assigned = assign(&rbs, &[1, 2], SOCK);
         // Heaviest first
         assert_eq!(cpu(&assigned, RB_SOCK_SEND), 1);
         assert_eq!(cpu(&assigned, RB_TCP4_EGRESS), 2);
@@ -394,12 +388,12 @@ mod tests {
     fn only_rare_rings_and_more_cpus_than_groups() {
         // -k with its default hooks: no per-packet ring
         let rbs = [RB_SOCK_TIMER, RB_SOCK_EVENT, RB_OWNERS];
-        let assigned = assign(&rbs, &[4, 5, 6]);
+        let assigned = assign(&rbs, &[4, 5, 6], SOCK);
         assert!(assigned.iter().all(|&(_, cpu)| cpu == 4));
         // One CPU takes everything
         let rbs = [RB_TCP4_EGRESS, RB_SOCK_SEND, RB_OWNERS];
-        assert!(assign(&rbs, &[9]).iter().all(|&(_, cpu)| cpu == 9));
+        assert!(assign(&rbs, &[9], SOCK).iter().all(|&(_, cpu)| cpu == 9));
         // No CPUs: no assignment
-        assert!(assign(&rbs, &[]).is_empty());
+        assert!(assign(&rbs, &[], SOCK).is_empty());
     }
 }

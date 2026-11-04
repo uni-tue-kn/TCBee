@@ -31,7 +31,7 @@ use crate::{
     },
     pooled::PooledFile,
     rawring::{walk, RingMap, RingWaiter, Stop, WalkError},
-    ring_groups::{assign, assign_with, HookGroup},
+    ring_groups::{assign, HookGroup},
 };
 
 /// How writer threads wait for new records
@@ -131,6 +131,8 @@ pub struct Writer {
     handles: Vec<(Vec<WriterReport>, JoinHandle<ThreadResult>)>,
     /// With writer CPUs: the writer CPU of each enabled ring buffer
     assignment: Vec<(u32, usize)>,
+    /// The enabled ring buffers and the writer CPUs that `assignment` is made for
+    placed: (Vec<u32>, Vec<usize>),
     /// With writer CPUs: the jobs registered but not started yet, per writer CPU
     pending: Vec<CpuJobs>,
     /// Jobs whose thread could not start, finished
@@ -144,8 +146,8 @@ pub struct Writer {
     /// How the trace files are written
     sink: SinkConfig,
     format: WriterFormat,
-    /// Ring bytes of field-selected sock records, for the placement
-    sock_record: Option<usize>,
+    /// Ring bytes of a sock record, which the placement weighs the sock rings by
+    sock_record: usize,
 }
 
 impl Writer {
@@ -163,7 +165,8 @@ impl Writer {
             balancer: None,
             sink: SinkConfig::default(),
             format: WriterFormat::default(),
-            sock_record: None,
+            sock_record: mem::size_of::<tcbee_common::records::sock_trace_entry>(),
+            placed: (Vec::new(), Vec::new()),
         }
     }
 
@@ -179,10 +182,11 @@ impl Writer {
         self
     }
 
-    /// Field-selected sock records of `ring_len` bytes: `with_cpu_affinity` weighs the sock
-    /// rings by them. Call it before that.
+    /// Field-selected sock records of `ring_len` bytes: the placement of `with_cpu_affinity`
+    /// weighs the sock rings by them
     pub fn with_sock_record(mut self, ring_len: usize) -> Self {
-        self.sock_record = Some(ring_len);
+        self.sock_record = ring_len;
+        self.assignment = assign(&self.placed.0, &self.placed.1, ring_len);
         self
     }
 
@@ -197,10 +201,8 @@ impl Writer {
         placement: Placement,
         rbs: &[u32],
     ) -> Self {
-        self.assignment = match self.sock_record {
-            Some(len) => assign_with(rbs, &cpus, len),
-            None => assign(rbs, &cpus),
-        };
+        self.assignment = assign(rbs, &cpus, self.sock_record);
+        self.placed = (rbs.to_vec(), cpus.clone());
         self.cpus = Arc::new(WriterCpus::new(cpus, placement));
         self
     }
@@ -2235,6 +2237,30 @@ mod tests {
             std::fs::remove_file(path).unwrap();
             let _ = std::fs::remove_file(cpu_side_path(path));
         }
+    }
+
+    /// The sock record length weighs the placement whichever builder call comes first
+    #[test]
+    fn sock_record_length_places_in_any_order() {
+        use tcbee_common::stats::{
+            RB_CUBIC, RB_CWND_SEND, RB_SOCK_RECV, RB_SOCK_SEND, RB_TCP4_EGRESS,
+        };
+        let rbs = [
+            RB_TCP4_EGRESS,
+            RB_SOCK_SEND,
+            RB_SOCK_RECV,
+            RB_CWND_SEND,
+            RB_CUBIC,
+        ];
+        let cpus = vec![26, 27];
+        let first = Writer::new(PollMode::default())
+            .with_sock_record(80)
+            .with_cpu_affinity(cpus.clone(), Placement::default(), &rbs);
+        let last = Writer::new(PollMode::default())
+            .with_cpu_affinity(cpus.clone(), Placement::default(), &rbs)
+            .with_sock_record(80);
+        assert_eq!(first.assignment, assign(&rbs, &cpus, 80));
+        assert_eq!(last.assignment, first.assignment);
     }
 
     /// Field-selected sock records: the ring records are the shape's length, the file records
