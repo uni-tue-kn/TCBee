@@ -3,6 +3,7 @@ pub mod onchange;
 pub mod owners;
 pub mod raw;
 pub mod sock_hooks;
+pub mod sockfields;
 
 use std::{
     fs,
