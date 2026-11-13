@@ -34,6 +34,13 @@ class Flow:
     end_ns: int | None
     duration_ns: int | None
 
+    def series(self):
+        """Discover available metrics without loading their samples."""
+        from .series import SeriesQuery
+
+        self._db._check_open()
+        return SeriesQuery(self._db, self.id)
+
     def __str__(self):
         def endpoint(ip, port):
             return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"

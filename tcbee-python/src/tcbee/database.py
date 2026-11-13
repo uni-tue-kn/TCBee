@@ -85,6 +85,18 @@ class Database:
         """Look up a database-local flow ID; raise NotFound if absent."""
         return self.flows().filter(id=flow_id).one()
 
+    def series(self, series_id):
+        """Look up one metric by its database-local catalog ID."""
+        from ._util import integer
+        from .errors import NotFound
+        from .series import _COLUMNS, Series
+
+        integer(series_id, "series_id")
+        rows = self._rows(f"SELECT {_COLUMNS} FROM series WHERE id = ?", (series_id,))
+        if not rows:
+            raise NotFound(f"No series with ID {series_id}")
+        return Series._from_row(self, rows[0])
+
     def close(self):
         """Close active cursors and the connection; safe to call repeatedly."""
         if not self._closed:

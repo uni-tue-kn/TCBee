@@ -11,6 +11,8 @@ from .errors import (
     UnsupportedSchema,
 )
 from .flow import Flow, FlowPage, FlowQuery
+from .samples import Samples
+from .series import Series, SeriesQuery
 
 __all__ = [
     "AmbiguousSelection",
@@ -21,6 +23,9 @@ __all__ = [
     "FlowQuery",
     "MissingCapability",
     "NotFound",
+    "Samples",
+    "Series",
+    "SeriesQuery",
     "TCBeeError",
     "UnsupportedDatabase",
     "UnsupportedSchema",
