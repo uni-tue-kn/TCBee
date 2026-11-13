@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tcbee.yml
+
   build:
+    needs: tests
     runs-on: ubuntu-24.04
     permissions:
       contents: write

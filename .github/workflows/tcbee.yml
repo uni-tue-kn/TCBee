@@ -2,9 +2,11 @@ name: TCBee build
 
 on:
   push:
-    branches: [ "main"]
+    branches: [main, dev]
   pull_request:
-    branches: [ "main"]
+    branches: [main, dev]
+  # Called by the release workflow, which builds only after these jobs pass
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
