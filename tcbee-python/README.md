@@ -42,7 +42,8 @@ token belongs to the same database connection and equivalent query, and is
 not a persistent bookmark. `for flow in flows` traverses bounded pages.
 `count()` explicitly counts matches. `top(size=20, by="sample_count")` and
 `top(size=20, by="duration_ns")` return a bounded tuple of ranked flows,
-with ID as the tie breaker. Ranking can scan and sort the entire catalog.
+with ID as the tie breaker. Ranking and time/duration filters can scan the entire catalog. Ordinary
+pages select IDs first, then summarize only those flows.
 `show()` prints a bounded table without counting all matches.
 
 Browsing reads catalog metadata, not event samples. `sample_count` sums
@@ -157,6 +158,16 @@ SQLite peak process RSS was about 172 MiB for the list read and 56 MiB for
 streaming; DuckDB used about 369 MiB and 275 MiB respectively, including engine
 buffers. These are illustrative local measurements, not performance
 guarantees. Use the benchmark on your hardware and representative recordings.
+
+The many-flow benchmark separately checks navigation without any event data:
+
+```bash
+python tcbee-python/benchmarks/browse_flows.py --flows 20000 --metrics 20
+```
+
+With 20,000 flows and 400,000 catalog entries, a 50-flow page took about 1 ms
+on SQLite and 6.5 ms on DuckDB locally. Traversing all flows took about 0.44 s
+and 0.56 s respectively. Actual costs depend on filters, layout and hardware.
 
 ## Owners and MPTCP connections
 

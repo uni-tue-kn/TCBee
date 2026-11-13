@@ -6,14 +6,17 @@ from ._util import address, direction_code, integer, window
 from .errors import AmbiguousSelection, NotFound
 
 # These summaries count metric values, not packets or distinct event records.
+_STATS = """
+SELECT s.flow_id, COUNT(*) AS series_count, SUM(s.n) AS sample_count,
+       MIN(s.t_min) AS start_ns, MAX(s.t_max) AS end_ns
+FROM series s {selection} GROUP BY s.flow_id
+"""
 _SUMMARY = """
 SELECT f.id, f.src, f.dst, f.sport, f.dport, f.l4proto,
-       (SELECT COUNT(*) FROM series s WHERE s.flow_id = f.id) AS series_count,
-       COALESCE((SELECT SUM(n) FROM series s WHERE s.flow_id = f.id), 0) AS sample_count,
-       (SELECT MIN(t_min) FROM series s WHERE s.flow_id = f.id) AS start_ns,
-       (SELECT MAX(t_max) FROM series s WHERE s.flow_id = f.id) AS end_ns,
-       (SELECT MAX(t_max) - MIN(t_min) FROM series s WHERE s.flow_id = f.id) AS duration_ns
-FROM flows f
+       COALESCE(s.series_count, 0) AS series_count,
+       COALESCE(s.sample_count, 0) AS sample_count,
+       s.start_ns, s.end_ns, s.end_ns - s.start_ns AS duration_ns
+FROM {flows} f LEFT JOIN ({stats}) s ON s.flow_id = f.id
 """
 
 
@@ -85,11 +88,15 @@ class FlowQuery:
     _db: object
     _predicates: tuple = ()
     _params: tuple = ()
+    _needs_summary: bool = False
 
-    def _where(self, predicate, *params):
+    def _where(self, predicate, *params, needs_summary=False):
         self._db._check_open()
         return replace(
-            self, _predicates=self._predicates + (predicate,), _params=self._params + params
+            self,
+            _predicates=self._predicates + (predicate,),
+            _params=self._params + params,
+            _needs_summary=self._needs_summary or needs_summary,
         )
 
     def filter(
@@ -143,14 +150,14 @@ class FlowQuery:
             result = result._where("(f.sport = ? OR f.dport = ?)", port, port)
         window(start_ns, end_ns)
         if start_ns is not None:
-            result = result._where("f.end_ns >= ?", start_ns)
+            result = result._where("f.end_ns >= ?", start_ns, needs_summary=True)
         if end_ns is not None:
-            result = result._where("f.start_ns < ?", end_ns)
+            result = result._where("f.start_ns < ?", end_ns, needs_summary=True)
         if start_ns is not None and start_ns == end_ns:
             result = result._where("1 = 0")
         if min_duration_ns is not None:
             integer(min_duration_ns, "min_duration_ns")
-            result = result._where("f.duration_ns >= ?", min_duration_ns)
+            result = result._where("f.duration_ns >= ?", min_duration_ns, needs_summary=True)
         return result
 
     def with_series(self, *, source=None, name=None, direction=None):
@@ -206,12 +213,31 @@ class FlowQuery:
             connection_id,
         )
 
-    def _sql(self):
+    def _sql(self, *, force_summary=False):
         where = " AND ".join(self._predicates) or "1 = 1"
-        return f"SELECT f.* FROM ({_SUMMARY}) f WHERE {where}"
+        source = "flows"
+        if self._needs_summary or force_summary:
+            stats = _STATS.format(selection="")
+            source = "(" + _SUMMARY.format(flows="flows", stats=stats) + ")"
+        return f"SELECT f.* FROM {source} f WHERE {where}"
 
-    def _take(self, size, order="f.id"):
-        rows = self._db._rows(self._sql() + f" ORDER BY {order} LIMIT ?", self._params + (size,))
+    def _take(self, size, order="f.id", *, ranked=False):
+        if self._needs_summary or ranked:
+            # Time/duration filtering and ranking genuinely require global summaries.
+            sql = self._sql(force_summary=True) + f" ORDER BY {order} LIMIT ?"
+        else:
+            # Limit tuple/EXISTS matches before grouping the catalog. DuckDB otherwise
+            # decorrelates scalar summaries into whole-catalog work on every page.
+            stats = _STATS.format(selection="WHERE s.flow_id IN (SELECT id FROM chosen)")
+            summary = _SUMMARY.format(flows="chosen", stats=stats)
+            sql = (
+                "WITH chosen AS ("
+                + self._sql()
+                + " ORDER BY f.id LIMIT ?) "
+                + summary
+                + " ORDER BY f.id"
+            )
+        rows = self._db._rows(sql, self._params + (size,))
         return tuple(Flow(self._db, *row) for row in rows)
 
     def count(self):
@@ -253,13 +279,15 @@ class FlowQuery:
         integer(size, "size", 1)
         if by not in ("sample_count", "duration_ns"):
             raise ValueError("by must be 'sample_count' or 'duration_ns'")
-        return self._take(size, f"f.{by} DESC NULLS LAST, f.id")
+        return self._take(size, f"f.{by} DESC NULLS LAST, f.id", ranked=True)
 
     def __iter__(self):
         token = None
         while True:
             page = self.page(size=256, after=token)
-            yield from page.items
+            for flow in page.items:
+                self._db._check_open()
+                yield flow
             token = page.next_cursor
             if token is None:
                 break

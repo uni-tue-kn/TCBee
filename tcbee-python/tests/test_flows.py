@@ -82,7 +82,11 @@ class FlowTests:
             with self.assertRaises(ValueError):
                 query.page(size=size)
         self.assertEqual(query.with_series(name="' OR 1=1 --").count(), 0)
+        iterator = iter(query)
+        next(iterator)
         self.db.close()
+        with self.assertRaises(tcbee.ClosedDatabase):
+            next(iterator)
         self.db.close()
         with self.assertRaises(tcbee.ClosedDatabase):
             query.page()
@@ -102,6 +106,33 @@ class SQLiteFlows(FlowTests, unittest.TestCase):
         self.db.flows().count()
         self.db.flows().top()
         self.db.flows().show(file=io.StringIO())
+
+    def test_small_page_does_not_scan_the_whole_catalog(self):
+        self.db.close()
+        with sqlite3.connect(self.path) as writer:
+            writer.executemany(
+                "INSERT INTO flows VALUES (?, '10.0.0.1', '10.0.0.2', ?, 5201, 6)",
+                ((i, i) for i in range(100, 2100)),
+            )
+            writer.executemany(
+                "INSERT INTO series VALUES (?, ?, 0, 'sock', 1, ?, 3, 'ev_sock', 'snd_cwnd', 1000000, 0, 100, 0, 100)",
+                ((i * 10 + m, i, f"metric_{m}") for i in range(100, 2100) for m in range(10)),
+            )
+        self.db = tcbee.open(self.path)
+        self.addCleanup(self.db.close)
+        operations = 0
+
+        def progress():
+            nonlocal operations
+            operations += 1
+            return 0
+
+        self.db._connection.set_progress_handler(progress, 1)
+        page = self.db.flows().page(size=5)
+        self.db._connection.set_progress_handler(None, 0)
+        self.assertEqual([flow.id for flow in page.items], [1, 3, 8, 10, 100])
+        # A full 20k-row catalog scan exceeds this by an order of magnitude.
+        self.assertLess(operations, 10_000)
 
     def test_read_only(self):
         with self.assertRaises(sqlite3.OperationalError):
