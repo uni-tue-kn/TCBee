@@ -153,6 +153,9 @@ All fallible calls return `StoreError`:
 
 ## Reading a database without this crate
 
+Python users can use the [tcbee API](../tcbee-python/README.md) for lazy flow
+filters, paginated browsing and batched metric reads.
+
 Both engines produce plain files, so any client works; [`examples/db`](../examples/db/) has Python scripts for SQLite and DuckDB. For example, the send-side congestion window of a flow:
 
 ```sql

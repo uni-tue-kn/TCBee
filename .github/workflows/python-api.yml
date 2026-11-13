@@ -1,0 +1,45 @@
+name: Python database API
+
+on:
+  push:
+    branches: [main, dev]
+    paths: ['tcbee-python/**', 'examples/db/**', 'ts-storage/**', 'tcbee-process/**',
+            'tcbee-record/tcbee-common/**', 'tcbee-record/tcbee-trace/**',
+            'Cargo.toml', 'Cargo.lock', '.github/workflows/python-api.yml']
+  pull_request:
+    paths: ['tcbee-python/**', 'examples/db/**', 'ts-storage/**', 'tcbee-process/**',
+            'tcbee-record/tcbee-common/**', 'tcbee-record/tcbee-trace/**',
+            'Cargo.toml', 'Cargo.lock', '.github/workflows/python-api.yml']
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.14']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install './tcbee-python[test]' matplotlib build
+      - run: python -m unittest discover -s tcbee-python/tests -v
+      - run: ruff check tcbee-python examples/db
+      - run: ruff format --check tcbee-python examples/db
+      - run: python -m build tcbee-python
+
+  processor-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p tcbee-process --no-default-features --features sqlite,bundled
+      - run: python -m pip install ./tcbee-python
+      - run: python -m unittest discover -s tcbee-python/tests -p test_integration.py -v
+        env:
+          TCBEE_PROCESS: ${{ github.workspace }}/target/debug/tcbee-process
+          TCBEE_TEST_ENGINES: sqlite
