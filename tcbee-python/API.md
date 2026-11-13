@@ -164,10 +164,9 @@ DuckDB. Arrays/dataframes use integer or nullable integer dtypes. Plotting
 usually converts values to float, which cannot distinguish every adjacent
 large integer. Keep the original samples for exact counter calculations.
 
-Stored NULL becomes `None`. NaN remains NaN where supported; SQLite has
-already stored it as NULL and cannot recover it. Nullable NumPy arrays and
-nullable floating dataframe columns use object dtype to preserve the
-NULL/NaN distinction. No adapter aligns different metrics by row number.
+Stored NULL becomes `None`. tcbee-process never writes NaN. Nullable NumPy
+arrays and nullable floating dataframe columns use object dtype, so NULL stays
+`None`. No adapter aligns different metrics by row number.
 
 ## Owners and connections
 

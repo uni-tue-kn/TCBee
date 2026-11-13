@@ -17,7 +17,11 @@ def direction_code(value):
 
 
 def address(value):
-    return str(ip_address(value))
+    ip = ip_address(value)
+    # Match Rust's IpAddr::to_string(); Python < 3.13 prints mapped addresses in hex
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        return f"::ffff:{ip.ipv4_mapped}"
+    return str(ip)
 
 
 def quote(name):

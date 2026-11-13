@@ -19,12 +19,12 @@ class Database:
         self.path = Path(path).expanduser().resolve()
         self._closed = False
         self._cursors = set()
+        self._connection = None
         with builtins.open(self.path, "rb") as file:
             header = file.read(16)
         if header.startswith(b"SQLite format 3\0"):
             self.engine = "sqlite"
             self._connection = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)
-            self._connection.execute("PRAGMA query_only = ON")
         elif header[8:12] == b"DUCK":
             import duckdb
 
@@ -33,6 +33,8 @@ class Database:
         else:
             raise UnsupportedDatabase(f"{self.path} is neither SQLite nor DuckDB")
         try:
+            if self.engine == "sqlite":
+                self._connection.execute("PRAGMA query_only = ON")
             try:
                 version = self._rows("SELECT value FROM meta WHERE key = 'schema_version'")
             except Exception as error:

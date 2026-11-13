@@ -64,8 +64,7 @@ class Samples:
     def to_frame(self):
         """Return a pandas DataFrame with explicit integer/nullable dtypes.
 
-        Floating values containing NULL use object dtype to distinguish None
-        from a stored NaN. The index does not imply metric alignment.
+        Floating values containing NULL use object dtype, so NULL stays None. The index does not imply metric alignment.
         """
         import pandas as pd
 
