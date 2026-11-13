@@ -50,7 +50,7 @@ jobs:
         # Builds libbpf, libelf and zlib from source and links them statically
         run: |
           cd crates/tcbee-record
-          cargo build --release --features static
+          cargo build --locked --release --features static
 
       - name: Cache cargo (workspace)
         uses: Swatinem/rust-cache@v2
@@ -59,13 +59,13 @@ jobs:
 
       # One cargo call for both tools: DuckDB and SQLite are compiled once (bundled, both engines)
       - name: Build tcbee-process and tcbee-viz (bundled)
-        run: cargo build --release -p tcbee-process -p tcbee-viz --features bundled
+        run: cargo build --locked --release -p tcbee-process -p tcbee-viz --features bundled
 
       - name: Build tcbee-live
         # Like tcbee-record: libbpf, libelf and zlib built from source and linked statically
         run: |
           cd crates/tcbee-live
-          cargo build --release --features static
+          cargo build --locked --release --features static
 
       - name: Package release archive
         run: |

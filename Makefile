@@ -26,25 +26,25 @@ all: record process viz live
 .PHONY: record
 record:
 	@echo "Building tcbee-record ..."
-	cd crates/tcbee-record && cargo build --release && cd ../..
+	cd crates/tcbee-record && cargo build --locked --release && cd ../..
 	$(MAKE) stage
 
 .PHONY: process
 process:
 	@echo "Building tcbee-process ..."
-	cargo build --release -p tcbee-process $(CARGO_FLAGS)
+	cargo build --locked --release -p tcbee-process $(CARGO_FLAGS)
 	$(MAKE) stage
 
 .PHONY: viz
 viz:
 	@echo "Building tcbee-viz ..."
-	cargo build --release -p tcbee-viz $(CARGO_FLAGS)
+	cargo build --locked --release -p tcbee-viz $(CARGO_FLAGS)
 	$(MAKE) stage
 
 .PHONY: live
 live:
 	@echo "Building tcbee-live ..."
-	cd crates/tcbee-live && cargo build --release && cd ../..
+	cd crates/tcbee-live && cargo build --locked --release && cd ../..
 	$(MAKE) stage
 
 # Copy the built binaries and the tcbee script to BIN_DIR

@@ -30,10 +30,10 @@ jobs:
         sudo apt install -y clang libclang-dev libelf-dev zlib1g-dev pkg-config make
 
     - name: TCBee-Record Build
-      run: cd crates/tcbee-record && cargo build --release
+      run: cd crates/tcbee-record && cargo build --locked --release
 
     - name: TCBee-Record Test
-      run: cd crates/tcbee-record && cargo test
+      run: cd crates/tcbee-record && cargo test --locked
 
   # tcbee-process, tcbee-viz and ts-storage form the cargo workspace in the repository root.
   # Every leg builds the engines it names and no others, and runs the tests of all three crates,
@@ -90,12 +90,12 @@ jobs:
       run: cargo clean -p libduckdb-sys
 
     - name: Test
-      run: cargo test $PACKAGES ${{ matrix.features }}
+      run: cargo test --locked $PACKAGES ${{ matrix.features }}
 
     - name: Check that the engine-disabled tests ran
       if: matrix.min_disabled_tests != 0
       run: |
-        cargo test $PACKAGES ${{ matrix.features }} -- $DISABLED_TESTS | tee disabled.txt
+        cargo test --locked $PACKAGES ${{ matrix.features }} -- $DISABLED_TESTS | tee disabled.txt
         passed=$(grep -c '^test .* ok$' disabled.txt || true)
         echo "engine-disabled tests passed: $passed"
         test "$passed" -ge ${{ matrix.min_disabled_tests }}
@@ -133,10 +133,10 @@ jobs:
 
     # One cargo call: libduckdb-sys and libsqlite3-sys are compiled once for both tools
     - name: TCBee-Process and TCBee-Viz Build (SQLite and DuckDB bundled)
-      run: cargo build --release -p tcbee-process -p tcbee-viz --features bundled
+      run: cargo build --locked --release -p tcbee-process -p tcbee-viz --features bundled
 
     - name: TCBee-Live Build
-      run: cd crates/tcbee-live && cargo build --release
+      run: cd crates/tcbee-live && cargo build --locked --release
 
     - name: TCBee-Live Test
-      run: cd crates/tcbee-live && cargo test
+      run: cd crates/tcbee-live && cargo test --locked
