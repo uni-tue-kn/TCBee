@@ -1,6 +1,6 @@
 # tcbee-viz
 
-Part of [TCBee](../README.md). A desktop viewer for the databases that `tcbee-process` writes.
+Part of [TCBee](../../README.md). A desktop viewer for the databases that `tcbee-process` writes.
 
 ```bash
 tcbee-viz /tmp/myflow.duck     # or start without an argument and open a file from Home

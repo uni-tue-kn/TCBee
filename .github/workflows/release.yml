@@ -49,7 +49,7 @@ jobs:
       - name: Build tcbee-record
         # Builds libbpf, libelf and zlib from source and links them statically
         run: |
-          cd tcbee-record
+          cd crates/tcbee-record
           cargo build --release --features static
 
       - name: Cache cargo (workspace)
@@ -64,17 +64,17 @@ jobs:
       - name: Build tcbee-live
         # Like tcbee-record: libbpf, libelf and zlib built from source and linked statically
         run: |
-          cd tcbee-live
+          cd crates/tcbee-live
           cargo build --release --features static
 
       - name: Package release archive
         run: |
           NAME="tcbee-$TAG-linux-x86_64"
           mkdir -p "$NAME"
-          cp tcbee-record/target/release/tcbee-record "$NAME/"
+          cp crates/tcbee-record/target/release/tcbee-record "$NAME/"
           cp target/release/tcbee-process "$NAME/"
           cp target/release/tcbee-viz "$NAME/"
-          cp tcbee-live/target/release/tcbee-live "$NAME/"
+          cp crates/tcbee-live/target/release/tcbee-live "$NAME/"
           sed "s|@VERSION@|$TAG|" tcbee > "$NAME/tcbee"
           cp packaging/install.sh "$NAME/"
           cp LICENSE NOTICES "$NAME/"

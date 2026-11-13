@@ -2,18 +2,18 @@
 # (DuckDB, SQLite, egui) are compiled once. tcbee-record and tcbee-live are separate workspaces.
 [workspace]
 resolver = "2"
-members = ["ts-storage", "tcbee-process", "tcbee-viz", "duckdb-cache"]
-exclude = ["tcbee-record", "tcbee-live"]
+members = ["crates/ts-storage", "crates/tcbee-process", "crates/tcbee-viz", "crates/duckdb-cache"]
+exclude = ["crates/tcbee-record", "crates/tcbee-live"]
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-ts_storage = { path = "ts-storage", default-features = false }
-tcbee-trace = { path = "tcbee-record/tcbee-trace" }
-tcbee-common = { path = "tcbee-record/tcbee-common" }
-duckdb-cache = { path = "duckdb-cache" }
+ts_storage = { path = "crates/ts-storage", default-features = false }
+tcbee-trace = { path = "crates/tcbee-record/tcbee-trace" }
+tcbee-common = { path = "crates/tcbee-record/tcbee-common" }
+duckdb-cache = { path = "crates/duckdb-cache" }
 tempfile = "3"
 anyhow = "1"
 log = "0.4.22"

@@ -2,7 +2,7 @@
 """Measure a single large metric in isolated processes (no timing assertions).
 
 Run after installing tcbee, duckdb and numpy:
-    python tcbee-python/benchmarks/read_metric.py --samples 1000000
+    python python/benchmarks/read_metric.py --samples 1000000
 
 Files are temporary. Results are warm-cache medians of three reads, including
 SQL execution and result conversion, excluding imports and metadata discovery.

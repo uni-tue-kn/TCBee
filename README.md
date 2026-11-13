@@ -1,10 +1,10 @@
 <div align="center">
- <img src="./imgs/tcbee.png" height=200/>
+ <img src="./docs/assets/tcbee.png" height=200/>
  <h2>TCBee: TCP Flow Analysis with eBPF</h2>
 
  ![License](https://img.shields.io/github/license/uni-tue-kn/TCBee) ![image](https://img.shields.io/badge/lang-rust-darkred) ![GitHub Release](https://img.shields.io/github/v/release/uni-tue-kn/TCBee) [![TCBee build](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml/badge.svg)](https://github.com/uni-tue-kn/TCBee/actions/workflows/tcbee.yml)
 
- <img alt="tcbee-record while recording" width="800" src="imgs/record-dark.png"/>
+ <img alt="tcbee-record while recording" width="800" src="docs/assets/record-dark.png"/>
 </div>
 
 TCBee monitors TCP flows at up to 5M events/s. It records packet headers and kernel TCP state with eBPF, stores them in a DuckDB or SQLite database and plots them. Linux only.
@@ -24,7 +24,7 @@ Requirements:
 
 - Linux on x86_64, kernel 5.12 or newer with BTF (`/sys/kernel/btf/vmlinux`). Root for `record` and `live`.
 - A glibc as new as that of Ubuntu 24.04 (the release is built there), e.g. Debian 13 or RHEL 10; the packages state the exact minimum. On older distributions, [build from source](#building-from-source).
-- For `tcbee-viz`, a display with OpenGL (X11 or Wayland). If it does not start, see [its runtime requirements](tcbee-viz/README.md#runtime-requirements).
+- For `tcbee-viz`, a display with OpenGL (X11 or Wayland). If it does not start, see [its runtime requirements](crates/tcbee-viz/README.md#runtime-requirements).
 
 Record the packet headers on `eth0` and the socket state of the flows on port 5201 (e.g. an `iperf3` test), stop with Ctrl+C, then process and open the recording:
 
@@ -64,7 +64,7 @@ sudo tcbee record -h eth0 -k -q --duration 60 --metadata    # no terminal UI, wi
 sudo tcbee record -k -d ~/rec                               # write to ~/rec instead of /tmp
 ```
 
-`--tp` and `--sock-hooks` take a list: plain names replace the default set, `+name` and `-name` add to or remove from it. `tcbee record --help` lists all flags. Filters, on-change mode, process owners and kernel requirements are in [tcbee-record/README.md](tcbee-record/README.md).
+`--tp` and `--sock-hooks` take a list: plain names replace the default set, `+name` and `-name` add to or remove from it. `tcbee record --help` lists all flags. Filters, on-change mode, process owners and kernel requirements are in [crates/tcbee-record/README.md](crates/tcbee-record/README.md).
 
 ### tcbee-process
 
@@ -76,7 +76,7 @@ tcbee process -s ~/rec -o /tmp/myflow.sqlite -f                # newest in ~/rec
 tcbee process -s /tmp/tcbee_2026-10-05T18-16-22 -o /tmp/a.duck # one specific recording
 ```
 
-An existing output file is only replaced with `-f`. More in [tcbee-process/README.md](tcbee-process/README.md).
+An existing output file is only replaced with `-f`. More in [crates/tcbee-process/README.md](crates/tcbee-process/README.md).
 
 ### tcbee-viz
 
@@ -86,11 +86,11 @@ Plots one flow, compares two, and adds derived series such as retransmissions or
 tcbee viz /tmp/myflow.duck    # or start without an argument and open a file from Home
 ```
 
-To try it without root, process the small recording in the repository: `tcbee process -s tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`. Tabs and filter syntax are in [tcbee-viz/README.md](tcbee-viz/README.md).
+To try it without root, process the small recording in the repository: `tcbee process -s crates/tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`. Tabs and filter syntax are in [crates/tcbee-viz/README.md](crates/tcbee-viz/README.md).
 
 ### tcbee-live
 
-A live congestion window monitor with a GUI that writes no files. It needs Linux 5.8 or newer with BTF. See [tcbee-live/README.md](tcbee-live/README.md).
+A live congestion window monitor with a GUI that writes no files. It needs Linux 5.8 or newer with BTF. See [crates/tcbee-live/README.md](crates/tcbee-live/README.md).
 
 ```bash
 sudo tcbee live --select-port 5201
@@ -114,17 +114,17 @@ sudo make install    # PREFIX=... and DESTDIR=... as usual; make uninstall remov
 
 `make record process viz` leaves out `tcbee-live`. To run without installing, call `./bin/tcbee`.
 
-DuckDB is compiled from source on the first build, which takes about ten minutes. To skip it, build with `make record process viz CARGO_FLAGS="--no-default-features --features sqlite"` and write `.sqlite` files. Cargo features and DuckDB linking options are in the [tcbee-process Building section](tcbee-process/README.md#building).
+DuckDB is compiled from source on the first build, which takes about ten minutes. To skip it, build with `make record process viz CARGO_FLAGS="--no-default-features --features sqlite"` and write `.sqlite` files. Cargo features and DuckDB linking options are in the [tcbee-process Building section](crates/tcbee-process/README.md#building).
 
 ## Reading the data yourself
 
-The [Python API](tcbee-python/README.md) filters and pages flows, discovers metrics,
+The [Python API](python/README.md) filters and pages flows, discovers metrics,
 and loads samples as lists, streaming batches or NumPy arrays for custom plots.
-Install it with `python -m pip install ./tcbee-python` (add `[duckdb]` for DuckDB).
+Install it with `python -m pip install ./python` (add `[duckdb]` for DuckDB).
 [examples/](examples/README.md) has ready-made plots of one flow's
 metrics, of several flows side by side, and of very long recordings.
 
-The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-storage` library, see [ts-storage/README.md](ts-storage/README.md), which also lists the tables and columns. [examples/raw/](examples/raw/) reads the raw `*.tcp` files.
+The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-storage` library, see [crates/ts-storage/README.md](crates/ts-storage/README.md), which also lists the tables and columns. [examples/raw/](examples/raw/) reads the raw `*.tcp` files.
 
 ## Testing
 
@@ -133,12 +133,12 @@ The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-sto
 ## Screenshots
 
 <picture>
- <source media="(prefers-color-scheme: dark)" srcset="imgs/visualize-single-dark.png"/>
- <img alt="CWND, SSTHRESH and retransmissions of one Reno flow" src="imgs/visualize-single-light.png"/>
+ <source media="(prefers-color-scheme: dark)" srcset="docs/assets/visualize-single-dark.png"/>
+ <img alt="CWND, SSTHRESH and retransmissions of one Reno flow" src="docs/assets/visualize-single-light.png"/>
 </picture>
 <picture>
- <source media="(prefers-color-scheme: dark)" srcset="imgs/visualize-multi-dark.png"/>
- <img alt="Two Cubic flows sharing a bottleneck in one plot" src="imgs/visualize-multi-light.png"/>
+ <source media="(prefers-color-scheme: dark)" srcset="docs/assets/visualize-multi-dark.png"/>
+ <img alt="Two Cubic flows sharing a bottleneck in one plot" src="docs/assets/visualize-multi-light.png"/>
 </picture>
 
 ## License and credits

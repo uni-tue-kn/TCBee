@@ -1,4 +1,4 @@
-"""Small files with the same catalog layout as ts-storage/src/schema.rs."""
+"""Small files with the same catalog layout as crates/ts-storage/src/schema.rs."""
 
 import sqlite3
 

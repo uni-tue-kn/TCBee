@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Writer throughput on this machine: tmpfs (no disk) against a disk directory, for 1/2/4
-# writer threads and the sock, tcp4 and cwnd records (tcbee-record/tcbee/src/writer_bench.rs).
+# writer threads and the sock, tcp4 and cwnd records (crates/tcbee-record/tcbee/src/writer_bench.rs).
 # No root needed, no eBPF: synthetic records through the writer's storage path.
 #
 #   testing/writer_bench.sh <disk_dir> [secs=60] [out.jsonl]
@@ -28,7 +28,7 @@ tmpfs=${TMPFS_DIR:-/dev/shm}
 [[ $(stat -f -c %T "$disk") != tmpfs ]] || { echo "$disk is on tmpfs, give a directory on a disk" >&2; exit 2; }
 
 # build once and run the test binary itself, so that the results belong to the build in the meta line
-cd "$here/tcbee-record" || exit 2
+cd "$here/crates/tcbee-record" || exit 2
 bin=$(cargo test --release --bin tcbee-record --no-run --message-format=json 2>/dev/null |
   python3 -c 'import json, sys
 for l in sys.stdin:

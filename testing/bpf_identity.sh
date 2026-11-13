@@ -9,20 +9,25 @@
 # programs one by one: every program of the baseline object, the opt-in ones declared with "?"
 # included. It also fails if the record layouts changed (records.h and what it includes, or the
 # generated Rust bindings whose hash is LAYOUT_ID). The baseline build uses its own target
-# directory under tcbee-record/target, so only the first run is slow.
+# directory under crates/tcbee-record/target, so only the first run is slow.
 set -euo pipefail
 
 repo=$(git rev-parse --show-toplevel)
 base=${1:?usage: testing/bpf_identity.sh BASE [PROG,...]}
 expected=",${2:-},"
 
-layouts="tcbee-record/tcbee/src/bpf/records.h tcbee-record/tcbee/src/bpf/onchange.h tcbee-record/tcbee-common/src/records_gen.rs"
-# shellcheck disable=SC2086
-if ! git -C "$repo" diff --quiet "$base" -- $layouts; then
-	git -C "$repo" diff --stat "$base" -- $layouts
-	echo "record layouts differ from $base" >&2
-	exit 1
-fi
+record=crates/tcbee-record
+# Commits before the move to crates/ have the workspace at the top level
+base_record=$record
+git -C "$repo" cat-file -e "$base:$record" 2>/dev/null || base_record=tcbee-record
+
+layouts="tcbee/src/bpf/records.h tcbee/src/bpf/onchange.h tcbee-common/src/records_gen.rs"
+for f in $layouts; do
+	if ! git -C "$repo" show "$base:$base_record/$f" | cmp -s - "$repo/$record/$f"; then
+		echo "record layouts differ from $base: $record/$f" >&2
+		exit 1
+	fi
+done
 
 tmp=$(mktemp -d)
 cleanup() {
@@ -33,7 +38,7 @@ trap cleanup EXIT
 
 git -C "$repo" worktree add --detach "$tmp/base" "$base" >/dev/null 2>&1
 # Build scripts before the one-line .obj() keep no object; patch them the same way
-build_rs="$tmp/base/tcbee-record/tcbee/build.rs"
+build_rs="$tmp/base/$base_record/tcbee/build.rs"
 grep -q '\.obj(' "$build_rs" ||
 	sed -i 's|^\( *\)\.source(BPF_SRC)|&\n\1.obj(out.join("tcbee.bpf.o"))|' "$build_rs"
 
@@ -42,9 +47,9 @@ object() {
 	find "$1" -path '*/build/tcbee-*/out/tcbee.bpf.o' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2
 }
 
-CARGO_TARGET_DIR="$repo/tcbee-record/target/bpf-identity" \
-	cargo build --quiet --release --manifest-path "$tmp/base/tcbee-record/Cargo.toml" -p tcbee
-cargo build --quiet --release --manifest-path "$repo/tcbee-record/Cargo.toml" -p tcbee
+CARGO_TARGET_DIR="$repo/$record/target/bpf-identity" \
+	cargo build --quiet --release --manifest-path "$tmp/base/$base_record/Cargo.toml" -p tcbee
+cargo build --quiet --release --manifest-path "$repo/$record/Cargo.toml" -p tcbee
 
 # BTF type ids in the CO-RE relocation notes shift whenever a type is added to the object;
 # libbpf resolves the relocations by type name and access path, which are compared. Local
@@ -59,8 +64,8 @@ disasm() {
 		sed -E 's/^ *[0-9a-f]+:\t//; s/^\t\t[0-9a-f]+:  /\t\t/; s/^[0-9a-f]{16} </</'
 }
 
-base_obj=$(object "$repo/tcbee-record/target/bpf-identity")
-new_obj=$(object "$repo/tcbee-record/target/release")
+base_obj=$(object "$repo/$record/target/bpf-identity")
+new_obj=$(object "$repo/$record/target/release")
 # Function symbols: address, binding, F, section, size, name
 progs=$(llvm-objdump -t "$base_obj" | awk '$3 == "F" { print $6 }')
 same=0 instructions=0 failed=0

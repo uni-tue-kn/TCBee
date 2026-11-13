@@ -4,7 +4,7 @@
  ![image](https://img.shields.io/badge/licence-Apache%202.0-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/part%20of-TCBee-yellow)
 </div>
 
-Part of [TCBee](../README.md).
+Part of [TCBee](../../README.md).
 
 - [Overview](#overview)
 - [How It Works](#how-it-works)
@@ -44,7 +44,7 @@ A flow filter map in the eBPF layer ensures only selected flows generate events,
 ## Build
 
 ```bash
-cd tcbee-live
+cd crates/tcbee-live
 cargo build --release
 ```
 

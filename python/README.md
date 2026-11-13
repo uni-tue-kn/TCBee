@@ -1,14 +1,14 @@
 # TCBee Python API
 
 Read and explore completed TCBee SQLite or DuckDB databases (schema version 3).
-Install from the repository with `python -m pip install ./tcbee-python`.
+Install from the repository with `python -m pip install ./python`.
 SQLite needs no additional dependencies; DuckDB support is available through
-`python -m pip install './tcbee-python[duckdb]'`.
+`python -m pip install './python[duckdb]'`.
 
 For the supplied plotting scripts, install NumPy and Matplotlib together:
 
 ```bash
-python -m pip install './tcbee-python[duckdb,plot]'
+python -m pip install './python[duckdb,plot]'
 ```
 
 Start with [flow discovery](#find-flows-and-metrics), then choose a
@@ -143,7 +143,7 @@ The database must stay open throughout iteration and be used from one thread.
 Only completed files are supported; live external modification is outside the
 API contract.
 
-For plotting with NumPy, install `./tcbee-python[duckdb,plot]` and use:
+For plotting with NumPy, install `./python[duckdb,plot]` and use:
 
 ```python
 with tcbee.open("recording.duck") as db:
@@ -154,7 +154,7 @@ with tcbee.open("recording.duck") as db:
 
 `samples.to_numpy()` converts an existing `Samples` batch. NumPy arrays keep
 integer timestamps and unsigned counters exact. Nullable values use object
-dtype with `None`. With `./tcbee-python[pandas]`, `samples.to_frame()` returns
+dtype with `None`. With `./python[pandas]`, `samples.to_frame()` returns
 `ts_ns`, `seq` and `value` columns with explicit nullable integer dtypes.
 Stored NULL stays `None`; tcbee-process never writes NaN.
 
@@ -167,8 +167,8 @@ to the selected sample count. No downsampling or truncation is implicit.
 Two benchmarks measure reads and flow browsing on your own hardware:
 
 ```bash
-python tcbee-python/benchmarks/read_metric.py --samples 1000000
-python tcbee-python/benchmarks/browse_flows.py --flows 20000 --metrics 20
+python python/benchmarks/read_metric.py --samples 1000000
+python python/benchmarks/browse_flows.py --flows 20000 --metrics 20
 ```
 
 For one million samples, NumPy reads from DuckDB are about 20 times faster
@@ -214,10 +214,10 @@ never created; old schemas require reprocessing with `tcbee-process`. Install
 `duckdb` to read DuckDB files; missing optional imports raise `ImportError`.
 
 ```bash
-python -m pip install './tcbee-python[test]'
-python -m unittest discover -s tcbee-python/tests -v
-ruff check tcbee-python
-ruff format --check tcbee-python
+python -m pip install './python[test]'
+python -m unittest discover -s python/tests -v
+ruff check python
+ruff format --check python
 ```
 
 Both backends use the same contract tests. Optional adapter/backend tests

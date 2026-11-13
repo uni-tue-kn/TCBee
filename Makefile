@@ -13,9 +13,9 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # Use the same flags for both, so the dependencies (DuckDB!) are built only once.
 CARGO_FLAGS ?=
 # Available tcbee parts for clean all. tcbee-process and tcbee-viz share the workspace in ./
-TCBEE_PARTS := . tcbee-record/ tcbee-live/
+TCBEE_PARTS := . crates/tcbee-record/ crates/tcbee-live/
 # Binaries to copy to BIN_DIR
-BINARIES := tcbee-record/target/release/tcbee-record target/release/tcbee-process target/release/tcbee-viz tcbee-live/target/release/tcbee-live
+BINARIES := crates/tcbee-record/target/release/tcbee-record target/release/tcbee-process target/release/tcbee-viz crates/tcbee-live/target/release/tcbee-live
 # Files that `make install` installs and `make uninstall` removes
 INSTALL_FILES := tcbee tcbee-record tcbee-process tcbee-viz tcbee-live
 
@@ -26,7 +26,7 @@ all: record process viz live
 .PHONY: record
 record:
 	@echo "Building tcbee-record ..."
-	cd tcbee-record && cargo build --release && cd ..
+	cd crates/tcbee-record && cargo build --release && cd ../..
 	$(MAKE) stage
 
 .PHONY: process
@@ -44,7 +44,7 @@ viz:
 .PHONY: live
 live:
 	@echo "Building tcbee-live ..."
-	cd tcbee-live && cargo build --release && cd ..
+	cd crates/tcbee-live && cargo build --release && cd ../..
 	$(MAKE) stage
 
 # Copy the built binaries and the tcbee script to BIN_DIR

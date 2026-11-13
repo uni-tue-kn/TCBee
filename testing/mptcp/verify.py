@@ -33,7 +33,7 @@ import struct
 import sys
 from pathlib import Path
 
-# On-disk layouts (bincode, no padding), see tcbee-record/tcbee/src/bpf/records.h and
+# On-disk layouts (bincode, no padding), see crates/tcbee-record/tcbee/src/bpf/records.h and
 # check_trace.py. Header: time, hook_seq, addr_v4, src_v6, dst_v6, sport, dport, family.
 HEADER = "<QQQ16s16sHHH"
 SOCK = struct.Struct(HEADER + "QQBIIHIQIIBIIIIIHIIIQIIHHI")

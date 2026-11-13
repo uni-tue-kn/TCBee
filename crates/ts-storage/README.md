@@ -4,7 +4,7 @@
  ![image](https://img.shields.io/badge/licence-MIT-blue) ![image](https://img.shields.io/badge/lang-rust-darkred) ![image](https://img.shields.io/badge/part%20of-TCBee-yellow)
 </div>
 
-Part of [TCBee](../README.md). A Rust library that reads and writes TCBee flow databases on SQLite or DuckDB behind one API. `tcbee-process` writes with it, `tcbee-viz` reads with it.
+Part of [TCBee](../../README.md). A Rust library that reads and writes TCBee flow databases on SQLite or DuckDB behind one API. `tcbee-process` writes with it, `tcbee-viz` reads with it.
 
 - [Database layout (schema version 3)](#database-layout-schema-version-3)
 - [Features and engines](#features-and-engines)
@@ -153,10 +153,10 @@ All fallible calls return `StoreError`:
 
 ## Reading a database without this crate
 
-Python users can use the [tcbee API](../tcbee-python/README.md) for lazy flow
+Python users can use the [tcbee API](../../python/README.md) for lazy flow
 filters, paginated browsing and batched metric reads.
 
-Both engines produce plain files, so any client works; [`examples/sql`](../examples/sql/README.md) has more queries, and [`examples/python`](../examples/python/) has plotting scripts. For example, the send-side congestion window of a flow:
+Both engines produce plain files, so any client works; [`examples/sql`](../../examples/sql/README.md) has more queries, and [`examples/python`](../../examples/python/) has plotting scripts. For example, the send-side congestion window of a flow:
 
 ```sql
 SELECT ts, snd_cwnd FROM ev_sock WHERE flow_id = 3 AND dir = 1 ORDER BY ts, seq;

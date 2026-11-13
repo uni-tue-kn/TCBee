@@ -1,6 +1,6 @@
 # tcbee-process
 
-Part of [TCBee](../README.md). Converts a raw recording of `tcbee-record` (the `*.tcp` files) into a SQLite or DuckDB database that `tcbee-viz` and your own scripts can read.
+Part of [TCBee](../../README.md). Converts a raw recording of `tcbee-record` (the `*.tcp` files) into a SQLite or DuckDB database that `tcbee-viz` and your own scripts can read.
 
 ```bash
 tcbee-process -o /tmp/myflow.duck                 # engine from the extension
@@ -8,7 +8,7 @@ tcbee-process -q -o /tmp/myflow.sqlite -t 4 -f    # SQLite, 4 threads, replace a
 tcbee-process -s ~/traces/tcbee_2026-10-05T18-16-22 -d
 ```
 
-`tcbee-process --help` prints the flags. The table layout is in [ts-storage/README.md](../ts-storage/README.md#database-layout-schema-version-3).
+`tcbee-process --help` prints the flags. The table layout is in [crates/ts-storage/README.md](../ts-storage/README.md#database-layout-schema-version-3).
 
 ## Usage
 
@@ -78,7 +78,7 @@ DuckDB's build script runs again (and with `bundled` recompiles all of DuckDB) w
 - Profile: `--release` and the default debug build are separate.
 - `RUSTFLAGS` and the other cargo environment, including the `DUCKDB_*` variables.
 
-Build from the repository root; a `target/` per crate would compile DuckDB once per crate. The crate `duckdb-cache/` and the `[profile.dev.build-override]` in the root `Cargo.toml` exist so that the choice of `-p` does not change the build. If `cargo tree -p tcbee-viz -e features -i syn@3` shows `syn` features that are missing in [duckdb-cache/Cargo.toml](../duckdb-cache/Cargo.toml), add them there.
+Build from the repository root; a `target/` per crate would compile DuckDB once per crate. The crate `crates/duckdb-cache/` and the `[profile.dev.build-override]` in the root `Cargo.toml` exist so that the choice of `-p` does not change the build. If `cargo tree -p tcbee-viz -e features -i syn@3` shows `syn` features that are missing in [crates/duckdb-cache/Cargo.toml](../duckdb-cache/Cargo.toml), add them there.
 
 ## Tests
 

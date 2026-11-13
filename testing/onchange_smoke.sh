@@ -21,7 +21,7 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-bin=${1:-$repo/tcbee-record/target/release/tcbee-record}
+bin=${1:-$repo/crates/tcbee-record/target/release/tcbee-record}
 [[ $EUID -eq 0 ]] || { echo "run as root" >&2; exit 2; }
 [[ -x $bin ]] || { echo "no $bin, build tcbee-record first" >&2; exit 2; }
 

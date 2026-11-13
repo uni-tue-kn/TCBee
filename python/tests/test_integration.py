@@ -29,7 +29,7 @@ class ProcessorIntegration(unittest.TestCase):
                         [
                             os.environ["TCBEE_PROCESS"],
                             "-s",
-                            str(ROOT / "tcbee-process/tests/fixtures/tcbee_small"),
+                            str(ROOT / "crates/tcbee-process/tests/fixtures/tcbee_small"),
                             "-o",
                             str(path),
                             "-t",

@@ -46,8 +46,8 @@ RECV_IP = "10.0.0.2"
 PORT1 = 5001
 PORT2 = 5002         # used only for the second stream in --double mode
 
-_LIVE_BASE    = Path(__file__).parent.parent / "tcbee-live"   / "target"
-_RECORD_BASE  = Path(__file__).parent.parent / "tcbee-record" / "target"
+_LIVE_BASE    = Path(__file__).parent.parent / "crates" / "tcbee-live"   / "target"
+_RECORD_BASE  = Path(__file__).parent.parent / "crates" / "tcbee-record" / "target"
 # tcbee-process and tcbee-viz are members of the cargo workspace in the repository root
 _PROCESS_BASE = Path(__file__).parent.parent / "target"
 _VIZ_BASE     = Path(__file__).parent.parent / "target"

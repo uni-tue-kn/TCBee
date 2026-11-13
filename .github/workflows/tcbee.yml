@@ -22,7 +22,7 @@ jobs:
     - name: Cache cargo
       uses: Swatinem/rust-cache@v2
       with:
-        workspaces: tcbee-record
+        workspaces: crates/tcbee-record
 
     - name: Install Dependencies
       run: |
@@ -30,10 +30,10 @@ jobs:
         sudo apt install -y clang libclang-dev libelf-dev zlib1g-dev pkg-config make
 
     - name: TCBee-Record Build
-      run: cd tcbee-record && cargo build --release
+      run: cd crates/tcbee-record && cargo build --release
 
     - name: TCBee-Record Test
-      run: cd tcbee-record && cargo test
+      run: cd crates/tcbee-record && cargo test
 
   # tcbee-process, tcbee-viz and ts-storage form the cargo workspace in the repository root.
   # Every leg builds the engines it names and no others, and runs the tests of all three crates,
@@ -103,7 +103,7 @@ jobs:
     - name: A SQLite-only build must not contain DuckDB
       if: matrix.name == 'sqlite-only'
       run: |
-        # duckdb-cache is our helper crate without DuckDB, see duckdb-cache/Cargo.toml
+        # duckdb-cache is our helper crate without DuckDB, see crates/duckdb-cache/Cargo.toml
         cargo tree $PACKAGES ${{ matrix.features }} -e all | grep -v duckdb-cache > tree.txt
         if grep -i duckdb tree.txt; then echo "DuckDB is in the dependency tree"; exit 1; fi
 
@@ -124,7 +124,7 @@ jobs:
     - name: Cache cargo (tcbee-live)
       uses: Swatinem/rust-cache@v2
       with:
-        workspaces: tcbee-live
+        workspaces: crates/tcbee-live
 
     - name: Install Dependencies
       run: |
@@ -136,7 +136,7 @@ jobs:
       run: cargo build --release -p tcbee-process -p tcbee-viz --features bundled
 
     - name: TCBee-Live Build
-      run: cd tcbee-live && cargo build --release
+      run: cd crates/tcbee-live && cargo build --release
 
     - name: TCBee-Live Test
-      run: cd tcbee-live && cargo test
+      run: cd crates/tcbee-live && cargo test

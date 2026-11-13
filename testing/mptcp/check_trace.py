@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 
 # The layouts below mirror sock_trace_entry and mptcp_pm_entry in
-# tcbee-record/tcbee/src/bpf/records.h (bincode, no padding). Update them together with the
-# size asserts in tcbee-record/tcbee-common/src/records.rs.
+# crates/tcbee-record/tcbee/src/bpf/records.h (bincode, no padding). Update them together with the
+# size asserts in crates/tcbee-record/tcbee-common/src/records.rs.
 #
 # sock_trace_entry on disk: the header
 # (time, hook_seq, addr_v4, src_v6, dst_v6, sport, dport, family), the socket fields, conn_id

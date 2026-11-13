@@ -93,9 +93,9 @@ def rebuild():
     ])
     dirs = []
     if target in ("live", "all"):
-        dirs.append(REPO_ROOT / "tcbee-live")
+        dirs.append(REPO_ROOT / "crates" / "tcbee-live")
     if target in ("record", "all"):
-        dirs.append(REPO_ROOT / "tcbee-record")
+        dirs.append(REPO_ROOT / "crates" / "tcbee-record")
     # tcbee-process and tcbee-viz are members of the cargo workspace in the repository root
     # (one target/, DuckDB is compiled once): build them in one cargo call.
     packages = [p for t, p in (("process", "tcbee-process"), ("viz", "tcbee-viz")) if target in (t, "all")]

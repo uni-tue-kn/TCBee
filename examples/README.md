@@ -1,10 +1,10 @@
 # Examples
 
 Python scripts that read and plot the databases written by `tcbee-process`, in [python/](python/).
-They use the [tcbee Python API](../tcbee-python/README.md). Install it from the repository root:
+They use the [tcbee Python API](../python/README.md). Install it from the repository root:
 
 ```bash
-python -m pip install './tcbee-python[duckdb,plot]'
+python -m pip install './python[duckdb,plot]'
 ```
 
 ## Quick start
@@ -15,7 +15,7 @@ python examples/python/plot_metrics.py recording.duck 1      # cwnd, RTT and goo
 python examples/python/compare_flows.py recording.duck       # goodput of the two largest flows
 ```
 
-No recording at hand? Process the test traces: `tcbee-process -s tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`.
+No recording at hand? Process the test traces: `tcbee-process -s crates/tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`.
 
 Every script takes `--help`, reads SQLite and DuckDB, and saves PNG, SVG or PDF with `--output`.
 Without `--output` it opens a window.
@@ -99,7 +99,7 @@ plt.ylabel("Congestion window (segments)")
 plt.savefig("cwnd.png")
 ```
 
-See the [API reference](../tcbee-python/API.md) for all methods.
+See the [API reference](../python/API.md) for all methods.
 
 ## More
 

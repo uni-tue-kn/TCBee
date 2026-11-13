@@ -1,8 +1,10 @@
 /install/
 /bin/
 /target/
+.ruff_cache/
 
 # working notes, kept local
+/notes/
 /PROCESS-REWRITE.md
 /PROCESS-INFLUXDB.md
 /RECORD-REWRITE.md

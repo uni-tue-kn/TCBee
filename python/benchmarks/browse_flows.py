@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Time catalog browsing independently of metric sample count.
 
-    python tcbee-python/benchmarks/browse_flows.py --flows 20000 --metrics 20
+    python python/benchmarks/browse_flows.py --flows 20000 --metrics 20
 
 Temporary files contain only metadata: millions of sample values per metric
 are represented by catalog counts, without creating or reading event tables.

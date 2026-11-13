@@ -12,7 +12,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-RECORD=${TCBEE_RECORD:-$ROOT/tcbee-record/target/release/tcbee-record}
+RECORD=${TCBEE_RECORD:-$ROOT/crates/tcbee-record/target/release/tcbee-record}
 PROCESS=${TCBEE_PROCESS:-$ROOT/target/release/tcbee-process}
 OUT=${OUT:-/tmp/tcbee-mptcp-test}
 SECONDS_TRAFFIC=${1:-3}

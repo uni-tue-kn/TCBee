@@ -6,7 +6,7 @@ For the Python library and plots, see [examples/README.md](../README.md).
 
 ## Database schema
 
-Besides the catalog tables there is one table per kind of recorded event, with one row per record. The complete description is in [ts-storage/README.md](../../ts-storage/README.md#database-layout-schema-version-3).
+Besides the catalog tables there is one table per kind of recorded event, with one row per record. The complete description is in [crates/ts-storage/README.md](../../crates/ts-storage/README.md#database-layout-schema-version-3).
 
 | Table | Content |
 |---|---|
