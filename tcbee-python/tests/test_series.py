@@ -47,6 +47,7 @@ class SeriesTests:
             "INSERT INTO ev_sock(flow_id, dir, ts, seq, snd_cwnd) VALUES (?, ?, ?, ?, ?)",
             (1, 1, self.t + 1, 1, 11),
         )
+        self.add_series(writer, 12, 0, "sock", 1, "broken", 3, "ev_sock", "missing_column", 4)
         writer.commit()
         writer.close()
         self.db = tcbee.open(self.path)
@@ -129,6 +130,14 @@ class SeriesTests:
         self.assertIs(self.db.series(8).read().values[0], True)
         self.assertEqual(self.db.series(9).read().values, ["label", None])
         self.assertEqual(self.db.series(11).read().values, [10, 11, None, 12, 13])
+
+    def test_missing_catalog_column_never_fabricates_values(self):
+        # SQLite treats unqualified double-quoted missing names as strings.
+        with self.assertRaisesRegex(Exception, "missing_column"):
+            self.db.series(12).read()
+        if importlib.util.find_spec("numpy"):
+            with self.assertRaisesRegex(Exception, "missing_column"):
+                self.db.series(12).read_numpy()
 
     def test_nested_queries_and_closed_iterators(self):
         first = self.series.iter_batches(batch_size=2)

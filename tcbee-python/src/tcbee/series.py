@@ -61,7 +61,7 @@ class Series:
         if self.kind == "raw":
             if not self._table or not self._table.startswith("ev_") or not self._column:
                 raise TCBeeError(f"Invalid event table/column in series {self.id}")
-            sql = f"SELECT ts, seq, {quote(self._column)} FROM {quote(self._table)}"
+            sql = f"SELECT e.ts, e.seq, e.{quote(self._column)} AS value FROM {quote(self._table)} AS e"
             conditions = ["flow_id = ?", "dir = ?"]
             params = [self.flow_id, direction_code(self.direction)]
         else:
