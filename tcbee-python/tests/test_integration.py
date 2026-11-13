@@ -72,7 +72,7 @@ class ExampleIntegration(unittest.TestCase):
             listed = subprocess.run(
                 [
                     sys.executable,
-                    str(ROOT / "examples/db/list_flows.py"),
+                    str(ROOT / "examples/python/list_flows.py"),
                     str(path),
                     "--port",
                     "5201",
@@ -93,7 +93,7 @@ class ExampleIntegration(unittest.TestCase):
                 subprocess.run(
                     [
                         sys.executable,
-                        str(ROOT / "examples/db/plot_metrics.py"),
+                        str(ROOT / "examples/python/plot_metrics.py"),
                         str(path),
                         "1",
                         "--metric",

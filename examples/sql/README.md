@@ -1,7 +1,8 @@
-# Database examples
+# SQL access
 
-The plotting scripts in this folder are described, with sample figures, in [examples/README.md](../README.md).
-This page describes the database itself, for SQL clients and your own code.
+The databases written by `tcbee-process` are plain SQLite or DuckDB files.
+This page describes their tables and gives queries for any SQL client.
+For the Python library and plots, see [examples/README.md](../README.md).
 
 ## Database schema
 
@@ -25,7 +26,7 @@ Besides the catalog tables there is one table per kind of recorded event, with o
 
 ## Queries
 
-`SELECT` statements for `sqlite3` or the `duckdb` shell. Flow ids are assigned while processing and differ from run to run: look yours up in `flows` (or with `list_flows.py`) and replace the `3` below.
+`SELECT` statements for `sqlite3` or the `duckdb` shell. Flow ids are assigned while processing and differ from run to run: look yours up in `flows` (or with `examples/python/list_flows.py`) and replace the `3` below.
 
 The send-side congestion window of flow 3 over time:
 

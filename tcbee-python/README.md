@@ -25,7 +25,7 @@ provides ready-to-run multi-panel, flow-comparison and streaming-envelope script
 | Fast full-resolution plotting | `metric.read_numpy()` | Eager arrays; native column export on DuckDB |
 | Dataframe analysis | `metric.read().to_frame()` | Eager pandas data with explicit nullable dtypes |
 | Process millions of samples | `metric.iter_batches()` | Bounded Python result memory |
-| Plot millions with a small figure | [plot_large_metric.py](../examples/db/plot_large_metric.py) | Streaming min/max envelope; explicit time-bin reduction |
+| Plot millions with a small figure | [plot_large_metric.py](../examples/python/plot_large_metric.py) | Streaming min/max envelope; explicit time-bin reduction |
 
 Full-resolution plotting still needs memory proportional to selected samples,
 and drawing millions of vertices can cost more than reading them. Use a time

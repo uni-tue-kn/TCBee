@@ -67,7 +67,7 @@ class PlottingExamples(unittest.TestCase):
                         result = subprocess.run(
                             [
                                 sys.executable,
-                                str(ROOT / "examples/db" / script),
+                                str(ROOT / "examples/python" / script),
                                 str(path),
                                 *args,
                                 "--output",
@@ -92,7 +92,7 @@ class PlottingExamples(unittest.TestCase):
     def test_envelope_preserves_extrema_carries_gaps_and_end_boundary(self):
         import numpy as np
 
-        sys.path.insert(0, str(ROOT / "examples/db"))
+        sys.path.insert(0, str(ROOT / "examples/python"))
         try:
             from plot_large_metric import envelope
         finally:
@@ -126,7 +126,7 @@ class PlottingExamples(unittest.TestCase):
             create_database(path, "sqlite")
             command = [
                 sys.executable,
-                str(ROOT / "examples/db/plot_metrics.py"),
+                str(ROOT / "examples/python/plot_metrics.py"),
                 str(path),
                 "1",
                 "--metric",
@@ -153,7 +153,7 @@ class PlottingExamples(unittest.TestCase):
     def test_goodput_unwraps_sequence_numbers(self):
         import numpy as np
 
-        sys.path.insert(0, str(ROOT / "examples/db"))
+        sys.path.insert(0, str(ROOT / "examples/python"))
         try:
             from _plotting import goodput
         finally:
