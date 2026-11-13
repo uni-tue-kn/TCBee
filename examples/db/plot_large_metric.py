@@ -4,6 +4,8 @@
 import argparse
 
 import numpy as np
+
+import tcbee
 from _plotting import (
     COLORS,
     GOODPUT,
@@ -18,8 +20,6 @@ from _plotting import (
     style,
     time_window,
 )
-
-import tcbee
 
 
 def envelope(series, *, start_ns, end_ns, bins=2000, batch_size=65_536):

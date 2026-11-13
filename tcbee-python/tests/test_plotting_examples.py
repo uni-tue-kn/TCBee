@@ -159,6 +159,6 @@ class PlottingExamples(unittest.TestCase):
         finally:
             sys.path.pop(0)
         # The last step wraps from 2**32 - 1000 to 1000, which is 2000 bytes
-        times = np.array([0.0, 0.1, 0.6, 0.7])
+        times = np.array([0.0, 0.1, 0.6, 1.0])
         _, rates = goodput(times, [2**32 - 3000, 2**32 - 2000, 2**32 - 1000, 1000], 0.5)
         np.testing.assert_allclose(rates, [1000 * 8 / 0.5 / 1e6, 3000 * 8 / 0.5 / 1e6])

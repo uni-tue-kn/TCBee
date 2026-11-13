@@ -22,20 +22,23 @@ Without `--output` it opens a window.
 
 ## Plots
 
-The plots below come from [testing/](../../testing/README.md): two iperf3 flows share a 10 Mb/s bottleneck with 80 ms RTT, the second starts after 30 s.
+The plots below come from [testing/](../../testing/README.md): two iperf3 transfers share a 10 Mb/s bottleneck with 80 ms RTT, the second starts after 30 s.
 They were recorded with `-h tcbee-eth0 -w -t -k -a --metrics`.
+`list_flows.py` also shows iperf3's control connections and the ACK direction of each transfer; the flow IDs below are the transfers.
 
 ### One flow: `plot_metrics.py`
 
 ```bash
-python examples/db/plot_metrics.py cubic.duck 1 --output cubic_metrics.png
+python examples/db/plot_metrics.py cubic.duck 1 --title "CUBIC, one flow"
+python examples/db/plot_metrics.py bbr.duck 11 --title "BBR, one flow"
 ```
 
 ![CUBIC: congestion window, RTT and goodput of one flow](img/cubic_metrics.png)
 
 CUBIC fills the 150-packet queue until it overflows, so the RTT follows the congestion window up to 400 ms.
 BBR keeps the queue short; its RTT stays near the base RTT until the second flow starts.
-The short dips every 10 s are BBR's ProbeRTT phase.
+The cwnd and goodput dips at 10, 20, 30 and 50 s are BBR's ProbeRTT phase.
+Goodput above 10 Mb/s in the CUBIC plot is real: after a loss, one cumulative ACK covers many segments.
 
 ![BBR: congestion window, RTT and goodput of one flow](img/bbr_metrics.png)
 
@@ -46,8 +49,8 @@ Use `--start` and `--end` (seconds) to zoom in.
 ### Several flows: `compare_flows.py`
 
 ```bash
-python examples/db/compare_flows.py cubic.duck --metric tcp_probe.SND_CWND
-python examples/db/compare_flows.py bbr.duck
+python examples/db/compare_flows.py cubic.duck --metric tcp_probe.SND_CWND --title "CUBIC, two flows"
+python examples/db/compare_flows.py bbr.duck --title "BBR, two flows"
 ```
 
 ![CUBIC: congestion windows of two flows](img/cubic_cwnd.png)
@@ -72,7 +75,8 @@ Use it when a metric has millions of samples.
 | Option | Meaning |
 |---|---|
 | `--metric SOURCE.NAME` | metric to plot; `list_flows.py -v` lists those of each flow |
-| `--dir send\|recv` | needed for metrics recorded in both directions (`sock`, `cwnd`, `tcp4`) |
+| `--dir send\|recv\|none` | needed for metrics recorded in several directions (`sock`, `cwnd`, `tcp4`) |
+| `--bin` | goodput interval in seconds (default 0.5) |
 | `--start`, `--end` | time window in seconds |
 | `--output FILE` | save as `.png`, `.svg` or `.pdf` |
 | `--title`, `--dpi` | figure title and PNG resolution |
@@ -119,7 +123,7 @@ Besides the catalog tables there is one table per kind of recorded event, with o
 
 ## Queries
 
-`SELECT` statements for `sqlite3` or the `duckdb` shell. Flow ids are assigned while processing and differ from run to run: look yours up in `flows` (or with `list_flows.py`) and replace the `3` below. Use IDs from your own catalog.
+`SELECT` statements for `sqlite3` or the `duckdb` shell. Flow ids are assigned while processing and differ from run to run: look yours up in `flows` (or with `list_flows.py`) and replace the `3` below.
 
 The send-side congestion window of flow 3 over time:
 

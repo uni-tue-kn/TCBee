@@ -4,6 +4,8 @@
 import argparse
 
 import numpy as np
+
+import tcbee
 from _plotting import (
     GOODPUT,
     GOODPUT_SOURCE,
@@ -19,11 +21,12 @@ from _plotting import (
     style,
 )
 
-import tcbee
-
 
 def bulk_flows(db, args):
-    """Pick the flows that sent the most data, skipping their ACK directions."""
+    """Pick the flows that sent the most data, skipping their ACK directions.
+
+    Only the 4 * limit flows with the most samples are considered.
+    """
     source, name = GOODPUT_SOURCE
     candidates = (
         db.flows()
@@ -46,7 +49,7 @@ def main():
         "flow_ids",
         nargs="*",
         type=int,
-        help="flows to plot (default: the flows with the most samples)",
+        help="flows to plot (default: the flows that sent the most data)",
     )
     parser.add_argument(
         "--metric",

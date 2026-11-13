@@ -3,9 +3,8 @@
 
 import argparse
 
-from _plotting import parse_spec, positive, run
-
 import tcbee
+from _plotting import parse_spec, positive, run
 
 
 def main():

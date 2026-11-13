@@ -123,7 +123,11 @@ def goodput(times, snd_una, bin_s):
     import numpy as np
 
     acked = np.diff(np.asarray(snd_una, dtype=np.int64)) % 2**32
-    edges = np.arange(times[0], times[-1] + bin_s, bin_s)
+    # Only whole bins: a partial last bin would understate the rate
+    count = int((times[-1] - times[0]) // bin_s)
+    if count < 1:
+        raise ValueError(f"The flow is shorter than one --bin of {bin_s} s")
+    edges = times[0] + bin_s * np.arange(count + 1)
     sums, _ = np.histogram(times[1:], bins=edges, weights=acked)
     return edges[:-1], sums * 8 / bin_s / 1e6
 

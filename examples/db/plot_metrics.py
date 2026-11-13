@@ -3,9 +3,8 @@
 
 import argparse
 
-from _plotting import COLORS, add_output_options, decorate, finish, label, read_metric, run, style
-
 import tcbee
+from _plotting import COLORS, add_output_options, decorate, finish, label, read_metric, run, style
 
 DEFAULT = ["tcp_probe.SND_CWND", "tcp_probe.SRTT", "goodput"]
 
