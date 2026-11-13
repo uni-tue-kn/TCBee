@@ -14,7 +14,8 @@ readme = "README.md"
 duckdb = ["duckdb>=1.0"]
 pandas = ["pandas>=1.5"]
 numpy = ["numpy>=1.23"]
-test = ["duckdb>=1.0", "pandas>=1.5", "numpy>=1.23", "ruff"]
+plot = ["numpy>=1.23", "matplotlib>=3.6"]
+test = ["duckdb>=1.0", "pandas>=1.5", "numpy>=1.23", "matplotlib>=3.6", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
