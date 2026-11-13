@@ -13,7 +13,7 @@ python -m pip install './tcbee-python[duckdb,plot]'
 
 Start with [flow discovery](#find-flows-and-metrics), then choose a
 [read method](#choose-a-read-method). The [API reference](API.md) lists public
-methods, return types and errors. The [plotting cookbook](../examples/db/README.md#plotting-cookbook)
+methods, return types and errors. The [plotting examples](../examples/db/README.md#plots)
 provides ready-to-run multi-panel, flow-comparison and streaming-envelope scripts.
 
 ## Choose a read method
@@ -143,7 +143,7 @@ The database must stay open throughout iteration and be used from one thread.
 Only completed files are supported; live external modification is outside the
 API contract.
 
-For plotting with NumPy, install `./tcbee-python[numpy,duckdb]` and use:
+For plotting with NumPy, install `./tcbee-python[duckdb,plot]` and use:
 
 ```python
 with tcbee.open("recording.duck") as db:
@@ -156,10 +156,7 @@ with tcbee.open("recording.duck") as db:
 integer timestamps and unsigned counters exact. Nullable values use object
 dtype with `None`. With `./tcbee-python[pandas]`, `samples.to_frame()` returns
 `ts_ns`, `seq` and `value` columns with explicit nullable integer dtypes.
-Stored NULL stays `None` in list reads; floating NaN stays NaN where the engine
-preserves it. SQLite stores NaN as NULL, so it cannot be recovered there.
-Dataframe float columns containing NULL use object dtype to retain the
-NULL/NaN distinction.
+Stored NULL stays `None`; tcbee-process never writes NaN.
 
 Only requested columns, flows, directions and time ranges are read. SQLite
 uses the event indexes created by `tcbee-process`; DuckDB handles its own
@@ -167,34 +164,15 @@ scans and sorts. Batching bounds Python result memory, not the database
 engine's buffers or sort workspace. Eager reads require memory proportional
 to the selected sample count. No downsampling or truncation is implicit.
 
-The reproducible synthetic benchmark is:
+Two benchmarks measure reads and flow browsing on your own hardware:
 
 ```bash
 python tcbee-python/benchmarks/read_metric.py --samples 1000000
-```
-
-Example local results for one million samples, warm-cache median of three
-reads, including result conversion and checksum validation:
-
-| Backend | List read | Streaming batches | NumPy read |
-|---|---:|---:|---:|
-| SQLite | 1.16 s | 0.96 s | 1.20 s |
-| DuckDB | 0.72 s | 0.62 s | 0.055 s |
-
-SQLite peak process RSS was about 172 MiB for the list read and 56 MiB for
-streaming; DuckDB used about 369 MiB and 275 MiB respectively, including engine
-buffers. These are illustrative local measurements, not performance
-guarantees. Use the benchmark on your hardware and representative recordings.
-
-The many-flow benchmark separately checks navigation without any event data:
-
-```bash
 python tcbee-python/benchmarks/browse_flows.py --flows 20000 --metrics 20
 ```
 
-With 20,000 flows and 400,000 catalog entries, a 50-flow page took about 1 ms
-on SQLite and 6.5 ms on DuckDB locally. Traversing all flows took about 0.44 s
-and 0.56 s respectively. Actual costs depend on filters, layout and hardware.
+For one million samples, NumPy reads from DuckDB are about 20 times faster
+than list reads; on SQLite all read methods take about the same time.
 
 ## Owners and MPTCP connections
 
