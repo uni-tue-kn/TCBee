@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "duckdb-cache"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "syn 3.0.6",
 ]
@@ -3893,7 +3893,7 @@ dependencies = [
 
 [[package]]
 name = "tcbee-common"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "serde",
  "tcbee-trace",
@@ -3901,7 +3901,7 @@ dependencies = [
 
 [[package]]
 name = "tcbee-process"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "argparse",
@@ -3920,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "tcbee-trace"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3929,7 +3929,7 @@ dependencies = [
 
 [[package]]
 name = "tcbee-viz"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "duckdb-cache",
  "eframe",
@@ -4135,7 +4135,7 @@ dependencies = [
 
 [[package]]
 name = "ts_storage"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "duckdb",
  "duckdb-cache",
