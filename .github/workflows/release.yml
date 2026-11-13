@@ -44,7 +44,7 @@ jobs:
             libgl-dev libegl-dev
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
 
       - name: Build tcbee-record
         # Builds libbpf, libelf and zlib from source and links them statically

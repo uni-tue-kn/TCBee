@@ -98,7 +98,7 @@ sudo tcbee live --select-port 5201
 
 ## Building from source
 
-Building needs Rust stable 1.82 or newer ([rustup.rs](https://rustup.rs/)) and these Debian/Ubuntu packages:
+Building needs [rustup](https://rustup.rs/), which installs the Rust version pinned in `rust-toolchain.toml`, and these Debian/Ubuntu packages:
 
 ```bash
 sudo apt install -y clang libclang-dev libelf-dev zlib1g-dev pkg-config make \
