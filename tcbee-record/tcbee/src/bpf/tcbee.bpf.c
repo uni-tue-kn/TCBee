@@ -710,7 +710,7 @@ static __always_inline __u64 sock_extra(struct sock *sk, struct tcp_sock *tp,
 {
 	switch (field) {
 	case SX_ca_state:
-		return BPF_CORE_READ_BITFIELD_PROBED(&tp->inet_conn, icsk_ca_state);
+		return BPF_CORE_READ_BITFIELD(&tp->inet_conn, icsk_ca_state);
 	case SX_packets_out:
 		return tp->packets_out;
 	case SX_delivered:
@@ -720,7 +720,7 @@ static __always_inline __u64 sock_extra(struct sock *sk, struct tcp_sock *tp,
 	case SX_app_limited:
 		return tp->app_limited;
 	case SX_chrono_type:
-		return BPF_CORE_READ_BITFIELD_PROBED(tp, chrono_type);
+		return BPF_CORE_READ_BITFIELD(tp, chrono_type);
 	case SX_chrono_busy:
 		return tp->chrono_stat[0];
 	case SX_chrono_rwnd_limited:
