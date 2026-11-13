@@ -132,6 +132,7 @@ fn main() -> anyhow::Result<()> {
     let mut sock_hooks: String = String::new();
     let mut sock_fields: String = String::new();
     let mut no_owners: bool = false;
+    let mut no_hook_seq: bool = false;
     let mut owners_no_cmdline: bool = false;
 
     {
@@ -325,6 +326,11 @@ fn main() -> anyhow::Result<()> {
             Store,
             "With -k at the hooks egress, ingress-entry and timer (give them with --sock-hooks): record only these groups of socket fields, into *_sock_sel.tcp files with a manifest.json. Smaller records let more of them through the writer and the disk without loss. Groups: pacing, icsk, cwnd, cc (the rest of the congestion and loss state), rcv, rtt, delivery, chrono, seq, sndbuf. The header, ato and conn_id are always recorded. The list works as in --tp, e.g. cwnd,rtt or all,-chrono.",
         );
+        argparser.refer(&mut no_hook_seq).add_option(
+            &["--no-hook-seq"],
+            StoreTrue,
+            "Disable per-flow hook sequence numbers (enabled by default). Records carry hook_seq=0: exact cross-CPU hook ordering and gap-based loss accounting are unavailable. Aggregate drop counters remain. TCP event hooks retain tuple membership filtering. Writes metadata.json to identify this mode.",
+        );
         argparser.refer(&mut no_owners).add_option(
             &["--no-owners"],
             StoreTrue,
@@ -510,7 +516,7 @@ fn main() -> anyhow::Result<()> {
         .interface(iface)
         .cwnd(trace_cwnd)
         .metrics(metrics)
-        .metadata(metadata)
+        .metadata(metadata || no_hook_seq)
         .algorithms(trace_algorithms)
         .mptcp(mptcp)
         .ringbuf_sizes(ringbuf_sizes)
@@ -522,6 +528,7 @@ fn main() -> anyhow::Result<()> {
         .on_change(on_change)
         .sock_hooks(sock_hooks)
         .sock_fields(sock_fields.clone())
+        .hook_seq(!no_hook_seq)
         .owners(!no_owners)
         .owner_cmdlines(!owners_no_cmdline)
         .dir(trace_dir);

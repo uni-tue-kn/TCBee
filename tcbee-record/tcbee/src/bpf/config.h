@@ -17,6 +17,9 @@ const volatile __u32 FILTER_RULE_FLAGS = 0;
  */
 const volatile __u64 RB_SUBMIT_FLAGS = BPF_RB_NO_WAKEUP;
 
+/* Load-time constant: disabled records carry hook_seq = 0 (ordering unavailable). */
+const volatile __u8 HOOK_SEQ_ENABLED = 1;
+
 /* Set to 0 by userspace when the flow list is not displayed */
 const volatile __u8 FLOW_TRACKING = 1;
 

@@ -139,6 +139,8 @@ pub struct Metrics {
     /// The threads of the writer CPUs (empty without --writer-cpus), by CPU
     pub writer_threads: Vec<WriterThreadStats>,
     pub programs: Vec<ProgramStats>,
+    /// False with --no-hook-seq: records carry hook_seq=0
+    pub hook_seq_enabled: bool,
     /// Entries in use and capacity of the hook_seq counter map. A full map turns the
     /// events of new flows into errors.
     pub hook_seq_keys: Option<u64>,
@@ -209,6 +211,7 @@ impl Metrics {
             ringbufs,
             writer_threads,
             programs,
+            hook_seq_enabled: hook_seq.is_some(),
             hook_seq_keys: hook_seq.map(|totals| totals.keys),
             hook_seq_capacity: hook_seq.map(|totals| totals.capacity),
         }

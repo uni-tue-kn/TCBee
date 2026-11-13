@@ -89,6 +89,8 @@ pub struct Recorder {
     pub interface: Option<String>,
     /// How the trace files were written, `records` or `raw` (`--writer-format`)
     pub writer_format: &'static str,
+    /// False means hook_seq=0; timestamp order cannot guarantee hook order.
+    pub hook_seq_enabled: bool,
     /// Ring buffer bytes per CPU by map name, for the created ring buffers
     pub ringbuf_sizes: BTreeMap<String, u32>,
 }

@@ -550,6 +550,8 @@ pub struct EbpfRunnerConfig {
     pub kernel: bool,
     pub cwnd: bool,
     pub metrics: bool,
+    /// Issue per-flow sequence numbers; disable to reduce per-event work.
+    pub hook_seq: bool,
     pub metadata: bool,
     pub algorithms: bool,
     pub mptcp: MptcpModes,
@@ -588,6 +590,7 @@ impl EbpfRunnerConfig {
             kernel: false,
             cwnd: false,
             metrics: false,
+            hook_seq: true,
             metadata: false,
             algorithms: false,
             mptcp: MptcpModes::default(),
@@ -604,6 +607,11 @@ impl EbpfRunnerConfig {
             owners: false,
             owner_cmdlines: true,
         }
+    }
+
+    pub fn hook_seq(mut self, enabled: bool) -> EbpfRunnerConfig {
+        self.hook_seq = enabled;
+        self
     }
 
     pub fn interface(mut self, iface: String) -> EbpfRunnerConfig {
@@ -764,6 +772,12 @@ mod tests {
         assert_eq!(ip_filter_keys(v4).len(), 2);
         let v6: IpAddr = "2001:db8::1".parse().unwrap();
         assert_eq!(ip_filter_keys(v6).len(), 1);
+    }
+
+    #[test]
+    fn sequence_numbers_default_on_and_can_be_disabled() {
+        assert!(EbpfRunnerConfig::new().hook_seq);
+        assert!(!EbpfRunnerConfig::new().hook_seq(false).hook_seq);
     }
 
     #[test]

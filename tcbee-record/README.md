@@ -76,6 +76,7 @@ At least one metric source is required.
 | `--duration SECS` | `0` | Stop after this many seconds; 0 records until Ctrl+C |
 | `-c N` | `1` | Number of CPUs used for processing |
 | `-q` | | Disable the terminal UI |
+| `--no-hook-seq` | off | Disable per-flow sequence numbering to reduce probe work. Records carry `hook_seq=0`; exact hook ordering across CPUs and loss detection from sequence gaps are unavailable. Aggregate drop counters remain. TCP event hooks retain tuple membership filtering. Writes `metadata.json` with `recorder.hook_seq_enabled=false` even without `--metadata`. |
 | `--metrics` | | Write a `metrics.json` summary file |
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
 | `--tui-update-ms N` | `100` | TUI refresh interval in milliseconds |

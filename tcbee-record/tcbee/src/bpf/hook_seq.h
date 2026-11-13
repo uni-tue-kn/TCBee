@@ -23,7 +23,9 @@
  * The number is taken right after the filter and before the record is reserved, so a
  * dropped event and an error after the filter leave a gap: issued = handled + dropped +
  * errors after the filter. An event that cannot get a counter (map full) counts as error
- * and writes no record, so every record has hook_seq >= 1.
+ * and writes no record, so every record has hook_seq >= 1 when enabled.
+ * With HOOK_SEQ_ENABLED=0 records carry 0 and sequence work is eliminated, except
+ * TCP_EVENTS keeps tuple membership (without increments) to filter socketless events.
  *
  * The on-change programs (--on-change) decide first and take a number only for the runs
  * they write: suppressed runs and a missing tcp_sock take none, so there issued = handled +
@@ -51,7 +53,7 @@ static __always_inline bool next_hook_seq(struct hook_seq_key *key, __u64 *hook_
 		if (!counter)
 			return false;
 	}
-	*hook_seq = __sync_fetch_and_add(counter, 1) + 1;
+	*hook_seq = HOOK_SEQ_ENABLED ? __sync_fetch_and_add(counter, 1) + 1 : 0;
 	return true;
 }
 
@@ -60,6 +62,11 @@ static __always_inline bool hook_seq_tuple(const struct ip_tuple *t, __u8 family
 					   __u64 *hook_seq)
 {
 	struct hook_seq_key key;
+
+	if (!HOOK_SEQ_ENABLED && rb != RB_TCP_EVENTS) {
+		*hook_seq = 0;
+		return true;
+	}
 
 	__builtin_memset(&key, 0, sizeof(key));
 	key.tuple = *t;
@@ -108,7 +115,7 @@ static __always_inline bool hook_seq_known_tuple(const struct ip_tuple *t, __u8 
 	}
 	if (!counter)
 		return false;
-	*hook_seq = __sync_fetch_and_add(counter, 1) + 1;
+	*hook_seq = HOOK_SEQ_ENABLED ? __sync_fetch_and_add(counter, 1) + 1 : 0;
 	return true;
 }
 
@@ -121,6 +128,11 @@ static __always_inline bool hook_seq_sk_shared(struct sock *sk, __u16 sport, __u
 					       __u64 *hook_seq)
 {
 	struct hook_seq_key key;
+
+	if (!HOOK_SEQ_ENABLED && rb != RB_TCP_EVENTS) {
+		*hook_seq = 0;
+		return true;
+	}
 
 	__builtin_memset(&key, 0, sizeof(key));
 	tuple_from_sk(&key.tuple, sk, sport, dport);
@@ -137,6 +149,11 @@ static __always_inline bool hook_seq_sk(struct sock *sk, __u16 sport, __u16 dpor
 					__u64 *hook_seq)
 {
 	struct ip_tuple t;
+
+	if (!HOOK_SEQ_ENABLED && rb != RB_TCP_EVENTS) {
+		*hook_seq = 0;
+		return true;
+	}
 
 	tuple_from_sk(&t, sk, sport, dport);
 	return hook_seq_tuple(&t, sk->__sk_common.skc_family, rb, hook_seq);

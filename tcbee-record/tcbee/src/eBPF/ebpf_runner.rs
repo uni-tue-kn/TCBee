@@ -599,6 +599,7 @@ impl EbpfRunner {
             skipped: self.skipped.clone(),
             interface: c.headers.then(|| c.iface.clone()),
             writer_format: c.writer_format.name(),
+            hook_seq_enabled: c.hook_seq,
             ringbuf_sizes: RINGBUFS
                 .iter()
                 .zip(&self.ringbuf_sizes)
@@ -669,6 +670,7 @@ impl EbpfRunner {
         rodata.FILTER_MODE = self.config.filter.mode();
         rodata.FILTER_RULE_FLAGS = self.config.filter.rule_flags();
         rodata.FLOW_TRACKING = self.config.do_tui as u8;
+        rodata.HOOK_SEQ_ENABLED = self.config.hook_seq as u8;
         rodata.RB_SUBMIT_FLAGS = self.config.poll_mode.submit_flags();
         let mptcp_tag = self.config.mptcp.tag && !disabled.contains(&OptionalGroup::MptcpTag);
         rodata.MPTCP_TAG = mptcp_tag as u8;
@@ -1155,7 +1157,11 @@ impl EbpfRunner {
         };
         // Stop token is cloned such that cancellation affects all other threads
         let stats = Arc::new(Stats::new(handle(&skel.maps.STATS)?));
-        self.hook_seq = Some(handle(&skel.maps.HOOK_SEQ)?);
+        self.hook_seq = if self.config.hook_seq {
+            Some(handle(&skel.maps.HOOK_SEQ)?)
+        } else {
+            None
+        };
         self.stats = Some(stats.clone());
         let bytes_written = writer.bytes_written();
         let mut watcher = EBPFWatcher::new(
