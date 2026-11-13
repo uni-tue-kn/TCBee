@@ -13,7 +13,7 @@ python -m pip install './tcbee-python[duckdb,plot]'
 
 Start with [flow discovery](#find-flows-and-metrics), then choose a
 [read method](#choose-a-read-method). The [API reference](API.md) lists public
-methods, return types and errors. The [plotting examples](../examples/db/README.md#plots)
+methods, return types and errors. The [plotting examples](../examples/README.md)
 provides ready-to-run multi-panel, flow-comparison and streaming-envelope scripts.
 
 ## Choose a read method

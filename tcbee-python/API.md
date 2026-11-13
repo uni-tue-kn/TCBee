@@ -3,7 +3,7 @@
 Import the public API with `import tcbee`. Python 3.10 or newer is required.
 SQLite uses the standard library. DuckDB, NumPy and pandas are optional;
 see [installation and the user guide](README.md) and the
-[plotting examples](../examples/db/README.md#plots).
+[plotting examples](../examples/README.md).
 
 ## Database
 
