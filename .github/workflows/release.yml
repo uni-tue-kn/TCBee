@@ -49,6 +49,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt
 
       - name: Build tcbee-record
         # Builds libbpf, libelf and zlib from source and links them statically
