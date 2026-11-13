@@ -97,6 +97,22 @@ class Database:
             raise NotFound(f"No series with ID {series_id}")
         return Series._from_row(self, rows[0])
 
+    def connection(self, connection_id):
+        """Look up a connection and navigate its member flows and intervals."""
+        from ._util import integer
+        from .errors import NotFound
+        from .relationships import Connection, require_connections
+
+        require_connections(self)
+        integer(connection_id, "connection_id")
+        rows = self._rows(
+            "SELECT id, kind, key, flow_id, start_ts, end_ts FROM connections WHERE id = ?",
+            (connection_id,),
+        )
+        if not rows:
+            raise NotFound(f"No connection with ID {connection_id}")
+        return Connection(self, *rows[0])
+
     def close(self):
         """Close active cursors and the connection; safe to call repeatedly."""
         if not self._closed:

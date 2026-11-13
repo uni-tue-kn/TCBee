@@ -11,14 +11,18 @@ from .errors import (
     UnsupportedSchema,
 )
 from .flow import Flow, FlowPage, FlowQuery
+from .relationships import Connection, ConnectionMembership, FlowOwner
 from .samples import Samples
 from .series import Series, SeriesQuery
 
 __all__ = [
     "AmbiguousSelection",
     "ClosedDatabase",
+    "Connection",
+    "ConnectionMembership",
     "Database",
     "Flow",
+    "FlowOwner",
     "FlowPage",
     "FlowQuery",
     "MissingCapability",

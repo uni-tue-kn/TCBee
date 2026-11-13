@@ -41,6 +41,22 @@ class Flow:
         self._db._check_open()
         return SeriesQuery(self._db, self.id)
 
+    def owners(self):
+        """Ownership observations, preserving multiple owners and timestamps.
+
+        Returns an empty tuple when the optional owner table is absent. Use
+        db.tables to distinguish missing metadata from no recorded owners.
+        """
+        from .relationships import owners
+
+        return owners(self._db, self.id)
+
+    def connections(self):
+        """Connections containing this tuple, possibly at different times."""
+        from .relationships import connections
+
+        return connections(self._db, self.id)
+
     def __str__(self):
         def endpoint(ip, port):
             return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
@@ -146,6 +162,48 @@ class FlowQuery:
                 params.append(direction_code(value) if column == "dir" else value)
         return self._where(
             "EXISTS (SELECT 1 FROM series s WHERE " + " AND ".join(clauses) + ")", *params
+        )
+
+    def owned_by(self, *, pid=None, uid=None, comm=None, cmdline_contains=None):
+        """Match any recorded owner; supplied fields must match the same row.
+
+        This selects owner observations at any time, not the owner of every
+        sample in a subsequent read. Missing metadata raises MissingCapability.
+        """
+        from .errors import MissingCapability
+
+        self._db._check_open()
+        if "flow_owners" not in self._db.tables:
+            raise MissingCapability("This database has no flow_owners table")
+        clauses, params = ["o.flow_id = f.id"], []
+        for column, value in (("pid", pid), ("uid", uid), ("comm", comm)):
+            if value is not None:
+                if column in ("pid", "uid"):
+                    integer(value, column)
+                clauses.append(f"o.{column} = ?")
+                params.append(value)
+        if cmdline_contains is not None:
+            clauses.append("instr(o.cmdline, ?) > 0")
+            params.append(cmdline_contains)
+        return self._where(
+            "EXISTS (SELECT 1 FROM flow_owners o WHERE " + " AND ".join(clauses) + ")", *params
+        )
+
+    def with_connection(self, connection_id, *, include_connection_flow=True):
+        """Match connection members without duplicating flow rows."""
+        from .relationships import require_connections
+
+        require_connections(self._db)
+        integer(connection_id, "connection_id")
+        membership = (
+            "EXISTS (SELECT 1 FROM connection_flows cf WHERE "
+            "cf.connection_id = c.id AND cf.flow_id = f.id)"
+        )
+        if include_connection_flow:
+            membership = "(c.flow_id = f.id OR " + membership + ")"
+        return self._where(
+            "EXISTS (SELECT 1 FROM connections c WHERE c.id = ? AND " + membership + ")",
+            connection_id,
         )
 
     def _sql(self):
