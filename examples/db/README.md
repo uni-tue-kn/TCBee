@@ -1,6 +1,15 @@
 # TCBee Database Access Examples
 
-Examples for reading the flow databases written by `tcbee-process` with plain SQL. The files are ordinary SQLite or DuckDB databases (schema version 3), so any client works. The scripts here need only Python 3; DuckDB files need `pip install duckdb` and plotting needs `pip install matplotlib`.
+Examples for reading flow databases written by `tcbee-process`. The scripts use
+[the Python API](../../tcbee-python/README.md) to browse flows and load metrics.
+Install from the repository root:
+
+```bash
+python -m pip install './tcbee-python[duckdb,numpy]' matplotlib
+```
+
+The files are ordinary SQLite or DuckDB databases (schema version 3), so any SQL
+client also works. The query examples below remain usable directly.
 
 To try them without a recording, process the test traces of the repository:
 
@@ -37,22 +46,16 @@ Besides the catalog tables there is one table per kind of recorded event, with o
 Lists the flows with their number of series and values.
 
 ```bash
-./list_flows.py <database>              # one line per flow
+./list_flows.py <database>              # first 50 flows, in ID order
 ./list_flows.py <database> --verbose    # and the series of each flow
-```
-
-```
-Found 83 flows in /tmp/small.sqlite
-
-ID     Flow                                                     Series   Values
-==================================================================================
-37     192.168.1.22:52668 -> 85.115.13.250:8080 (TCP)           78       45408
-35     192.168.1.22:37806 -> 37.51.193.149:8080 (TCP)           78       30685
+./list_flows.py <database> --port 5201 --process iperf3
+./list_flows.py <database> --metric sock.snd_cwnd --limit 20
+./list_flows.py <database> --all        # explicitly display all matches
 ```
 
 ### `plot_cwnd.py`
 
-Plots the congestion window of a flow, read straight from the event tables: `ev_sock.snd_cwnd` (send side) and `ev_tcp_probe.SND_CWND`. Other columns work too, as `<source>.<column>`.
+Plots the congestion window of a flow, loaded through the Python API: `ev_sock.snd_cwnd` (send side) and `ev_tcp_probe.SND_CWND`. Other columns work too, as `<source>.<column>`.
 
 ```bash
 ./plot_cwnd.py <database>                       # list the flows
@@ -60,6 +63,7 @@ Plots the congestion window of a flow, read straight from the event tables: `ev_
 ./plot_cwnd.py <database> 3 --series sock.snd_cwnd,sock.snd_ssthresh,tcp_probe.SRTT
 ./plot_cwnd.py <database> 3 --dir recv          # receive side of sock, cwnd, tcp4, tcp6
 ./plot_cwnd.py <database> 3 --output cwnd.png
+./plot_cwnd.py <database> 3 --start 1 --end 5 # seconds since flow start, [1, 5)
 ```
 
 ## Queries
@@ -103,14 +107,17 @@ WHERE s.flow_id = 3 AND s.name = 'my_metric' ORDER BY d.ts, d.seq;
 ## Python
 
 ```python
-import sqlite3          # for DuckDB: import duckdb; db = duckdb.connect(path, read_only=True)
+import sqlite3  # for DuckDB: import duckdb; db = duckdb.connect(path, read_only=True)
 
 db = sqlite3.connect("/tmp/small.sqlite")
-for fid, src, dst, sport, dport in db.execute("SELECT id, src, dst, sport, dport FROM flows"):
+for fid, src, dst, sport, dport in db.execute(
+    "SELECT id, src, dst, sport, dport FROM flows"
+):
     print(f"flow {fid}: {src}:{sport} -> {dst}:{dport}")
 
 rows = db.execute(
-    "SELECT ts, snd_cwnd FROM ev_sock WHERE flow_id = ? AND dir = 1 ORDER BY ts, seq", (3,)
+    "SELECT ts, snd_cwnd FROM ev_sock WHERE flow_id = ? AND dir = 1 ORDER BY ts, seq",
+    (3,),
 ).fetchall()
 t0 = rows[0][0]
 for ts, cwnd in rows[:5]:
