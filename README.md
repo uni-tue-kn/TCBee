@@ -121,6 +121,8 @@ DuckDB is compiled from source on the first build, which takes about ten minutes
 The [Python API](tcbee-python/README.md) filters and pages flows, discovers metrics,
 and loads samples as lists, streaming batches or NumPy arrays for custom plots.
 Install it with `python -m pip install ./tcbee-python` (add `[duckdb]` for DuckDB).
+The [plotting cookbook](examples/db/README.md#plotting-cookbook) includes multi-panel
+plots, flow comparisons and streaming min/max envelopes for large recordings.
 
 The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-storage` library, see [ts-storage/README.md](ts-storage/README.md), which also lists the tables and columns. [examples/db/](examples/db/) has Python scripts that list flows and plot the congestion window, and [examples/raw/](examples/raw/) reads the raw `*.tcp` files.
 

@@ -5,6 +5,33 @@ Install from the repository with `python -m pip install ./tcbee-python`.
 SQLite needs no additional dependencies; DuckDB support is available through
 `python -m pip install './tcbee-python[duckdb]'`.
 
+For the supplied plotting scripts, install NumPy and Matplotlib together:
+
+```bash
+python -m pip install './tcbee-python[duckdb,plot]'
+```
+
+Start with [flow discovery](#find-flows-and-metrics), then choose a
+[read method](#choose-a-read-method). The [API reference](API.md) lists public
+methods, return types and errors. The [plotting cookbook](../examples/db/README.md#plotting-cookbook)
+provides ready-to-run multi-panel, flow-comparison and streaming-envelope scripts.
+
+## Choose a read method
+
+| Task | Recommended method | Memory / behavior |
+|---|---|---|
+| Find flows and metrics | `db.flows()` / `flow.series()` | Catalog only; bounded previews and pages |
+| Small custom calculation | `metric.read()` | Exact Python values; loads selected samples |
+| Fast full-resolution plotting | `metric.read_numpy()` | Eager arrays; native column export on DuckDB |
+| Dataframe analysis | `metric.read().to_frame()` | Eager pandas data with explicit nullable dtypes |
+| Process millions of samples | `metric.iter_batches()` | Bounded Python result memory |
+| Plot millions with a small figure | [plot_large_metric.py](../examples/db/plot_large_metric.py) | Streaming min/max envelope; explicit time-bin reduction |
+
+Full-resolution plotting still needs memory proportional to selected samples,
+and drawing millions of vertices can cost more than reading them. Use a time
+window or the envelope example when an overview is enough. The API itself
+always returns the requested samples without downsampling.
+
 ## Find flows and metrics
 
 ```python
@@ -42,8 +69,8 @@ token belongs to the same database connection and equivalent query, and is
 not a persistent bookmark. `for flow in flows` traverses bounded pages.
 `count()` explicitly counts matches. `top(size=20, by="sample_count")` and
 `top(size=20, by="duration_ns")` return a bounded tuple of ranked flows,
-with ID as the tie breaker. Ranking and time/duration filters can scan the entire catalog. Ordinary
-pages select IDs first, then summarize only those flows.
+with ID as the tie breaker. Ranking and time/duration filters can scan the
+entire catalog. Ordinary pages select IDs first, then summarize only those flows.
 `show()` prints a bounded table without counting all matches.
 
 Browsing reads catalog metadata, not event samples. `sample_count` sums
