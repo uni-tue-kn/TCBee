@@ -93,9 +93,13 @@ class ExampleIntegration(unittest.TestCase):
                 subprocess.run(
                     [
                         sys.executable,
-                        str(ROOT / "examples/db/plot_cwnd.py"),
+                        str(ROOT / "examples/db/plot_metrics.py"),
                         str(path),
                         "1",
+                        "--metric",
+                        "sock.snd_cwnd",
+                        "--dir",
+                        "send",
                         "--output",
                         str(output),
                     ],

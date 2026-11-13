@@ -35,9 +35,31 @@ class PlottingExamples(unittest.TestCase):
                 writer.commit()
                 writer.close()
                 commands = [
-                    ("plot_metrics.py", ["1", "--metric", "sock.snd_cwnd"], ".png"),
-                    ("compare_flows.py", ["1", "8", "--align", "flow"], ".svg"),
-                    ("plot_large_metric.py", ["1", "--bins", "2", "--batch-size", "1"], ".pdf"),
+                    (
+                        "plot_metrics.py",
+                        ["1", "--metric", "sock.snd_cwnd", "--dir", "send"],
+                        ".png",
+                    ),
+                    (
+                        "compare_flows.py",
+                        ["1", "8", "--metric", "sock.snd_cwnd", "--dir", "send", "--align", "flow"],
+                        ".svg",
+                    ),
+                    (
+                        "plot_large_metric.py",
+                        [
+                            "1",
+                            "--metric",
+                            "sock.snd_cwnd",
+                            "--dir",
+                            "send",
+                            "--bins",
+                            "2",
+                            "--batch-size",
+                            "1",
+                        ],
+                        ".pdf",
+                    ),
                 ]
                 for script, args, suffix in commands:
                     with self.subTest(engine=engine, script=script):
@@ -67,7 +89,7 @@ class PlottingExamples(unittest.TestCase):
                         else:
                             self.assertIn(b"<svg", data)
 
-    def test_envelope_preserves_extrema_duplicates_gaps_and_end_boundary(self):
+    def test_envelope_preserves_extrema_carries_gaps_and_end_boundary(self):
         import numpy as np
 
         sys.path.insert(0, str(ROOT / "examples/db"))
@@ -89,8 +111,9 @@ class PlottingExamples(unittest.TestCase):
         edges, low, high, seen = envelope(Metric(), start_ns=10, end_ns=20, bins=5, batch_size=1)
         self.assertEqual(edges, [10, 12, 14, 16, 18, 20])
         self.assertEqual(seen, 3)
-        np.testing.assert_equal(low, [1, np.nan, np.nan, np.nan, -5])
-        np.testing.assert_equal(high, [100, np.nan, np.nan, np.nan, -5])
+        # Empty bins carry the last value forward, like a step plot
+        np.testing.assert_equal(low, [1, 100, 100, 100, -5])
+        np.testing.assert_equal(high, [100, 100, 100, 100, -5])
         # More requested bins than nanoseconds must not create zero-width bins.
         edges, _, _, _ = envelope(Metric(), start_ns=10, end_ns=12, bins=2000)
         self.assertEqual(edges, [10, 11, 12])
@@ -108,6 +131,8 @@ class PlottingExamples(unittest.TestCase):
                 "1",
                 "--metric",
                 "sock.snd_cwnd",
+                "--dir",
+                "send",
                 "--start",
                 "2",
                 "--end",
@@ -124,3 +149,16 @@ class PlottingExamples(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("--start must precede --end", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
+
+    def test_goodput_unwraps_sequence_numbers(self):
+        import numpy as np
+
+        sys.path.insert(0, str(ROOT / "examples/db"))
+        try:
+            from _plotting import goodput
+        finally:
+            sys.path.pop(0)
+        # The last step wraps from 2**32 - 1000 to 1000, which is 2000 bytes
+        times = np.array([0.0, 0.1, 0.6, 0.7])
+        _, rates = goodput(times, [2**32 - 3000, 2**32 - 2000, 2**32 - 1000, 1000], 0.5)
+        np.testing.assert_allclose(rates, [1000 * 8 / 0.5 / 1e6, 3000 * 8 / 0.5 / 1e6])

@@ -1,18 +1,42 @@
 #!/usr/bin/env python3
-"""Compare a metric across selected flows, aligned in recording time or by flow start."""
+"""Compare one metric across flows, for example how two flows share a bottleneck."""
 
 import argparse
 
-import tcbee
+import numpy as np
 from _plotting import (
+    GOODPUT,
+    GOODPUT_SOURCE,
     add_output_options,
-    arrays_for_plot,
     decorate,
     finish,
+    label,
+    parse_spec,
+    positive,
+    read_metric,
     run,
     select_metric,
     style,
 )
+
+import tcbee
+
+
+def bulk_flows(db, args):
+    """Pick the flows that sent the most data, skipping their ACK directions."""
+    source, name = GOODPUT_SOURCE
+    candidates = (
+        db.flows()
+        .filter(host=args.host, port=args.port)
+        .with_series(source=source, name=name)
+        .top(size=4 * args.limit)
+    )
+    sent = {}
+    for flow in candidates:
+        snd_una = select_metric(flow, GOODPUT).read_numpy()["value"].astype("int64")
+        sent[flow] = int((np.diff(snd_una) % 2**32).sum())
+    flows = sorted((f for f in sent if sent[f] > 0), key=sent.get, reverse=True)
+    return flows[: args.limit]
 
 
 def main():
@@ -22,81 +46,55 @@ def main():
         "flow_ids",
         nargs="*",
         type=int,
-        help="omit to choose matching flows by sample count",
+        help="flows to plot (default: the flows with the most samples)",
     )
-    parser.add_argument("--metric", default="sock.snd_cwnd", metavar="SOURCE.NAME")
-    parser.add_argument("--dir", choices=("send", "recv", "none"), default="send")
+    parser.add_argument(
+        "--metric",
+        default=GOODPUT,
+        metavar="SOURCE.NAME",
+        help="metric to compare; 'goodput' is computed (default)",
+    )
     parser.add_argument("--host", help="automatic selection: either endpoint")
     parser.add_argument("--port", type=int, help="automatic selection: either port")
     parser.add_argument(
-        "--limit",
-        type=int,
-        default=4,
-        help="automatic selection: maximum flows (default: 4)",
+        "--limit", type=positive, default=2, help="automatic selection: flows (default: 2)"
     )
     parser.add_argument(
         "--align",
         choices=("recording", "flow"),
         default="recording",
-        help="shared recording time or each flow's start (default: recording)",
+        help="start the time axis at the first flow or at each flow's start",
     )
-    parser.add_argument("--ylabel", default="Raw value")
     add_output_options(parser)
     args = parser.parse_args()
-    if args.limit < 1:
-        parser.error("--limit must be positive")
-    if args.flow_ids and (args.host is not None or args.port is not None):
-        parser.error(
-            "--host and --port apply to automatic selection; omit explicit flow IDs"
-        )
-    source, separator, name = args.metric.partition(".")
-    if not separator or not source or not name:
-        parser.error("--metric must be SOURCE.NAME")
-    direction = (
-        "none" if source in ("tcp_probe", "cubic", "bbr", "derived") else args.dir
-    )
+    if args.flow_ids and (args.host or args.port):
+        parser.error("--host and --port select flows automatically; omit flow IDs")
+    if args.metric != GOODPUT:
+        parse_spec(args.metric)
     style()
     import matplotlib.pyplot as plt
 
     with tcbee.open(args.database) as db:
         if args.flow_ids:
-            flows = tuple(db.flow(fid) for fid in dict.fromkeys(args.flow_ids))
+            flows = [db.flow(fid) for fid in dict.fromkeys(args.flow_ids)]
         else:
-            flows = (
-                db.flows()
-                .filter(host=args.host, port=args.port)
-                .with_series(source=source, name=name, direction=direction)
-                .top(size=args.limit)
-            )
+            flows = bulk_flows(db, args)
         if not flows or any(flow.start_ns is None for flow in flows):
-            raise ValueError(
-                "No flows with recorded samples match; use list_flows.py to inspect the database"
-            )
-        shared_origin = min(flow.start_ns for flow in flows)
-        fig, ax = plt.subplots(figsize=(11, 5.2), layout="constrained")
-        for index, flow in enumerate(flows):
-            metric = select_metric(flow, args.metric, args.dir)
-            origin = flow.start_ns if args.align == "flow" else shared_origin
-            times, values = arrays_for_plot(metric, args, origin)
-            ax.step(
-                times,
-                values,
-                where="post",
-                linestyle=("-", "--", "-.", ":")[index % 4],
-                label=str(flow),
-                rasterized=True,
-            )
-        ax.set_title(
-            args.title or f"{args.metric} · {direction}", loc="left", fontsize=14
-        )
-        ax.set_xlabel(
-            "Time since each flow started (seconds)"
-            if args.align == "flow"
-            else "Time since earliest selected flow (seconds)"
-        )
-        ax.set_ylabel(args.ylabel)
+            raise ValueError("No flows with samples match; see list_flows.py")
+        first_ns = min(flow.start_ns for flow in flows)
+        lines = []
+        for flow in sorted(flows, key=lambda flow: flow.start_ns):
+            origin = flow.start_ns if args.align == "flow" else first_ns
+            lines.append((flow, *read_metric(flow, args.metric, args, origin)))
+        fig, ax = plt.subplots(figsize=(7, 3), layout="constrained")
+        for flow, times, values in lines:
+            ax.step(times, values, where="post", label=f"Flow {flow.id} (port {flow.dport})")
+        ax.set_xlabel("Time since flow start (s)" if args.align == "flow" else "Time (s)")
+        ax.set_ylabel(label(args.metric))
+        if args.title:
+            ax.set_title(args.title, loc="left")
         decorate(ax)
-        ax.legend(loc="upper left", bbox_to_anchor=(0, -0.18), fontsize=8)
+        ax.legend(loc="lower right", bbox_to_anchor=(1, 1), ncols=len(lines))
         finish(fig, args)
 
 
