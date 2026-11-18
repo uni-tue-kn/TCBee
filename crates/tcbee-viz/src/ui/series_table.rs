@@ -81,11 +81,7 @@ impl SeriesTable {
                 FILTER_GAP,
             );
 
-            let filter_lower = self.filter.to_lowercase();
-            let visible: Vec<&SeriesInfo> = entries
-                .iter()
-                .filter(|ts| series_label(ts).to_lowercase().contains(&filter_lower))
-                .collect();
+            let visible = matching_series(entries, &self.filter);
 
             // ── Selection bar ────────────────────────────────────────────────
             let visible_ids: Vec<i64> = visible.iter().map(|ts| ts.id).collect();
@@ -96,13 +92,9 @@ impl SeriesTable {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new(format!(
-                            "{} of {} selected",
-                            selected_ids.len(),
-                            entries.len()
-                        ))
-                        .size(11.5)
-                        .color(theme::muted_text(dark_mode)),
+                        RichText::new(selection_count(&visible_ids, selected_ids, &self.filter))
+                            .size(11.5)
+                            .color(theme::muted_text(dark_mode)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
@@ -229,6 +221,22 @@ impl SeriesTable {
     }
 }
 
+/// The series whose label contains `filter`, ignoring case
+fn matching_series<'a>(entries: &'a [SeriesInfo], filter: &str) -> Vec<&'a SeriesInfo> {
+    let filter = filter.to_lowercase();
+    entries
+        .iter()
+        .filter(|ts| series_label(ts).to_lowercase().contains(&filter))
+        .collect()
+}
+
+/// How many of the `visible` series are selected, the series that match the filter
+fn selection_count(visible: &[i64], selected: &[i64], filter: &str) -> String {
+    let count = visible.iter().filter(|id| selected.contains(id)).count();
+    let shown = if filter.is_empty() { "" } else { " shown" };
+    format!("{count} of {}{shown} selected", visible.len())
+}
+
 fn type_cell(ui: &mut Ui, val_type: ColType, width: f32, selected: bool) {
     let (label, color) = type_display(val_type, selected);
     ui.add_sized(
@@ -275,4 +283,51 @@ fn type_display(val_type: ColType, selected: bool) -> (&'static str, Color32) {
         _ => Color32::from_rgb(180, 100, 20),
     };
     (label, color)
+}
+
+#[cfg(test)]
+mod tests {
+    use ts_storage::{Dir, SeriesKind};
+
+    use super::*;
+
+    fn info(id: i64, name: &str) -> SeriesInfo {
+        SeriesInfo {
+            id,
+            flow_id: 1,
+            kind: SeriesKind::Raw,
+            source: "sock".to_string(),
+            dir: Dir::Send,
+            name: name.to_string(),
+            value_type: ColType::U32,
+            tbl: Some("ev_sock".to_string()),
+            col: Some(name.to_string()),
+            n: 10,
+            t_min: Some(0),
+            t_max: Some(9),
+            v_min: Some(0.0),
+            v_max: Some(1.0),
+        }
+    }
+
+    #[test]
+    fn all_and_none_act_on_the_matching_series() {
+        let entries = [info(1, "snd_cwnd"), info(2, "srtt"), info(3, "snd_wnd")];
+        let ids = |filter| -> Vec<i64> {
+            matching_series(&entries, filter)
+                .iter()
+                .map(|ts| ts.id)
+                .collect()
+        };
+        assert_eq!(ids(""), vec![1, 2, 3]);
+        assert_eq!(ids("SND"), vec![1, 3]);
+        assert_eq!(ids("nothing"), Vec::<i64>::new());
+
+        assert_eq!(selection_count(&[1, 2, 3], &[2], ""), "1 of 3 selected");
+        // A selected series that is filtered out is not counted
+        assert_eq!(
+            selection_count(&[1, 3], &[2, 3], "snd"),
+            "1 of 2 shown selected"
+        );
+    }
 }
