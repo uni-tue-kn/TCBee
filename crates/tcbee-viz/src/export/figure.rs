@@ -9,8 +9,8 @@ use crate::plot_style::{LegendPosition, PlotStyle};
 pub struct FigureSeries {
     pub label: String,
     pub points: Vec<(f64, f64)>,
-    /// Spans `(start, end)` in seconds where events are missing
-    pub gaps: Vec<(f64, f64)>,
+    /// Spans `(start, end)` in seconds where events are missing; `None` if unknown
+    pub gaps: Option<Vec<(f64, f64)>>,
     /// Drawn as steps (on-change series) rather than straight segments
     pub step: bool,
 }
@@ -47,19 +47,28 @@ pub fn ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
 
 /// A tick label: SI prefixes from 10^4 on, otherwise as few decimals as the tick step needs.
 pub fn tick_label(v: f64, step: f64) -> String {
+    // Enough decimals to tell ticks `step` apart, also when zoomed in on large values
+    let decimals = |step: f64| {
+        if step > 0.0 {
+            (-step.log10().floor()).clamp(0.0, 12.0) as usize
+        } else {
+            0
+        }
+    };
     let a = v.abs();
-    for (div, suffix) in [(1e12, "T"), (1e9, "G"), (1e6, "M"), (1e4, "k")] {
-        if a >= div {
-            let div = if suffix == "k" { 1e3 } else { div };
-            return trim(format!("{:.2}", v / div)) + suffix;
+    for (from, div, suffix) in [
+        (1e12, 1e12, "T"),
+        (1e9, 1e9, "G"),
+        (1e6, 1e6, "M"),
+        (1e4, 1e3, "k"),
+    ] {
+        if a >= from {
+            let d = decimals(step / div);
+            return trim(format!("{:.d$}", v / div)) + suffix;
         }
     }
-    let decimals = if step > 0.0 {
-        (-step.log10().floor()).clamp(0.0, 9.0) as usize
-    } else {
-        0
-    };
-    let s = format!("{v:.decimals$}");
+    let d = decimals(step);
+    let s = format!("{v:.d$}");
     if s.trim_start_matches('-')
         .chars()
         .all(|c| c == '0' || c == '.')
@@ -174,7 +183,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
             escape(&style.gap_color),
             style.gap_opacity
         );
-        for (a, b) in fig.series.iter().flat_map(|f| &f.gaps) {
+        for (a, b) in fig.series.iter().flat_map(|f| f.gaps.iter().flatten()) {
             // At least a hairline, so a gap between two close events stays visible
             let (xa, xb) = (sx(*a), sx(*b));
             let width = (xb - xa).max(0.5);
@@ -278,6 +287,16 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     s
 }
 
+/// The legend entry of a series; it tells when the gaps of a shown series are unknown, so a
+/// run without hook_seq does not look loss-free.
+fn legend_label(f: &FigureSeries, style: &PlotStyle) -> String {
+    if style.show_gaps && f.gaps.is_none() {
+        format!("{} (gaps n/a)", f.label)
+    } else {
+        f.label.clone()
+    }
+}
+
 fn legend(s: &mut String, fig: &Figure, style: &PlotStyle, (pl, pr, pt, pb): (f64, f64, f64, f64)) {
     if style.legend == LegendPosition::None || fig.series.is_empty() {
         return;
@@ -285,12 +304,8 @@ fn legend(s: &mut String, fig: &Figure, style: &PlotStyle, (pl, pr, pt, pb): (f6
     let fs = f64::from(style.font_size_pt);
     let row = fs * 1.25;
     let sample = fs * 1.6;
-    let longest = fig
-        .series
-        .iter()
-        .map(|f| f.label.chars().count())
-        .max()
-        .unwrap_or(0) as f64;
+    let labels: Vec<String> = fig.series.iter().map(|f| legend_label(f, style)).collect();
+    let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64;
     let bw = sample + fs * 0.9 + longest * fs * CHAR_WIDTH + fs * 0.4;
     let bh = row * fig.series.len() as f64 + fs * 0.4;
     let pad = fs * 0.4;
@@ -304,7 +319,7 @@ fn legend(s: &mut String, fig: &Figure, style: &PlotStyle, (pl, pr, pt, pb): (f6
         s,
         r##"<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" fill="white" fill-opacity="0.85" stroke="#bfbfbf" stroke-width="0.4"/>"##
     );
-    for (i, f) in fig.series.iter().enumerate() {
+    for (i, label) in labels.iter().enumerate() {
         let cy = by + fs * 0.2 + row * (i as f64 + 0.5);
         let _ = write!(
             s,
@@ -319,7 +334,7 @@ fn legend(s: &mut String, fig: &Figure, style: &PlotStyle, (pl, pr, pt, pb): (f6
             r#"<text x="{}" y="{}">{}</text>"#,
             bx + fs * 0.4 + sample + fs * 0.5,
             cy + fs * 0.35,
-            escape(&f.label)
+            escape(label)
         );
     }
 }
@@ -408,6 +423,10 @@ mod tests {
         assert_eq!(tick_label(25_000.0, 5000.0), "25k");
         assert_eq!(tick_label(1.5e9, 5e8), "1.5G");
         assert_eq!(tick_label(-0.0, 0.5), "0");
+        // Zoomed in on large values: still distinct
+        assert_eq!(tick_label(4_294_967_100.0, 100.0), "4.2949671G");
+        assert_eq!(tick_label(4_294_967_200.0, 100.0), "4.2949672G");
+        assert_eq!(tick_label(10_002.0, 2.0), "10.002k");
     }
 
     #[test]
@@ -437,7 +456,7 @@ mod tests {
             series: vec![FigureSeries {
                 label: "a & b".into(),
                 points: vec![(0.0, 1.0), (1.0, 9.0)],
-                gaps: vec![(0.4, 0.5)],
+                gaps: Some(vec![(0.4, 0.5)]),
                 step: false,
             }],
         };
@@ -451,5 +470,14 @@ mod tests {
             ..PlotStyle::default()
         };
         assert!(!svg(&fig, &no_gaps).contains("fill-opacity=\"0.3\""));
+        let unknown = Figure {
+            series: vec![FigureSeries {
+                gaps: None,
+                ..fig.series.into_iter().next().unwrap()
+            }],
+            ..fig
+        };
+        assert!(svg(&unknown, &PlotStyle::default()).contains("a &amp; b (gaps n/a)"));
+        assert!(!svg(&unknown, &no_gaps).contains("gaps n/a"));
     }
 }

@@ -73,12 +73,13 @@ pub fn collect(
                 db.load_range_envelope(info, t0, t1, columns)
             };
             let gaps = match &sd.gaps {
-                Some(Gaps::Known(gaps)) => gaps
-                    .iter()
-                    .filter(|g| g.end_ns as f64 >= t0 && g.start_ns as f64 <= t1)
-                    .map(|g| (secs(g.start_ns as f64), secs(g.end_ns as f64)))
-                    .collect(),
-                _ => Vec::new(),
+                Some(Gaps::Known(gaps)) => Some(
+                    gaps.iter()
+                        .filter(|g| g.overlaps(t0, t1))
+                        .map(|g| (secs(g.start_ns as f64), secs(g.end_ns as f64)))
+                        .collect(),
+                ),
+                _ => None,
             };
             names.push(info.name.clone());
             series.push(FigureSeries {
@@ -327,7 +328,7 @@ mod tests {
             series: vec![FigureSeries {
                 label: "cwnd".into(),
                 points: vec![(0.0, 1.0), (1.0, 8.0), (2.0, 4.0)],
-                gaps: vec![(0.5, 0.6)],
+                gaps: Some(vec![(0.5, 0.6)]),
                 step: false,
             }],
         }
