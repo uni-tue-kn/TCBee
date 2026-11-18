@@ -1,3 +1,5 @@
+use crate::plot_style::PlotStyle;
+
 /// Application-wide settings. Passed as plain references to each tab — no Arc/RwLock needed.
 #[derive(Clone)]
 pub struct AppSettings {
@@ -11,6 +13,8 @@ pub struct AppSettings {
     /// Target minimum horizontal spacing between rendered points.
     pub pointseries_threshold: f64,
     pub dark_mode: bool,
+    /// Style of exported figures, saved in viz.toml
+    pub plot_style: PlotStyle,
 }
 
 impl Default for AppSettings {
@@ -22,6 +26,7 @@ impl Default for AppSettings {
             adaptive_downsample: true,
             pointseries_threshold: 2.0,
             dark_mode: false,
+            plot_style: PlotStyle::default(),
         }
     }
 }
