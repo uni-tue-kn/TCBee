@@ -219,7 +219,7 @@ pub fn write(fig: &Figure, style: &PlotStyle, path: &Path) -> Result<(), String>
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// A file name without extension for an export of `flow_id` and `metrics`:
+/// A file name without extension for an export of `flow_id` and its first three `metrics`:
 /// `flow<id>_<metric>[_<metric>]`.
 pub fn default_file_stem(flow_id: Option<i64>, metrics: &[&str]) -> String {
     let mut name = flow_id.map_or("flows".to_string(), |id| format!("flow{id}"));
