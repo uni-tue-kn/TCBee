@@ -190,7 +190,7 @@ fn style_editor(ui: &mut egui::Ui, style: &mut PlotStyle) -> bool {
             });
             ui.end_row();
 
-            ui.label("Gaps (hook_seq):");
+            ui.label("Gaps (hook_seq) in figures:");
             ui.horizontal(|ui| {
                 changed |= ui.checkbox(&mut style.show_gaps, "show").changed();
                 changed |= color_edit(ui, &mut style.gap_color);

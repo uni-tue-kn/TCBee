@@ -101,7 +101,8 @@ class Series:
         ordered by seq, or None if they are unknown: for derived series and for
         runs recorded without hook_seq (--no-hook-seq stores seq 0). An empty
         list means no event is missing between recorded ones; losses after the
-        last recorded event cannot be seen. Matches ts_storage's Store::seq_gaps.
+        last recorded event cannot be seen. Same query and rules as ts_storage's
+        Store::seq_gaps (crates/ts-storage/src/gaps.rs), whose range is inclusive.
         """
         window(start_ns, end_ns)
         if self.kind != "raw":
