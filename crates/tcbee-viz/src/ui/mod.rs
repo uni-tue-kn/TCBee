@@ -12,3 +12,4 @@ pub mod tab_settings;
 pub mod tab_single_flow;
 pub mod table;
 pub mod theme;
+pub mod x_range;

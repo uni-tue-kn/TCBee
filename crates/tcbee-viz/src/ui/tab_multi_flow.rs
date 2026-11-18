@@ -15,13 +15,14 @@ use crate::{
         flow_table::FlowTable,
         gap_marks,
         series_table::SeriesTable,
-        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox, x_range_editor},
+        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox},
         tab_single_flow::{
             compact_axis_label, compact_coordinates_formatter, plot_height_with_footer,
             seconds_grid_spacer, seconds_since_formatter, split_plot_height_with_footer,
             to_plot_points, vertical_marker_label,
         },
         theme,
+        x_range::{self, XRangeEditor},
     },
 };
 
@@ -52,6 +53,7 @@ pub struct TabMultiFlow {
     manual_x_min: f64,
     manual_x_max: f64,
     apply_manual_x: bool,
+    x_range: XRangeEditor,
     needs_fit: bool,
 }
 
@@ -76,6 +78,7 @@ impl Default for TabMultiFlow {
             manual_x_min: 0.0,
             manual_x_max: 1.0,
             apply_manual_x: false,
+            x_range: XRangeEditor::default(),
             needs_fit: false,
         }
     }
@@ -99,6 +102,7 @@ impl TabMultiFlow {
         self.manual_x_min = 0.0;
         self.manual_x_max = 1.0;
         self.apply_manual_x = false;
+        self.x_range.reset();
         self.needs_fit = false;
     }
 
@@ -244,12 +248,13 @@ impl TabMultiFlow {
         ) {
             self.export_status = Some(status);
         }
-        if x_range_editor(
+        if let Some((min, max)) = self.x_range.show(
             ui,
             "multi_flow_x_range",
-            &mut self.manual_x_min,
-            &mut self.manual_x_max,
+            x_range_bounds(&self.state_a, &self.state_b, self.view.x),
         ) {
+            self.manual_x_min = min;
+            self.manual_x_max = max;
             self.apply_manual_x = true;
         }
     }
@@ -961,6 +966,29 @@ fn points_bounds(pts: &[[f64; 2]]) -> Option<PlotDataBounds> {
             (x_min.min(*x), x_max.max(*x)),
             (y_min.min(*y), y_max.max(*y)),
         )),
+    })
+}
+
+/// The bounds of the X range editor over the selected flows, None without one. `plot_x` are
+/// the plot's bounds of the last frame.
+fn x_range_bounds(
+    state_a: &PlotState,
+    state_b: &PlotState,
+    plot_x: Option<(f64, f64)>,
+) -> Option<x_range::Bounds> {
+    let selected: Vec<&PlotState> = [state_a, state_b]
+        .into_iter()
+        .filter(|s| s.flow_id.is_some())
+        .collect();
+    if selected.is_empty() {
+        return None;
+    }
+    let visible_min = selected.iter().map(|s| s.x_min).fold(f64::MAX, f64::min);
+    let visible_max = selected.iter().map(|s| s.x_max).fold(f64::MIN, f64::max);
+    Some(x_range::Bounds {
+        origin: merged_x_origin(state_a, state_b),
+        data: selected_x_bounds(state_a, state_b),
+        visible: plot_x.unwrap_or((visible_min, visible_max)),
     })
 }
 

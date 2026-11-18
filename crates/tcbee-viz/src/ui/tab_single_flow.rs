@@ -13,8 +13,9 @@ use crate::{
         flow_table::FlowTable,
         gap_marks,
         series_table::SeriesTable,
-        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox, x_range_editor},
+        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox},
         theme,
+        x_range::{self, XRangeEditor},
     },
 };
 
@@ -30,6 +31,7 @@ pub struct TabSingleFlow {
     manual_x_min: f64,
     manual_x_max: f64,
     apply_manual_x: bool,
+    x_range: XRangeEditor,
     needs_fit: bool,
     remove_outliers: bool,
     show_gaps: bool,
@@ -50,6 +52,7 @@ impl Default for TabSingleFlow {
             manual_x_min: 0.0,
             manual_x_max: 1.0,
             apply_manual_x: false,
+            x_range: XRangeEditor::default(),
             needs_fit: false,
             remove_outliers: true,
             show_gaps: true,
@@ -70,6 +73,7 @@ impl TabSingleFlow {
         self.manual_x_min = 0.0;
         self.manual_x_max = 1.0;
         self.apply_manual_x = false;
+        self.x_range.reset();
         self.needs_fit = false;
         self.remove_outliers = true;
     }
@@ -222,12 +226,15 @@ impl TabSingleFlow {
         {
             self.export_status = Some(status);
         }
-        if x_range_editor(
-            ui,
-            "single_flow_x_range",
-            &mut self.manual_x_min,
-            &mut self.manual_x_max,
-        ) {
+        let bounds = self.state.flow_id.map(|_| x_range::Bounds {
+            origin: self.state.data_x_min,
+            data: (self.state.data_x_min, self.state.data_x_max),
+            // The plot's bounds of the last frame
+            visible: self.view.x.unwrap_or((self.state.x_min, self.state.x_max)),
+        });
+        if let Some((min, max)) = self.x_range.show(ui, "single_flow_x_range", bounds) {
+            self.manual_x_min = min;
+            self.manual_x_max = max;
             self.apply_manual_x = true;
         }
     }

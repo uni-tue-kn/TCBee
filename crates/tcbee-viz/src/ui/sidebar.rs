@@ -145,21 +145,3 @@ pub fn outliers_checkbox(ui: &mut Ui, remove_outliers: &mut bool) -> bool {
     })
     .inner
 }
-
-/// A collapsed "X range" section with Min, Max and Apply, true when Apply was clicked
-pub fn x_range_editor(ui: &mut Ui, id_salt: &str, min: &mut f64, max: &mut f64) -> bool {
-    let mut apply = false;
-    egui::CollapsingHeader::new("X range")
-        .id_salt(id_salt)
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Min");
-                ui.add(egui::DragValue::new(min).speed(0.1));
-                ui.label("Max");
-                ui.add(egui::DragValue::new(max).speed(0.1));
-                apply = ui.button("Apply").clicked();
-            });
-        });
-    apply
-}
