@@ -8,7 +8,7 @@ use crate::{
     backend::db::DbBackend,
     data::{plot_state::PlotState, preprocessing::remove_leading_outliers},
     settings::AppSettings,
-    ui::{flow_table::FlowTable, series_table::SeriesTable, theme},
+    ui::{flow_table::FlowTable, gap_marks, series_table::SeriesTable, theme},
 };
 
 const PLOT_AXIS_FOOTER: f32 = 36.0;
@@ -24,6 +24,7 @@ pub struct TabSingleFlow {
     apply_manual_x: bool,
     needs_fit: bool,
     remove_outliers: bool,
+    show_gaps: bool,
 }
 
 impl Default for TabSingleFlow {
@@ -37,6 +38,7 @@ impl Default for TabSingleFlow {
             apply_manual_x: false,
             needs_fit: false,
             remove_outliers: true,
+            show_gaps: true,
         }
     }
 }
@@ -192,6 +194,7 @@ impl TabSingleFlow {
         {
             self.needs_fit = true;
         }
+        gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
 
         ui.add_space(8.0);
         ui.label(RichText::new("X range").strong().size(12.0));
@@ -240,6 +243,10 @@ impl TabSingleFlow {
         self.state
             .reload_if_sampling_changed(db, settings, plot_width_px);
 
+        if self.show_gaps {
+            self.state.load_gaps(db);
+        }
+
         let has_string = self.state.series.iter().any(|s| s.is_string_type());
         let split_view = self.state.split_view;
 
@@ -282,6 +289,7 @@ impl TabSingleFlow {
 
         let fit = std::mem::take(&mut self.needs_fit);
         let remove_outliers = self.remove_outliers;
+        let show_gaps = self.show_gaps;
 
         let display: Vec<(Vec<[f64; 2]>, egui::Color32, String)> = self
             .state
@@ -369,6 +377,12 @@ impl TabSingleFlow {
                 }
             }
 
+            if show_gaps {
+                for s in &self.state.series {
+                    gap_marks::draw_series(plot_ui, s);
+                }
+            }
+
             for (pts, color, name) in &display {
                 plot_ui.line(
                     Line::new(PlotPoints::from(pts.clone()))
@@ -417,6 +431,7 @@ impl TabSingleFlow {
 
         let fit = std::mem::take(&mut self.needs_fit);
         let remove_outliers = self.remove_outliers;
+        let show_gaps = self.show_gaps;
 
         let display: Vec<(i64, Vec<[f64; 2]>, egui::Color32, String, f64, f64)> = self
             .state
@@ -499,6 +514,13 @@ impl TabSingleFlow {
                                 new_x_min = vx_min;
                                 new_x_max = vx_max;
                                 needs_reload = true;
+                            }
+                        }
+
+                        if show_gaps {
+                            if let Some(s) = self.state.series.iter().find(|s| s.series_id == *sid)
+                            {
+                                gap_marks::draw_series(plot_ui, s);
                             }
                         }
 

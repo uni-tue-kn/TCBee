@@ -1,4 +1,4 @@
-use ts_storage::{SeriesInfo, ValueKind};
+use ts_storage::{Gaps, SeriesInfo, ValueKind};
 
 use crate::{
     backend::db::{flow_x_bounds, format_flow, DbBackend},
@@ -105,6 +105,16 @@ impl PlotState {
                 load_series_window(db, &mut sd, x_min, x_max, settings, None);
                 self.series.push(sd);
             }
+        }
+    }
+
+    /// Reads the gaps of the series that have none yet. Plugin outputs have no hook_seq.
+    pub fn load_gaps(&mut self, db: &DbBackend) {
+        for sd in self.series.iter_mut().filter(|s| s.gaps.is_none()) {
+            sd.gaps = Some(match &sd.info {
+                Some(info) => db.seq_gaps(info),
+                None => Gaps::Unavailable,
+            });
         }
     }
 

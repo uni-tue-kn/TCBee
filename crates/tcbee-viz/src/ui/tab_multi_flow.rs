@@ -12,6 +12,7 @@ use crate::{
     settings::AppSettings,
     ui::{
         flow_table::FlowTable,
+        gap_marks,
         series_table::SeriesTable,
         tab_single_flow::{
             compact_axis_label, compact_coordinates_formatter, plot_height_with_footer,
@@ -38,6 +39,7 @@ pub struct TabMultiFlow {
     merged_view: bool,
     split_series_view: bool,
     remove_outliers: bool,
+    show_gaps: bool,
     manual_x_min: f64,
     manual_x_max: f64,
     apply_manual_x: bool,
@@ -56,6 +58,7 @@ impl Default for TabMultiFlow {
             merged_view: true,
             split_series_view: false,
             remove_outliers: true,
+            show_gaps: true,
             manual_x_min: 0.0,
             manual_x_max: 1.0,
             apply_manual_x: false,
@@ -75,6 +78,7 @@ impl TabMultiFlow {
         self.merged_view = true;
         self.split_series_view = false;
         self.remove_outliers = true;
+        self.show_gaps = true;
         self.manual_x_min = 0.0;
         self.manual_x_max = 1.0;
         self.apply_manual_x = false;
@@ -192,6 +196,11 @@ impl TabMultiFlow {
         {
             self.needs_fit = true;
         }
+        gap_marks::controls(
+            ui,
+            &mut self.show_gaps,
+            self.state_a.series.iter().chain(&self.state_b.series),
+        );
 
         ui.add_space(4.0);
         ui.scope(|ui| {
@@ -256,6 +265,11 @@ impl TabMultiFlow {
             .reload_if_sampling_changed(db, settings, plot_width_px);
         self.state_b
             .reload_if_sampling_changed(db, settings, plot_width_px);
+
+        if self.show_gaps {
+            self.state_a.load_gaps(db);
+            self.state_b.load_gaps(db);
+        }
 
         if self.split_series_view {
             self.show_series_split_plots(ui, db, settings);
@@ -333,6 +347,11 @@ impl TabMultiFlow {
                     }
                 }
 
+                if self.show_gaps {
+                    for s in self.state_a.series.iter().chain(&self.state_b.series) {
+                        gap_marks::draw_series(plot_ui, s);
+                    }
+                }
                 for (pts, color, name) in &display_a {
                     plot_ui.line(
                         Line::new(PlotPoints::from(pts.clone()))
@@ -448,6 +467,11 @@ impl TabMultiFlow {
                         new_x_a = (vx_min, vx_max);
                     }
                 }
+                if self.show_gaps {
+                    for s in &self.state_a.series {
+                        gap_marks::draw_series(plot_ui, s);
+                    }
+                }
                 for (pts, color, name) in &display_a {
                     plot_ui.line(
                         Line::new(PlotPoints::from(pts.clone()))
@@ -492,6 +516,11 @@ impl TabMultiFlow {
                     if self.state_b.needs_reload(vx_min, vx_max) {
                         reload_b = true;
                         new_x_b = (vx_min, vx_max);
+                    }
+                }
+                if self.show_gaps {
+                    for s in &self.state_b.series {
+                        gap_marks::draw_series(plot_ui, s);
                     }
                 }
                 for (pts, color, name) in &display_b {
@@ -602,6 +631,19 @@ impl TabMultiFlow {
                             if self.state_b.needs_reload(vx_min, vx_max) {
                                 reload_b = true;
                                 new_x_b = (vx_min, vx_max);
+                            }
+                        }
+
+                        if self.show_gaps {
+                            let state = if item.flow_prefix == "A" {
+                                &self.state_a
+                            } else {
+                                &self.state_b
+                            };
+                            if let Some(s) =
+                                state.series.iter().find(|s| s.series_id == item.series_id)
+                            {
+                                gap_marks::draw_series(plot_ui, s);
                             }
                         }
 

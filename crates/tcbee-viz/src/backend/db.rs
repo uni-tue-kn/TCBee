@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ts_storage::{
-    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, SeriesInfo,
-    SeriesKind, Store, StoreError,
+    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, Gaps,
+    SeriesInfo, SeriesKind, Store, StoreError,
 };
 
 use crate::{backend::binding::series_label, data::series_data::SeriesData};
@@ -132,6 +132,8 @@ pub struct DbBackend {
     meta: OnceCell<Vec<(String, String)>>,
     /// (source, dir code, watched fields) of the on-change files, from the catalog meta
     step_sources: OnceCell<Vec<(String, u8, Vec<String>)>>,
+    /// Gaps per (table, flow, dir code): one hook_seq counter, shared by the columns of a table
+    gaps: RefCell<HashMap<(String, i64, u8), Gaps>>,
     /// Last read error that was logged, so a failing plot reload logs once, not every frame.
     last_error: RefCell<Option<String>>,
 }
@@ -325,6 +327,27 @@ impl DbBackend {
                 && *dir == series.dir.code()
                 && fields.iter().any(|f| *f == series.name)
         })
+    }
+
+    /// The missing events of a series, read once per hook_seq counter. A read error is logged
+    /// and counts as unknown.
+    pub fn seq_gaps(&self, series: &SeriesInfo) -> Gaps {
+        let (Some(db), Some(tbl)) = (&self.store, &series.tbl) else {
+            return Gaps::Unavailable;
+        };
+        let key = (tbl.clone(), series.flow_id, series.dir.code());
+        if let Some(gaps) = self.gaps.borrow().get(&key) {
+            return gaps.clone();
+        }
+        let gaps = db.seq_gaps(series, None).unwrap_or_else(|e| {
+            self.report(format!(
+                "reading the gaps of {} failed: {e}",
+                series_label(series)
+            ));
+            Gaps::Unavailable
+        });
+        self.gaps.borrow_mut().insert(key, gaps.clone());
+        gaps
     }
 
     /// End of a flow: the last timestamp of any of its series
@@ -810,6 +833,20 @@ mod tests {
             assert_eq!(pts.first(), Some(&(ts(24) as f64, 1.0)));
             assert_eq!(pts.len(), 1 + 21);
             assert_eq!(pts.last(), Some(&(ts(45) as f64, 2.0)));
+        }
+    }
+
+    #[test]
+    fn gaps_of_a_run_numbered_from_zero_are_unknown_and_derived_have_none() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let series = db.list_series_for_flow(1);
+            let una = find(&series, "tcp_probe", Dir::None, "SND_UNA");
+            // The fixture numbers its rows from 0, as a run without hook_seq does.
+            assert_eq!(db.seq_gaps(una), Gaps::Unavailable);
+            let mut derived = una.clone();
+            derived.tbl = None;
+            assert_eq!(db.seq_gaps(&derived), Gaps::Unavailable);
         }
     }
 
