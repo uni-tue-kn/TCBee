@@ -38,7 +38,6 @@ Combine terms with spaces, e.g. src:10.0.0.1 dport:443";
 #[derive(Default)]
 pub struct FlowTable {
     pub filter: String,
-    pub selected_id: Option<i64>,
     stats_cache: HashMap<i64, FlowStats>,
 }
 
@@ -51,7 +50,6 @@ struct FlowStats {
 impl FlowTable {
     pub fn reset(&mut self) {
         self.filter.clear();
-        self.selected_id = None;
         self.stats_cache.clear();
     }
 
@@ -59,9 +57,16 @@ impl FlowTable {
         self.stats_cache.clear();
     }
 
-    /// Render the table. Returns `Some(flow_id)` when a new row is clicked.
-    pub fn show(&mut self, ui: &mut Ui, db: &DbBackend, flows: &[Flow]) -> Option<i64> {
-        self.show_with_id_salt(ui, db, flows, "flow_table")
+    /// Render the table with the caller's `selected` flow highlighted. Returns `Some(flow_id)`
+    /// when another row is clicked.
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        db: &DbBackend,
+        flows: &[Flow],
+        selected: Option<i64>,
+    ) -> Option<i64> {
+        self.show_with_id_salt(ui, db, flows, selected, "flow_table")
     }
 
     /// Render the table with a caller-provided ID salt for repeated table instances.
@@ -70,6 +75,7 @@ impl FlowTable {
         ui: &mut Ui,
         db: &DbBackend,
         flows: &[Flow],
+        selected: Option<i64>,
         id_salt: &'static str,
     ) -> Option<i64> {
         let mut new_selection: Option<i64> = None;
@@ -150,7 +156,7 @@ impl FlowTable {
                     for i in range {
                         let (flow, conn) = &visible[i];
                         let fid = flow.id;
-                        let is_selected = self.selected_id == Some(fid);
+                        let is_selected = selected == Some(fid);
                         let stats = *self
                             .stats_cache
                             .entry(fid)
@@ -195,7 +201,6 @@ impl FlowTable {
                         let row_click =
                             table::row_click(ui, row_rect, ui.id().with((id_salt, "row", fid)));
                         if row_click.clicked() && !is_selected {
-                            self.selected_id = Some(fid);
                             new_selection = Some(fid);
                         }
 

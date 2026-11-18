@@ -26,6 +26,7 @@ struct InputBinding {
 #[derive(Default)]
 pub struct TabProcess {
     flow_table: FlowTable,
+    selected_flow: Option<i64>,
     /// Catalog rows of the selected flow, read once per selection and after a save.
     available: Vec<SeriesInfo>,
     available_flow: Option<i64>,
@@ -117,7 +118,8 @@ impl TabProcess {
             return;
         }
 
-        if self.flow_table.show(ui, db, flows).is_some() {
+        if let Some(flow_id) = self.flow_table.show(ui, db, flows, self.selected_flow) {
+            self.selected_flow = Some(flow_id);
             self.input_bindings.clear();
             self.input_series.clear();
             self.preview_series.clear();
@@ -130,7 +132,7 @@ impl TabProcess {
 
     /// Reads the series list again when the selected flow changed or after a save.
     fn sync_available(&mut self, db: &DbBackend) {
-        let selected = self.flow_table.selected_id;
+        let selected = self.selected_flow;
         if self.available_flow != selected {
             self.available = selected.map_or_else(Vec::new, |id| db.list_series_for_flow(id));
             self.available_flow = selected;
@@ -139,7 +141,7 @@ impl TabProcess {
 
     /// The selected flow, if it exists.
     fn selected_flow(&self, db: &DbBackend) -> Result<i64, String> {
-        match self.flow_table.selected_id {
+        match self.selected_flow {
             Some(id) if db.flow_exists(id) => Ok(id),
             Some(_) => Err("flow not found".to_string()),
             None => Err("no flow selected".to_string()),
@@ -178,7 +180,7 @@ impl TabProcess {
                 ui.label(format!("  • {}", name));
             }
 
-            if let Some(flow_id) = self.flow_table.selected_id {
+            if let Some(flow_id) = self.selected_flow {
                 Self::ensure_input_bindings(&mut self.input_bindings, &required, &self.available);
 
                 ui.add_space(6.0);
@@ -216,7 +218,7 @@ impl TabProcess {
         ui.add_space(12.0);
         ui.separator();
 
-        let can_preview = self.flow_table.selected_id.is_some()
+        let can_preview = self.selected_flow.is_some()
             && self.selected_plugin.is_some()
             && self
                 .input_bindings
@@ -241,7 +243,7 @@ impl TabProcess {
 
         if !self.preview_series.is_empty() {
             ui.add_space(8.0);
-            let can_save = self.flow_table.selected_id.is_some();
+            let can_save = self.selected_flow.is_some();
             if ui
                 .add_enabled(can_save, egui::Button::new("Save to database"))
                 .clicked()

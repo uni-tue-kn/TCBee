@@ -1036,7 +1036,9 @@ fn flow_section(
 
     egui::Frame::NONE.show(ui, |ui| {
         ui.set_max_height((table_height * 0.62).max(160.0));
-        if let Some(new_id) = flow_table.show_with_id_salt(ui, db, flows, flow_table_id) {
+        if let Some(new_id) =
+            flow_table.show_with_id_salt(ui, db, flows, state.flow_id, flow_table_id)
+        {
             state.select_flow(db, new_id);
             changed = true;
         }
