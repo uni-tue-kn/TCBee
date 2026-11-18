@@ -18,7 +18,30 @@ It takes one database path (`.duck`, `.duckdb`, `.sqlite`, `.db`) or `-h` for he
 | Multi Flow | Two flows (*Flow A*, *Flow B*) on one time axis. |
 | MPTCP | Only for recordings made with `tcbee-record -m`. Lists the connections with their side, plots chosen metrics of all subflows of one connection stacked on one time axis below a lane of its path manager events, and lists the subflows with their bytes and share and a filterable list of the events. |
 | Process | Plugins that compute derived series from a flow: bytes in flight, usable send window, duplicate ACKs, retransmissions, sender limitation, loss episodes, upper TCP window. *Load & Preview* plots the result, *Save to database* stores it as new series of the flow. |
-| Settings | Text size, downsampling, time granularity, dark mode. |
+| Settings | Text size, downsampling, time granularity, dark mode, and the style of exported figures. |
+
+## Gaps
+
+`tcbee-record` numbers the events of each flow direction at a hook (hook_seq), so an event that was dropped leaves a hole in the numbers.
+With *Show gaps* on, the plots shade these holes in the colour of their series; hovering a span shows how many events are missing.
+Spans closer than a pixel are merged.
+Losses after the last recorded event cannot be seen.
+Series recorded with `--no-hook-seq` and derived series have no gap information and are listed as *Gaps n/a*.
+
+## Export
+
+Both plot tabs export what they show: the selected metrics in the visible time range.
+
+- *Export figure…* opens a preview of the figure next to its style, and *Save figure…* writes it as PDF or PNG (by the file extension).
+  Style edits in the preview apply to that figure only, unless *Use as default style* keeps them.
+  The y-axis label and the legend labels can be replaced there, for that figure only.
+  The data is read again from the database at the resolution of the figure, keeping the extremes of each column; leading outliers are dropped as in the plot.
+  Lines and gaps keep their colours from the viewer, unless the style uses its own palette.
+  The default style is set under *Settings → Figure export*, with a preview of the figure last opened for export.
+  It is saved in `$XDG_CONFIG_HOME/tcbee/viz.toml` (default `~/.config/tcbee/viz.toml`), which can also be edited by hand or kept with a paper.
+  The value range of a single plot is kept; split plots fit their data.
+- *Export data script…* writes a Python script that loads the same series and their gaps with the [tcbee package](../../python/API.md).
+  It has no plotting code: plot with the library of your choice where the script says so.
 
 ## Flow filter
 

@@ -14,6 +14,22 @@ _DIRECTIONS = ("none", "send", "recv")
 
 
 @dataclass(frozen=True)
+class Gap:
+    """Events missing between two recorded events of a series, found from hook_seq.
+
+    start_ns and end_ns are the timestamps of the recorded events around the
+    gap (start_ns <= end_ns). For events missing before the first recorded one,
+    both are the timestamp of that event. first_seq is the hook_seq of the
+    first missing event.
+    """
+
+    start_ns: int
+    end_ns: int
+    first_seq: int
+    missing: int
+
+
+@dataclass(frozen=True)
 class Series:
     """One metric for a flow, source and direction, with stored summary bounds.
 
@@ -77,6 +93,49 @@ class Series:
             conditions.append("ts < ?")
             params.append(end_ns)
         return sql + " WHERE " + " AND ".join(conditions) + " ORDER BY ts, seq", params
+
+    def gaps(self, *, start_ns=None, end_ns=None):
+        """Events missing from this series according to hook_seq (the seq column).
+
+        Returns the gaps that overlap the half-open window [start_ns, end_ns),
+        ordered by seq, or None if they are unknown: for derived series and for
+        runs recorded without hook_seq (--no-hook-seq stores seq 0). An empty
+        list means no event is missing between recorded ones; losses after the
+        last recorded event cannot be seen. Same query and rules as ts_storage's
+        Store::seq_gaps (crates/ts-storage/src/gaps.rs), whose range is inclusive.
+        """
+        window(start_ns, end_ns)
+        if self.kind != "raw":
+            return None
+        if not self._table or not self._table.startswith("ev_"):
+            raise TCBeeError(f"Invalid event table in series {self.id}")
+        # One hook_seq counter feeds one (table, flow, dir): order by seq, not ts, which
+        # can go back across CPUs.
+        sql = (
+            'SELECT "seq", "ts", "prev_seq", "prev_ts" FROM (SELECT "seq", "ts", '
+            'LAG("seq") OVER w AS "prev_seq", LAG("ts") OVER w AS "prev_ts" '
+            f'FROM {quote(self._table)} WHERE "flow_id" = ? AND "dir" = ? '
+            'WINDOW w AS (ORDER BY "seq", "ts")) AS g '
+            'WHERE "prev_seq" IS NULL OR "seq" - "prev_seq" > 1 ORDER BY "seq"'
+        )
+        gaps = []
+        for seq, ts, prev_seq, prev_ts in self._db._rows(
+            sql, (self.flow_id, direction_code(self.direction))
+        ):
+            if prev_seq is None:
+                # The first row holds the lowest seq
+                if seq == 0:
+                    return None
+                if seq == 1:
+                    continue
+                gap = Gap(ts, ts, 1, seq - 1)
+            else:
+                gap = Gap(min(prev_ts, ts), max(prev_ts, ts), prev_seq + 1, seq - prev_seq - 1)
+            if (start_ns is None or gap.end_ns >= start_ns) and (
+                end_ns is None or gap.start_ns < end_ns
+            ):
+                gaps.append(gap)
+        return gaps
 
     def iter_batches(self, *, batch_size=65_536, start_ns=None, end_ns=None):
         """Stream selected samples with bounded Python memory and one SQL query.

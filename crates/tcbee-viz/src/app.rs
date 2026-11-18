@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::{
     backend::db::DbBackend,
+    plot_style::PlotStyle,
     settings::AppSettings,
     ui::{
         tab_home::TabHome,
@@ -54,7 +55,10 @@ impl Default for TcbeeApp {
     fn default() -> Self {
         Self {
             active_tab: Tab::Home,
-            settings: AppSettings::default(),
+            settings: AppSettings {
+                plot_style: PlotStyle::load(),
+                ..AppSettings::default()
+            },
             db: DbBackend::default(),
             tab_home: TabHome::default(),
             tab_overview: TabOverview::default(),
@@ -70,6 +74,9 @@ impl Default for TcbeeApp {
 impl eframe::App for TcbeeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         theme::apply(ctx, self.settings.dark_mode, self.settings.text_size);
+        if let Some(style) = crate::export::take_default_style(ctx) {
+            self.settings.plot_style = style;
+        }
 
         // Tab bar
         egui::TopBottomPanel::top("tab_bar")

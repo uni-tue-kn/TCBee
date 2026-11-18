@@ -135,6 +135,7 @@ Inspect the catalog rather than assuming a recording contains every metric.
 | `metric.read(start_ns=None, end_ns=None)` | Eager `Samples` containing lists |
 | `metric.iter_batches(batch_size=65536, start_ns=None, end_ns=None)` | Iterator of `Samples`, one SQL query and independent cursor |
 | `metric.read_numpy(start_ns=None, end_ns=None)` | Eager dict of NumPy arrays: `ts_ns`, `seq`, `value` |
+| `metric.gaps(start_ns=None, end_ns=None)` | Missing events (list of `Gap`), or `None` if unknown |
 
 Every time window is **[start_ns, end_ns)**, in nanoseconds since boot. Omitted
 bounds are unbounded. Reads order by `(ts, seq)` and retain duplicate keys;
@@ -147,6 +148,16 @@ NumPy export uses DuckDB's native column export; SQLite converts batched list
 reads. Nullable arrays use object dtype with `None`. Stop a batch iterator
 early with `iterator.close()` or `contextlib.closing(iterator)`. Python result
 memory is bounded by batch size; engine scans and sorting may use more memory.
+
+`gaps()` finds events missing from a raw series by its hook_seq numbers
+(`seq`), as tcbee-viz shades them. It returns the gaps that overlap the window,
+ordered by `seq`, each a `Gap(start_ns, end_ns, first_seq, missing)`:
+`start_ns` and `end_ns` are the timestamps of the recorded events around the
+gap, `missing` the number of lost events. Events missing before the first
+recorded one give a gap with `start_ns == end_ns`. Losses after the last
+recorded event cannot be seen. It returns `None` for derived series and for
+runs recorded with `--no-hook-seq`, so an empty list always means no event is
+missing between recorded ones.
 
 ## Samples
 

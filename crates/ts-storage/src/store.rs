@@ -4,6 +4,7 @@
 use crate::batch::EventBatch;
 use crate::catalog::{Catalog, SeriesInfo};
 use crate::error::StoreError;
+use crate::gaps::Gaps;
 use crate::model::{ConnectionFlow, ConnectionInfo, DataPoint, Flow, FlowOwner};
 use crate::schema::{Dialect, EventTable, ValueKind};
 
@@ -76,6 +77,9 @@ pub trait Store {
         range: Option<(f64, f64)>,
         f: &mut dyn FnMut(DataPoint),
     ) -> Result<(), StoreError>;
+    /// Events missing from a raw series according to hook_seq, the gaps that overlap `range`
+    /// (inclusive, in f64 ns). `Unavailable` for derived series and runs without hook_seq.
+    fn seq_gaps(&self, s: &SeriesInfo, range: Option<(f64, f64)>) -> Result<Gaps, StoreError>;
     fn create_derived(
         &self,
         flow_id: i64,

@@ -3,11 +3,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ts_storage::{
-    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, SeriesInfo,
-    SeriesKind, Store, StoreError,
+    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, Gaps,
+    SeriesInfo, SeriesKind, Store, StoreError,
 };
 
-use crate::{backend::binding::series_label, data::series_data::SeriesData};
+use crate::{
+    backend::binding::series_label,
+    data::{preprocessing::Envelope, series_data::SeriesData},
+};
 
 /// File extensions the file dialog and the usage text offer.
 pub const DB_EXTENSIONS: &[&str] = &["sqlite", "db", "duck", "duckdb"];
@@ -119,6 +122,8 @@ impl std::fmt::Display for OpenError {
 #[derive(Default)]
 pub struct DbBackend {
     store: Option<Box<dyn Store>>,
+    /// The open file
+    path: Option<PathBuf>,
     /// Flows never change while a file is open, so they are read once.
     flows: OnceCell<Vec<Flow>>,
     /// Same for connections and their flows.
@@ -132,6 +137,8 @@ pub struct DbBackend {
     meta: OnceCell<Vec<(String, String)>>,
     /// (source, dir code, watched fields) of the on-change files, from the catalog meta
     step_sources: OnceCell<Vec<(String, u8, Vec<String>)>>,
+    /// Gaps per (table, flow, dir code): one hook_seq counter, shared by the columns of a table
+    gaps: RefCell<HashMap<(String, i64, u8), Gaps>>,
     /// Last read error that was logged, so a failing plot reload logs once, not every frame.
     last_error: RefCell<Option<String>>,
 }
@@ -141,8 +148,14 @@ impl DbBackend {
         let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e, &path))?;
         Ok(Self {
             store: Some(store),
+            path: Some(path),
             ..Self::default()
         })
+    }
+
+    /// The open file.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     pub fn is_connected(&self) -> bool {
@@ -327,6 +340,32 @@ impl DbBackend {
         })
     }
 
+    /// The missing events of a series, read once per hook_seq counter. A read error is logged
+    /// and counts as unknown until the next call.
+    pub fn seq_gaps(&self, series: &SeriesInfo) -> Gaps {
+        let (Some(db), Some(tbl)) = (&self.store, &series.tbl) else {
+            return Gaps::Unavailable;
+        };
+        let key = (tbl.clone(), series.flow_id, series.dir.code());
+        if let Some(gaps) = self.gaps.borrow().get(&key) {
+            return gaps.clone();
+        }
+        match db.seq_gaps(series, None) {
+            Ok(gaps) => {
+                self.gaps.borrow_mut().insert(key, gaps.clone());
+                gaps
+            }
+            // Not cached: the next call retries
+            Err(e) => {
+                self.report(format!(
+                    "reading the gaps of {} failed: {e}",
+                    series_label(series)
+                ));
+                Gaps::Unavailable
+            }
+        }
+    }
+
     /// End of a flow: the last timestamp of any of its series
     pub fn flow_end(&self, flow_id: i64) -> Option<f64> {
         self.list_series_for_flow(flow_id)
@@ -403,6 +442,28 @@ impl DbBackend {
             out.clear();
         }
         out
+    }
+
+    /// Numeric points in a range at the resolution of `columns` time slices: the first, lowest,
+    /// highest and last point of each (see `Envelope`). Reads every point of the range.
+    pub fn load_range_envelope(
+        &self,
+        series: &SeriesInfo,
+        t_min: f64,
+        t_max: f64,
+        columns: usize,
+    ) -> Vec<(f64, f64)> {
+        let mut env = Envelope::new(t_min, t_max, columns);
+        let result = self.for_each(series, Some((t_min, t_max)), &mut |p| {
+            if let Some(v) = datavalue_as_f64(&p.value) {
+                env.push(p.timestamp, v);
+            }
+        });
+        if let Err(e) = result {
+            self.report(e);
+            return Vec::new();
+        }
+        env.finish()
     }
 
     /// Numeric points (booleans as 0/1) in a range.
@@ -810,6 +871,20 @@ mod tests {
             assert_eq!(pts.first(), Some(&(ts(24) as f64, 1.0)));
             assert_eq!(pts.len(), 1 + 21);
             assert_eq!(pts.last(), Some(&(ts(45) as f64, 2.0)));
+        }
+    }
+
+    #[test]
+    fn gaps_of_a_run_numbered_from_zero_are_unknown_and_derived_have_none() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let series = db.list_series_for_flow(1);
+            let una = find(&series, "tcp_probe", Dir::None, "SND_UNA");
+            // The fixture numbers its rows from 0, as a run without hook_seq does.
+            assert_eq!(db.seq_gaps(una), Gaps::Unavailable);
+            let mut derived = una.clone();
+            derived.tbl = None;
+            assert_eq!(db.seq_gaps(&derived), Gaps::Unavailable);
         }
     }
 

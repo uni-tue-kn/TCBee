@@ -1,5 +1,5 @@
 use egui::Color32;
-use ts_storage::{DataValue, SeriesInfo, ValueKind};
+use ts_storage::{DataValue, Gaps, SeriesInfo, ValueKind};
 
 use crate::backend::binding::series_label;
 
@@ -31,6 +31,8 @@ pub struct SeriesData {
     /// An on-change series (tcbee-record --on-change): a step function whose points are the
     /// changes. It is drawn as steps and never thinned or trimmed.
     pub step: bool,
+    /// Missing events from hook_seq, read on first use (`None` until then).
+    pub gaps: Option<Gaps>,
 }
 
 impl SeriesData {
@@ -61,6 +63,7 @@ impl SeriesData {
             loaded_range: None,
             loaded_sample_interval: 0.0,
             step: false,
+            gaps: None,
         }
     }
 

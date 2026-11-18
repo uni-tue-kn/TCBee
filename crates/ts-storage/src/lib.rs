@@ -12,6 +12,7 @@ pub mod catalog;
 #[cfg(feature = "duckdb")]
 pub mod duckdb;
 pub mod error;
+pub mod gaps;
 pub mod model;
 pub mod schema;
 pub mod sql;
@@ -25,6 +26,7 @@ pub mod time;
 pub use batch::{ColumnData, EventBatch};
 pub use catalog::{Catalog, SeriesInfo, StatsAccumulator};
 pub use error::StoreError;
+pub use gaps::{Gap, Gaps};
 pub use model::{ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Flow, FlowOwner, IpTuple};
 pub use schema::{
     ColType, Column, Dialect, Dir, EventTable, SeriesKind, Table, ValueKind, SCHEMA_VERSION,

@@ -399,3 +399,14 @@ fn replace_of_max_id_series() {
     assert_eq!(st.series_by_id(a.id).unwrap().unwrap(), a);
 }
 
+#[test]
+fn seq_gaps_from_hook_seq() {
+    let db = TmpDb::new();
+    build(
+        &db,
+        vec![crate::testutil::gap_batch()],
+        vec![flow(1, 1000), flow(2, 2000), flow(3, 3000)],
+    )
+    .unwrap();
+    crate::testutil::check_gaps(crate::open(db.path()).unwrap().as_ref());
+}

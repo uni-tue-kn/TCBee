@@ -13,7 +13,7 @@ from .errors import (
 from .flow import Flow, FlowPage, FlowQuery
 from .relationships import Connection, ConnectionMembership, FlowOwner
 from .samples import Samples
-from .series import Series, SeriesQuery
+from .series import Gap, Series, SeriesQuery
 
 __all__ = [
     "AmbiguousSelection",
@@ -25,6 +25,7 @@ __all__ = [
     "FlowOwner",
     "FlowPage",
     "FlowQuery",
+    "Gap",
     "MissingCapability",
     "NotFound",
     "Samples",

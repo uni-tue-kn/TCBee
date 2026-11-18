@@ -34,7 +34,7 @@ Every `ev_*` table starts with `flow_id`, `dir`, `ts` and `seq`, followed by one
 
 - `ts` is the recorder's `bpf_ktime_get_ns()` value in nanoseconds since boot, stored as an exact integer.
 - `dir` is 0 for sources without a direction (`tcp_probe`, `cubic`, `bbr`), 1 for send and 2 for receive files.
-- `seq` is the index of the record in its trace file. Ordering by `(ts, seq)` is stable; samples with equal timestamps are all kept.
+- `seq` is the hook_seq of the record: its number among the events of its flow direction at its hook (0 if recorded with `--no-hook-seq`). Ordering by `(ts, seq)` is stable; samples with equal timestamps are all kept. A jump in `seq` marks dropped events, see `Store::seq_gaps`.
 - A **series** is one column of one `(flow, source, dir)` group. `series.kind` is 0 for raw series and 1 for derived ones, `tbl` and `col` name the event table and column of a raw series, `n`, `t_min`, `t_max`, `v_min` and `v_max` describe its values, so bounds and counts need no scan. `value_type` is 0 bool, 1 u8, 2 u16, 3 u32, 4 u64, 5 i64, 6 f64, 7 text.
 - There are no foreign keys and no unique keys on event tables. DuckDB files have no indexes on them; SQLite files get one on `(flow_id, dir, ts, seq)` after the load.
 - Unsigned 64-bit columns (`pacing_rate`, `max_pacing_rate`, `SOCK_COOKIE`, ...) are stored as unsigned in DuckDB and as their two's complement `i64` bit pattern in SQLite, so SQLite shows `max_pacing_rate = u64::MAX` as `-1`. The read API of this crate converts back and saturates values above `i64::MAX` to `i64::MAX` on both engines.
@@ -92,6 +92,7 @@ for flow in store.flows()? {                              // Vec<Flow>
 | `flows()`, `flow(id)` | flows of the file |
 | `series(flow_id)`, `series_by_id(id)` | catalog rows (`SeriesInfo`) with `n`, `t_min`, `t_max`, `v_min`, `v_max` |
 | `for_each_point(&series, range, callback)` | stream the points of a raw or derived series |
+| `seq_gaps(&series, range)` | events missing according to hook_seq, `Gaps::Known(Vec<Gap>)` or `Gaps::Unavailable` (derived series, `--no-hook-seq`) |
 | `create_derived(flow_id, name, kind, points)` | add a derived series (`ValueKind::{Int, Float, Bool, String}`) |
 | `replace_derived(&existing, points)` | replace the points of a derived series in one transaction |
 | `delete_derived(&series)` | delete a derived series |

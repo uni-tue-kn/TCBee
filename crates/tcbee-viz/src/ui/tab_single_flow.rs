@@ -7,8 +7,9 @@ use egui_plot::{
 use crate::{
     backend::db::DbBackend,
     data::{plot_state::PlotState, preprocessing::remove_leading_outliers},
+    export,
     settings::AppSettings,
-    ui::{flow_table::FlowTable, series_table::SeriesTable, theme},
+    ui::{flow_table::FlowTable, gap_marks, series_table::SeriesTable, theme},
 };
 
 const PLOT_AXIS_FOOTER: f32 = 36.0;
@@ -24,6 +25,12 @@ pub struct TabSingleFlow {
     apply_manual_x: bool,
     needs_fit: bool,
     remove_outliers: bool,
+    show_gaps: bool,
+    /// The visible part of the plot, for the figure export
+    view: export::View,
+    export_status: export::Status,
+    /// The open export window
+    preview: Option<export::Preview>,
 }
 
 impl Default for TabSingleFlow {
@@ -37,12 +44,17 @@ impl Default for TabSingleFlow {
             apply_manual_x: false,
             needs_fit: false,
             remove_outliers: true,
+            show_gaps: true,
+            view: export::View::default(),
+            export_status: None,
+            preview: None,
         }
     }
 }
 
 impl TabSingleFlow {
     pub fn reset(&mut self) {
+        self.preview = None;
         self.state.reset();
         self.flow_table.reset();
         self.series_table.reset();
@@ -192,6 +204,15 @@ impl TabSingleFlow {
         {
             self.needs_fit = true;
         }
+        gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
+        if let Some(request) = export::controls(ui, &self.export_status) {
+            self.export(request, db, settings);
+        }
+        if let Some(status) =
+            export::show_preview(ui.ctx(), &mut self.preview, db, &[(&self.state, "")])
+        {
+            self.export_status = Some(status);
+        }
 
         ui.add_space(8.0);
         ui.label(RichText::new("X range").strong().size(12.0));
@@ -240,6 +261,10 @@ impl TabSingleFlow {
         self.state
             .reload_if_sampling_changed(db, settings, plot_width_px);
 
+        if self.show_gaps {
+            self.state.load_gaps(db);
+        }
+
         let has_string = self.state.series.iter().any(|s| s.is_string_type());
         let split_view = self.state.split_view;
 
@@ -282,6 +307,7 @@ impl TabSingleFlow {
 
         let fit = std::mem::take(&mut self.needs_fit);
         let remove_outliers = self.remove_outliers;
+        let show_gaps = self.show_gaps;
 
         let display: Vec<(Vec<[f64; 2]>, egui::Color32, String)> = self
             .state
@@ -343,6 +369,7 @@ impl TabSingleFlow {
         let mut new_x_min = self.state.x_min;
         let mut new_x_max = self.state.x_max;
         let mut needs_reload = false;
+        let mut view = export::View::default();
 
         let plot_response = plot.show(ui, |plot_ui| {
             if fit {
@@ -366,6 +393,19 @@ impl TabSingleFlow {
                     new_x_min = vx_min;
                     new_x_max = vx_max;
                     needs_reload = true;
+                }
+            }
+
+            let b = plot_ui.plot_bounds();
+            view = export::View {
+                x: Some((b.min()[0], b.max()[0])),
+                y: Some((b.min()[1], b.max()[1])),
+                ..export::View::default()
+            };
+
+            if show_gaps {
+                for s in &self.state.series {
+                    gap_marks::draw_series(plot_ui, s);
                 }
             }
 
@@ -397,6 +437,8 @@ impl TabSingleFlow {
             }
         });
 
+        self.view = view;
+
         if plot_response.response.secondary_clicked() {
             self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
@@ -409,6 +451,36 @@ impl TabSingleFlow {
         }
     }
 
+    fn export(&mut self, request: export::Request, db: &DbBackend, settings: &AppSettings) {
+        let style = &settings.plot_style;
+        if style.show_gaps {
+            self.state.load_gaps(db);
+        }
+        let metrics: Vec<&str> = self
+            .state
+            .series
+            .iter()
+            .filter_map(|s| s.info.as_ref().map(|i| i.name.as_str()))
+            .collect();
+        let file_stem = export::default_file_stem(self.state.flow_id, &metrics);
+        match export::run(
+            request,
+            db,
+            &[(&self.state, "")],
+            self.state.data_x_min,
+            export::View {
+                remove_outliers: self.remove_outliers,
+                ..self.view
+            },
+            style,
+            &file_stem,
+        ) {
+            Some(export::Outcome::Saved(status)) => self.export_status = Some(status),
+            Some(export::Outcome::Preview(preview)) => self.preview = Some(*preview),
+            None => {}
+        }
+    }
+
     fn show_split_plots(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
         let apply_x = self.apply_manual_x;
         let x_min = self.manual_x_min;
@@ -417,6 +489,7 @@ impl TabSingleFlow {
 
         let fit = std::mem::take(&mut self.needs_fit);
         let remove_outliers = self.remove_outliers;
+        let show_gaps = self.show_gaps;
 
         let display: Vec<(i64, Vec<[f64; 2]>, egui::Color32, String, f64, f64)> = self
             .state
@@ -455,6 +528,8 @@ impl TabSingleFlow {
         let mut new_x_min = self.state.x_min;
         let mut new_x_max = self.state.x_max;
         let mut right_clicked = false;
+        // Each split plot has its own y range: the figure fits its own
+        let mut view = export::View::default();
 
         ScrollArea::vertical()
             .id_salt("split_scroll")
@@ -502,6 +577,16 @@ impl TabSingleFlow {
                             }
                         }
 
+                        let b = plot_ui.plot_bounds();
+                        view.x = Some((b.min()[0], b.max()[0]));
+
+                        if show_gaps {
+                            if let Some(s) = self.state.series.iter().find(|s| s.series_id == *sid)
+                            {
+                                gap_marks::draw_series(plot_ui, s);
+                            }
+                        }
+
                         plot_ui.line(
                             Line::new(PlotPoints::from(pts.clone()))
                                 .color(*color)
@@ -527,6 +612,8 @@ impl TabSingleFlow {
                     ui.add_space(4.0);
                 }
             });
+
+        self.view = view;
 
         if right_clicked {
             self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));

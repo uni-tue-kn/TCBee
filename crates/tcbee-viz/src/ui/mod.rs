@@ -1,5 +1,7 @@
 pub mod flow_table;
+pub mod gap_marks;
 pub mod series_table;
+pub mod style_editor;
 pub mod tab_home;
 pub mod tab_mptcp;
 pub mod tab_multi_flow;
