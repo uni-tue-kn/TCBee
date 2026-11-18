@@ -28,7 +28,7 @@ pub struct Figure {
 /// Approximate width of a character relative to the font size, for the layout.
 const CHAR_WIDTH: f64 = 0.55;
 const TICK_LEN: f64 = 3.0;
-const GRID_COLOR: &str = "#d9d9d9";
+const GRID_COLOR: &str = "#e0e0e0";
 /// Height of a legend row and length of its line sample, relative to the font size
 const LEGEND_ROW: f64 = 1.25;
 const LEGEND_SAMPLE: f64 = 1.6;
@@ -168,15 +168,9 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     );
     let _ = write!(s, r#"<rect width="{w}" height="{h}" fill="white"/>"#);
 
+    // Horizontal lines only: vertical ones would compete with the time series
     if style.grid {
         let _ = write!(s, r#"<g stroke="{GRID_COLOR}" stroke-width="0.4">"#);
-        for x in &x_ticks {
-            let _ = write!(
-                s,
-                r#"<line x1="{0}" y1="{pt}" x2="{0}" y2="{pb}"/>"#,
-                sx(*x)
-            );
-        }
         for y in &y_ticks {
             let _ = write!(
                 s,
@@ -237,12 +231,10 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     }
     s.push_str("</g>");
 
-    // Frame, ticks and labels
+    // Axes on the left and bottom, ticks and labels
     let _ = write!(
         s,
-        r#"<rect x="{pl}" y="{pt}" width="{}" height="{}" fill="none" stroke="black" stroke-width="0.6"/>"#,
-        pr - pl,
-        pb - pt
+        r#"<path d="M{pl} {pt}V{pb}H{pr}" fill="none" stroke="black" stroke-width="0.6"/>"#
     );
     s.push_str(r#"<g stroke="black" stroke-width="0.6">"#);
     for x in &x_ticks {

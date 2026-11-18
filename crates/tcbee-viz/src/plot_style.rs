@@ -74,7 +74,7 @@ impl Default for PlotStyle {
             width_in: 3.5,
             height_in: 2.2,
             font_family: "sans-serif".into(),
-            font_size_pt: 8.0,
+            font_size_pt: 9.0,
             line_width_pt: 1.0,
             grid: true,
             legend: LegendPosition::Above,
@@ -95,12 +95,48 @@ impl Default for PlotStyle {
     }
 }
 
-/// Figure size presets: (label, width, height) in inches.
-pub const SIZE_PRESETS: [(&str, f32, f32); 3] = [
-    ("Single column", 3.5, 2.2),
-    ("Double column", 7.0, 2.6),
-    ("Slide 16:9", 8.0, 4.5),
+/// A figure size with the font and line width that suit it.
+pub struct SizePreset {
+    pub label: &'static str,
+    pub width_in: f32,
+    pub height_in: f32,
+    pub font_size_pt: f32,
+    pub line_width_pt: f32,
+}
+
+pub const SIZE_PRESETS: [SizePreset; 3] = [
+    SizePreset {
+        label: "Single column",
+        width_in: 3.5,
+        height_in: 2.2,
+        font_size_pt: 9.0,
+        line_width_pt: 1.0,
+    },
+    SizePreset {
+        label: "Double column",
+        width_in: 7.0,
+        height_in: 2.6,
+        font_size_pt: 9.0,
+        line_width_pt: 1.0,
+    },
+    // Seen from afar on a projector
+    SizePreset {
+        label: "Slide 16:9",
+        width_in: 8.0,
+        height_in: 4.5,
+        font_size_pt: 16.0,
+        line_width_pt: 2.0,
+    },
 ];
+
+impl SizePreset {
+    pub fn apply(&self, style: &mut PlotStyle) {
+        style.width_in = self.width_in;
+        style.height_in = self.height_in;
+        style.font_size_pt = self.font_size_pt;
+        style.line_width_pt = self.line_width_pt;
+    }
+}
 
 #[derive(Default, Serialize, Deserialize)]
 struct ConfigFile {

@@ -120,9 +120,13 @@ fn style_editor(ui: &mut egui::Ui, style: &mut PlotStyle) -> bool {
         .show(ui, |ui| {
             ui.label("Size:");
             ui.horizontal(|ui| {
-                for (label, w, h) in SIZE_PRESETS {
-                    if ui.button(label).clicked() {
-                        (style.width_in, style.height_in) = (w, h);
+                for preset in &SIZE_PRESETS {
+                    if ui
+                        .button(preset.label)
+                        .on_hover_text("Sets size, font size and line width")
+                        .clicked()
+                    {
+                        preset.apply(style);
                         changed = true;
                     }
                 }
@@ -156,7 +160,7 @@ fn style_editor(ui: &mut egui::Ui, style: &mut PlotStyle) -> bool {
 
             ui.label("Font size:");
             changed |= ui
-                .add(egui::Slider::new(&mut style.font_size_pt, 5.0..=16.0).suffix(" pt"))
+                .add(egui::Slider::new(&mut style.font_size_pt, 5.0..=24.0).suffix(" pt"))
                 .changed();
             ui.end_row();
 

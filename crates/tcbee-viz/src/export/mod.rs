@@ -160,7 +160,8 @@ pub fn collect(
     }
 }
 
-/// The value range of all points with 5 % padding.
+/// The value range of all points with 5 % padding, which does not reach below zero for
+/// values that cannot be negative, such as counters.
 fn fit(series: &[FigureSeries]) -> (f64, f64) {
     let (lo, hi) = series
         .iter()
@@ -172,7 +173,12 @@ fn fit(series: &[FigureSeries]) -> (f64, f64) {
         return (0.0, 1.0);
     }
     let pad = ((hi - lo) * 0.05).max(hi.abs() * 0.05).max(1e-9);
-    (lo - pad, hi + pad)
+    let bottom = if lo >= 0.0 {
+        (lo - pad).max(0.0)
+    } else {
+        lo - pad
+    };
+    (bottom, hi + pad)
 }
 
 /// System fonts, loaded on the first export, with a sans-serif family that exists.
