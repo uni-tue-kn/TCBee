@@ -50,7 +50,8 @@ pub fn tick_label(v: f64, step: f64) -> String {
     // Enough decimals to tell ticks `step` apart, also when zoomed in on large values
     let decimals = |step: f64| {
         if step > 0.0 {
-            (-step.log10().floor()).clamp(0.0, 12.0) as usize
+            // The step is a difference of two ticks: 0.3 - 0.2 is just below 0.1
+            (-(step * (1.0 + 1e-9)).log10().floor()).clamp(0.0, 12.0) as usize
         } else {
             0
         }
@@ -364,6 +365,8 @@ mod tests {
         assert_eq!(tick_label(4_294_967_100.0, 100.0), "4.2949671G");
         assert_eq!(tick_label(4_294_967_200.0, 100.0), "4.2949672G");
         assert_eq!(tick_label(10_002.0, 2.0), "10.002k");
+        assert_eq!(tick_label(-10_002.0, 2.0), "-10.002k");
+        assert_eq!(tick_label(0.2, 0.30000000000000004 - 0.2), "0.2");
     }
 
     #[test]

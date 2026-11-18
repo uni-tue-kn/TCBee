@@ -69,12 +69,12 @@ fn exported<'a>(
 
 /// The plotted series that cannot be exported: plugin outputs, which are not in the
 /// database, and text series.
-fn not_exported<'a>(sources: &'a Sources<'a>) -> Vec<&'a str> {
+fn not_exported(sources: &Sources) -> Vec<String> {
     sources
         .iter()
-        .flat_map(|(state, _)| &state.series)
-        .filter(|s| s.info.is_none() || s.is_string_type())
-        .map(|s| s.name.as_str())
+        .flat_map(|(state, prefix)| state.series.iter().map(move |s| (prefix, s)))
+        .filter(|(_, s)| s.info.is_none() || s.is_string_type())
+        .map(|(prefix, s)| format!("{prefix}{}", s.name))
         .collect()
 }
 
@@ -257,8 +257,11 @@ pub fn run(
     style: &PlotStyle,
     file_stem: &str,
 ) -> Status {
-    if exported(sources).next().is_none() || view.x.is_none() {
+    if exported(sources).next().is_none() {
         return Some(Err("no numeric metric of the database is plotted".into()));
+    }
+    if view.x.is_none() {
+        return Some(Err("the plot has not been drawn yet".into()));
     }
     let status = match request {
         Request::Figure => export_figure(
