@@ -11,7 +11,10 @@ use ts_storage::Gaps;
 
 use crate::{
     backend::db::DbBackend,
-    data::{plot_state::PlotState, preprocessing::expand_steps},
+    data::{
+        plot_state::PlotState,
+        preprocessing::{expand_steps, Envelope},
+    },
     plot_style::PlotStyle,
 };
 use figure::{Figure, FigureSeries};
@@ -68,7 +71,11 @@ pub fn collect(
             let Some(info) = &sd.info else { continue };
             let points = if sd.step {
                 let end = db.flow_end(info.flow_id).map(|t| t.min(t1));
-                expand_steps(&db.load_range_steps(info, t0, t1), end)
+                let steps = expand_steps(&db.load_range_steps(info, t0, t1), end);
+                // The first, lowest, highest and last point of each column keep the levels
+                let mut env = Envelope::new(t0, t1, columns);
+                steps.into_iter().for_each(|(t, v)| env.push(t, v));
+                env.finish()
             } else {
                 db.load_range_envelope(info, t0, t1, columns)
             };

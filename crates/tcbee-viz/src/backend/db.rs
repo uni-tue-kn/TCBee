@@ -8,7 +8,8 @@ use ts_storage::{
 };
 
 use crate::{
-    backend::binding::series_label, data::series_data::SeriesData, export::figure::Envelope,
+    backend::binding::series_label,
+    data::{preprocessing::Envelope, series_data::SeriesData},
 };
 
 /// File extensions the file dialog and the usage text offer.

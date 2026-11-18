@@ -212,9 +212,77 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[idx]
 }
 
+/// Streaming form of [`bucket_min_max`] with fixed column edges, for figure exports: per column
+/// of `columns` equal time slices of `[x0, x1]`, the first, lowest, highest and last point, in
+/// time order. Keeps every peak of a series at the resolution of the figure
+/// while bounding the number of points. Feed points in time order with [`Envelope::push`].
+pub struct Envelope {
+    x0: f64,
+    width: f64,
+    columns: usize,
+    current: Option<(usize, [(f64, f64); 4])>,
+    out: Vec<(f64, f64)>,
+}
+
+impl Envelope {
+    pub fn new(x0: f64, x1: f64, columns: usize) -> Self {
+        let columns = columns.max(1);
+        Self {
+            x0,
+            width: (x1 - x0) / columns as f64,
+            columns,
+            current: None,
+            out: Vec::new(),
+        }
+    }
+
+    /// Adds a point; non-finite values cannot be drawn and are skipped.
+    pub fn push(&mut self, x: f64, y: f64) {
+        if !y.is_finite() {
+            return;
+        }
+        let col = if self.width > 0.0 {
+            (((x - self.x0) / self.width).floor().max(0.0) as usize).min(self.columns - 1)
+        } else {
+            0
+        };
+        match &mut self.current {
+            Some((c, [_, lo, hi, last])) if *c == col => {
+                if y < lo.1 {
+                    *lo = (x, y);
+                }
+                if y > hi.1 {
+                    *hi = (x, y);
+                }
+                *last = (x, y);
+            }
+            _ => {
+                self.flush();
+                self.current = Some((col, [(x, y); 4]));
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some((_, mut pts)) = self.current.take() {
+            pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for p in pts {
+                if self.out.last() != Some(&p) {
+                    self.out.push(p);
+                }
+            }
+        }
+    }
+
+    pub fn finish(mut self) -> Vec<(f64, f64)> {
+        self.flush();
+        self.out
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{bucket_min_max, expand_steps, remove_leading_outliers};
+    use super::{bucket_min_max, expand_steps, remove_leading_outliers, Envelope};
 
     #[test]
     fn steps_hold_the_previous_value() {
@@ -273,5 +341,27 @@ mod tests {
         let pts: Vec<_> = (0..20).map(|i| (i as f64, 10.0 + i as f64)).collect();
 
         assert_eq!(remove_leading_outliers(&pts), pts.as_slice());
+    }
+
+    #[test]
+    fn envelope_keeps_extremes_per_column() {
+        let mut e = Envelope::new(0.0, 2.0, 2);
+        for (x, y) in [(0.0, 1.0), (0.2, 5.0), (0.4, -1.0), (0.6, 2.0), (1.5, 3.0)] {
+            e.push(x, y);
+        }
+        assert_eq!(
+            e.finish(),
+            vec![(0.0, 1.0), (0.2, 5.0), (0.4, -1.0), (0.6, 2.0), (1.5, 3.0)]
+        );
+        let mut e = Envelope::new(0.0, 1.0, 1);
+        for i in 0..1000 {
+            e.push(i as f64 / 1000.0, (i % 7) as f64);
+        }
+        assert!(e.finish().len() <= 4);
+        let mut e = Envelope::new(0.0, 1.0, 1);
+        e.push(0.0, f64::NAN);
+        e.push(0.5, f64::INFINITY);
+        e.push(0.6, 2.0);
+        assert_eq!(e.finish(), vec![(0.6, 2.0)]);
     }
 }
