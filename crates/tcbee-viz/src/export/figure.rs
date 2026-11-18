@@ -181,9 +181,14 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         .last()
         .map_or(0, |x| tick_label(*x, x_step).chars().count());
     let right = (last_x_label as f64 * fs * CHAR_WIDTH / 2.0).max(fs * 0.9);
-    let labels: Vec<String> = fig.series.iter().map(|f| legend_label(f, style)).collect();
-    let above = (style.legend == LegendPosition::Above && !labels.is_empty())
-        .then(|| legend_rows(&labels, fs, w - left - right));
+    let mut labels: Vec<String> = fig.series.iter().map(|f| legend_label(f, style)).collect();
+    let above = (style.legend == LegendPosition::Above && !labels.is_empty()).then(|| {
+        let width = w - left - right;
+        for label in &mut labels {
+            *label = shorten(label, fs, width);
+        }
+        legend_rows(&labels, fs, width)
+    });
     let legend_height = above.as_ref().map_or(0.0, |rows| {
         rows.iter().map(|(_, row)| row + 1).max().unwrap_or(0) as f64 * fs * LEGEND_ROW
     });
@@ -360,6 +365,16 @@ fn entry_width(label: &str, fs: f64) -> f64 {
     fs * LEGEND_SAMPLE + fs * 0.5 + label.chars().count() as f64 * fs * CHAR_WIDTH
 }
 
+/// `label`, cut short with "…" so its legend entry is at most `width` wide.
+fn shorten(label: &str, fs: f64, width: f64) -> String {
+    if entry_width(label, fs) <= width {
+        return label.to_string();
+    }
+    let room = (width - entry_width("", fs)) / (fs * CHAR_WIDTH);
+    let keep = (room.floor() as usize).saturating_sub(1);
+    label.chars().take(keep).chain(['…']).collect()
+}
+
 /// Positions `(x offset, row)` of the legend entries in rows of at most `width`.
 fn legend_rows(labels: &[String], fs: f64, width: f64) -> Vec<(f64, usize)> {
     let gap = fs * 1.2;
@@ -492,6 +507,10 @@ mod tests {
         assert_eq!(rows[2].0, 0.0);
         // An entry wider than the plot still gets its own row
         assert_eq!(legend_rows(&labels, 8.0, 1.0).last().unwrap().1, 2);
+        // and is cut short to fit
+        let long = shorten("flow 1 snd_cwnd send", 8.0, one);
+        assert!(long.ends_with('…') && entry_width(&long, 8.0) <= one);
+        assert_eq!(shorten("flow 1", 8.0, one), "flow 1");
     }
 
     #[test]
