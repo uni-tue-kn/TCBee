@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum LegendPosition {
     None,
+    /// In a row above the plot area, so it never covers data
+    Above,
     UpperLeft,
     UpperRight,
     LowerLeft,
@@ -18,7 +20,8 @@ pub enum LegendPosition {
 }
 
 impl LegendPosition {
-    pub const ALL: [LegendPosition; 5] = [
+    pub const ALL: [LegendPosition; 6] = [
+        LegendPosition::Above,
         LegendPosition::UpperRight,
         LegendPosition::UpperLeft,
         LegendPosition::LowerRight,
@@ -29,6 +32,7 @@ impl LegendPosition {
     pub fn label(self) -> &'static str {
         match self {
             LegendPosition::None => "none",
+            LegendPosition::Above => "above the plot",
             LegendPosition::UpperLeft => "upper left",
             LegendPosition::UpperRight => "upper right",
             LegendPosition::LowerLeft => "lower left",
@@ -73,7 +77,7 @@ impl Default for PlotStyle {
             font_size_pt: 8.0,
             line_width_pt: 1.0,
             grid: true,
-            legend: LegendPosition::UpperRight,
+            legend: LegendPosition::Above,
             use_palette: false,
             // Okabe-Ito, distinguishable with colour vision deficiencies
             palette: [

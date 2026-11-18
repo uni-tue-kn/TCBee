@@ -29,6 +29,9 @@ pub struct Figure {
 const CHAR_WIDTH: f64 = 0.55;
 const TICK_LEN: f64 = 3.0;
 const GRID_COLOR: &str = "#d9d9d9";
+/// Height of a legend row and length of its line sample, relative to the font size
+const LEGEND_ROW: f64 = 1.25;
+const LEGEND_SAMPLE: f64 = 1.6;
 
 /// About `target` round tick values (1, 2 or 5 times a power of ten) within `[lo, hi]`.
 pub fn ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
@@ -140,7 +143,13 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         .last()
         .map_or(0, |x| tick_label(*x, x_step).chars().count());
     let right = (last_x_label as f64 * fs * CHAR_WIDTH / 2.0).max(fs * 0.9);
-    let top = fs * 0.6;
+    let labels: Vec<String> = fig.series.iter().map(|f| legend_label(f, style)).collect();
+    let above = (style.legend == LegendPosition::Above && !labels.is_empty())
+        .then(|| legend_rows(&labels, fs, w - left - right));
+    let legend_height = above.as_ref().map_or(0.0, |rows| {
+        rows.iter().map(|(_, row)| row + 1).max().unwrap_or(0) as f64 * fs * LEGEND_ROW
+    });
+    let top = fs * 0.6 + legend_height;
     let (pl, pr, pt, pb) = (left, w - right, top, h - bottom);
     let sx = |x: f64| pl + (x - x0) / (x1 - x0).max(f64::MIN_POSITIVE) * (pr - pl);
     let sy = |y: f64| pb - (y - y0) / (y1 - y0).max(f64::MIN_POSITIVE) * (pb - pt);
@@ -288,7 +297,10 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
             escape(&fig.y_label)
         );
     }
-    legend(&mut s, fig, style, (pl, pr, pt, pb));
+    match above {
+        Some(rows) => legend_above(&mut s, fig, &labels, &rows, style, pl),
+        None => legend(&mut s, fig, &labels, style, (pl, pr, pt, pb)),
+    }
     s.push_str("</svg>");
     s
 }
@@ -303,21 +315,85 @@ fn legend_label(f: &FigureSeries, style: &PlotStyle) -> String {
     }
 }
 
-fn legend(s: &mut String, fig: &Figure, style: &PlotStyle, (pl, pr, pt, pb): (f64, f64, f64, f64)) {
+/// Width of a legend entry: line sample, space and label.
+fn entry_width(label: &str, fs: f64) -> f64 {
+    fs * LEGEND_SAMPLE + fs * 0.5 + label.chars().count() as f64 * fs * CHAR_WIDTH
+}
+
+/// Positions `(x offset, row)` of the legend entries in rows of at most `width`.
+fn legend_rows(labels: &[String], fs: f64, width: f64) -> Vec<(f64, usize)> {
+    let gap = fs * 1.2;
+    let (mut x, mut row) = (0.0, 0);
+    let mut out = Vec::new();
+    for label in labels {
+        let ew = entry_width(label, fs);
+        if x > 0.0 && x + ew > width {
+            (x, row) = (0.0, row + 1);
+        }
+        out.push((x, row));
+        x += ew + gap;
+    }
+    out
+}
+
+/// A line sample and label of a legend entry, centred on `cy`.
+fn legend_entry(s: &mut String, (x, cy): (f64, f64), color: &str, label: &str, style: &PlotStyle) {
+    let fs = f64::from(style.font_size_pt);
+    let _ = write!(
+        s,
+        r#"<line x1="{x}" y1="{cy}" x2="{}" y2="{cy}" stroke="{}" stroke-width="{}"/>"#,
+        x + fs * LEGEND_SAMPLE,
+        escape(color),
+        style.line_width_pt
+    );
+    let _ = write!(
+        s,
+        r#"<text x="{}" y="{}">{}</text>"#,
+        x + fs * LEGEND_SAMPLE + fs * 0.5,
+        cy + fs * 0.35,
+        escape(label)
+    );
+}
+
+/// The legend in rows above the plot area, which starts at `pl`.
+fn legend_above(
+    s: &mut String,
+    fig: &Figure,
+    labels: &[String],
+    rows: &[(f64, usize)],
+    style: &PlotStyle,
+    pl: f64,
+) {
+    let fs = f64::from(style.font_size_pt);
+    for ((label, f), (x, row)) in labels.iter().zip(&fig.series).zip(rows) {
+        let cy = fs * 0.6 + fs * LEGEND_ROW * (*row as f64 + 0.5);
+        legend_entry(s, (pl + x, cy), &f.color, label, style);
+    }
+}
+
+/// The legend in a box inside a corner of the plot area.
+fn legend(
+    s: &mut String,
+    fig: &Figure,
+    labels: &[String],
+    style: &PlotStyle,
+    (pl, pr, pt, pb): (f64, f64, f64, f64),
+) {
     if style.legend == LegendPosition::None || fig.series.is_empty() {
         return;
     }
     let fs = f64::from(style.font_size_pt);
-    let row = fs * 1.25;
-    let sample = fs * 1.6;
-    let labels: Vec<String> = fig.series.iter().map(|f| legend_label(f, style)).collect();
+    let row = fs * LEGEND_ROW;
+    let sample = fs * LEGEND_SAMPLE;
     let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64;
     let bw = sample + fs * 0.9 + longest * fs * CHAR_WIDTH + fs * 0.4;
     let bh = row * fig.series.len() as f64 + fs * 0.4;
     let pad = fs * 0.4;
     let (bx, by) = match style.legend {
         LegendPosition::UpperLeft => (pl + pad, pt + pad),
-        LegendPosition::UpperRight | LegendPosition::None => (pr - pad - bw, pt + pad),
+        LegendPosition::UpperRight | LegendPosition::None | LegendPosition::Above => {
+            (pr - pad - bw, pt + pad)
+        }
         LegendPosition::LowerLeft => (pl + pad, pb - pad - bh),
         LegendPosition::LowerRight => (pr - pad - bw, pb - pad - bh),
     };
@@ -327,21 +403,7 @@ fn legend(s: &mut String, fig: &Figure, style: &PlotStyle, (pl, pr, pt, pb): (f6
     );
     for (i, (label, f)) in labels.iter().zip(&fig.series).enumerate() {
         let cy = by + fs * 0.2 + row * (i as f64 + 0.5);
-        let _ = write!(
-            s,
-            r#"<line x1="{}" y1="{cy}" x2="{}" y2="{cy}" stroke="{}" stroke-width="{}"/>"#,
-            bx + fs * 0.4,
-            bx + fs * 0.4 + sample,
-            escape(&f.color),
-            style.line_width_pt
-        );
-        let _ = write!(
-            s,
-            r#"<text x="{}" y="{}">{}</text>"#,
-            bx + fs * 0.4 + sample + fs * 0.5,
-            cy + fs * 0.35,
-            escape(label)
-        );
+        legend_entry(s, (bx + fs * 0.4, cy), &f.color, label, style);
     }
 }
 
@@ -372,6 +434,17 @@ mod tests {
         assert_eq!(tick_label(10_002.0, 2.0), "10.002k");
         assert_eq!(tick_label(-10_002.0, 2.0), "-10.002k");
         assert_eq!(tick_label(0.2, 0.30000000000000004 - 0.2), "0.2");
+    }
+
+    #[test]
+    fn legend_rows_wrap_to_the_width() {
+        let labels: Vec<String> = ["flow 1", "flow 2", "flow 3"].map(String::from).to_vec();
+        let one = entry_width("flow 1", 8.0);
+        let rows = legend_rows(&labels, 8.0, one * 2.5);
+        assert_eq!(rows.iter().map(|r| r.1).collect::<Vec<_>>(), vec![0, 0, 1]);
+        assert_eq!(rows[2].0, 0.0);
+        // An entry wider than the plot still gets its own row
+        assert_eq!(legend_rows(&labels, 8.0, 1.0).last().unwrap().1, 2);
     }
 
     #[test]

@@ -102,6 +102,7 @@ pub fn collect(
     let secs = |t: f64| (t - origin) / 1e9;
     let mut series = Vec::new();
     let mut names = Vec::new();
+    let mut flows = Vec::new();
     for (prefix, sd, info) in exported(sources) {
         let points = if sd.step {
             let end = db.flow_end(info.flow_id).map(|t| t.min(t1));
@@ -125,6 +126,7 @@ pub fn collect(
             _ => None,
         };
         names.push(info.name.clone());
+        flows.push(format!("flow {}", info.flow_id));
         series.push(FigureSeries {
             label: format!("{prefix}{}", sd.name),
             color: series_color(style, series.len(), sd),
@@ -135,6 +137,15 @@ pub fn collect(
     }
     let y_range = view.y.unwrap_or_else(|| fit(&series));
     names.dedup();
+    // The axis names a single metric, so the legend need only tell the flows apart
+    let mut unique = flows.clone();
+    unique.sort();
+    unique.dedup();
+    if names.len() == 1 && unique.len() == flows.len() {
+        for (f, flow) in series.iter_mut().zip(flows) {
+            f.label = flow;
+        }
+    }
     Figure {
         x_label: "Time (s)".into(),
         // One metric names the axis; several are told apart by the legend.
