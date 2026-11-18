@@ -184,6 +184,9 @@ fn style_editor(ui: &mut egui::Ui, style: &mut PlotStyle) -> bool {
 
             ui.label("Line colours:");
             ui.horizontal(|ui| {
+                changed |= ui
+                    .checkbox(&mut style.use_palette, "palette instead of the viewer's")
+                    .changed();
                 for hex in &mut style.palette {
                     changed |= color_edit(ui, hex);
                 }

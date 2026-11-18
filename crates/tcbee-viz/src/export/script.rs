@@ -70,7 +70,7 @@ pub fn render(
         .replace("{{DB}}", &py_str(db))
 }
 
-/// The series of `sources` that the tcbee package can read, coloured from `style`.
+/// The series of `sources` that the tcbee package can read, coloured as in the figure.
 pub fn series(sources: &Sources, style: &PlotStyle) -> Vec<ScriptSeries> {
     let mut out = Vec::new();
     for (prefix, sd, info) in super::exported(sources) {
@@ -80,7 +80,7 @@ pub fn series(sources: &Sources, style: &PlotStyle) -> Vec<ScriptSeries> {
             name: info.name.clone(),
             direction: ["none", "send", "recv"][usize::from(info.dir.code()).min(2)],
             label: format!("{prefix}{}", sd.name),
-            color: style.palette_color(out.len()).to_string(),
+            color: super::series_color(style, out.len(), sd),
         });
     }
     out

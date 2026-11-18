@@ -49,7 +49,9 @@ pub struct PlotStyle {
     pub line_width_pt: f32,
     pub grid: bool,
     pub legend: LegendPosition,
-    /// Line colours as `#rrggbb`, used in series order.
+    /// Colour series by `palette` instead of their colours in the viewer
+    pub use_palette: bool,
+    /// Line colours as `#rrggbb`, used in series order when `use_palette` is set.
     pub palette: Vec<String>,
     /// Colour of the shaded hook_seq gaps, `#rrggbb`, drawn with `gap_opacity`.
     pub gap_color: String,
@@ -69,6 +71,7 @@ impl Default for PlotStyle {
             line_width_pt: 1.0,
             grid: true,
             legend: LegendPosition::UpperRight,
+            use_palette: false,
             // Okabe-Ito, distinguishable with colour vision deficiencies
             palette: [
                 "#0072b2", "#e69f00", "#009e73", "#d55e00", "#cc79a7", "#56b4e9", "#f0e442",

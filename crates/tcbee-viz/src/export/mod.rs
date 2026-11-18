@@ -53,8 +53,7 @@ impl Format {
 pub type Sources<'a> = [(&'a PlotState, &'a str)];
 
 /// The exported series of `sources` in plot order, with their legend prefix: the numeric
-/// series of the database. Their position picks their colour from the style, in the figure
-/// and in the data script alike.
+/// series of the database.
 fn exported<'a>(
     sources: &'a Sources<'a>,
 ) -> impl Iterator<Item = (&'a str, &'a SeriesData, &'a SeriesInfo)> + 'a {
@@ -65,6 +64,16 @@ fn exported<'a>(
             .filter(|s| !s.is_string_type())
             .filter_map(move |s| Some((*prefix, s, s.info.as_ref()?)))
     })
+}
+
+/// The colour of the `i`-th exported series `sd`, in the figure and the data script alike:
+/// its colour in the viewer, or the style's palette if the style asks for it.
+fn series_color(style: &PlotStyle, i: usize, sd: &SeriesData) -> String {
+    if style.use_palette {
+        style.palette_color(i).to_string()
+    } else {
+        crate::plot_style::to_hex(sd.color)
+    }
 }
 
 /// The plotted series that cannot be exported: plugin outputs, which are not in the
@@ -87,6 +96,7 @@ pub fn collect(
     origin: f64,
     x_range: (f64, f64),
     y_range: Option<(f64, f64)>,
+    style: &PlotStyle,
     columns: usize,
 ) -> Figure {
     let (t0, t1) = x_range;
@@ -116,6 +126,7 @@ pub fn collect(
         names.push(info.name.clone());
         series.push(FigureSeries {
             label: format!("{prefix}{}", sd.name),
+            color: series_color(style, series.len(), sd),
             points: points.into_iter().map(|(t, v)| (secs(t), v)).collect(),
             gaps,
             step: sd.step,
@@ -316,7 +327,7 @@ fn export_figure(
     let Some(x) = view.x else {
         return Some(Err("nothing is plotted".into()));
     };
-    let fig = collect(db, sources, origin, x, view.y, format.columns(style));
+    let fig = collect(db, sources, origin, x, view.y, style, format.columns(style));
     Some(write(&fig, style, &path).map(|()| path.display().to_string()))
 }
 
@@ -375,6 +386,7 @@ mod tests {
             y_range: (0.0, 10.0),
             series: vec![FigureSeries {
                 label: "cwnd".into(),
+                color: "#0072b2".into(),
                 points: vec![(0.0, 1.0), (1.0, 8.0), (2.0, 4.0)],
                 gaps: Some(vec![(0.5, 0.6)]),
                 step: false,
@@ -464,11 +476,16 @@ mod selection_tests {
             .collect();
         assert_eq!(names, vec![state.series[1].name.as_str()]);
         assert_eq!(not_exported(&sources).len(), 2);
-        let style = PlotStyle::default();
+        let mut style = PlotStyle::default();
         let script = script::series(&sources, &style);
         assert_eq!(script.len(), 1);
         assert_eq!(script[0].direction, "send");
-        // The first exported series takes the first colour, as in the figure
-        assert_eq!(script[0].color, style.palette_color(0));
+        // The viewer's colour, or the palette's first one, as in the figure
+        assert_eq!(script[0].color, "#000000");
+        style.use_palette = true;
+        assert_eq!(
+            script::series(&sources, &style)[0].color,
+            style.palette_color(0)
+        );
     }
 }

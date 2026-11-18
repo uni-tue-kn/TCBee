@@ -8,6 +8,8 @@ use crate::plot_style::{LegendPosition, PlotStyle};
 /// One line of a figure. `x` is in seconds.
 pub struct FigureSeries {
     pub label: String,
+    /// Line colour, `#rrggbb`
+    pub color: String,
     pub points: Vec<(f64, f64)>,
     /// Spans `(start, end)` in seconds where events are missing; `None` if unknown
     pub gaps: Option<Vec<(f64, f64)>>,
@@ -197,7 +199,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         }
         s.push_str("</g>");
     }
-    for (i, f) in fig.series.iter().enumerate() {
+    for f in &fig.series {
         let mut d = String::new();
         let mut prev: Option<(f64, f64)> = None;
         for &(x, y) in &f.points {
@@ -218,7 +220,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         let _ = write!(
             s,
             r#"<path d="{d}" fill="none" stroke="{}" stroke-width="{lw}" stroke-linejoin="round" stroke-linecap="round"/>"#,
-            escape(style.palette_color(i))
+            escape(&f.color)
         );
     }
     s.push_str("</g>");
@@ -320,14 +322,14 @@ fn legend(s: &mut String, fig: &Figure, style: &PlotStyle, (pl, pr, pt, pb): (f6
         s,
         r##"<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" fill="white" fill-opacity="0.85" stroke="#bfbfbf" stroke-width="0.4"/>"##
     );
-    for (i, label) in labels.iter().enumerate() {
+    for (i, (label, f)) in labels.iter().zip(&fig.series).enumerate() {
         let cy = by + fs * 0.2 + row * (i as f64 + 0.5);
         let _ = write!(
             s,
             r#"<line x1="{}" y1="{cy}" x2="{}" y2="{cy}" stroke="{}" stroke-width="{}"/>"#,
             bx + fs * 0.4,
             bx + fs * 0.4 + sample,
-            escape(style.palette_color(i)),
+            escape(&f.color),
             style.line_width_pt
         );
         let _ = write!(
@@ -378,6 +380,7 @@ mod tests {
             y_range: (0.0, 10.0),
             series: vec![FigureSeries {
                 label: "a & b".into(),
+                color: "#0072b2".into(),
                 points: vec![(0.0, 1.0), (1.0, 9.0)],
                 gaps: Some(vec![(0.4, 0.5)]),
                 step: false,
