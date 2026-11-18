@@ -180,22 +180,25 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
 
     s.push_str(r#"<g clip-path="url(#area)">"#);
     if style.show_gaps {
-        let _ = write!(
-            s,
-            r#"<g fill="{}" fill-opacity="{}">"#,
-            escape(&style.gap_color),
-            style.gap_opacity
-        );
-        for (a, b) in fig.series.iter().flat_map(|f| f.gaps.iter().flatten()) {
-            // At least a hairline, so a gap between two close events stays visible
-            let (xa, xb) = (sx(*a), sx(*b));
-            let width = (xb - xa).max(0.5);
-            let _ = write!(
-                s,
-                r#"<rect x="{}" y="{pt}" width="{width}" height="{}"/>"#,
-                xa - (width - (xb - xa)) / 2.0,
-                pb - pt
-            );
+        let _ = write!(s, r#"<g fill-opacity="{}">"#, style.gap_opacity);
+        for f in &fig.series {
+            let color = if style.gaps_in_series_color {
+                &f.color
+            } else {
+                &style.gap_color
+            };
+            for (a, b) in f.gaps.iter().flatten() {
+                // At least a hairline, so a gap between two close events stays visible
+                let (xa, xb) = (sx(*a), sx(*b));
+                let width = (xb - xa).max(0.5);
+                let _ = write!(
+                    s,
+                    r#"<rect x="{}" y="{pt}" width="{width}" height="{}" fill="{}"/>"#,
+                    xa - (width - (xb - xa)) / 2.0,
+                    pb - pt,
+                    escape(color)
+                );
+            }
         }
         s.push_str("</g>");
     }
@@ -389,13 +392,13 @@ mod tests {
         let s = svg(&fig, &PlotStyle::default());
         assert!(s.starts_with("<svg") && s.ends_with("</svg>"));
         assert!(s.contains("cwnd &lt;segments&gt;") && s.contains("a &amp; b"));
-        assert!(s.contains(r#"fill-opacity="0.3""#));
+        assert!(s.contains(r#"fill-opacity="0.25""#) && s.contains(r##"fill="#0072b2""##));
         assert!(s.contains(r##"stroke="#0072b2""##));
         let no_gaps = PlotStyle {
             show_gaps: false,
             ..PlotStyle::default()
         };
-        assert!(!svg(&fig, &no_gaps).contains("fill-opacity=\"0.3\""));
+        assert!(!svg(&fig, &no_gaps).contains(r#"fill-opacity="0.25""#));
         let unknown = Figure {
             series: vec![FigureSeries {
                 gaps: None,

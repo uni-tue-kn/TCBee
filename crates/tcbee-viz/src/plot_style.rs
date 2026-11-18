@@ -53,8 +53,11 @@ pub struct PlotStyle {
     pub use_palette: bool,
     /// Line colours as `#rrggbb`, used in series order when `use_palette` is set.
     pub palette: Vec<String>,
-    /// Colour of the shaded hook_seq gaps, `#rrggbb`, drawn with `gap_opacity`.
+    /// Shade hook_seq gaps in the colour of their series, as the viewer does
+    pub gaps_in_series_color: bool,
+    /// Colour of the shaded hook_seq gaps, `#rrggbb`, if not in the series colour
     pub gap_color: String,
+    /// Opacity of the shaded gaps
     pub gap_opacity: f32,
     pub show_gaps: bool,
     /// Resolution of PNG exports.
@@ -79,8 +82,9 @@ impl Default for PlotStyle {
             ]
             .map(String::from)
             .to_vec(),
+            gaps_in_series_color: true,
             gap_color: "#808080".into(),
-            gap_opacity: 0.3,
+            gap_opacity: 0.25,
             show_gaps: true,
             png_dpi: 300,
         }

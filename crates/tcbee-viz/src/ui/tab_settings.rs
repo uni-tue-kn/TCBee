@@ -196,7 +196,12 @@ fn style_editor(ui: &mut egui::Ui, style: &mut PlotStyle) -> bool {
             ui.label("Gaps (hook_seq) in figures:");
             ui.horizontal(|ui| {
                 changed |= ui.checkbox(&mut style.show_gaps, "show").changed();
-                changed |= color_edit(ui, &mut style.gap_color);
+                changed |= ui
+                    .checkbox(&mut style.gaps_in_series_color, "in series colour")
+                    .changed();
+                if !style.gaps_in_series_color {
+                    changed |= color_edit(ui, &mut style.gap_color);
+                }
                 changed |= ui
                     .add(egui::Slider::new(&mut style.gap_opacity, 0.05..=1.0).text("opacity"))
                     .changed();
