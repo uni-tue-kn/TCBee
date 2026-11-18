@@ -341,7 +341,7 @@ impl DbBackend {
     }
 
     /// The missing events of a series, read once per hook_seq counter. A read error is logged
-    /// and counts as unknown.
+    /// and counts as unknown until the next call.
     pub fn seq_gaps(&self, series: &SeriesInfo) -> Gaps {
         let (Some(db), Some(tbl)) = (&self.store, &series.tbl) else {
             return Gaps::Unavailable;
@@ -350,15 +350,20 @@ impl DbBackend {
         if let Some(gaps) = self.gaps.borrow().get(&key) {
             return gaps.clone();
         }
-        let gaps = db.seq_gaps(series, None).unwrap_or_else(|e| {
-            self.report(format!(
-                "reading the gaps of {} failed: {e}",
-                series_label(series)
-            ));
-            Gaps::Unavailable
-        });
-        self.gaps.borrow_mut().insert(key, gaps.clone());
-        gaps
+        match db.seq_gaps(series, None) {
+            Ok(gaps) => {
+                self.gaps.borrow_mut().insert(key, gaps.clone());
+                gaps
+            }
+            // Not cached: the next call retries
+            Err(e) => {
+                self.report(format!(
+                    "reading the gaps of {} failed: {e}",
+                    series_label(series)
+                ));
+                Gaps::Unavailable
+            }
+        }
     }
 
     /// End of a flow: the last timestamp of any of its series
