@@ -12,14 +12,14 @@ use crate::{
     export,
     settings::AppSettings,
     ui::{
-        flow_table::{selected_flow_card, FlowTable},
+        flow_table::FlowTable,
         gap_marks,
         series_table::SeriesTable,
+        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox, x_range_editor},
         tab_single_flow::{
-            apply_series_action, compact_axis_label, compact_coordinates_formatter,
-            outliers_checkbox, plot_height_with_footer, seconds_grid_spacer,
-            seconds_since_formatter, split_plot_height_with_footer, to_plot_points,
-            vertical_marker_label, x_range_editor, SIDEBAR_BOTTOM_GAP,
+            compact_axis_label, compact_coordinates_formatter, plot_height_with_footer,
+            seconds_grid_spacer, seconds_since_formatter, split_plot_height_with_footer,
+            to_plot_points, vertical_marker_label,
         },
         theme,
     },
@@ -1021,23 +1021,18 @@ fn flow_section(
         return false;
     }
 
-    if let Some(flow_id) = state.flow_id {
-        if selected_flow_card(ui, db, flow_id, &state.flow_label, *choosing_flow) {
-            *choosing_flow = !*choosing_flow;
-        }
-        ui.add_space(4.0);
-    }
-    if state.flow_id.is_none() || *choosing_flow {
-        egui::Frame::NONE.show(ui, |ui| {
-            ui.set_max_height((table_height * 0.62).max(160.0));
-            if let Some(new_id) =
-                flow_table.show_with_id_salt(ui, db, flows, state.flow_id, flow_table_id)
-            {
-                state.select_flow(db, new_id);
-                *choosing_flow = false;
-                changed = true;
-            }
-        });
+    if let Some(new_id) = flow_picker(
+        ui,
+        db,
+        flows,
+        flow_table,
+        state,
+        choosing_flow,
+        (table_height * 0.62).max(160.0),
+        flow_table_id,
+    ) {
+        state.select_flow(db, new_id);
+        changed = true;
     }
 
     if state.flow_id.is_none() {
@@ -1062,7 +1057,7 @@ fn flow_section(
 
     // The metrics table takes the rest of the flow's half
     let used = ui.cursor().top() - top;
-    let metrics_height = (table_height - used - SIDEBAR_BOTTOM_GAP).max(160.0);
+    let metrics_height = (table_height - used - sidebar::BOTTOM_GAP).max(160.0);
     egui::Frame::NONE.show(ui, |ui| {
         ui.set_max_height(metrics_height);
         if let Some(action) =

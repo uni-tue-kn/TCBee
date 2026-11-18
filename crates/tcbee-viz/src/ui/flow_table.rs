@@ -101,8 +101,8 @@ impl FlowTable {
         self.stats_cache.clear();
     }
 
-    /// Render the table with the caller's `selected` flow highlighted. Returns `Some(flow_id)`
-    /// when another row is clicked.
+    /// Render the table with the caller's `selected` flow highlighted. Returns the flow id of
+    /// a clicked row, also when it is the selected one.
     pub fn show(
         &mut self,
         ui: &mut Ui,
@@ -257,7 +257,7 @@ impl FlowTable {
                         let row_rect = row_response.response.rect;
                         let row_click =
                             table::row_click(ui, row_rect, ui.id().with((id_salt, "row", fid)));
-                        if row_click.clicked() && !is_selected {
+                        if row_click.clicked() {
                             new_selection = Some(fid);
                         }
 
@@ -268,53 +268,6 @@ impl FlowTable {
 
         new_selection
     }
-}
-
-/// The selected flow as a one-line card, `label` from `format_flow`, with the process below it
-/// if known. The button reads "Change" while the table is hidden and "Done" while `choosing`.
-/// Returns true when it was clicked.
-pub fn selected_flow_card(
-    ui: &mut Ui,
-    db: &DbBackend,
-    flow_id: i64,
-    label: &str,
-    choosing: bool,
-) -> bool {
-    let dark_mode = ui.visuals().dark_mode;
-    let mut clicked = false;
-    table::frame(dark_mode)
-        .fill(theme::table_row_selected(dark_mode))
-        .inner_margin(egui::Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let text = if choosing { "Done" } else { "Change" };
-                    clicked = ui.button(text).clicked();
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(label).strong().color(theme::text(dark_mode)),
-                            )
-                            .truncate(),
-                        )
-                        .on_hover_text(label);
-                        let owner = db.owner_label(flow_id);
-                        if !owner.is_empty() {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(owner)
-                                        .size(11.5)
-                                        .color(theme::muted_text(dark_mode)),
-                                )
-                                .truncate(),
-                            );
-                        }
-                    });
-                });
-            });
-        });
-    clicked
 }
 
 /// The owners of a flow, one line each, for the hover of the process cell

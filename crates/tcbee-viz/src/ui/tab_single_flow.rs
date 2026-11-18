@@ -10,17 +10,15 @@ use crate::{
     export,
     settings::AppSettings,
     ui::{
-        flow_table::{selected_flow_card, FlowTable},
+        flow_table::FlowTable,
         gap_marks,
-        series_table::{SeriesAction, SeriesTable},
+        series_table::SeriesTable,
+        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox, x_range_editor},
         theme,
     },
 };
 
 const PLOT_AXIS_FOOTER: f32 = 36.0;
-/// Space between a table that fills the sidebar and the controls below it
-pub const SIDEBAR_BOTTOM_GAP: f32 = 12.0;
-const OUTLIER_TOOLTIP: &str = "Automatically removes only leading points whose values are far outside the following steady-state data, so large initial CWND or ssthresh values do not distort auto-fit.";
 type PlotDataBounds = ((f64, f64), (f64, f64));
 
 pub struct TabSingleFlow {
@@ -134,26 +132,22 @@ impl TabSingleFlow {
         section_heading(ui, "Flow");
 
         let flows = db.list_flows();
-        let flow_table_height = (sidebar_height * 0.45).max(120.0);
-        if let Some(flow_id) = self.state.flow_id {
-            if selected_flow_card(ui, db, flow_id, &self.state.flow_label, self.choosing_flow) {
-                self.choosing_flow = !self.choosing_flow;
-            }
-            ui.add_space(6.0);
-        }
         if flows.is_empty() {
             ui.label(RichText::new("No flows found in database.").color(egui::Color32::GRAY));
-        } else if self.state.flow_id.is_none() || self.choosing_flow {
-            egui::Frame::NONE.show(ui, |ui| {
-                ui.set_max_height(flow_table_height);
-                if let Some(new_id) = self.flow_table.show(ui, db, flows, self.state.flow_id) {
-                    self.state.select_flow(db, new_id);
-                    self.manual_x_min = self.state.data_x_min;
-                    self.manual_x_max = self.state.data_x_max;
-                    self.needs_fit = true;
-                    self.choosing_flow = false;
-                }
-            });
+        } else if let Some(new_id) = flow_picker(
+            ui,
+            db,
+            flows,
+            &mut self.flow_table,
+            &self.state,
+            &mut self.choosing_flow,
+            (sidebar_height * 0.45).max(120.0),
+            "flow_table",
+        ) {
+            self.state.select_flow(db, new_id);
+            self.manual_x_min = self.state.data_x_min;
+            self.manual_x_max = self.state.data_x_max;
+            self.needs_fit = true;
         }
 
         if self.state.flow_id.is_none() {
@@ -186,7 +180,7 @@ impl TabSingleFlow {
 
             // The metrics table takes the rest of the sidebar
             let used = ui.cursor().top() - top;
-            let metrics_height = (sidebar_height - used - SIDEBAR_BOTTOM_GAP).max(160.0);
+            let metrics_height = (sidebar_height - used - sidebar::BOTTOM_GAP).max(160.0);
             egui::Frame::NONE.show(ui, |ui| {
                 ui.set_max_height(metrics_height);
                 if let Some(action) = self
@@ -906,49 +900,6 @@ pub fn plot_height_with_footer(available_height: f32) -> f32 {
 pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -> f32 {
     let count = plot_count.max(1) as f32;
     ((available_height - PLOT_AXIS_FOOTER) / count).max(80.0)
-}
-
-/// Change the selected metrics of `state` as the user asked in a `SeriesTable`
-pub fn apply_series_action(
-    state: &mut PlotState,
-    db: &DbBackend,
-    action: SeriesAction,
-    settings: &AppSettings,
-) {
-    match action {
-        SeriesAction::Toggle(id) => state.toggle_series(db, id, settings),
-        SeriesAction::Select(ids) => state.select_series(db, &ids, settings),
-        SeriesAction::Deselect(ids) => state.deselect_series(&ids),
-    }
-}
-
-/// The "Remove outliers" checkbox, true when it changed
-pub fn outliers_checkbox(ui: &mut egui::Ui, remove_outliers: &mut bool) -> bool {
-    ui.scope(|ui| {
-        ui.style_mut().interaction.tooltip_delay = 0.0;
-        ui.checkbox(remove_outliers, "Remove outliers")
-            .on_hover_text(OUTLIER_TOOLTIP)
-            .changed()
-    })
-    .inner
-}
-
-/// A collapsed "X range" section with Min, Max and Apply, true when Apply was clicked
-pub fn x_range_editor(ui: &mut egui::Ui, id_salt: &str, min: &mut f64, max: &mut f64) -> bool {
-    let mut apply = false;
-    egui::CollapsingHeader::new("X range")
-        .id_salt(id_salt)
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Min");
-                ui.add(egui::DragValue::new(min).speed(0.1));
-                ui.label("Max");
-                ui.add(egui::DragValue::new(max).speed(0.1));
-                apply = ui.button("Apply").clicked();
-            });
-        });
-    apply
 }
 
 pub fn section_heading(ui: &mut egui::Ui, label: &str) {
