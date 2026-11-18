@@ -16,6 +16,8 @@ rfd = "0.15.0"
 duckdb-cache.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.2.1"
+resvg = "0.45"
+svg2pdf = "0.13.0"
 
 [dev-dependencies]
 tempfile.workspace = true

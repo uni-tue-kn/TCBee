@@ -7,7 +7,9 @@ use ts_storage::{
     SeriesInfo, SeriesKind, Store, StoreError,
 };
 
-use crate::{backend::binding::series_label, data::series_data::SeriesData};
+use crate::{
+    backend::binding::series_label, data::series_data::SeriesData, export::figure::Envelope,
+};
 
 /// File extensions the file dialog and the usage text offer.
 pub const DB_EXTENSIONS: &[&str] = &["sqlite", "db", "duck", "duckdb"];
@@ -426,6 +428,28 @@ impl DbBackend {
             out.clear();
         }
         out
+    }
+
+    /// Numeric points in a range at the resolution of `columns` time slices: the first, lowest,
+    /// highest and last point of each (see `Envelope`). Reads every point of the range.
+    pub fn load_range_envelope(
+        &self,
+        series: &SeriesInfo,
+        t_min: f64,
+        t_max: f64,
+        columns: usize,
+    ) -> Vec<(f64, f64)> {
+        let mut env = Envelope::new(t_min, t_max, columns);
+        let result = self.for_each(series, Some((t_min, t_max)), &mut |p| {
+            if let Some(v) = datavalue_as_f64(&p.value) {
+                env.push(p.timestamp, v);
+            }
+        });
+        if let Err(e) = result {
+            self.report(e);
+            return Vec::new();
+        }
+        env.finish()
     }
 
     /// Numeric points (booleans as 0/1) in a range.

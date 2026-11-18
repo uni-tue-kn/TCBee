@@ -1,6 +1,7 @@
 mod app;
 mod backend;
 mod data;
+mod export;
 mod plot_style;
 mod settings;
 mod ui;

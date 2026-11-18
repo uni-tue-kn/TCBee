@@ -7,6 +7,7 @@ use egui_plot::{
 use crate::{
     backend::db::DbBackend,
     data::{plot_state::PlotState, preprocessing::remove_leading_outliers},
+    export,
     settings::AppSettings,
     ui::{flow_table::FlowTable, gap_marks, series_table::SeriesTable, theme},
 };
@@ -25,6 +26,9 @@ pub struct TabSingleFlow {
     needs_fit: bool,
     remove_outliers: bool,
     show_gaps: bool,
+    /// The visible part of the plot, for the figure export
+    view: export::View,
+    export_status: export::Status,
 }
 
 impl Default for TabSingleFlow {
@@ -39,6 +43,8 @@ impl Default for TabSingleFlow {
             needs_fit: false,
             remove_outliers: true,
             show_gaps: true,
+            view: export::View::default(),
+            export_status: None,
         }
     }
 }
@@ -195,6 +201,9 @@ impl TabSingleFlow {
             self.needs_fit = true;
         }
         gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
+        if export::controls(ui, &self.export_status) {
+            self.export_figure(db, settings);
+        }
 
         ui.add_space(8.0);
         ui.label(RichText::new("X range").strong().size(12.0));
@@ -351,6 +360,7 @@ impl TabSingleFlow {
         let mut new_x_min = self.state.x_min;
         let mut new_x_max = self.state.x_max;
         let mut needs_reload = false;
+        let mut view = export::View::default();
 
         let plot_response = plot.show(ui, |plot_ui| {
             if fit {
@@ -376,6 +386,12 @@ impl TabSingleFlow {
                     needs_reload = true;
                 }
             }
+
+            let b = plot_ui.plot_bounds();
+            view = export::View {
+                x: Some((b.min()[0], b.max()[0])),
+                y: Some((b.min()[1], b.max()[1])),
+            };
 
             if show_gaps {
                 for s in &self.state.series {
@@ -411,6 +427,8 @@ impl TabSingleFlow {
             }
         });
 
+        self.view = view;
+
         if plot_response.response.secondary_clicked() {
             self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
@@ -420,6 +438,30 @@ impl TabSingleFlow {
             self.state.x_max = new_x_max;
             self.state
                 .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
+        }
+    }
+
+    fn export_figure(&mut self, db: &DbBackend, settings: &AppSettings) {
+        let style = &settings.plot_style;
+        if style.show_gaps {
+            self.state.load_gaps(db);
+        }
+        let metrics: Vec<&str> = self
+            .state
+            .series
+            .iter()
+            .filter_map(|s| s.info.as_ref().map(|i| i.name.as_str()))
+            .collect();
+        let file_name = export::default_file_name(self.state.flow_id, &metrics);
+        if let Some(status) = export::export(
+            db,
+            &[(&self.state, "")],
+            self.state.data_x_min,
+            self.view,
+            style,
+            &file_name,
+        ) {
+            self.export_status = Some(status);
         }
     }
 
@@ -470,6 +512,8 @@ impl TabSingleFlow {
         let mut new_x_min = self.state.x_min;
         let mut new_x_max = self.state.x_max;
         let mut right_clicked = false;
+        // Each split plot has its own y range: the figure fits its own
+        let mut view = export::View::default();
 
         ScrollArea::vertical()
             .id_salt("split_scroll")
@@ -517,6 +561,9 @@ impl TabSingleFlow {
                             }
                         }
 
+                        let b = plot_ui.plot_bounds();
+                        view.x = Some((b.min()[0], b.max()[0]));
+
                         if show_gaps {
                             if let Some(s) = self.state.series.iter().find(|s| s.series_id == *sid)
                             {
@@ -549,6 +596,8 @@ impl TabSingleFlow {
                     ui.add_space(4.0);
                 }
             });
+
+        self.view = view;
 
         if right_clicked {
             self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));

@@ -137,6 +137,14 @@ impl PlotStyle {
             PlotStyle::default()
         })
     }
+
+    /// The `#rrggbb` colour of the `i`-th series, repeating the palette.
+    pub fn palette_color(&self, i: usize) -> &str {
+        match self.palette.len() {
+            0 => "#000000",
+            n => &self.palette[i % n],
+        }
+    }
 }
 
 /// `#rrggbb` to a colour.
@@ -193,5 +201,7 @@ mod tests {
         let c = parse_hex("#0072b2").unwrap();
         assert_eq!(to_hex(c), "#0072b2");
         assert_eq!(parse_hex("0072b2"), None);
+        let style = PlotStyle::default();
+        assert_eq!(style.palette_color(8), style.palette_color(0));
     }
 }

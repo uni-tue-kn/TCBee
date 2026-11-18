@@ -9,6 +9,7 @@ use crate::{
         preprocessing::{generate_colors, remove_leading_outliers},
         series_data::SeriesData,
     },
+    export,
     settings::AppSettings,
     ui::{
         flow_table::FlowTable,
@@ -40,6 +41,9 @@ pub struct TabMultiFlow {
     split_series_view: bool,
     remove_outliers: bool,
     show_gaps: bool,
+    /// The visible part of the plots, for the figure export
+    view: export::View,
+    export_status: export::Status,
     manual_x_min: f64,
     manual_x_max: f64,
     apply_manual_x: bool,
@@ -59,6 +63,8 @@ impl Default for TabMultiFlow {
             split_series_view: false,
             remove_outliers: true,
             show_gaps: true,
+            view: export::View::default(),
+            export_status: None,
             manual_x_min: 0.0,
             manual_x_max: 1.0,
             apply_manual_x: false,
@@ -201,6 +207,9 @@ impl TabMultiFlow {
             &mut self.show_gaps,
             self.state_a.series.iter().chain(&self.state_b.series),
         );
+        if export::controls(ui, &self.export_status) {
+            self.export_figure(db, settings);
+        }
 
         ui.add_space(4.0);
         ui.scope(|ui| {
@@ -246,6 +255,41 @@ impl TabMultiFlow {
                 self.apply_manual_x = true;
             }
         });
+    }
+
+    fn export_figure(&mut self, db: &DbBackend, settings: &AppSettings) {
+        let style = &settings.plot_style;
+        if style.show_gaps {
+            self.state_a.load_gaps(db);
+            self.state_b.load_gaps(db);
+        }
+        let metrics: Vec<&str> = self
+            .state_a
+            .series
+            .iter()
+            .chain(&self.state_b.series)
+            .filter_map(|s| s.info.as_ref().map(|i| i.name.as_str()))
+            .collect();
+        let file_name = export::default_file_name(None, &metrics);
+        // Split plots each fit their own y range, so the figure fits its own
+        let view = if self.merged_view && !self.split_series_view {
+            self.view
+        } else {
+            export::View {
+                y: None,
+                ..self.view
+            }
+        };
+        if let Some(status) = export::export(
+            db,
+            &[(&self.state_a, "A:"), (&self.state_b, "B:")],
+            merged_x_origin(&self.state_a, &self.state_b),
+            view,
+            style,
+            &file_name,
+        ) {
+            self.export_status = Some(status);
+        }
     }
 
     fn show_plot_area(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
@@ -294,6 +338,7 @@ impl TabMultiFlow {
         let string_markers_a = string_marker_display(&self.state_a.series, "A:");
         let string_markers_b = string_marker_display(&self.state_b.series, "B:");
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
+        let mut view = export::View::default();
         let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) =
             pad_plot_bounds(merged_display_bounds(&display_a, &display_b).unwrap_or((
                 selected_x_bounds(&self.state_a, &self.state_b),
@@ -347,6 +392,11 @@ impl TabMultiFlow {
                     }
                 }
 
+                let b = plot_ui.plot_bounds();
+                view = export::View {
+                    x: Some((b.min()[0], b.max()[0])),
+                    y: Some((b.min()[1], b.max()[1])),
+                };
                 if self.show_gaps {
                     for s in self.state_a.series.iter().chain(&self.state_b.series) {
                         gap_marks::draw_series(plot_ui, s);
@@ -387,6 +437,7 @@ impl TabMultiFlow {
                 }
             });
 
+        self.view = view;
         if plot_response.response.secondary_clicked() {
             self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
@@ -418,6 +469,7 @@ impl TabMultiFlow {
         let label_a = self.state_a.flow_label.clone();
         let label_b = self.state_b.flow_label.clone();
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
+        let mut view = export::View::default();
         let (fit_x_min, fit_x_max) = selected_x_bounds(&self.state_a, &self.state_b);
         let (_, (fit_y_a_min, fit_y_a_max)) =
             display_bounds(&display_a).unwrap_or(((fit_x_min, fit_x_max), self.state_a.y_bounds()));
@@ -467,6 +519,8 @@ impl TabMultiFlow {
                         new_x_a = (vx_min, vx_max);
                     }
                 }
+                let b = plot_ui.plot_bounds();
+                view.x = Some((b.min()[0], b.max()[0]));
                 if self.show_gaps {
                     for s in &self.state_a.series {
                         gap_marks::draw_series(plot_ui, s);
@@ -518,6 +572,8 @@ impl TabMultiFlow {
                         new_x_b = (vx_min, vx_max);
                     }
                 }
+                let b = plot_ui.plot_bounds();
+                view.x = Some((b.min()[0], b.max()[0]));
                 if self.show_gaps {
                     for s in &self.state_b.series {
                         gap_marks::draw_series(plot_ui, s);
@@ -532,6 +588,7 @@ impl TabMultiFlow {
                 }
             });
 
+        self.view = view;
         if response_a.response.secondary_clicked() || response_b.response.secondary_clicked() {
             self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
@@ -576,6 +633,7 @@ impl TabMultiFlow {
 
         let plot_height = split_plot_height_with_footer(ui.available_height(), display.len());
         let x_origin = merged_x_origin(&self.state_a, &self.state_b);
+        let mut view = export::View::default();
         let (fit_x_min, fit_x_max) = pad_x_bounds(selected_x_bounds(&self.state_a, &self.state_b));
 
         let mut reload_a = false;
@@ -634,6 +692,8 @@ impl TabMultiFlow {
                             }
                         }
 
+                        let b = plot_ui.plot_bounds();
+                        view.x = Some((b.min()[0], b.max()[0]));
                         if self.show_gaps {
                             let state = if item.flow_prefix == "A" {
                                 &self.state_a
@@ -662,6 +722,7 @@ impl TabMultiFlow {
                 }
             });
 
+        self.view = view;
         if right_clicked {
             self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
         }
