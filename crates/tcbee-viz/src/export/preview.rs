@@ -1,6 +1,8 @@
 //! The export window: the figure as it will be saved, next to a draft of its style. Edits
 //! change only the draft until the user saves the figure or makes the draft the default.
 
+use std::sync::Arc;
+
 use super::{collect, figure::Figure, not_exported, write, Format, Sources, Status, View};
 use crate::{backend::db::DbBackend, plot_style::PlotStyle, ui::style_editor};
 
@@ -18,9 +20,81 @@ pub struct Preview {
     file_stem: String,
     pub(super) draft: PlotStyle,
     /// The rendered figure and the style and pixels per inch it was rendered with
-    image: Option<(PlotStyle, f32, Result<egui::TextureHandle, String>)>,
+    image: Option<(PlotStyle, f32, Rendered)>,
     status: Status,
 }
+
+/// The figure rendered with `style` at `px_per_inch`, as a texture called `name`.
+fn texture(
+    ctx: &egui::Context,
+    name: &str,
+    figure: &Figure,
+    style: &PlotStyle,
+    px_per_inch: f32,
+) -> Rendered {
+    super::rasterize(figure, style, px_per_inch)
+        .map(|img| ctx.load_texture(name, img, egui::TextureOptions::LINEAR))
+}
+
+fn last_figure_id() -> egui::Id {
+    egui::Id::new("export_last_figure")
+}
+
+/// Keeps `figure` as the last one opened for export, for the preview in the settings.
+fn remember_figure(ctx: &egui::Context, figure: &Figure) {
+    ctx.data_mut(|d| d.insert_temp(last_figure_id(), Arc::new(figure.clone())));
+}
+
+/// The style preview of the settings: the figure last opened for export, else a sample.
+#[derive(Default)]
+pub struct StylePreview {
+    /// The rendered figure and the style, figure and pixels per inch it was rendered with
+    image: Option<(PlotStyle, Arc<Figure>, f32, Rendered)>,
+}
+
+impl StylePreview {
+    pub fn show(&mut self, ui: &mut egui::Ui, style: &PlotStyle) {
+        let figure = ui
+            .ctx()
+            .data(|d| d.get_temp::<Arc<Figure>>(last_figure_id()))
+            .unwrap_or_else(|| Arc::new(Figure::sample()));
+        let width = (style.width_in * SCREEN_PER_INCH)
+            .min(MAX_WIDTH)
+            .min(ui.available_width());
+        let scale = width / style.width_in * ui.ctx().pixels_per_point();
+        let stale = self
+            .image
+            .as_ref()
+            .is_none_or(|(s, f, px, _)| s != style || !Arc::ptr_eq(f, &figure) || *px != scale);
+        if stale {
+            let texture = if style.use_palette {
+                let mut recoloured = (*figure).clone();
+                for (i, f) in recoloured.series.iter_mut().enumerate() {
+                    f.color = style.palette_color(i).to_string();
+                }
+                texture(ui.ctx(), "style_preview", &recoloured, style, scale)
+            } else {
+                texture(ui.ctx(), "style_preview", &figure, style, scale)
+            };
+            self.image = Some((style.clone(), figure, scale, texture));
+        }
+        match &self.image {
+            Some((_, _, _, Ok(texture))) => {
+                ui.add(egui::Image::new((
+                    texture.id(),
+                    texture.size_vec2() / ui.ctx().pixels_per_point(),
+                )));
+            }
+            Some((_, _, _, Err(e))) => {
+                ui.colored_label(egui::Color32::RED, format!("Preview failed: {e}"));
+            }
+            None => {}
+        }
+    }
+}
+
+/// A rendered figure, or why rendering failed.
+type Rendered = Result<egui::TextureHandle, String>;
 
 /// What the window asks of its tab.
 pub enum Action {
@@ -105,10 +179,10 @@ impl Preview {
             }) {
                 self.figure = self.styled_figure(db, sources, (MAX_WIDTH * 2.0) as usize);
             }
-            let texture = super::rasterize(&self.figure, &self.draft, scale).map(|img| {
-                ui.ctx()
-                    .load_texture("export_preview", img, egui::TextureOptions::LINEAR)
-            });
+            if self.image.is_none() {
+                remember_figure(ui.ctx(), &self.figure);
+            }
+            let texture = texture(ui.ctx(), "export_preview", &self.figure, &self.draft, scale);
             self.image = Some((self.draft.clone(), scale, texture));
         }
         match &self.image {

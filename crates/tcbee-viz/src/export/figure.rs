@@ -6,6 +6,7 @@ use std::fmt::Write;
 use crate::plot_style::{LegendPosition, PlotStyle};
 
 /// One line of a figure. `x` is in seconds.
+#[derive(Clone)]
 pub struct FigureSeries {
     pub label: String,
     /// Line colour, `#rrggbb`
@@ -17,12 +18,49 @@ pub struct FigureSeries {
     pub step: bool,
 }
 
+#[derive(Clone)]
 pub struct Figure {
     pub x_label: String,
     pub y_label: String,
     pub x_range: (f64, f64),
     pub y_range: (f64, f64),
     pub series: Vec<FigureSeries>,
+}
+
+impl Figure {
+    /// Two made-up cwnd series with a gap, to show a style before anything is plotted.
+    pub fn sample() -> Figure {
+        let saw = |period: f64, peak: f64| {
+            (0..=400)
+                .map(|i| {
+                    let t = f64::from(i) * 0.025;
+                    (t, 10.0 + peak * ((t / period).fract()))
+                })
+                .collect()
+        };
+        Figure {
+            x_label: "Time (s)".into(),
+            y_label: "snd_cwnd".into(),
+            x_range: (0.0, 10.0),
+            y_range: (0.0, 120.0),
+            series: vec![
+                FigureSeries {
+                    label: "flow 1".into(),
+                    color: "#1f77b4".into(),
+                    points: saw(2.5, 100.0),
+                    gaps: Some(vec![(4.0, 4.6)]),
+                    step: false,
+                },
+                FigureSeries {
+                    label: "flow 2".into(),
+                    color: "#d62728".into(),
+                    points: saw(3.3, 70.0),
+                    gaps: None,
+                    step: false,
+                },
+            ],
+        }
+    }
 }
 
 /// Approximate width of a character relative to the font size, for the layout.

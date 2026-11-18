@@ -10,6 +10,7 @@ pub struct TabSettings {
     style_status: Option<Result<String, String>>,
     /// The plot style changed and is not saved yet
     style_dirty: bool,
+    style_preview: crate::export::preview::StylePreview,
 }
 
 impl TabSettings {
@@ -65,7 +66,20 @@ impl TabSettings {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.heading(egui::RichText::new("Figure export").color(theme::text(dark_mode)));
-                self.style_dirty |= style_editor::show(ui, &mut settings.plot_style);
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        self.style_dirty |= style_editor::show(ui, &mut settings.plot_style);
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("The figure last opened for export, or a sample")
+                                .small()
+                                .color(theme::muted_text(dark_mode)),
+                        );
+                        self.style_preview.show(ui, &settings.plot_style);
+                    });
+                });
                 // Save once a drag or edit has ended, not on every frame of it
                 if self.style_dirty && !ui.input(|i| i.pointer.any_down()) {
                     self.style_dirty = false;
