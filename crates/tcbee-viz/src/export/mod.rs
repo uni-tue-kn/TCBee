@@ -1,6 +1,7 @@
 //! Export of the current plot as a styled PDF or PNG figure.
 
 pub mod figure;
+pub mod preview;
 pub mod script;
 
 use std::path::Path;
@@ -19,6 +20,7 @@ use crate::{
     plot_style::PlotStyle,
 };
 use figure::{Figure, FigureSeries};
+pub use preview::Preview;
 
 /// Columns per inch of a PDF figure, for thinning its data.
 const PDF_COLUMNS_PER_INCH: f32 = 300.0;
@@ -211,15 +213,45 @@ fn fonts() -> Result<Arc<usvg::fontdb::Database>, String> {
     Ok(db.clone())
 }
 
-/// Renders `fig` with `style` to `path`, as PDF or PNG by its extension.
-pub fn write(fig: &Figure, style: &PlotStyle, path: &Path) -> Result<(), String> {
-    let format = Format::of(path).ok_or("the file name must end in .pdf or .png")?;
-    let svg = figure::svg(fig, style);
+/// The figure as an SVG tree, ready to render.
+fn tree(fig: &Figure, style: &PlotStyle) -> Result<usvg::Tree, String> {
     let options = usvg::Options {
         fontdb: fonts()?,
         ..usvg::Options::default()
     };
-    let tree = usvg::Tree::from_str(&svg, &options).map_err(|e| e.to_string())?;
+    usvg::Tree::from_str(&figure::svg(fig, style), &options).map_err(|e| e.to_string())
+}
+
+/// `tree` in pixels, `scale` pixels per point.
+fn pixmap(tree: &usvg::Tree, scale: f32) -> Result<tiny_skia::Pixmap, String> {
+    let size = tree
+        .size()
+        .to_int_size()
+        .scale_by(scale)
+        .ok_or("figure too small")?;
+    let mut pixmap =
+        tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("figure too large")?;
+    resvg::render(
+        tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    Ok(pixmap)
+}
+
+/// `fig` as an image of `scale` pixels per point, for the preview.
+pub fn rasterize(fig: &Figure, style: &PlotStyle, scale: f32) -> Result<egui::ColorImage, String> {
+    let pixmap = pixmap(&tree(fig, style)?, scale)?;
+    Ok(egui::ColorImage::from_rgba_premultiplied(
+        [pixmap.width() as usize, pixmap.height() as usize],
+        pixmap.data(),
+    ))
+}
+
+/// Renders `fig` with `style` to `path`, as PDF or PNG by its extension.
+pub fn write(fig: &Figure, style: &PlotStyle, path: &Path) -> Result<(), String> {
+    let format = Format::of(path).ok_or("the file name must end in .pdf or .png")?;
+    let tree = tree(fig, style)?;
     let bytes = match format {
         Format::Pdf => svg2pdf::to_pdf(
             &tree,
@@ -227,25 +259,30 @@ pub fn write(fig: &Figure, style: &PlotStyle, path: &Path) -> Result<(), String>
             svg2pdf::PageOptions::default(),
         )
         .map_err(|e| e.to_string())?,
-        Format::Png => {
-            // The SVG is sized in points
-            let scale = style.png_dpi as f32 / 72.0;
-            let size = tree
-                .size()
-                .to_int_size()
-                .scale_by(scale)
-                .ok_or("figure too small")?;
-            let mut pixmap =
-                tiny_skia::Pixmap::new(size.width(), size.height()).ok_or("figure too large")?;
-            resvg::render(
-                &tree,
-                tiny_skia::Transform::from_scale(scale, scale),
-                &mut pixmap.as_mut(),
-            );
-            pixmap.encode_png().map_err(|e| e.to_string())?
-        }
+        // The SVG is sized in points
+        Format::Png => pixmap(&tree, style.png_dpi as f32 / 72.0)?
+            .encode_png()
+            .map_err(|e| e.to_string())?,
     };
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Where the export window leaves a style made the default, for the app to take up.
+fn default_style_id() -> egui::Id {
+    egui::Id::new("export_new_default_style")
+}
+
+/// Saves `style` as the default in the config file and hands it to the app; the file's path.
+pub fn save_default_style(ctx: &egui::Context, style: &PlotStyle) -> Result<String, String> {
+    let path = crate::plot_style::config_path().ok_or("no home directory")?;
+    style.save_to(&path)?;
+    ctx.data_mut(|d| d.insert_temp(default_style_id(), style.clone()));
+    Ok(path.display().to_string())
+}
+
+/// A style the export window made the default since the last call.
+pub fn take_default_style(ctx: &egui::Context) -> Option<PlotStyle> {
+    ctx.data_mut(|d| d.remove_temp::<PlotStyle>(default_style_id()))
 }
 
 /// A file name without extension for an export of `flow_id` and its first three `metrics`:
@@ -277,8 +314,16 @@ pub struct View {
 /// The result of the last export of a tab: the written file or the error.
 pub type Status = Option<Result<String, String>>;
 
-/// Runs an export of the plotted `sources`: asks where to save and returns the outcome, `None`
-/// if cancelled. `file_stem` names the file by default.
+/// What an export request led to.
+pub enum Outcome {
+    /// A file was written, or writing failed
+    Saved(Result<String, String>),
+    /// The export window opened
+    Preview(Box<Preview>),
+}
+
+/// Runs an export of the plotted `sources`: opens the preview of a figure, or asks where to
+/// save a script; `None` if cancelled. `file_stem` names the file by default.
 pub fn run(
     request: Request,
     db: &DbBackend,
@@ -287,22 +332,28 @@ pub fn run(
     view: View,
     style: &PlotStyle,
     file_stem: &str,
-) -> Status {
+) -> Option<Outcome> {
     if exported(sources).next().is_none() {
-        return Some(Err("no numeric metric of the database is plotted".into()));
+        return Some(Outcome::Saved(Err(
+            "no numeric metric of the database is plotted".into(),
+        )));
     }
-    if view.x.is_none() {
-        return Some(Err("the plot has not been drawn yet".into()));
-    }
+    let Some(x) = view.x else {
+        return Some(Outcome::Saved(
+            Err("the plot has not been drawn yet".into()),
+        ));
+    };
     let status = match request {
-        Request::Figure => export_figure(
-            db,
-            sources,
-            origin,
-            view,
-            style,
-            &format!("{file_stem}.pdf"),
-        ),
+        Request::Figure => {
+            return Some(Outcome::Preview(Box::new(Preview::new(
+                db,
+                sources,
+                origin,
+                (x, view),
+                style,
+                file_stem,
+            ))));
+        }
         Request::Script => script::export(
             db.path(),
             sources,
@@ -313,42 +364,30 @@ pub fn run(
         ),
     }?;
     let skipped = not_exported(sources);
-    Some(status.map(|path| {
+    Some(Outcome::Saved(status.map(|path| {
         if skipped.is_empty() {
             path
         } else {
             format!("{path} (without {})", skipped.join(", "))
         }
-    }))
+    })))
 }
 
-/// Asks where to save, renders the figure and returns the outcome; `None` if cancelled.
-fn export_figure(
+/// Shows the export window of a tab, if open; the outcome of a save made in it.
+pub fn show_preview(
+    ctx: &egui::Context,
+    preview: &mut Option<Preview>,
     db: &DbBackend,
     sources: &Sources,
-    origin: f64,
-    view: View,
-    style: &PlotStyle,
-    file_name: &str,
-) -> Status {
-    let path = rfd::FileDialog::new()
-        .add_filter("PDF", &["pdf"])
-        .add_filter("PNG", &["png"])
-        .set_file_name(file_name)
-        .save_file()?;
-    let path = if path.extension().is_none() {
-        path.with_extension("pdf")
-    } else {
-        path
-    };
-    let Some(format) = Format::of(&path) else {
-        return Some(Err("the file name must end in .pdf or .png".into()));
-    };
-    let Some(x) = view.x else {
-        return Some(Err("nothing is plotted".into()));
-    };
-    let fig = collect(db, sources, origin, (x, view), style, format.columns(style));
-    Some(write(&fig, style, &path).map(|()| path.display().to_string()))
+) -> Option<Result<String, String>> {
+    match preview.as_mut()?.show(ctx, db, sources) {
+        preview::Action::None => None,
+        preview::Action::Close => {
+            *preview = None;
+            None
+        }
+        preview::Action::Saved(result) => Some(result),
+    }
 }
 
 /// What the user asked to export.
@@ -365,7 +404,7 @@ pub fn controls(ui: &mut egui::Ui, status: &Status) -> Option<Request> {
         if ui
             .button("Export figure…")
             .on_hover_text(
-                "Save the visible plot as PDF or PNG, styled as in Settings → Figure export",
+                "Preview the visible plot as a figure, adjust its style and save it as PDF or PNG",
             )
             .clicked()
         {
@@ -426,6 +465,9 @@ mod tests {
         let bytes = std::fs::read(&png).unwrap();
         assert!(bytes.starts_with(b"\x89PNG"));
         assert!(write(&fig(), &style, &dir.path().join("f.svg")).is_err());
+        // The preview: 3.5 in at scale 1, which usvg takes as 96 pixels per inch
+        let img = rasterize(&fig(), &style, 1.0).unwrap();
+        assert_eq!(img.size[0], 336);
     }
 
     #[test]

@@ -44,6 +44,8 @@ pub struct TabMultiFlow {
     /// The visible part of the plots, for the figure export
     view: export::View,
     export_status: export::Status,
+    /// The open export window
+    preview: Option<export::Preview>,
     manual_x_min: f64,
     manual_x_max: f64,
     apply_manual_x: bool,
@@ -65,6 +67,7 @@ impl Default for TabMultiFlow {
             show_gaps: true,
             view: export::View::default(),
             export_status: None,
+            preview: None,
             manual_x_min: 0.0,
             manual_x_max: 1.0,
             apply_manual_x: false,
@@ -75,6 +78,7 @@ impl Default for TabMultiFlow {
 
 impl TabMultiFlow {
     pub fn reset(&mut self) {
+        self.preview = None;
         self.state_a.reset();
         self.state_b.reset();
         self.table_a.reset();
@@ -210,6 +214,14 @@ impl TabMultiFlow {
         if let Some(request) = export::controls(ui, &self.export_status) {
             self.export(request, db, settings);
         }
+        if let Some(status) = export::show_preview(
+            ui.ctx(),
+            &mut self.preview,
+            db,
+            &[(&self.state_a, "A:"), (&self.state_b, "B:")],
+        ) {
+            self.export_status = Some(status);
+        }
 
         ui.add_space(4.0);
         ui.scope(|ui| {
@@ -280,7 +292,7 @@ impl TabMultiFlow {
             remove_outliers: self.remove_outliers,
             ..self.view
         };
-        if let Some(status) = export::run(
+        match export::run(
             request,
             db,
             &[(&self.state_a, "A:"), (&self.state_b, "B:")],
@@ -289,7 +301,9 @@ impl TabMultiFlow {
             style,
             &file_stem,
         ) {
-            self.export_status = Some(status);
+            Some(export::Outcome::Saved(status)) => self.export_status = Some(status),
+            Some(export::Outcome::Preview(preview)) => self.preview = Some(*preview),
+            None => {}
         }
     }
 

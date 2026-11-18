@@ -74,6 +74,9 @@ impl Default for TcbeeApp {
 impl eframe::App for TcbeeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         theme::apply(ctx, self.settings.dark_mode, self.settings.text_size);
+        if let Some(style) = crate::export::take_default_style(ctx) {
+            self.settings.plot_style = style;
+        }
 
         // Tab bar
         egui::TopBottomPanel::top("tab_bar")

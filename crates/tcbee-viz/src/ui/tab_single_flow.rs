@@ -29,6 +29,8 @@ pub struct TabSingleFlow {
     /// The visible part of the plot, for the figure export
     view: export::View,
     export_status: export::Status,
+    /// The open export window
+    preview: Option<export::Preview>,
 }
 
 impl Default for TabSingleFlow {
@@ -45,12 +47,14 @@ impl Default for TabSingleFlow {
             show_gaps: true,
             view: export::View::default(),
             export_status: None,
+            preview: None,
         }
     }
 }
 
 impl TabSingleFlow {
     pub fn reset(&mut self) {
+        self.preview = None;
         self.state.reset();
         self.flow_table.reset();
         self.series_table.reset();
@@ -203,6 +207,11 @@ impl TabSingleFlow {
         gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
         if let Some(request) = export::controls(ui, &self.export_status) {
             self.export(request, db, settings);
+        }
+        if let Some(status) =
+            export::show_preview(ui.ctx(), &mut self.preview, db, &[(&self.state, "")])
+        {
+            self.export_status = Some(status);
         }
 
         ui.add_space(8.0);
@@ -454,7 +463,7 @@ impl TabSingleFlow {
             .filter_map(|s| s.info.as_ref().map(|i| i.name.as_str()))
             .collect();
         let file_stem = export::default_file_stem(self.state.flow_id, &metrics);
-        if let Some(status) = export::run(
+        match export::run(
             request,
             db,
             &[(&self.state, "")],
@@ -466,7 +475,9 @@ impl TabSingleFlow {
             style,
             &file_stem,
         ) {
-            self.export_status = Some(status);
+            Some(export::Outcome::Saved(status)) => self.export_status = Some(status),
+            Some(export::Outcome::Preview(preview)) => self.preview = Some(*preview),
+            None => {}
         }
     }
 
