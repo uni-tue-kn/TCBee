@@ -6,17 +6,21 @@ use ts_storage::{Flow, FlowOwner};
 use crate::{
     backend::db::DbBackend,
     ui::{
-        table::{self, data_cell, header_cell, ROW_HEIGHT},
+        table::{
+            self, data_cell, header_cell, number_cell, number_header_cell, text_cell,
+            text_header_cell, ROW_HEIGHT,
+        },
         theme,
     },
 };
 
-const COL_ID: f32 = 36.0;
-const COL_PORT: f32 = 54.0;
+const COL_ID: f32 = 40.0;
 const COL_SERIES: f32 = 54.0;
-const COL_POINTS: f32 = 72.0;
+const COL_POINTS: f32 = 64.0;
 const COL_CONN: f32 = 54.0;
-const COL_PROC: f32 = 140.0;
+const COL_PROC: f32 = 120.0;
+/// The flow column gets the width the other columns leave, at least this much
+const MIN_FLOW_W: f32 = 180.0;
 const FILTER_GAP: f32 = 20.0;
 const FILTER_HELP: &str = "Filter syntax:\n\
 Plain text searches all flow columns and the process names.\n\
@@ -39,6 +43,46 @@ Combine terms with spaces, e.g. src:10.0.0.1 dport:443";
 pub struct FlowTable {
     pub filter: String,
     stats_cache: HashMap<i64, FlowStats>,
+}
+
+/// The columns after ID and flow, which only show when the table is wide enough
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Column {
+    Points,
+    Process,
+    Conn,
+    Series,
+}
+
+impl Column {
+    fn width(self) -> f32 {
+        match self {
+            Column::Points => COL_POINTS,
+            Column::Process => COL_PROC,
+            Column::Conn => COL_CONN,
+            Column::Series => COL_SERIES,
+        }
+    }
+}
+
+/// The optional columns that fit next to ID and a flow column of at least `MIN_FLOW_W` in
+/// `width`, by priority, and the flow column's width. Process and Conn only exist for
+/// recordings that have them.
+fn visible_columns(width: f32, has_proc: bool, has_conn: bool) -> (Vec<Column>, f32) {
+    let mut columns = Vec::new();
+    let mut flow_w = width - COL_ID;
+    for (column, exists) in [
+        (Column::Points, true),
+        (Column::Process, has_proc),
+        (Column::Conn, has_conn),
+        (Column::Series, true),
+    ] {
+        if exists && flow_w - column.width() >= MIN_FLOW_W {
+            columns.push(column);
+            flow_w -= column.width();
+        }
+    }
+    (columns, flow_w.max(0.0))
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -121,26 +165,25 @@ impl FlowTable {
             }
 
             // ── Header ────────────────────────────────────────────────────────
-            let conn_w = if show_conn { COL_CONN } else { 0.0 };
-            let proc_w = if show_proc { COL_PROC } else { 0.0 };
-            let fixed_w = COL_ID + COL_PORT + COL_PORT + COL_SERIES + COL_POINTS + conn_w + proc_w;
-            let col_ip = ((content_w - fixed_w) / 2.0).max(40.0);
+            let (columns, flow_w) = visible_columns(content_w, show_proc, show_conn);
 
             table::header_row(ui, content_w, |ui| {
-                header_cell(ui, "ID", COL_ID);
-                header_cell(ui, "Src IP", col_ip);
-                header_cell(ui, "Sport", COL_PORT);
-                header_cell(ui, "Dst IP", col_ip);
-                header_cell(ui, "Dport", COL_PORT);
-                if show_conn {
-                    header_cell(ui, "Conn", COL_CONN).on_hover_text("MPTCP connection/subflow");
+                number_header_cell(ui, "ID", COL_ID);
+                text_header_cell(ui, "Flow", flow_w);
+                for &column in &columns {
+                    match column {
+                        Column::Points => drop(number_header_cell(ui, "Points", COL_POINTS)),
+                        Column::Process => drop(
+                            text_header_cell(ui, "Process", COL_PROC)
+                                .on_hover_text("The process that opened the connection, name[pid]"),
+                        ),
+                        Column::Conn => drop(
+                            header_cell(ui, "Conn", COL_CONN)
+                                .on_hover_text("MPTCP connection/subflow"),
+                        ),
+                        Column::Series => drop(number_header_cell(ui, "Series", COL_SERIES)),
+                    }
                 }
-                if show_proc {
-                    header_cell(ui, "Process", COL_PROC)
-                        .on_hover_text("The process that opened the connection, name[pid]");
-                }
-                header_cell(ui, "Series", COL_SERIES);
-                header_cell(ui, "Points", COL_POINTS);
             });
 
             ui.separator();
@@ -171,29 +214,43 @@ impl FlowTable {
                             let bg = table::row_fill(dark_mode, i, is_selected, hovered);
                             ui.painter().rect_filled(rect, 0.0, bg);
 
-                            data_cell(ui, &fid.to_string(), COL_ID, is_selected);
-                            data_cell(ui, &flow.tuple.src.to_string(), col_ip, is_selected);
-                            data_cell(ui, &flow.tuple.sport.to_string(), COL_PORT, is_selected);
-                            data_cell(ui, &flow.tuple.dst.to_string(), col_ip, is_selected);
-                            data_cell(ui, &flow.tuple.dport.to_string(), COL_PORT, is_selected);
-                            if show_conn {
-                                data_cell(ui, conn, COL_CONN, is_selected);
-                            }
-                            if show_proc {
-                                let owners = db.flow_owners(fid);
-                                let cell =
-                                    data_cell(ui, db.owner_label(fid), COL_PROC, is_selected);
-                                if !owners.is_empty() {
-                                    cell.on_hover_ui(|ui| owner_details(ui, owners));
+                            number_cell(ui, &fid.to_string(), COL_ID, is_selected);
+                            let tuple = format!(
+                                "{}:{} → {}:{}",
+                                flow.tuple.src, flow.tuple.sport, flow.tuple.dst, flow.tuple.dport
+                            );
+                            text_cell(ui, &tuple, flow_w, is_selected);
+                            for &column in &columns {
+                                match column {
+                                    Column::Points => drop(number_cell(
+                                        ui,
+                                        &format_count(stats.point_count),
+                                        COL_POINTS,
+                                        is_selected,
+                                    )),
+                                    Column::Process => {
+                                        let owners = db.flow_owners(fid);
+                                        let cell = text_cell(
+                                            ui,
+                                            db.owner_label(fid),
+                                            COL_PROC,
+                                            is_selected,
+                                        );
+                                        if !owners.is_empty() {
+                                            cell.on_hover_ui(|ui| owner_details(ui, owners));
+                                        }
+                                    }
+                                    Column::Conn => {
+                                        drop(data_cell(ui, conn, COL_CONN, is_selected))
+                                    }
+                                    Column::Series => drop(number_cell(
+                                        ui,
+                                        &stats.series_count.to_string(),
+                                        COL_SERIES,
+                                        is_selected,
+                                    )),
                                 }
                             }
-                            data_cell(ui, &stats.series_count.to_string(), COL_SERIES, is_selected);
-                            data_cell(
-                                ui,
-                                &format_count(stats.point_count),
-                                COL_POINTS,
-                                is_selected,
-                            );
                         });
 
                         // Make the whole row clickable
@@ -388,6 +445,26 @@ mod tests {
                 l4proto: 6,
             },
         )
+    }
+
+    #[test]
+    fn narrow_tables_drop_the_low_priority_columns() {
+        use Column::*;
+        // ID and flow only
+        let (columns, flow_w) = visible_columns(240.0, true, true);
+        assert_eq!((columns, flow_w), (vec![], 200.0));
+        let (columns, flow_w) = visible_columns(300.0, true, true);
+        assert_eq!((columns, flow_w), (vec![Points], 196.0));
+        // Process is skipped where it does not fit, smaller columns may still follow
+        let (columns, _) = visible_columns(360.0, true, true);
+        assert_eq!(columns, vec![Points, Conn]);
+        let (columns, _) = visible_columns(500.0, true, true);
+        assert_eq!(columns, vec![Points, Process, Conn]);
+        let (columns, _) = visible_columns(500.0, false, false);
+        assert_eq!(columns, vec![Points, Series]);
+        let (columns, flow_w) = visible_columns(800.0, true, true);
+        assert_eq!(columns, vec![Points, Process, Conn, Series]);
+        assert_eq!(flow_w, 800.0 - 332.0);
     }
 
     #[test]
