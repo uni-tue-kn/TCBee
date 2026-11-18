@@ -40,6 +40,8 @@ pub struct TabSingleFlow {
     export_status: export::Status,
     /// The open export window
     preview: Option<export::Preview>,
+    /// The data script shown for copying
+    script: Option<String>,
 }
 
 impl Default for TabSingleFlow {
@@ -59,6 +61,7 @@ impl Default for TabSingleFlow {
             view: export::View::default(),
             export_status: None,
             preview: None,
+            script: None,
         }
     }
 }
@@ -66,6 +69,7 @@ impl Default for TabSingleFlow {
 impl TabSingleFlow {
     pub fn reset(&mut self) {
         self.preview = None;
+        self.script = None;
         self.state.reset();
         self.flow_table.reset();
         self.choosing_flow = false;
@@ -218,6 +222,7 @@ impl TabSingleFlow {
             }
             gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
         });
+        export::show_script(ui.ctx(), &mut self.script);
         if let Some(request) = export::controls(ui, &self.export_status) {
             self.export(request, db, settings);
         }
@@ -475,6 +480,7 @@ impl TabSingleFlow {
         ) {
             Some(export::Outcome::Saved(status)) => self.export_status = Some(status),
             Some(export::Outcome::Preview(preview)) => self.preview = Some(*preview),
+            Some(export::Outcome::Script(text)) => self.script = Some(text),
             None => {}
         }
     }

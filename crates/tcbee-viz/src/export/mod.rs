@@ -324,10 +324,12 @@ pub enum Outcome {
     Saved(Result<String, String>),
     /// The export window opened
     Preview(Box<Preview>),
+    /// The text of a data script, to show for copying
+    Script(String),
 }
 
-/// Runs an export of the plotted `sources`: opens the preview of a figure, or asks where to
-/// save a script; `None` if cancelled. `file_stem` names the file by default.
+/// Runs an export of the plotted `sources`: opens the preview of a figure or returns the text
+/// of a data script. `file_stem` names the figure file by default.
 pub fn run(
     request: Request,
     db: &DbBackend,
@@ -358,23 +360,54 @@ pub fn run(
                 file_stem,
             ))));
         }
-        Request::Script => script::export(
-            db.path(),
-            sources,
-            origin,
-            view,
-            style,
-            &format!("{file_stem}.py"),
-        ),
-    }?;
+        Request::Script => script::text(db.path(), sources, origin, view, style),
+    };
     let skipped = not_exported(sources);
-    Some(Outcome::Saved(status.map(|path| {
-        if skipped.is_empty() {
-            path
-        } else {
-            format!("{path} (without {})", skipped.join(", "))
-        }
-    })))
+    Some(match status {
+        Ok(text) if skipped.is_empty() => Outcome::Script(text),
+        Ok(text) => Outcome::Script(format!(
+            "# Not included, the tcbee package cannot read them: {}\n{text}",
+            skipped.join(", ")
+        )),
+        Err(e) => Outcome::Saved(Err(e)),
+    })
+}
+
+/// Shows the data script of a tab in a window, if there is one, with a button to copy it.
+pub fn show_script(ctx: &egui::Context, script: &mut Option<String>) {
+    let Some(text) = script.as_deref() else {
+        return;
+    };
+    let mut open = true;
+    egui::Window::new("Python data script")
+        .open(&mut open)
+        .default_size([640.0, 480.0])
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Copy to clipboard").clicked() {
+                    ui.ctx().copy_text(text.to_string());
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Loads the plotted series with the tcbee package; plot them where it says so.",
+                    )
+                    .small(),
+                );
+            });
+            ui.separator();
+            egui::ScrollArea::both().show(ui, |ui| {
+                // A &str makes the text box read-only but still selectable
+                ui.add(
+                    egui::TextEdit::multiline(&mut &*text)
+                        .code_editor()
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        });
+    if !open {
+        *script = None;
+    }
 }
 
 /// Shows the export window of a tab, if open; the outcome of a save made in it.
@@ -423,8 +456,8 @@ pub fn controls(ui: &mut egui::Ui, status: &Status) -> Option<Request> {
         if ui
             .button("Export data script…")
             .on_hover_text(
-                "Save a Python script that loads the plotted data and gaps with the tcbee \
-                 package, to plot with the library of your choice",
+                "Show a Python script to copy that loads the plotted data and gaps with the \
+                 tcbee package, to plot with the library of your choice",
             )
             .clicked()
         {

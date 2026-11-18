@@ -40,7 +40,7 @@ Both plot tabs export what they show: the selected metrics in the visible time r
   The default style is set under *Settings → Figure export*, with a preview of the figure last opened for export.
   It is saved in `$XDG_CONFIG_HOME/tcbee/viz.toml` (default `~/.config/tcbee/viz.toml`), which can also be edited by hand or kept with a paper.
   The value range of a single plot is kept; split plots fit their data.
-- *Export data script…* writes a Python script that loads the same series and their gaps with the [tcbee package](../../python/API.md).
+- *Export data script…* shows a Python script to copy that loads the same series and their gaps with the [tcbee package](../../python/API.md).
   It has no plotting code: plot with the library of your choice where the script says so.
 
 ## Flow filter

@@ -86,37 +86,28 @@ pub fn series(sources: &Sources, style: &PlotStyle) -> Vec<ScriptSeries> {
     out
 }
 
-/// Asks where to save and writes the script; `None` if cancelled.
-pub fn export(
+/// The script that loads the plotted `sources` of the database at `db_path` in the visible
+/// range of `view`.
+pub fn text(
     db_path: Option<&Path>,
     sources: &Sources,
     origin: f64,
     view: View,
     style: &PlotStyle,
-    file_name: &str,
-) -> super::Status {
+) -> Result<String, String> {
     let (Some(db_path), Some((x0, x1))) = (db_path, view.x) else {
-        return Some(Err("no database is open".into()));
+        return Err("no database is open".into());
     };
-    let path = rfd::FileDialog::new()
-        .add_filter("Python", &["py"])
-        .set_file_name(file_name)
-        .save_file()?;
     let db = std::path::absolute(db_path).unwrap_or_else(|_| db_path.to_path_buf());
     // The script's range is half-open, the visible one inclusive
     let range = (x0.floor() as i64, x1.ceil() as i64 + 1);
-    let text = render(
+    Ok(render(
         &db.to_string_lossy(),
         range,
         origin.round() as i64,
         view.y,
         &series(sources, style),
-    );
-    Some(
-        std::fs::write(&path, text)
-            .map(|()| path.display().to_string())
-            .map_err(|e| format!("{}: {e}", path.display())),
-    )
+    ))
 }
 
 #[cfg(test)]

@@ -50,6 +50,8 @@ pub struct TabMultiFlow {
     export_status: export::Status,
     /// The open export window
     preview: Option<export::Preview>,
+    /// The data script shown for copying
+    script: Option<String>,
     manual_x_min: f64,
     manual_x_max: f64,
     apply_manual_x: bool,
@@ -75,6 +77,7 @@ impl Default for TabMultiFlow {
             view: export::View::default(),
             export_status: None,
             preview: None,
+            script: None,
             manual_x_min: 0.0,
             manual_x_max: 1.0,
             apply_manual_x: false,
@@ -87,6 +90,7 @@ impl Default for TabMultiFlow {
 impl TabMultiFlow {
     pub fn reset(&mut self) {
         self.preview = None;
+        self.script = None;
         self.state_a.reset();
         self.state_b.reset();
         self.table_a.reset();
@@ -237,6 +241,7 @@ impl TabMultiFlow {
                 self.state_a.series.iter().chain(&self.state_b.series),
             );
         });
+        export::show_script(ui.ctx(), &mut self.script);
         if let Some(request) = export::controls(ui, &self.export_status) {
             self.export(request, db, settings);
         }
@@ -293,6 +298,7 @@ impl TabMultiFlow {
         ) {
             Some(export::Outcome::Saved(status)) => self.export_status = Some(status),
             Some(export::Outcome::Preview(preview)) => self.preview = Some(*preview),
+            Some(export::Outcome::Script(text)) => self.script = Some(text),
             None => {}
         }
     }
