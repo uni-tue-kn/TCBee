@@ -454,3 +454,22 @@ fn replace_of_the_series_with_the_highest_id() {
     assert_eq!(next.id, a.id + 1);
 }
 
+#[test]
+fn seq_gaps_from_hook_seq() {
+    let db = TmpDb::new();
+    let s = create(Engine::DuckDb, db.path(), CreateOptions::default()).unwrap();
+    s.create_tables(&[&ZETA]).unwrap();
+    let batch = crate::testutil::gap_batch();
+    let mut acc = StatsAccumulator::new();
+    acc.observe(&batch).unwrap();
+    let mut w = s.writer().unwrap();
+    w.write(batch).unwrap();
+    w.close().unwrap();
+    s.finish(Catalog {
+        flows: vec![flow(1, 1000), flow(2, 2000), flow(3, 3000)],
+        series: acc.into_series(1),
+        ..Catalog::default()
+    })
+    .unwrap();
+    crate::testutil::check_gaps(open(db.path()).unwrap().as_ref());
+}

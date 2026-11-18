@@ -20,6 +20,15 @@ pub fn range_query(tbl: &str, col: &str) -> String {
     points(tbl, col, r#" AND "ts" >= ? AND "ts" <= ?"#)
 }
 
+/// The first row (lowest `seq`) and every row whose `seq` jumps by more than 1, as
+/// `seq, ts, prev_seq, prev_ts`, ordered by `seq`. Parameters: flow_id, dir.
+pub fn seq_gaps_query(tbl: &str) -> String {
+    format!(
+        r#"SELECT "seq", "ts", "prev_seq", "prev_ts" FROM (SELECT "seq", "ts", LAG("seq") OVER w AS "prev_seq", LAG("ts") OVER w AS "prev_ts" FROM {} WHERE "flow_id" = ? AND "dir" = ? WINDOW w AS (ORDER BY "seq", "ts")) AS g WHERE "prev_seq" IS NULL OR "seq" - "prev_seq" > 1 ORDER BY "seq""#,
+        quote_ident(tbl)
+    )
+}
+
 /// Parameters: flow_id, dir.
 pub fn all_points_query(tbl: &str, col: &str) -> String {
     points(tbl, col, "")

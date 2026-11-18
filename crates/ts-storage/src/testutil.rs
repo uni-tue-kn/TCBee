@@ -152,3 +152,49 @@ pub fn pts(v: &[(f64, DataValue)]) -> Vec<DataPoint> {
         })
         .collect()
 }
+
+/// ZETA rows for the hook_seq gap tests: flow 1 (send) misses seq 3-4 with timestamps that go
+/// back across the gap, flow 2 (recv) was recorded without hook_seq, flow 3 (send) misses seq 1-2.
+pub fn gap_batch() -> EventBatch {
+    zeta_batch(&[
+        (1, Dir::Send, 10, 1, 0, 0, 0.0, "a"),
+        (1, Dir::Send, 30, 2, 0, 0, 0.0, "b"),
+        (1, Dir::Send, 20, 5, 0, 0, 0.0, "c"),
+        (1, Dir::Send, 40, 6, 0, 0, 0.0, "d"),
+        (2, Dir::Recv, 10, 0, 0, 0, 0.0, "a"),
+        (2, Dir::Recv, 20, 0, 0, 0, 0.0, "b"),
+        (3, Dir::Send, 50, 3, 0, 0, 0.0, "a"),
+        (3, Dir::Send, 60, 4, 0, 0, 0.0, "b"),
+    ])
+}
+
+/// Checks `Store::seq_gaps` on a database written from [`gap_batch`].
+pub fn check_gaps(st: &dyn crate::Store) {
+    use crate::{Gap, Gaps};
+    let u = |flow_id: i64| {
+        st.series(flow_id)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.col.as_deref() == Some("u"))
+            .unwrap()
+    };
+    let gap = |start_ns, end_ns, first_seq, missing| Gap {
+        start_ns,
+        end_ns,
+        first_seq,
+        missing,
+    };
+    assert_eq!(
+        st.seq_gaps(&u(1), None).unwrap(),
+        Gaps::Known(vec![gap(20, 30, 3, 2)])
+    );
+    assert_eq!(
+        st.seq_gaps(&u(1), Some((31.0, 40.0))).unwrap(),
+        Gaps::Known(vec![])
+    );
+    assert_eq!(st.seq_gaps(&u(2), None).unwrap(), Gaps::Unavailable);
+    assert_eq!(
+        st.seq_gaps(&u(3), None).unwrap(),
+        Gaps::Known(vec![gap(50, 50, 1, 2)])
+    );
+}

@@ -23,6 +23,7 @@ use ::duckdb::{params, params_from_iter, Appender, Connection, Row, Statement};
 use super::batch::EventBatch;
 use super::catalog::{derived_ts, flow_from_parts, Catalog, DerivedStats, SeriesInfo, SeriesRow};
 use super::error::StoreError;
+use super::gaps::{self, Gaps};
 use super::schema::{
     create_fixed_table_sql, create_table_sql, ColType, Dialect, Dir, EventTable, SeriesKind,
     ValueKind, FIXED_TABLES, SCHEMA_VERSION,
@@ -708,6 +709,19 @@ impl Store for DuckStore {
             });
         }
         Ok(())
+    }
+
+    fn seq_gaps(&self, s: &SeriesInfo, range: Option<(f64, f64)>) -> Result<Gaps, StoreError> {
+        let (SeriesKind::Raw, Some(tbl)) = (s.kind, &s.tbl) else {
+            return Ok(Gaps::Unavailable);
+        };
+        let mut stmt = self.conn.prepare(&sql::seq_gaps_query(tbl))?;
+        let rows = stmt
+            .query_map(params![s.flow_id, s.dir.code()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(gaps::from_rows(rows, range))
     }
 
     fn create_derived(
