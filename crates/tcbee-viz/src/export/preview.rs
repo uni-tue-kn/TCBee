@@ -1,5 +1,5 @@
-//! The export window: the figure as it will be saved, next to a draft of its style. Edits
-//! change only the draft until the user saves the figure or makes the draft the default.
+//! The export window: the figure as it will be saved, next to its labels and a draft of its
+//! style. Edits change only this figure until the user makes the draft style the default.
 
 use std::sync::Arc;
 
@@ -30,6 +30,8 @@ pub struct Preview {
     view: View,
     file_stem: String,
     pub(super) draft: PlotStyle,
+    /// The y-axis label and legend labels as the user set them for this figure
+    texts: Texts,
     image: FigureImage,
     /// The figure was handed to the settings preview
     remembered: bool,
@@ -55,6 +57,56 @@ fn last_figure_id() -> egui::Id {
 /// Keeps `figure` as the last one opened for export, for the preview in the settings.
 fn remember_figure(ctx: &egui::Context, figure: &Figure) {
     ctx.data_mut(|d| d.insert_temp(last_figure_id(), Arc::new(figure.clone())));
+}
+
+/// Texts of one figure that the user can replace: they hold for this export only.
+struct Texts {
+    y_label: String,
+    labels: Vec<String>,
+}
+
+impl Texts {
+    fn of(figure: &Figure) -> Texts {
+        Texts {
+            y_label: figure.y_label.clone(),
+            labels: figure.series.iter().map(|f| f.label.clone()).collect(),
+        }
+    }
+
+    fn apply(&self, figure: &mut Figure) {
+        figure.y_label.clone_from(&self.y_label);
+        for (f, label) in figure.series.iter_mut().zip(&self.labels) {
+            f.label.clone_from(label);
+        }
+    }
+
+    /// Text fields for the labels; returns whether any changed.
+    fn edit(&mut self, ui: &mut egui::Ui, figure: &Figure) -> bool {
+        let mut changed = false;
+        egui::Grid::new("figure_texts")
+            .num_columns(2)
+            .spacing([40.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Y-axis label:");
+                changed |= ui
+                    .add(egui::TextEdit::singleline(&mut self.y_label).hint_text("none"))
+                    .changed();
+                ui.end_row();
+                for (i, (label, f)) in self.labels.iter_mut().zip(&figure.series).enumerate() {
+                    ui.label(if i == 0 { "Legend labels:" } else { "" });
+                    ui.horizontal(|ui| {
+                        if let Some(c) = crate::plot_style::parse_hex(&f.color) {
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(14.0, 3.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 0.0, c);
+                        }
+                        changed |= ui.text_edit_singleline(label).changed();
+                    });
+                    ui.end_row();
+                }
+            });
+        changed
+    }
 }
 
 /// A figure rendered for the screen, kept until its figure, style or size changes.
@@ -142,8 +194,10 @@ impl Preview {
         style: &PlotStyle,
         file_stem: &str,
     ) -> Preview {
+        let figure = collect(db, sources, origin, (x_range, view), PREVIEW_COLUMNS);
         Preview {
-            figure: collect(db, sources, origin, (x_range, view), PREVIEW_COLUMNS),
+            texts: Texts::of(&figure),
+            figure,
             series: series_ids(sources),
             origin,
             x_range,
@@ -175,6 +229,11 @@ impl Preview {
                     ui.vertical(|ui| self.show_image(ui, sources));
                     ui.separator();
                     ui.vertical(|ui| {
+                        if self.texts.edit(ui, &self.figure) {
+                            self.texts.apply(&mut self.figure);
+                            self.image = FigureImage::default();
+                        }
+                        ui.separator();
                         style_editor::show(ui, &mut self.draft);
                         ui.separator();
                         action = self.buttons(ui, db, sources);
@@ -260,13 +319,32 @@ impl Preview {
         let Some(format) = Format::of(&path) else {
             return Some(Err("the file name must end in .pdf or .png".into()));
         };
-        let fig = collect(
+        let mut fig = collect(
             db,
             sources,
             self.origin,
             (self.x_range, self.view),
             format.columns(&self.draft),
         );
+        self.texts.apply(&mut fig);
         Some(write(&fig, &self.draft, &path).map(|()| path.display().to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn texts_replace_the_y_label_and_legend_labels() {
+        let mut figure = Figure::sample();
+        let mut texts = Texts::of(&figure);
+        assert_eq!(texts.y_label, "snd_cwnd");
+        texts.y_label = "Cwnd (segments)".into();
+        texts.labels[1] = "CUBIC".into();
+        texts.apply(&mut figure);
+        assert_eq!(figure.y_label, "Cwnd (segments)");
+        assert_eq!(figure.series[0].label, "flow 1");
+        assert_eq!(figure.series[1].label, "CUBIC");
     }
 }

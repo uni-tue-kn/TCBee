@@ -34,6 +34,7 @@ Both plot tabs export what they show: the selected metrics in the visible time r
 
 - *Export figure…* opens a preview of the figure next to its style, and *Save figure…* writes it as PDF or PNG (by the file extension).
   Style edits in the preview apply to that figure only, unless *Use as default style* keeps them.
+  The y-axis label and the legend labels can be replaced there, for that figure only.
   The data is read again from the database at the resolution of the figure, keeping the extremes of each column; leading outliers are dropped as in the plot.
   Lines and gaps keep their colours from the viewer, unless the style uses its own palette.
   The default style is set under *Settings → Figure export*, with a preview of the figure last opened for export.
