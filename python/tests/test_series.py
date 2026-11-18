@@ -195,6 +195,34 @@ class SeriesTests:
         self.db.close()
         self.assertEqual(int(frame["value"].iloc[3]), 2**64 - 1)
 
+    def test_gaps_from_hook_seq(self):
+        # Same rows and expectations as ts-storage's check_gaps: flow 8 misses seq 3-4 with
+        # timestamps that go back across the gap.
+        self.db.close()
+        writer = (
+            __import__("duckdb").connect(str(self.path))
+            if self.engine == "duckdb"
+            else sqlite3.connect(self.path)
+        )
+        writer.executemany(
+            "INSERT INTO ev_sock(flow_id, dir, ts, seq, snd_cwnd) VALUES (8, 1, ?, ?, 0)",
+            [(self.t + 10, 1), (self.t + 30, 2), (self.t + 20, 5), (self.t + 40, 6)],
+        )
+        writer.commit()
+        writer.close()
+        db = tcbee.open(self.path)
+        self.addCleanup(db.close)
+        series = db.flow(8).series().one(source="sock", name="snd_cwnd")
+        gap = tcbee.Gap(self.t + 20, self.t + 30, 3, 2)
+        self.assertEqual(series.gaps(), [gap])
+        self.assertEqual(series.gaps(start_ns=self.t + 31, end_ns=self.t + 41), [])
+        self.assertEqual(series.gaps(start_ns=self.t + 30), [gap])
+        # Flow 1 numbers its rows from 0, as a run without hook_seq does
+        flow1 = db.flow(1).series().one(source="sock", name="snd_cwnd", direction="send")
+        self.assertIsNone(flow1.gaps())
+        derived = db.flow(1).series().one(name="metric_6")
+        self.assertIsNone(derived.gaps())
+
 
 class SQLiteSeries(SeriesTests, unittest.TestCase):
     engine = "sqlite"
