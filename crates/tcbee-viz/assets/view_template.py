@@ -34,6 +34,8 @@ with tcbee.open(DB) as db:
 # for *_, label, color in SERIES:
 #     t = [(ts - ORIGIN_NS) / 1e9 for ts in data[label].ts_ns]
 #     ax.plot(t, data[label].values, label=label, color=color)
+#     if gaps[label] is None:
+#         print(f"{label}: gaps unknown (recorded without hook_seq)")
 #     for gap in gaps[label] or []:
 #         ax.axvspan((gap.start_ns - ORIGIN_NS) / 1e9, (gap.end_ns - ORIGIN_NS) / 1e9, alpha=0.3)
 # ax.set_xlabel("Time (s)")

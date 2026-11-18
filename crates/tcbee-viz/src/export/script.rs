@@ -60,30 +60,28 @@ pub fn render(
         );
     }
     let y = y_range.map_or("None".to_string(), |(lo, hi)| format!("({lo:?}, {hi:?})"));
+    // Strings last, so a placeholder inside them stays as it is
     TEMPLATE
-        .replace("{{DB}}", &py_str(db))
         .replace("{{START_NS}}", &start_ns.to_string())
         .replace("{{END_NS}}", &end_ns.to_string())
         .replace("{{ORIGIN_NS}}", &origin_ns.to_string())
         .replace("{{YLIM}}", &y)
         .replace("{{SERIES}}", &rows)
+        .replace("{{DB}}", &py_str(db))
 }
 
 /// The series of `sources` that the tcbee package can read, coloured from `style`.
 pub fn series(sources: &Sources, style: &PlotStyle) -> Vec<ScriptSeries> {
     let mut out = Vec::new();
-    for (state, prefix) in sources {
-        for sd in &state.series {
-            let Some(info) = &sd.info else { continue };
-            out.push(ScriptSeries {
-                flow_id: info.flow_id,
-                source: info.source.clone(),
-                name: info.name.clone(),
-                direction: ["none", "send", "recv"][usize::from(info.dir.code()).min(2)],
-                label: format!("{prefix}{}", sd.name),
-                color: style.palette_color(out.len()).to_string(),
-            });
-        }
+    for (prefix, sd, info) in super::exported(sources) {
+        out.push(ScriptSeries {
+            flow_id: info.flow_id,
+            source: info.source.clone(),
+            name: info.name.clone(),
+            direction: ["none", "send", "recv"][usize::from(info.dir.code()).min(2)],
+            label: format!("{prefix}{}", sd.name),
+            color: style.palette_color(out.len()).to_string(),
+        });
     }
     out
 }
@@ -98,7 +96,7 @@ pub fn export(
     file_name: &str,
 ) -> super::Status {
     let (Some(db_path), Some((x0, x1))) = (db_path, view.x) else {
-        return Some(Err("nothing is plotted".into()));
+        return Some(Err("no database is open".into()));
     };
     let path = rfd::FileDialog::new()
         .add_filter("Python", &["py"])

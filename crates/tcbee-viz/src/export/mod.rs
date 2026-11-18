@@ -7,13 +7,14 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use resvg::{tiny_skia, usvg};
-use ts_storage::Gaps;
+use ts_storage::{Gaps, SeriesInfo};
 
 use crate::{
     backend::db::DbBackend,
     data::{
         plot_state::PlotState,
         preprocessing::{expand_steps, Envelope},
+        series_data::SeriesData,
     },
     plot_style::PlotStyle,
 };
@@ -51,6 +52,32 @@ impl Format {
 /// The plotted flows of a tab: each with the prefix of its legend labels.
 pub type Sources<'a> = [(&'a PlotState, &'a str)];
 
+/// The exported series of `sources` in plot order, with their legend prefix: the numeric
+/// series of the database. Their position picks their colour from the style, in the figure
+/// and in the data script alike.
+fn exported<'a>(
+    sources: &'a Sources<'a>,
+) -> impl Iterator<Item = (&'a str, &'a SeriesData, &'a SeriesInfo)> + 'a {
+    sources.iter().flat_map(|(state, prefix)| {
+        state
+            .series
+            .iter()
+            .filter(|s| !s.is_string_type())
+            .filter_map(move |s| Some((*prefix, s, s.info.as_ref()?)))
+    })
+}
+
+/// The plotted series that cannot be exported: plugin outputs, which are not in the
+/// database, and text series.
+fn not_exported<'a>(sources: &'a Sources<'a>) -> Vec<&'a str> {
+    sources
+        .iter()
+        .flat_map(|(state, _)| &state.series)
+        .filter(|s| s.info.is_none() || s.is_string_type())
+        .map(|s| s.name.as_str())
+        .collect()
+}
+
 /// The figure of the numeric series of `sources` in the time range `x_range` (ns), read from
 /// the database at the figure's resolution. Times become seconds since `origin` (ns), as on
 /// the plot axis. `y_range` `None` fits the data.
@@ -66,36 +93,33 @@ pub fn collect(
     let secs = |t: f64| (t - origin) / 1e9;
     let mut series = Vec::new();
     let mut names = Vec::new();
-    for (state, prefix) in sources {
-        for sd in state.series.iter().filter(|s| !s.is_string_type()) {
-            let Some(info) = &sd.info else { continue };
-            let points = if sd.step {
-                let end = db.flow_end(info.flow_id).map(|t| t.min(t1));
-                let steps = expand_steps(&db.load_range_steps(info, t0, t1), end);
-                // The first, lowest, highest and last point of each column keep the levels
-                let mut env = Envelope::new(t0, t1, columns);
-                steps.into_iter().for_each(|(t, v)| env.push(t, v));
-                env.finish()
-            } else {
-                db.load_range_envelope(info, t0, t1, columns)
-            };
-            let gaps = match &sd.gaps {
-                Some(Gaps::Known(gaps)) => Some(
-                    gaps.iter()
-                        .filter(|g| g.overlaps(t0, t1))
-                        .map(|g| (secs(g.start_ns as f64), secs(g.end_ns as f64)))
-                        .collect(),
-                ),
-                _ => None,
-            };
-            names.push(info.name.clone());
-            series.push(FigureSeries {
-                label: format!("{prefix}{}", sd.name),
-                points: points.into_iter().map(|(t, v)| (secs(t), v)).collect(),
-                gaps,
-                step: sd.step,
-            });
-        }
+    for (prefix, sd, info) in exported(sources) {
+        let points = if sd.step {
+            let end = db.flow_end(info.flow_id).map(|t| t.min(t1));
+            let steps = expand_steps(&db.load_range_steps(info, t0, t1), end);
+            // The first, lowest, highest and last point of each column keep the levels
+            let mut env = Envelope::new(t0, t1, columns);
+            steps.into_iter().for_each(|(t, v)| env.push(t, v));
+            env.finish()
+        } else {
+            db.load_range_envelope(info, t0, t1, columns)
+        };
+        let gaps = match &sd.gaps {
+            Some(Gaps::Known(gaps)) => Some(
+                gaps.iter()
+                    .filter(|g| g.overlaps(t0, t1))
+                    .map(|g| (secs(g.start_ns as f64), secs(g.end_ns as f64)))
+                    .collect(),
+            ),
+            _ => None,
+        };
+        names.push(info.name.clone());
+        series.push(FigureSeries {
+            label: format!("{prefix}{}", sd.name),
+            points: points.into_iter().map(|(t, v)| (secs(t), v)).collect(),
+            gaps,
+            step: sd.step,
+        });
     }
     let y_range = y_range.unwrap_or_else(|| fit(&series));
     names.dedup();
@@ -233,7 +257,10 @@ pub fn run(
     style: &PlotStyle,
     file_stem: &str,
 ) -> Status {
-    match request {
+    if exported(sources).next().is_none() || view.x.is_none() {
+        return Some(Err("no numeric metric of the database is plotted".into()));
+    }
+    let status = match request {
         Request::Figure => export_figure(
             db,
             sources,
@@ -250,7 +277,15 @@ pub fn run(
             style,
             &format!("{file_stem}.py"),
         ),
-    }
+    }?;
+    let skipped = not_exported(sources);
+    Some(status.map(|path| {
+        if skipped.is_empty() {
+            path
+        } else {
+            format!("{path} (without {})", skipped.join(", "))
+        }
+    }))
 }
 
 /// Asks where to save, renders the figure and returns the outcome; `None` if cancelled.
@@ -267,11 +302,14 @@ fn export_figure(
         .add_filter("PNG", &["png"])
         .set_file_name(file_name)
         .save_file()?;
-    let path = match Format::of(&path) {
-        Some(_) => path,
-        None => path.with_extension("pdf"),
+    let path = if path.extension().is_none() {
+        path.with_extension("pdf")
+    } else {
+        path
     };
-    let format = Format::of(&path)?;
+    let Some(format) = Format::of(&path) else {
+        return Some(Err("the file name must end in .pdf or .png".into()));
+    };
     let Some(x) = view.x else {
         return Some(Err("nothing is plotted".into()));
     };
@@ -371,5 +409,63 @@ mod tests {
         let (lo, hi) = fit(&fig().series);
         assert!(lo < 1.0 && hi > 8.0);
         assert_eq!(fit(&[]), (0.0, 1.0));
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use ts_storage::{ColType, Dir, SeriesKind, ValueKind};
+
+    use super::*;
+
+    fn info(id: i64, name: &str, value_type: ColType) -> SeriesInfo {
+        SeriesInfo {
+            id,
+            flow_id: 1,
+            kind: SeriesKind::Raw,
+            source: "sock".into(),
+            dir: Dir::Send,
+            name: name.into(),
+            value_type,
+            tbl: Some("ev_sock".into()),
+            col: Some(name.into()),
+            n: 1,
+            t_min: Some(0),
+            t_max: Some(1),
+            v_min: None,
+            v_max: None,
+        }
+    }
+
+    #[test]
+    fn text_and_plugin_series_are_not_exported_and_colours_match() {
+        let mut state = PlotState::default();
+        let black = egui::Color32::BLACK;
+        state.series = vec![
+            SeriesData::from_info(&info(1, "event", ColType::Text), 0.0, 1.0, black),
+            SeriesData::from_info(&info(2, "snd_cwnd", ColType::U32), 0.0, 1.0, black),
+            SeriesData::new(
+                "plugin".into(),
+                3,
+                ValueKind::Float,
+                0.0,
+                1.0,
+                0.0,
+                1.0,
+                black,
+            ),
+        ];
+        let sources = [(&state, "A:")];
+        let names: Vec<&str> = exported(&sources)
+            .map(|(_, s, _)| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec![state.series[1].name.as_str()]);
+        assert_eq!(not_exported(&sources).len(), 2);
+        let style = PlotStyle::default();
+        let script = script::series(&sources, &style);
+        assert_eq!(script.len(), 1);
+        assert_eq!(script[0].direction, "send");
+        // The first exported series takes the first colour, as in the figure
+        assert_eq!(script[0].color, style.palette_color(0));
     }
 }
