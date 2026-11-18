@@ -32,10 +32,12 @@ Series recorded with `--no-hook-seq` and derived series have no gap information 
 
 Both plot tabs export what they show: the selected metrics in the visible time range.
 
-- *Export figure…* writes a PDF or PNG (by the file extension).
-  The data is read again from the database at the resolution of the figure, keeping the extremes of each column.
-  Size, font, line width, grid, legend, line colours, gap shading and PNG resolution come from *Settings → Figure export*.
-  They are saved in `$XDG_CONFIG_HOME/tcbee/viz.toml` (default `~/.config/tcbee/viz.toml`), which can also be edited by hand or kept with a paper.
+- *Export figure…* opens a preview of the figure next to its style, and *Save figure…* writes it as PDF or PNG (by the file extension).
+  Style edits in the preview apply to that figure only, unless *Use as default style* keeps them.
+  The data is read again from the database at the resolution of the figure, keeping the extremes of each column; leading outliers are dropped as in the plot.
+  Lines and gaps keep their colours from the viewer, unless the style uses its own palette.
+  The default style is set under *Settings → Figure export*, with a preview of the figure last opened for export.
+  It is saved in `$XDG_CONFIG_HOME/tcbee/viz.toml` (default `~/.config/tcbee/viz.toml`), which can also be edited by hand or kept with a paper.
   The value range of a single plot is kept; split plots fit their data.
 - *Export data script…* writes a Python script that loads the same series and their gaps with the [tcbee package](../../python/API.md).
   It has no plotting code: plot with the library of your choice where the script says so.

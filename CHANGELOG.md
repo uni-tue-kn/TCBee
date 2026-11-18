@@ -4,7 +4,7 @@
 
 ### Added
 - `tcbee-viz`: shades where events of a series are missing according to hook_seq, with the count on hover and a *Show gaps* toggle.
-- `tcbee-viz`: *Export figure…* saves the visible plot as PDF or PNG in a style set under *Settings → Figure export* (kept in `~/.config/tcbee/viz.toml`).
+- `tcbee-viz`: *Export figure…* previews the visible plot as a figure, lets you adjust its style, and saves it as PDF or PNG; the default style is set under *Settings → Figure export* (kept in `~/.config/tcbee/viz.toml`).
 - `tcbee-viz`: *Export data script…* saves a Python script that loads the plotted data and gaps with the tcbee package.
 - `ts-storage`: `Store::seq_gaps`; Python API: `Series.gaps()`.
 
