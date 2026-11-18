@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `tcbee-viz`: shades where events of a series are missing according to hook_seq, with the count on hover and a *Show gaps* toggle.
+- `tcbee-viz`: *Export figure…* saves the visible plot as PDF or PNG in a figure style set under *Settings → Figure export* (kept in `~/.config/tcbee/viz.toml`); *Export data script…* saves a Python script that loads the plotted data and gaps with the tcbee package.
+- `ts-storage`: `Store::seq_gaps`; Python API: `Series.gaps()`.
+
 ## 2.0.0
 
 TCBee 2.0 replaces the eBPF stack of `tcbee-record` and `tcbee-live` with C programs loaded through libbpf (no more aya, nightly Rust or `bpf-linker`), rewrites the processing pipeline and the database format (schema version 3), and adds a Python API.
