@@ -279,10 +279,9 @@ fn default_style_id() -> egui::Id {
 
 /// Saves `style` as the default in the config file and hands it to the app; the file's path.
 pub fn save_default_style(ctx: &egui::Context, style: &PlotStyle) -> Result<String, String> {
-    let path = crate::plot_style::config_path().ok_or("no home directory")?;
-    style.save_to(&path)?;
+    let path = style.save()?;
     ctx.data_mut(|d| d.insert_temp(default_style_id(), style.clone()));
-    Ok(path.display().to_string())
+    Ok(path)
 }
 
 /// A style the export window made the default since the last call.

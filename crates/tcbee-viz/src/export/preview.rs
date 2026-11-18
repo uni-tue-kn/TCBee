@@ -30,8 +30,9 @@ pub struct Preview {
     view: View,
     file_stem: String,
     pub(super) draft: PlotStyle,
-    /// The rendered figure and the style and pixels per inch it was rendered with
-    image: Option<(PlotStyle, f32, Rendered)>,
+    image: FigureImage,
+    /// The figure was handed to the settings preview
+    remembered: bool,
     status: Status,
 }
 
@@ -56,11 +57,55 @@ fn remember_figure(ctx: &egui::Context, figure: &Figure) {
     ctx.data_mut(|d| d.insert_temp(last_figure_id(), Arc::new(figure.clone())));
 }
 
+/// A figure rendered for the screen, kept until its figure, style or size changes.
+#[derive(Default)]
+struct FigureImage {
+    /// The style, figure address and pixels per inch of `texture`
+    key: Option<(PlotStyle, usize, f32)>,
+    texture: Option<Rendered>,
+}
+
+impl FigureImage {
+    /// Shows `figure` in `style`, at most `max_width` points wide; returns the shown width.
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        name: &str,
+        figure: &Figure,
+        style: &PlotStyle,
+        max_width: f32,
+    ) -> f32 {
+        let width = (style.width_in * SCREEN_PER_INCH).min(max_width);
+        let px_per_inch = width / style.width_in * ui.ctx().pixels_per_point();
+        let address = std::ptr::from_ref(figure) as usize;
+        let fresh = self
+            .key
+            .as_ref()
+            .is_some_and(|(s, a, px)| s == style && *a == address && *px == px_per_inch);
+        if !fresh {
+            self.texture = Some(texture(ui.ctx(), name, figure, style, px_per_inch));
+            self.key = Some((style.clone(), address, px_per_inch));
+        }
+        match &self.texture {
+            Some(Ok(texture)) => {
+                let size = texture.size_vec2() / ui.ctx().pixels_per_point();
+                ui.add(egui::Image::new((texture.id(), size)));
+            }
+            Some(Err(e)) => {
+                ui.colored_label(egui::Color32::RED, format!("Preview failed: {e}"));
+            }
+            None => {}
+        }
+        width
+    }
+}
+
 /// The style preview of the settings: the figure last opened for export, else a sample.
 #[derive(Default)]
 pub struct StylePreview {
-    /// The rendered figure and the style, figure and pixels per inch it was rendered with
-    image: Option<(PlotStyle, Arc<Figure>, f32, Rendered)>,
+    image: FigureImage,
+    /// Keeps the shown figure alive, so its address stays its own
+    figure: Option<Arc<Figure>>,
 }
 
 impl StylePreview {
@@ -68,31 +113,12 @@ impl StylePreview {
         let figure = ui
             .ctx()
             .data(|d| d.get_temp::<Arc<Figure>>(last_figure_id()))
+            .or_else(|| self.figure.clone())
             .unwrap_or_else(|| Arc::new(Figure::sample()));
-        let width = (style.width_in * SCREEN_PER_INCH)
-            .min(MAX_WIDTH)
-            .min(ui.available_width());
-        let scale = width / style.width_in * ui.ctx().pixels_per_point();
-        let stale = self
-            .image
-            .as_ref()
-            .is_none_or(|(s, f, px, _)| s != style || !Arc::ptr_eq(f, &figure) || *px != scale);
-        if stale {
-            let texture = texture(ui.ctx(), "style_preview", &figure, style, scale);
-            self.image = Some((style.clone(), figure, scale, texture));
-        }
-        match &self.image {
-            Some((_, _, _, Ok(texture))) => {
-                ui.add(egui::Image::new((
-                    texture.id(),
-                    texture.size_vec2() / ui.ctx().pixels_per_point(),
-                )));
-            }
-            Some((_, _, _, Err(e))) => {
-                ui.colored_label(egui::Color32::RED, format!("Preview failed: {e}"));
-            }
-            None => {}
-        }
+        let max_width = MAX_WIDTH.min(ui.available_width());
+        self.image
+            .show(ui, "style_preview", &figure, style, max_width);
+        self.figure = Some(figure);
     }
 }
 
@@ -124,7 +150,8 @@ impl Preview {
             view,
             file_stem: file_stem.to_string(),
             draft: style.clone(),
-            image: None,
+            image: FigureImage::default(),
+            remembered: false,
             status: None,
         }
     }
@@ -162,38 +189,22 @@ impl Preview {
     }
 
     fn show_image(&mut self, ui: &mut egui::Ui, sources: &Sources) {
-        let width = (self.draft.width_in * SCREEN_PER_INCH).min(MAX_WIDTH);
-        let scale = width / self.draft.width_in * ui.ctx().pixels_per_point();
-        let stale = self
+        if !self.remembered {
+            remember_figure(ui.ctx(), &self.figure);
+            self.remembered = true;
+        }
+        let width = self
             .image
-            .as_ref()
-            .is_none_or(|(style, s, _)| *style != self.draft || *s != scale);
-        if stale {
-            if self.image.is_none() {
-                remember_figure(ui.ctx(), &self.figure);
-            }
-            let texture = texture(ui.ctx(), "export_preview", &self.figure, &self.draft, scale);
-            self.image = Some((self.draft.clone(), scale, texture));
-        }
-        match &self.image {
-            Some((_, _, Ok(texture))) => {
-                let size = texture.size_vec2() / ui.ctx().pixels_per_point();
-                ui.add(egui::Image::new((texture.id(), size)));
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{:.1} × {:.1} in, shown at {:.0} %",
-                        self.draft.width_in,
-                        self.draft.height_in,
-                        width / (self.draft.width_in * SCREEN_PER_INCH) * 100.0
-                    ))
-                    .small(),
-                );
-            }
-            Some((_, _, Err(e))) => {
-                ui.colored_label(egui::Color32::RED, format!("Preview failed: {e}"));
-            }
-            None => {}
-        }
+            .show(ui, "export_preview", &self.figure, &self.draft, MAX_WIDTH);
+        ui.label(
+            egui::RichText::new(format!(
+                "{:.1} × {:.1} in, shown at {:.0} %",
+                self.draft.width_in,
+                self.draft.height_in,
+                width / (self.draft.width_in * SCREEN_PER_INCH) * 100.0
+            ))
+            .small(),
+        );
         let skipped = not_exported(sources);
         if !skipped.is_empty() {
             ui.label(

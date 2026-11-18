@@ -1,5 +1,4 @@
 use crate::{
-    plot_style::{self, PlotStyle},
     settings::AppSettings,
     ui::{style_editor, theme},
 };
@@ -83,7 +82,7 @@ impl TabSettings {
                 // Save once a drag or edit has ended, not on every frame of it
                 if self.style_dirty && !ui.input(|i| i.pointer.any_down()) {
                     self.style_dirty = false;
-                    self.style_status = Some(save_style(&settings.plot_style));
+                    self.style_status = Some(settings.plot_style.save());
                 }
                 match &self.style_status {
                     Some(Ok(path)) => {
@@ -107,10 +106,4 @@ impl TabSettings {
                 );
             });
     }
-}
-
-fn save_style(style: &PlotStyle) -> Result<String, String> {
-    let path = plot_style::config_path().ok_or("no home directory")?;
-    style.save_to(&path)?;
-    Ok(path.display().to_string())
 }

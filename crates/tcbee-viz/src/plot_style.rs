@@ -174,6 +174,13 @@ impl PlotStyle {
         std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// Saves the style to the user's config file; returns its path.
+    pub fn save(&self) -> Result<String, String> {
+        let path = config_path().ok_or("no home directory")?;
+        self.save_to(&path)?;
+        Ok(path.display().to_string())
+    }
+
     /// The style of the user's config file; defaults (and a logged error) if it is unreadable.
     pub fn load() -> PlotStyle {
         let Some(path) = config_path() else {
