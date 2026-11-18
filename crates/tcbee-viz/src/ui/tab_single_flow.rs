@@ -80,6 +80,10 @@ impl TabSingleFlow {
             .default_width(500.0)
             .frame(theme::sidebar_frame(settings.dark_mode))
             .show_inside(ui, |ui| {
+                // The controls go first so the scroll area below gets the remaining height
+                egui::TopBottomPanel::bottom("single_flow_controls")
+                    .frame(theme::sidebar_controls_frame(settings.dark_mode))
+                    .show_inside(ui, |ui| self.show_view_controls(ui, db, settings));
                 let sidebar_height = ui.available_height();
                 ScrollArea::vertical()
                     .id_salt("single_flow_sidebar_scroll")
@@ -172,39 +176,29 @@ impl TabSingleFlow {
                     self.needs_fit = true;
                 }
             });
-
-            ui.add_space(6.0);
-            ui.scope(|ui| {
-                ui.style_mut().interaction.tooltip_delay = 0.0;
-                ui.horizontal(|ui| {
-                    let checkbox_response = ui
-                        .checkbox(&mut self.remove_outliers, "Remove Outliers")
-                        .on_hover_text(OUTLIER_TOOLTIP);
-                    if checkbox_response.changed() {
-                        self.needs_fit = true;
-                    }
-                    ui.add_sized(
-                        [18.0, 18.0],
-                        egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
-                    )
-                    .on_hover_text(OUTLIER_TOOLTIP);
-                });
-            });
         }
+    }
 
-        ui.add_space(10.0);
-        ui.separator();
-
-        // ── View options ─────────────────────────────────────────────────
-        section_heading(ui, "View");
-
-        if ui
-            .checkbox(&mut self.state.split_view, "Split into separate plots")
-            .changed()
-        {
-            self.needs_fit = true;
-        }
-        gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
+    /// Reset zoom, the view toggles and the X range, always visible below the sidebar
+    fn show_view_controls(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Reset zoom").clicked() {
+                self.manual_x_min = self.state.data_x_min;
+                self.manual_x_max = self.state.data_x_max;
+                self.apply_manual_x = true;
+            }
+            if ui
+                .checkbox(&mut self.state.split_view, "Split")
+                .on_hover_text("Show each metric in its own plot")
+                .changed()
+            {
+                self.needs_fit = true;
+            }
+            if outliers_checkbox(ui, &mut self.remove_outliers) {
+                self.needs_fit = true;
+            }
+            gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
+        });
         if let Some(request) = export::controls(ui, &self.export_status) {
             self.export(request, db, settings);
         }
@@ -213,32 +207,14 @@ impl TabSingleFlow {
         {
             self.export_status = Some(status);
         }
-
-        ui.add_space(8.0);
-        ui.label(RichText::new("X range").strong().size(12.0));
-
-        egui::Grid::new("x_range_grid")
-            .num_columns(2)
-            .spacing([6.0, 4.0])
-            .show(ui, |ui| {
-                ui.label("Min:");
-                ui.add(egui::DragValue::new(&mut self.manual_x_min).speed(0.1));
-                ui.end_row();
-                ui.label("Max:");
-                ui.add(egui::DragValue::new(&mut self.manual_x_max).speed(0.1));
-                ui.end_row();
-            });
-
-        ui.horizontal(|ui| {
-            if ui.button("Apply").clicked() {
-                self.apply_manual_x = true;
-            }
-            if ui.button("Reset zoom").clicked() {
-                self.manual_x_min = self.state.data_x_min;
-                self.manual_x_max = self.state.data_x_max;
-                self.apply_manual_x = true;
-            }
-        });
+        if x_range_editor(
+            ui,
+            "single_flow_x_range",
+            &mut self.manual_x_min,
+            &mut self.manual_x_max,
+        ) {
+            self.apply_manual_x = true;
+        }
     }
 
     fn show_plot_area(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
@@ -909,6 +885,35 @@ pub fn plot_height_with_footer(available_height: f32) -> f32 {
 pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -> f32 {
     let count = plot_count.max(1) as f32;
     ((available_height - PLOT_AXIS_FOOTER) / count).max(80.0)
+}
+
+/// The "Remove outliers" checkbox, true when it changed
+pub fn outliers_checkbox(ui: &mut egui::Ui, remove_outliers: &mut bool) -> bool {
+    ui.scope(|ui| {
+        ui.style_mut().interaction.tooltip_delay = 0.0;
+        ui.checkbox(remove_outliers, "Remove outliers")
+            .on_hover_text(OUTLIER_TOOLTIP)
+            .changed()
+    })
+    .inner
+}
+
+/// A collapsed "X range" section with Min, Max and Apply, true when Apply was clicked
+pub fn x_range_editor(ui: &mut egui::Ui, id_salt: &str, min: &mut f64, max: &mut f64) -> bool {
+    let mut apply = false;
+    egui::CollapsingHeader::new("X range")
+        .id_salt(id_salt)
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Min");
+                ui.add(egui::DragValue::new(min).speed(0.1));
+                ui.label("Max");
+                ui.add(egui::DragValue::new(max).speed(0.1));
+                apply = ui.button("Apply").clicked();
+            });
+        });
+    apply
 }
 
 pub fn section_heading(ui: &mut egui::Ui, label: &str) {

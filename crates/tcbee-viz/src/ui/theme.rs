@@ -254,3 +254,10 @@ pub fn sidebar_frame(dark_mode: bool) -> egui::Frame {
         .inner_margin(egui::Margin::symmetric(0, 10))
         .stroke(Stroke::new(1.0, border(dark_mode)))
 }
+
+/// The strip of view controls pinned to the bottom of a sidebar
+pub fn sidebar_controls_frame(dark_mode: bool) -> egui::Frame {
+    egui::Frame::new()
+        .fill(sidebar_bg(dark_mode))
+        .inner_margin(egui::Margin::symmetric(16, 8))
+}

@@ -16,15 +16,14 @@ use crate::{
         gap_marks,
         series_table::SeriesTable,
         tab_single_flow::{
-            compact_axis_label, compact_coordinates_formatter, plot_height_with_footer,
-            seconds_grid_spacer, seconds_since_formatter, split_plot_height_with_footer,
-            to_plot_points, vertical_marker_label,
+            compact_axis_label, compact_coordinates_formatter, outliers_checkbox,
+            plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter,
+            split_plot_height_with_footer, to_plot_points, vertical_marker_label, x_range_editor,
         },
         theme,
     },
 };
 
-const OUTLIER_TOOLTIP: &str = "Automatically removes only leading points whose values are far outside the following steady-state data, so large initial CWND or ssthresh values do not distort auto-fit.";
 const MULTI_PLOT_PADDING_X: f64 = 0.02;
 const MULTI_PLOT_PADDING_Y: f64 = 0.06;
 const MULTI_SPLIT_LABEL_SPACE: f32 = 52.0;
@@ -112,6 +111,10 @@ impl TabMultiFlow {
             .default_width(500.0)
             .frame(theme::sidebar_frame(settings.dark_mode))
             .show_inside(ui, |ui| {
+                // The controls go first so the scroll area below gets the remaining height
+                egui::TopBottomPanel::bottom("multi_flow_controls")
+                    .frame(theme::sidebar_controls_frame(settings.dark_mode))
+                    .show_inside(ui, |ui| self.show_view_controls(ui, db, settings));
                 let sidebar_height = ui.available_height();
                 ScrollArea::vertical()
                     .id_salt("multi_flow_sidebar_scroll")
@@ -184,33 +187,41 @@ impl TabMultiFlow {
         ) {
             self.needs_fit = true;
         }
+    }
 
-        ui.add_space(8.0);
-        ui.separator();
-
-        // ── View ─────────────────────────────────────────────────────────
-        ui.label(RichText::new("View").strong().size(13.0));
-        ui.add_space(2.0);
-        if ui
-            .checkbox(&mut self.merged_view, "Merge into one plot")
-            .changed()
-        {
-            self.needs_fit = true;
-        }
-        if ui
-            .checkbox(
-                &mut self.split_series_view,
-                "Split selected metrics into separate plots",
-            )
-            .changed()
-        {
-            self.needs_fit = true;
-        }
-        gap_marks::controls(
-            ui,
-            &mut self.show_gaps,
-            self.state_a.series.iter().chain(&self.state_b.series),
-        );
+    /// Reset zoom, the view toggles and the X range, always visible below the sidebar
+    fn show_view_controls(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Reset zoom").clicked() {
+                let x_min = self.state_a.data_x_min.min(self.state_b.data_x_min);
+                let x_max = self.state_a.data_x_max.max(self.state_b.data_x_max);
+                self.manual_x_min = x_min;
+                self.manual_x_max = x_max;
+                self.apply_manual_x = true;
+            }
+            if ui
+                .checkbox(&mut self.merged_view, "Merge")
+                .on_hover_text("Show both flows in one plot")
+                .changed()
+            {
+                self.needs_fit = true;
+            }
+            if ui
+                .checkbox(&mut self.split_series_view, "Split")
+                .on_hover_text("Show each selected metric in its own plot")
+                .changed()
+            {
+                self.needs_fit = true;
+            }
+            if outliers_checkbox(ui, &mut self.remove_outliers) {
+                self.needs_fit = true;
+            }
+            gap_marks::controls(
+                ui,
+                &mut self.show_gaps,
+                self.state_a.series.iter().chain(&self.state_b.series),
+            );
+        });
         if let Some(request) = export::controls(ui, &self.export_status) {
             self.export(request, db, settings);
         }
@@ -222,51 +233,14 @@ impl TabMultiFlow {
         ) {
             self.export_status = Some(status);
         }
-
-        ui.add_space(4.0);
-        ui.scope(|ui| {
-            ui.style_mut().interaction.tooltip_delay = 0.0;
-            ui.horizontal(|ui| {
-                if ui
-                    .checkbox(&mut self.remove_outliers, "Remove Outliers")
-                    .on_hover_text(OUTLIER_TOOLTIP)
-                    .changed()
-                {
-                    self.needs_fit = true;
-                }
-                ui.add_sized(
-                    [18.0, 18.0],
-                    egui::Label::new(RichText::new("?").strong()).sense(egui::Sense::hover()),
-                )
-                .on_hover_text(OUTLIER_TOOLTIP);
-            });
-        });
-
-        ui.add_space(6.0);
-        ui.label(RichText::new("X range").strong().size(12.0));
-        egui::Grid::new("multi_x_range")
-            .num_columns(2)
-            .spacing([6.0, 4.0])
-            .show(ui, |ui| {
-                ui.label("Min:");
-                ui.add(egui::DragValue::new(&mut self.manual_x_min).speed(0.1));
-                ui.end_row();
-                ui.label("Max:");
-                ui.add(egui::DragValue::new(&mut self.manual_x_max).speed(0.1));
-                ui.end_row();
-            });
-        ui.horizontal(|ui| {
-            if ui.button("Apply").clicked() {
-                self.apply_manual_x = true;
-            }
-            if ui.button("Reset zoom").clicked() {
-                let x_min = self.state_a.data_x_min.min(self.state_b.data_x_min);
-                let x_max = self.state_a.data_x_max.max(self.state_b.data_x_max);
-                self.manual_x_min = x_min;
-                self.manual_x_max = x_max;
-                self.apply_manual_x = true;
-            }
-        });
+        if x_range_editor(
+            ui,
+            "multi_flow_x_range",
+            &mut self.manual_x_min,
+            &mut self.manual_x_max,
+        ) {
+            self.apply_manual_x = true;
+        }
     }
 
     fn export(&mut self, request: export::Request, db: &DbBackend, settings: &AppSettings) {
