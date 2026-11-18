@@ -13,7 +13,7 @@ use crate::{
     backend::db::DbBackend,
     data::{
         plot_state::PlotState,
-        preprocessing::{expand_steps, Envelope},
+        preprocessing::{expand_steps, remove_leading_outliers, Envelope},
         series_data::SeriesData,
     },
     plot_style::PlotStyle,
@@ -88,14 +88,13 @@ fn not_exported(sources: &Sources) -> Vec<String> {
 }
 
 /// The figure of the numeric series of `sources` in the time range `x_range` (ns), read from
-/// the database at the figure's resolution. Times become seconds since `origin` (ns), as on
-/// the plot axis. `y_range` `None` fits the data.
+/// the database at the figure's resolution and filtered as in `view`. Times become seconds
+/// since `origin` (ns), as on the plot axis. A `view` without y range fits the data.
 pub fn collect(
     db: &DbBackend,
     sources: &Sources,
     origin: f64,
-    x_range: (f64, f64),
-    y_range: Option<(f64, f64)>,
+    (x_range, view): ((f64, f64), View),
     style: &PlotStyle,
     columns: usize,
 ) -> Figure {
@@ -111,6 +110,8 @@ pub fn collect(
             let mut env = Envelope::new(t0, t1, columns);
             steps.into_iter().for_each(|(t, v)| env.push(t, v));
             env.finish()
+        } else if view.remove_outliers {
+            remove_leading_outliers(&db.load_range_envelope(info, t0, t1, columns)).to_vec()
         } else {
             db.load_range_envelope(info, t0, t1, columns)
         };
@@ -132,7 +133,7 @@ pub fn collect(
             step: sd.step,
         });
     }
-    let y_range = y_range.unwrap_or_else(|| fit(&series));
+    let y_range = view.y.unwrap_or_else(|| fit(&series));
     names.dedup();
     Figure {
         x_label: "Time (s)".into(),
@@ -252,6 +253,8 @@ pub fn default_file_stem(flow_id: Option<i64>, metrics: &[&str]) -> String {
 pub struct View {
     pub x: Option<(f64, f64)>,
     pub y: Option<(f64, f64)>,
+    /// The plot drops leading outliers of line series
+    pub remove_outliers: bool,
 }
 
 /// The result of the last export of a tab: the written file or the error.
@@ -327,7 +330,7 @@ fn export_figure(
     let Some(x) = view.x else {
         return Some(Err("nothing is plotted".into()));
     };
-    let fig = collect(db, sources, origin, x, view.y, style, format.columns(style));
+    let fig = collect(db, sources, origin, (x, view), style, format.columns(style));
     Some(write(&fig, style, &path).map(|()| path.display().to_string()))
 }
 

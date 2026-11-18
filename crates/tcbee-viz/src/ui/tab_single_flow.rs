@@ -391,6 +391,7 @@ impl TabSingleFlow {
             view = export::View {
                 x: Some((b.min()[0], b.max()[0])),
                 y: Some((b.min()[1], b.max()[1])),
+                ..export::View::default()
             };
 
             if show_gaps {
@@ -458,7 +459,10 @@ impl TabSingleFlow {
             db,
             &[(&self.state, "")],
             self.state.data_x_min,
-            self.view,
+            export::View {
+                remove_outliers: self.remove_outliers,
+                ..self.view
+            },
             style,
             &file_stem,
         ) {

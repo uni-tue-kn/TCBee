@@ -271,14 +271,14 @@ impl TabMultiFlow {
             .filter_map(|s| s.info.as_ref().map(|i| i.name.as_str()))
             .collect();
         let file_stem = export::default_file_stem(None, &metrics);
-        // Split plots each fit their own y range, so the figure fits its own
-        let view = if self.merged_view && !self.split_series_view {
-            self.view
-        } else {
-            export::View {
-                y: None,
-                ..self.view
-            }
+        let view = export::View {
+            // Split plots each fit their own y range, so the figure fits its own
+            y: self
+                .view
+                .y
+                .filter(|_| self.merged_view && !self.split_series_view),
+            remove_outliers: self.remove_outliers,
+            ..self.view
         };
         if let Some(status) = export::run(
             request,
@@ -397,6 +397,7 @@ impl TabMultiFlow {
                 view = export::View {
                     x: Some((b.min()[0], b.max()[0])),
                     y: Some((b.min()[1], b.max()[1])),
+                    ..export::View::default()
                 };
                 if self.show_gaps {
                     for s in self.state_a.series.iter().chain(&self.state_b.series) {
