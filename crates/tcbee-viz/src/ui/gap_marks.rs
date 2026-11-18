@@ -19,8 +19,8 @@ type Span = (f64, f64, i64);
 fn spans(gaps: &[Gap], x_min: f64, x_max: f64, px: f64) -> Vec<Span> {
     let mut visible: Vec<Span> = gaps
         .iter()
+        .filter(|g| g.overlaps(x_min, x_max))
         .map(|g| (g.start_ns as f64, g.end_ns as f64, g.missing))
-        .filter(|(start, end, _)| *end >= x_min && *start <= x_max)
         .collect();
     visible.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut out: Vec<Span> = Vec::new();

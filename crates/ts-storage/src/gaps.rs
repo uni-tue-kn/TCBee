@@ -5,6 +5,8 @@
 //! jumps of `seq` within its rows, ordered by `seq` (not by `ts`, which can go back across CPUs).
 //! A run recorded without hook_seq stores 0 everywhere; its gaps are unknown.
 //! Losses after the last recorded event cannot be seen.
+//! The Python package (`Series.gaps` in python/src/tcbee/series.py) applies the same query and
+//! rules; change both together.
 
 /// Events missing between two recorded events of a series.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +19,13 @@ pub struct Gap {
     pub first_seq: i64,
     /// Number of missing events
     pub missing: i64,
+}
+
+impl Gap {
+    /// Whether the gap overlaps the inclusive range `[lo, hi]` (ns).
+    pub fn overlaps(&self, lo: f64, hi: f64) -> bool {
+        self.end_ns as f64 >= lo && self.start_ns as f64 <= hi
+    }
 }
 
 /// The gaps of a series.
@@ -52,11 +61,7 @@ pub(crate) fn from_rows(rows: impl IntoIterator<Item = GapRow>, range: Option<(f
                 missing: seq - prev_seq - 1,
             },
         };
-        let inside = match range {
-            Some((lo, hi)) => gap.end_ns as f64 >= lo && gap.start_ns as f64 <= hi,
-            None => true,
-        };
-        if inside {
+        if range.is_none_or(|(lo, hi)| gap.overlaps(lo, hi)) {
             gaps.push(gap);
         }
     }
