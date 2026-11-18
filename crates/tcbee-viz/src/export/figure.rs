@@ -9,7 +9,7 @@ use crate::plot_style::{LegendPosition, PlotStyle};
 #[derive(Clone)]
 pub struct FigureSeries {
     pub label: String,
-    /// Line colour, `#rrggbb`
+    /// Line colour in the viewer, `#rrggbb`; see [`line_color`]
     pub color: String,
     pub points: Vec<(f64, f64)>,
     /// Spans `(start, end)` in seconds where events are missing; `None` if unknown
@@ -222,9 +222,9 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     s.push_str(r#"<g clip-path="url(#area)">"#);
     if style.show_gaps {
         let _ = write!(s, r#"<g fill-opacity="{}">"#, style.gap_opacity);
-        for f in &fig.series {
+        for (i, f) in fig.series.iter().enumerate() {
             let color = if style.gaps_in_series_color {
-                &f.color
+                line_color(style, i, f)
             } else {
                 &style.gap_color
             };
@@ -243,7 +243,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         }
         s.push_str("</g>");
     }
-    for f in &fig.series {
+    for (i, f) in fig.series.iter().enumerate() {
         let mut d = String::new();
         let mut prev: Option<(f64, f64)> = None;
         for &(x, y) in &f.points {
@@ -264,7 +264,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         let _ = write!(
             s,
             r#"<path d="{d}" fill="none" stroke="{}" stroke-width="{lw}" stroke-linejoin="round" stroke-linecap="round"/>"#,
-            escape(&f.color)
+            escape(line_color(style, i, f))
         );
     }
     s.push_str("</g>");
@@ -335,6 +335,16 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     s
 }
 
+/// The colour of the `i`-th series `f`: its colour in the viewer, or the style's palette if
+/// the style asks for it.
+pub fn line_color<'a>(style: &'a PlotStyle, i: usize, f: &'a FigureSeries) -> &'a str {
+    if style.use_palette {
+        style.palette_color(i)
+    } else {
+        &f.color
+    }
+}
+
 /// The legend entry of a series; it tells when the gaps of a shown series are unknown, so a
 /// run without hook_seq does not look loss-free.
 fn legend_label(f: &FigureSeries, style: &PlotStyle) -> String {
@@ -395,9 +405,9 @@ fn legend_above(
     pl: f64,
 ) {
     let fs = f64::from(style.font_size_pt);
-    for ((label, f), (x, row)) in labels.iter().zip(&fig.series).zip(rows) {
+    for (i, ((label, f), (x, row))) in labels.iter().zip(&fig.series).zip(rows).enumerate() {
         let cy = fs * 0.6 + fs * LEGEND_ROW * (*row as f64 + 0.5);
-        legend_entry(s, (pl + x, cy), &f.color, label, style);
+        legend_entry(s, (pl + x, cy), line_color(style, i, f), label, style);
     }
 }
 
@@ -421,6 +431,7 @@ fn legend(
     let pad = fs * 0.4;
     let (bx, by) = match style.legend {
         LegendPosition::UpperLeft => (pl + pad, pt + pad),
+        // `Above` and `None` do not draw this legend
         LegendPosition::UpperRight | LegendPosition::None | LegendPosition::Above => {
             (pr - pad - bw, pt + pad)
         }
@@ -433,7 +444,13 @@ fn legend(
     );
     for (i, (label, f)) in labels.iter().zip(&fig.series).enumerate() {
         let cy = by + fs * 0.2 + row * (i as f64 + 0.5);
-        legend_entry(s, (bx + fs * 0.4, cy), &f.color, label, style);
+        legend_entry(
+            s,
+            (bx + fs * 0.4, cy),
+            line_color(style, i, f),
+            label,
+            style,
+        );
     }
 }
 
@@ -497,6 +514,13 @@ mod tests {
         assert!(s.contains("cwnd &lt;segments&gt;") && s.contains("a &amp; b"));
         assert!(s.contains(r#"fill-opacity="0.25""#) && s.contains(r##"fill="#0072b2""##));
         assert!(s.contains(r##"stroke="#0072b2""##));
+        let palette = PlotStyle {
+            use_palette: true,
+            palette: vec!["#123456".into()],
+            ..PlotStyle::default()
+        };
+        let p = svg(&fig, &palette);
+        assert!(p.contains(r##"stroke="#123456""##) && !p.contains("#0072b2"));
         let no_gaps = PlotStyle {
             show_gaps: false,
             ..PlotStyle::default()

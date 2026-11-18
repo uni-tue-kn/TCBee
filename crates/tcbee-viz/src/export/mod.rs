@@ -68,8 +68,8 @@ fn exported<'a>(
     })
 }
 
-/// The colour of the `i`-th exported series `sd`, in the figure and the data script alike:
-/// its colour in the viewer, or the style's palette if the style asks for it.
+/// The colour of the `i`-th exported series `sd` in the data script, as
+/// [`figure::line_color`] picks it in the figure.
 fn series_color(style: &PlotStyle, i: usize, sd: &SeriesData) -> String {
     if style.use_palette {
         style.palette_color(i).to_string()
@@ -97,7 +97,6 @@ pub fn collect(
     sources: &Sources,
     origin: f64,
     (x_range, view): ((f64, f64), View),
-    style: &PlotStyle,
     columns: usize,
 ) -> Figure {
     let (t0, t1) = x_range;
@@ -131,7 +130,7 @@ pub fn collect(
         flows.push(format!("flow {}", info.flow_id));
         series.push(FigureSeries {
             label: format!("{prefix}{}", sd.name),
-            color: series_color(style, series.len(), sd),
+            color: crate::plot_style::to_hex(sd.color),
             points: points.into_iter().map(|(t, v)| (secs(t), v)).collect(),
             gaps,
             step: sd.step,
@@ -386,6 +385,12 @@ pub fn show_preview(
     db: &DbBackend,
     sources: &Sources,
 ) -> Option<Result<String, String>> {
+    if !preview.as_ref()?.shows(sources) {
+        *preview = None;
+        return Some(Err(
+            "the plotted series changed, so the export window closed".into(),
+        ));
+    }
     match preview.as_mut()?.show(ctx, db, sources) {
         preview::Action::None => None,
         preview::Action::Close => {

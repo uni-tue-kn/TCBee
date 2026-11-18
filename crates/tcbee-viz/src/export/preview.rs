@@ -10,10 +10,21 @@ use crate::{backend::db::DbBackend, plot_style::PlotStyle, ui::style_editor};
 const SCREEN_PER_INCH: f32 = 96.0;
 /// Widest preview on screen, in points.
 const MAX_WIDTH: f32 = 800.0;
+/// Time slices of the previewed data, enough for the widest preview on a HiDPI screen
+const PREVIEW_COLUMNS: usize = 1600;
+
+/// The series of `sources` in plot order, to tell when the plot changed.
+fn series_ids(sources: &Sources) -> Vec<(i64, String)> {
+    super::exported(sources)
+        .map(|(prefix, sd, info)| (info.flow_id, format!("{prefix}{}", sd.name)))
+        .collect()
+}
 
 pub struct Preview {
     /// The data at preview resolution; saving reads it again at the file's
     figure: Figure,
+    /// The series of `figure`, to notice when the tab plots others
+    series: Vec<(i64, String)>,
     origin: f64,
     x_range: (f64, f64),
     view: View,
@@ -67,15 +78,7 @@ impl StylePreview {
             .as_ref()
             .is_none_or(|(s, f, px, _)| s != style || !Arc::ptr_eq(f, &figure) || *px != scale);
         if stale {
-            let texture = if style.use_palette {
-                let mut recoloured = (*figure).clone();
-                for (i, f) in recoloured.series.iter_mut().enumerate() {
-                    f.color = style.palette_color(i).to_string();
-                }
-                texture(ui.ctx(), "style_preview", &recoloured, style, scale)
-            } else {
-                texture(ui.ctx(), "style_preview", &figure, style, scale)
-            };
+            let texture = texture(ui.ctx(), "style_preview", &figure, style, scale);
             self.image = Some((style.clone(), figure, scale, texture));
         }
         match &self.image {
@@ -113,9 +116,9 @@ impl Preview {
         style: &PlotStyle,
         file_stem: &str,
     ) -> Preview {
-        let columns = (MAX_WIDTH * 2.0) as usize;
         Preview {
-            figure: collect(db, sources, origin, (x_range, view), style, columns),
+            figure: collect(db, sources, origin, (x_range, view), PREVIEW_COLUMNS),
+            series: series_ids(sources),
             origin,
             x_range,
             view,
@@ -126,16 +129,9 @@ impl Preview {
         }
     }
 
-    /// The figure with the colours of the draft, as it will be saved.
-    fn styled_figure(&self, db: &DbBackend, sources: &Sources, columns: usize) -> Figure {
-        collect(
-            db,
-            sources,
-            self.origin,
-            (self.x_range, self.view),
-            &self.draft,
-            columns,
-        )
+    /// Whether `sources` still plot the series of the figure.
+    pub fn shows(&self, sources: &Sources) -> bool {
+        self.series == series_ids(sources)
     }
 
     /// The window; `sources` are the tab's plotted flows, read again when saving.
@@ -149,7 +145,7 @@ impl Preview {
             .default_pos(ctx.screen_rect().center() - egui::vec2(500.0, 250.0))
             .show(ctx, |ui| {
                 ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| self.show_image(ui, db, sources));
+                    ui.vertical(|ui| self.show_image(ui, sources));
                     ui.separator();
                     ui.vertical(|ui| {
                         style_editor::show(ui, &mut self.draft);
@@ -165,7 +161,7 @@ impl Preview {
         }
     }
 
-    fn show_image(&mut self, ui: &mut egui::Ui, db: &DbBackend, sources: &Sources) {
+    fn show_image(&mut self, ui: &mut egui::Ui, sources: &Sources) {
         let width = (self.draft.width_in * SCREEN_PER_INCH).min(MAX_WIDTH);
         let scale = width / self.draft.width_in * ui.ctx().pixels_per_point();
         let stale = self
@@ -173,12 +169,6 @@ impl Preview {
             .as_ref()
             .is_none_or(|(style, s, _)| *style != self.draft || *s != scale);
         if stale {
-            // Colours are picked while collecting, so a palette switch reads the data again
-            if self.image.as_ref().is_some_and(|(style, _, _)| {
-                style.use_palette != self.draft.use_palette || style.palette != self.draft.palette
-            }) {
-                self.figure = self.styled_figure(db, sources, (MAX_WIDTH * 2.0) as usize);
-            }
             if self.image.is_none() {
                 remember_figure(ui.ctx(), &self.figure);
             }
@@ -259,7 +249,13 @@ impl Preview {
         let Some(format) = Format::of(&path) else {
             return Some(Err("the file name must end in .pdf or .png".into()));
         };
-        let fig = self.styled_figure(db, sources, format.columns(&self.draft));
+        let fig = collect(
+            db,
+            sources,
+            self.origin,
+            (self.x_range, self.view),
+            format.columns(&self.draft),
+        );
         Some(write(&fig, &self.draft, &path).map(|()| path.display().to_string()))
     }
 }
