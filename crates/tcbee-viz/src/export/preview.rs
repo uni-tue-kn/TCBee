@@ -17,7 +17,7 @@ pub struct Preview {
     view: View,
     file_stem: String,
     pub(super) draft: PlotStyle,
-    /// The rendered figure and the style and scale it was rendered with
+    /// The rendered figure and the style and pixels per inch it was rendered with
     image: Option<(PlotStyle, f32, Result<egui::TextureHandle, String>)>,
     status: Status,
 }
@@ -93,7 +93,7 @@ impl Preview {
 
     fn show_image(&mut self, ui: &mut egui::Ui, db: &DbBackend, sources: &Sources) {
         let width = (self.draft.width_in * SCREEN_PER_INCH).min(MAX_WIDTH);
-        let scale = width / (self.draft.width_in * 72.0) * ui.ctx().pixels_per_point();
+        let scale = width / self.draft.width_in * ui.ctx().pixels_per_point();
         let stale = self
             .image
             .as_ref()

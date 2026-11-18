@@ -222,7 +222,10 @@ fn tree(fig: &Figure, style: &PlotStyle) -> Result<usvg::Tree, String> {
     usvg::Tree::from_str(&figure::svg(fig, style), &options).map_err(|e| e.to_string())
 }
 
-/// `tree` in pixels, `scale` pixels per point.
+/// usvg's pixels per inch: the size of the SVG, given in points, is converted to these.
+const USVG_PX_PER_INCH: f32 = 96.0;
+
+/// `tree` in pixels, `scale` pixels per usvg pixel.
 fn pixmap(tree: &usvg::Tree, scale: f32) -> Result<tiny_skia::Pixmap, String> {
     let size = tree
         .size()
@@ -239,9 +242,13 @@ fn pixmap(tree: &usvg::Tree, scale: f32) -> Result<tiny_skia::Pixmap, String> {
     Ok(pixmap)
 }
 
-/// `fig` as an image of `scale` pixels per point, for the preview.
-pub fn rasterize(fig: &Figure, style: &PlotStyle, scale: f32) -> Result<egui::ColorImage, String> {
-    let pixmap = pixmap(&tree(fig, style)?, scale)?;
+/// `fig` as an image of `px_per_inch`, for the preview.
+pub fn rasterize(
+    fig: &Figure,
+    style: &PlotStyle,
+    px_per_inch: f32,
+) -> Result<egui::ColorImage, String> {
+    let pixmap = pixmap(&tree(fig, style)?, px_per_inch / USVG_PX_PER_INCH)?;
     Ok(egui::ColorImage::from_rgba_premultiplied(
         [pixmap.width() as usize, pixmap.height() as usize],
         pixmap.data(),
@@ -259,8 +266,7 @@ pub fn write(fig: &Figure, style: &PlotStyle, path: &Path) -> Result<(), String>
             svg2pdf::PageOptions::default(),
         )
         .map_err(|e| e.to_string())?,
-        // The SVG is sized in points
-        Format::Png => pixmap(&tree, style.png_dpi as f32 / 72.0)?
+        Format::Png => pixmap(&tree, style.png_dpi as f32 / USVG_PX_PER_INCH)?
             .encode_png()
             .map_err(|e| e.to_string())?,
     };
@@ -464,10 +470,12 @@ mod tests {
         write(&fig(), &style, &png).unwrap();
         let bytes = std::fs::read(&png).unwrap();
         assert!(bytes.starts_with(b"\x89PNG"));
+        // 3.5 in at 300 dpi; the width is a big-endian u32 at byte 16
+        let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+        assert_eq!(width, 1050);
         assert!(write(&fig(), &style, &dir.path().join("f.svg")).is_err());
-        // The preview: 3.5 in at scale 1, which usvg takes as 96 pixels per inch
-        let img = rasterize(&fig(), &style, 1.0).unwrap();
-        assert_eq!(img.size[0], 336);
+        let img = rasterize(&fig(), &style, 100.0).unwrap();
+        assert_eq!(img.size[0], 350);
     }
 
     #[test]
