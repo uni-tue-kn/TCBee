@@ -12,7 +12,7 @@ use crate::{
     ui::{
         flow_table::{selected_flow_card, FlowTable},
         gap_marks,
-        series_table::SeriesTable,
+        series_table::{SeriesAction, SeriesTable},
         theme,
     },
 };
@@ -183,11 +183,11 @@ impl TabSingleFlow {
             let metrics_height = (sidebar_height - flow_table_height - 180.0).max(100.0);
             egui::Frame::NONE.show(ui, |ui| {
                 ui.set_max_height(metrics_height);
-                if let Some(toggled_id) =
-                    self.series_table
-                        .show(ui, &available, &selected_ids, &colors)
+                if let Some(action) = self
+                    .series_table
+                    .show(ui, &available, &selected_ids, &colors)
                 {
-                    self.state.toggle_series(db, toggled_id, settings);
+                    apply_series_action(&mut self.state, db, action, settings);
                     self.needs_fit = true;
                 }
             });
@@ -900,6 +900,20 @@ pub fn plot_height_with_footer(available_height: f32) -> f32 {
 pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -> f32 {
     let count = plot_count.max(1) as f32;
     ((available_height - PLOT_AXIS_FOOTER) / count).max(80.0)
+}
+
+/// Change the selected metrics of `state` as the user asked in a `SeriesTable`
+pub fn apply_series_action(
+    state: &mut PlotState,
+    db: &DbBackend,
+    action: SeriesAction,
+    settings: &AppSettings,
+) {
+    match action {
+        SeriesAction::Toggle(id) => state.toggle_series(db, id, settings),
+        SeriesAction::Select(ids) => state.select_series(db, &ids, settings),
+        SeriesAction::Deselect(ids) => state.deselect_series(&ids),
+    }
 }
 
 /// The "Remove outliers" checkbox, true when it changed

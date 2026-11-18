@@ -16,9 +16,10 @@ use crate::{
         gap_marks,
         series_table::SeriesTable,
         tab_single_flow::{
-            compact_axis_label, compact_coordinates_formatter, outliers_checkbox,
-            plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter,
-            split_plot_height_with_footer, to_plot_points, vertical_marker_label, x_range_editor,
+            apply_series_action, compact_axis_label, compact_coordinates_formatter,
+            outliers_checkbox, plot_height_with_footer, seconds_grid_spacer,
+            seconds_since_formatter, split_plot_height_with_footer, to_plot_points,
+            vertical_marker_label, x_range_editor,
         },
         theme,
     },
@@ -1060,10 +1061,10 @@ fn flow_section(
     let metrics_height = (table_height * 0.72).max(180.0);
     egui::Frame::NONE.show(ui, |ui| {
         ui.set_max_height(metrics_height);
-        if let Some(toggled_id) =
+        if let Some(action) =
             series_table.show_with_id_salt(ui, &available, &selected_ids, &colors, series_table_id)
         {
-            state.toggle_series(db, toggled_id, settings);
+            apply_series_action(state, db, action, settings);
             changed = true;
         }
     });

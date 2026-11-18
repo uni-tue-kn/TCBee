@@ -84,14 +84,19 @@ impl PlotState {
 
     /// Toggle a series on/off. Assigns a color when added.
     pub fn toggle_series(&mut self, db: &DbBackend, series_id: i64, settings: &AppSettings) {
-        if let Some(pos) = self
-            .selected_series_ids
-            .iter()
-            .position(|&id| id == series_id)
-        {
-            self.selected_series_ids.remove(pos);
-            self.series.retain(|s| s.series_id != series_id);
+        if self.selected_series_ids.contains(&series_id) {
+            self.deselect_series(&[series_id]);
         } else {
+            self.select_series(db, &[series_id], settings);
+        }
+    }
+
+    /// Add the series of `ids` that are not selected yet, each with the next palette color.
+    pub fn select_series(&mut self, db: &DbBackend, ids: &[i64], settings: &AppSettings) {
+        for &series_id in ids {
+            if self.selected_series_ids.contains(&series_id) {
+                continue;
+            }
             self.selected_series_ids.push(series_id);
             // Assign the next color in the palette
             let color_idx = self.series.len();
@@ -106,6 +111,12 @@ impl PlotState {
                 self.series.push(sd);
             }
         }
+    }
+
+    /// Remove the series of `ids` from the selection.
+    pub fn deselect_series(&mut self, ids: &[i64]) {
+        self.selected_series_ids.retain(|id| !ids.contains(id));
+        self.series.retain(|s| !ids.contains(&s.series_id));
     }
 
     /// Reads the gaps of the series that have none yet. Plugin outputs have no hook_seq.
@@ -298,4 +309,57 @@ pub fn fetch_range(
     }
     sd.loaded_range = Some((fetch_min, fetch_max));
     sd.loaded_sample_interval = sample_interval;
+}
+
+#[cfg(test)]
+mod tests {
+    use ts_storage::{ColType, Dir, SeriesInfo, SeriesKind};
+
+    use super::*;
+
+    fn info(id: i64) -> SeriesInfo {
+        SeriesInfo {
+            id,
+            flow_id: 1,
+            kind: SeriesKind::Raw,
+            source: "sock".to_string(),
+            dir: Dir::Send,
+            name: format!("m{id}"),
+            value_type: ColType::U32,
+            tbl: Some("ev_sock".to_string()),
+            col: Some(format!("m{id}")),
+            n: 10,
+            t_min: Some(0),
+            t_max: Some(9),
+            v_min: Some(0.0),
+            v_max: Some(1.0),
+        }
+    }
+
+    fn state() -> PlotState {
+        PlotState {
+            flow_id: Some(1),
+            available_series: (1..=4).map(info).collect(),
+            ..PlotState::default()
+        }
+    }
+
+    fn selected(state: &PlotState) -> (Vec<i64>, Vec<i64>) {
+        let loaded = state.series.iter().map(|s| s.series_id).collect();
+        (state.selected_series_ids.clone(), loaded)
+    }
+
+    #[test]
+    fn selecting_many_keeps_the_selected_ones() {
+        let (db, settings) = (DbBackend::default(), AppSettings::default());
+        let mut state = state();
+        state.toggle_series(&db, 2, &settings);
+        // Unlike toggling, selecting a selected series keeps it
+        state.select_series(&db, &[1, 2, 3], &settings);
+        assert_eq!(selected(&state), (vec![2, 1, 3], vec![2, 1, 3]));
+        state.deselect_series(&[2, 4]);
+        assert_eq!(selected(&state), (vec![1, 3], vec![1, 3]));
+        state.toggle_series(&db, 1, &settings);
+        assert_eq!(selected(&state), (vec![3], vec![3]));
+    }
 }

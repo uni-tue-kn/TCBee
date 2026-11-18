@@ -14,6 +14,17 @@ const COL_TYPE: f32 = 44.0;
 const COL_COUNT: f32 = 64.0;
 const FILTER_GAP: f32 = 4.0;
 
+/// What the user did in a `SeriesTable`
+#[derive(Clone, Debug, PartialEq)]
+pub enum SeriesAction {
+    /// A row was clicked
+    Toggle(i64),
+    /// "All" was clicked: the metrics that match the filter
+    Select(Vec<i64>),
+    /// "None" was clicked: the metrics that match the filter
+    Deselect(Vec<i64>),
+}
+
 /// A searchable, checkable table for selecting time series metrics.
 #[derive(Default)]
 pub struct SeriesTable {
@@ -31,14 +42,14 @@ impl SeriesTable {
     /// `selected_ids` — currently checked series IDs.
     /// `colors` — `(series_id, Color32)` for series that are already selected (used for the dot).
     ///
-    /// Returns `Some(series_id)` when a row checkbox is toggled.
+    /// Returns what the user clicked, if anything.
     pub fn show(
         &mut self,
         ui: &mut Ui,
         entries: &[SeriesInfo],
         selected_ids: &[i64],
         colors: &[(i64, Color32)],
-    ) -> Option<i64> {
+    ) -> Option<SeriesAction> {
         self.show_with_id_salt(ui, entries, selected_ids, colors, "series_table")
     }
 
@@ -50,8 +61,8 @@ impl SeriesTable {
         selected_ids: &[i64],
         colors: &[(i64, Color32)],
         id_salt: &'static str,
-    ) -> Option<i64> {
-        let mut toggled: Option<i64> = None;
+    ) -> Option<SeriesAction> {
+        let mut action: Option<SeriesAction> = None;
         let dark_mode = ui.visuals().dark_mode;
 
         table::frame(dark_mode).show(ui, |ui| {
@@ -75,6 +86,49 @@ impl SeriesTable {
                 .iter()
                 .filter(|ts| series_label(ts).to_lowercase().contains(&filter_lower))
                 .collect();
+
+            // ── Selection bar ────────────────────────────────────────────────
+            let visible_ids: Vec<i64> = visible.iter().map(|ts| ts.id).collect();
+            ui.allocate_ui_with_layout(
+                Vec2::new(content_w, ROW_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} of {} selected",
+                            selected_ids.len(),
+                            entries.len()
+                        ))
+                        .size(11.5)
+                        .color(theme::muted_text(dark_mode)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
+                        let enabled = !visible_ids.is_empty();
+                        let hint = if self.filter.is_empty() {
+                            "all metrics"
+                        } else {
+                            "the metrics that match the filter"
+                        };
+                        if ui
+                            .add_enabled(enabled, egui::Button::new("None").small())
+                            .on_hover_text(format!("Deselect {hint}"))
+                            .clicked()
+                        {
+                            action = Some(SeriesAction::Deselect(visible_ids.clone()));
+                        }
+                        if ui
+                            .add_enabled(enabled, egui::Button::new("All").small())
+                            .on_hover_text(format!("Select {hint}"))
+                            .clicked()
+                        {
+                            action = Some(SeriesAction::Select(visible_ids.clone()));
+                        }
+                    });
+                },
+            );
 
             ui.separator();
 
@@ -163,7 +217,7 @@ impl SeriesTable {
                         let row_click =
                             table::row_click(ui, row_rect, ui.id().with((id_salt, "srow", sid)));
                         if row_click.clicked() {
-                            toggled = Some(sid);
+                            action = Some(SeriesAction::Toggle(sid));
                         }
 
                         table::row_divider(ui, row_resp.response.rect);
@@ -171,7 +225,7 @@ impl SeriesTable {
                 });
         });
 
-        toggled
+        action
     }
 }
 
