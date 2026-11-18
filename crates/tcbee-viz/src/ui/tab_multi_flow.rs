@@ -12,7 +12,7 @@ use crate::{
     export,
     settings::AppSettings,
     ui::{
-        flow_table::FlowTable,
+        flow_table::{selected_flow_card, FlowTable},
         gap_marks,
         series_table::SeriesTable,
         tab_single_flow::{
@@ -34,6 +34,9 @@ pub struct TabMultiFlow {
     state_b: PlotState,
     table_a: FlowTable,
     table_b: FlowTable,
+    /// The flow table of A or B is shown again to pick another flow
+    choosing_flow_a: bool,
+    choosing_flow_b: bool,
     series_table_a: SeriesTable,
     series_table_b: SeriesTable,
     merged_view: bool,
@@ -58,6 +61,8 @@ impl Default for TabMultiFlow {
             state_b: PlotState::default(),
             table_a: FlowTable::default(),
             table_b: FlowTable::default(),
+            choosing_flow_a: false,
+            choosing_flow_b: false,
             series_table_a: SeriesTable::default(),
             series_table_b: SeriesTable::default(),
             merged_view: true,
@@ -82,6 +87,8 @@ impl TabMultiFlow {
         self.state_b.reset();
         self.table_a.reset();
         self.table_b.reset();
+        self.choosing_flow_a = false;
+        self.choosing_flow_b = false;
         self.series_table_a.reset();
         self.series_table_b.reset();
         self.merged_view = true;
@@ -154,6 +161,7 @@ impl TabMultiFlow {
             "Flow A",
             egui::Color32::from_rgb(70, 130, 200),
             &mut self.table_a,
+            &mut self.choosing_flow_a,
             &mut self.series_table_a,
             &mut self.state_a,
             flows,
@@ -176,6 +184,7 @@ impl TabMultiFlow {
             "Flow B",
             egui::Color32::from_rgb(200, 100, 60),
             &mut self.table_b,
+            &mut self.choosing_flow_b,
             &mut self.series_table_b,
             &mut self.state_b,
             flows,
@@ -984,6 +993,7 @@ fn flow_section(
     title: &str,
     accent: egui::Color32,
     flow_table: &mut FlowTable,
+    choosing_flow: &mut bool,
     series_table: &mut SeriesTable,
     state: &mut PlotState,
     flows: &[Flow],
@@ -1008,15 +1018,24 @@ fn flow_section(
         return false;
     }
 
-    egui::Frame::NONE.show(ui, |ui| {
-        ui.set_max_height((table_height * 0.62).max(160.0));
-        if let Some(new_id) =
-            flow_table.show_with_id_salt(ui, db, flows, state.flow_id, flow_table_id)
-        {
-            state.select_flow(db, new_id);
-            changed = true;
+    if let Some(flow_id) = state.flow_id {
+        if selected_flow_card(ui, db, flow_id, &state.flow_label, *choosing_flow) {
+            *choosing_flow = !*choosing_flow;
         }
-    });
+        ui.add_space(4.0);
+    }
+    if state.flow_id.is_none() || *choosing_flow {
+        egui::Frame::NONE.show(ui, |ui| {
+            ui.set_max_height((table_height * 0.62).max(160.0));
+            if let Some(new_id) =
+                flow_table.show_with_id_salt(ui, db, flows, state.flow_id, flow_table_id)
+            {
+                state.select_flow(db, new_id);
+                *choosing_flow = false;
+                changed = true;
+            }
+        });
+    }
 
     if state.flow_id.is_none() {
         return changed;

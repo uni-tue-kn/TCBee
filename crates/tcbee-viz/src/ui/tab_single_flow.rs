@@ -9,7 +9,12 @@ use crate::{
     data::{plot_state::PlotState, preprocessing::remove_leading_outliers},
     export,
     settings::AppSettings,
-    ui::{flow_table::FlowTable, gap_marks, series_table::SeriesTable, theme},
+    ui::{
+        flow_table::{selected_flow_card, FlowTable},
+        gap_marks,
+        series_table::SeriesTable,
+        theme,
+    },
 };
 
 const PLOT_AXIS_FOOTER: f32 = 36.0;
@@ -19,6 +24,8 @@ type PlotDataBounds = ((f64, f64), (f64, f64));
 pub struct TabSingleFlow {
     state: PlotState,
     flow_table: FlowTable,
+    /// The flow table is shown again to pick another flow
+    choosing_flow: bool,
     series_table: SeriesTable,
     manual_x_min: f64,
     manual_x_max: f64,
@@ -38,6 +45,7 @@ impl Default for TabSingleFlow {
         Self {
             state: PlotState::default(),
             flow_table: FlowTable::default(),
+            choosing_flow: false,
             series_table: SeriesTable::default(),
             manual_x_min: 0.0,
             manual_x_max: 1.0,
@@ -57,6 +65,7 @@ impl TabSingleFlow {
         self.preview = None;
         self.state.reset();
         self.flow_table.reset();
+        self.choosing_flow = false;
         self.series_table.reset();
         self.manual_x_min = 0.0;
         self.manual_x_max = 1.0;
@@ -118,14 +127,19 @@ impl TabSingleFlow {
     ) {
         // ── Flow table ──────────────────────────────────────────────────
         ui.add_space(4.0);
-        section_heading(ui, "Flow Selection");
+        section_heading(ui, "Flow");
 
         let flows = db.list_flows();
         let flow_table_height = (sidebar_height * 0.45).max(120.0);
+        if let Some(flow_id) = self.state.flow_id {
+            if selected_flow_card(ui, db, flow_id, &self.state.flow_label, self.choosing_flow) {
+                self.choosing_flow = !self.choosing_flow;
+            }
+            ui.add_space(6.0);
+        }
         if flows.is_empty() {
             ui.label(RichText::new("No flows found in database.").color(egui::Color32::GRAY));
-        } else {
-            // Reserve space for flow table — takes up top half of sidebar
+        } else if self.state.flow_id.is_none() || self.choosing_flow {
             egui::Frame::NONE.show(ui, |ui| {
                 ui.set_max_height(flow_table_height);
                 if let Some(new_id) = self.flow_table.show(ui, db, flows, self.state.flow_id) {
@@ -133,6 +147,7 @@ impl TabSingleFlow {
                     self.manual_x_min = self.state.data_x_min;
                     self.manual_x_max = self.state.data_x_max;
                     self.needs_fit = true;
+                    self.choosing_flow = false;
                 }
             });
         }
