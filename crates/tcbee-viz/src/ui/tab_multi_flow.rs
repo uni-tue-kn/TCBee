@@ -19,7 +19,7 @@ use crate::{
             apply_series_action, compact_axis_label, compact_coordinates_formatter,
             outliers_checkbox, plot_height_with_footer, seconds_grid_spacer,
             seconds_since_formatter, split_plot_height_with_footer, to_plot_points,
-            vertical_marker_label, x_range_editor,
+            vertical_marker_label, x_range_editor, SIDEBAR_BOTTOM_GAP,
         },
         theme,
     },
@@ -116,7 +116,7 @@ impl TabMultiFlow {
             .resizable(true)
             .min_width(240.0)
             .max_width(500.0)
-            .default_width(500.0)
+            .default_width(360.0)
             .frame(theme::sidebar_frame(settings.dark_mode))
             .show_inside(ui, |ui| {
                 // The controls go first so the scroll area below gets the remaining height
@@ -154,7 +154,8 @@ impl TabMultiFlow {
         sidebar_height: f32,
     ) {
         let flows = db.list_flows();
-        let half_h = ((sidebar_height - 120.0) / 2.0).max(220.0);
+        // Each flow gets half of the sidebar, less the space between them
+        let half_h = ((sidebar_height - 20.0) / 2.0).max(220.0);
 
         // ── Flow A ───────────────────────────────────────────────────────
         if flow_section(
@@ -1005,6 +1006,7 @@ fn flow_section(
     series_table_id: &'static str,
 ) -> bool {
     let mut changed = false;
+    let top = ui.cursor().top();
 
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(4.0, 16.0), egui::Sense::hover());
@@ -1058,7 +1060,9 @@ fn flow_section(
         .map(|s| (s.series_id, s.color))
         .collect();
 
-    let metrics_height = (table_height * 0.72).max(180.0);
+    // The metrics table takes the rest of the flow's half
+    let used = ui.cursor().top() - top;
+    let metrics_height = (table_height - used - SIDEBAR_BOTTOM_GAP).max(160.0);
     egui::Frame::NONE.show(ui, |ui| {
         ui.set_max_height(metrics_height);
         if let Some(action) =

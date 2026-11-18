@@ -18,6 +18,8 @@ use crate::{
 };
 
 const PLOT_AXIS_FOOTER: f32 = 36.0;
+/// Space between a table that fills the sidebar and the controls below it
+pub const SIDEBAR_BOTTOM_GAP: f32 = 12.0;
 const OUTLIER_TOOLTIP: &str = "Automatically removes only leading points whose values are far outside the following steady-state data, so large initial CWND or ssthresh values do not distort auto-fit.";
 type PlotDataBounds = ((f64, f64), (f64, f64));
 
@@ -86,7 +88,7 @@ impl TabSingleFlow {
             .resizable(true)
             .min_width(240.0)
             .max_width(500.0)
-            .default_width(500.0)
+            .default_width(360.0)
             .frame(theme::sidebar_frame(settings.dark_mode))
             .show_inside(ui, |ui| {
                 // The controls go first so the scroll area below gets the remaining height
@@ -125,6 +127,8 @@ impl TabSingleFlow {
         settings: &AppSettings,
         sidebar_height: f32,
     ) {
+        let top = ui.cursor().top();
+
         // ── Flow table ──────────────────────────────────────────────────
         ui.add_space(4.0);
         section_heading(ui, "Flow");
@@ -180,7 +184,9 @@ impl TabSingleFlow {
                 .map(|s| (s.series_id, s.color))
                 .collect();
 
-            let metrics_height = (sidebar_height - flow_table_height - 180.0).max(100.0);
+            // The metrics table takes the rest of the sidebar
+            let used = ui.cursor().top() - top;
+            let metrics_height = (sidebar_height - used - SIDEBAR_BOTTOM_GAP).max(160.0);
             egui::Frame::NONE.show(ui, |ui| {
                 ui.set_max_height(metrics_height);
                 if let Some(action) = self
