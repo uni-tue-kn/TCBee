@@ -1,6 +1,7 @@
 //! Export of the current plot as a styled PDF or PNG figure.
 
 pub mod figure;
+pub mod script;
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -186,8 +187,9 @@ pub fn write(fig: &Figure, style: &PlotStyle, path: &Path) -> Result<(), String>
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// A file name for a figure of `flow_id` and `metrics`: `flow<id>_<metric>[_<metric>].pdf`.
-pub fn default_file_name(flow_id: Option<i64>, metrics: &[&str]) -> String {
+/// A file name without extension for an export of `flow_id` and `metrics`:
+/// `flow<id>_<metric>[_<metric>]`.
+pub fn default_file_stem(flow_id: Option<i64>, metrics: &[&str]) -> String {
     let mut name = flow_id.map_or("flows".to_string(), |id| format!("flow{id}"));
     for m in metrics.iter().take(3) {
         name.push('_');
@@ -199,7 +201,7 @@ pub fn default_file_name(flow_id: Option<i64>, metrics: &[&str]) -> String {
             }
         }));
     }
-    name + ".pdf"
+    name
 }
 
 /// The visible part of a plot: x range (ns) and, for a single plot, its y range.
@@ -212,8 +214,39 @@ pub struct View {
 /// The result of the last export of a tab: the written file or the error.
 pub type Status = Option<Result<String, String>>;
 
+/// Runs an export of the plotted `sources`: asks where to save and returns the outcome, `None`
+/// if cancelled. `file_stem` names the file by default.
+pub fn run(
+    request: Request,
+    db: &DbBackend,
+    sources: &Sources,
+    origin: f64,
+    view: View,
+    style: &PlotStyle,
+    file_stem: &str,
+) -> Status {
+    match request {
+        Request::Figure => export_figure(
+            db,
+            sources,
+            origin,
+            view,
+            style,
+            &format!("{file_stem}.pdf"),
+        ),
+        Request::Script => script::export(
+            db.path(),
+            sources,
+            origin,
+            view,
+            style,
+            &format!("{file_stem}.py"),
+        ),
+    }
+}
+
 /// Asks where to save, renders the figure and returns the outcome; `None` if cancelled.
-pub fn export(
+fn export_figure(
     db: &DbBackend,
     sources: &Sources,
     origin: f64,
@@ -238,12 +271,37 @@ pub fn export(
     Some(write(&fig, style, &path).map(|()| path.display().to_string()))
 }
 
-/// The button that starts an export, and the outcome of the last one.
-pub fn controls(ui: &mut egui::Ui, status: &Status) -> bool {
-    let clicked = ui
-        .button("Export figure…")
-        .on_hover_text("Save the visible plot as PDF or PNG, styled as in Settings → Figure export")
-        .clicked();
+/// What the user asked to export.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Request {
+    Figure,
+    Script,
+}
+
+/// The export buttons and the outcome of the last export.
+pub fn controls(ui: &mut egui::Ui, status: &Status) -> Option<Request> {
+    let mut request = None;
+    ui.horizontal(|ui| {
+        if ui
+            .button("Export figure…")
+            .on_hover_text(
+                "Save the visible plot as PDF or PNG, styled as in Settings → Figure export",
+            )
+            .clicked()
+        {
+            request = Some(Request::Figure);
+        }
+        if ui
+            .button("Export data script…")
+            .on_hover_text(
+                "Save a Python script that loads the plotted data and gaps with the tcbee \
+                 package, to plot with the library of your choice",
+            )
+            .clicked()
+        {
+            request = Some(Request::Script);
+        }
+    });
     match status {
         Some(Ok(path)) => {
             ui.label(egui::RichText::new(format!("Saved {path}")).small());
@@ -253,7 +311,7 @@ pub fn controls(ui: &mut egui::Ui, status: &Status) -> bool {
         }
         None => {}
     }
-    clicked
+    request
 }
 
 #[cfg(test)]
@@ -292,8 +350,8 @@ mod tests {
     #[test]
     fn file_names_and_columns() {
         assert_eq!(
-            default_file_name(Some(3), &["SND_CWND", "srtt us"]),
-            "flow3_snd_cwnd_srtt_us.pdf"
+            default_file_stem(Some(3), &["SND_CWND", "srtt us"]),
+            "flow3_snd_cwnd_srtt_us"
         );
         let style = PlotStyle::default();
         assert_eq!(Format::Png.columns(&style), 1050);

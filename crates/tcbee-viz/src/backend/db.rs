@@ -121,6 +121,8 @@ impl std::fmt::Display for OpenError {
 #[derive(Default)]
 pub struct DbBackend {
     store: Option<Box<dyn Store>>,
+    /// The open file
+    path: Option<PathBuf>,
     /// Flows never change while a file is open, so they are read once.
     flows: OnceCell<Vec<Flow>>,
     /// Same for connections and their flows.
@@ -145,8 +147,14 @@ impl DbBackend {
         let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e, &path))?;
         Ok(Self {
             store: Some(store),
+            path: Some(path),
             ..Self::default()
         })
+    }
+
+    /// The open file.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     pub fn is_connected(&self) -> bool {

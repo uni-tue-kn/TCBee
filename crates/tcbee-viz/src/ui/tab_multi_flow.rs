@@ -207,8 +207,8 @@ impl TabMultiFlow {
             &mut self.show_gaps,
             self.state_a.series.iter().chain(&self.state_b.series),
         );
-        if export::controls(ui, &self.export_status) {
-            self.export_figure(db, settings);
+        if let Some(request) = export::controls(ui, &self.export_status) {
+            self.export(request, db, settings);
         }
 
         ui.add_space(4.0);
@@ -257,7 +257,7 @@ impl TabMultiFlow {
         });
     }
 
-    fn export_figure(&mut self, db: &DbBackend, settings: &AppSettings) {
+    fn export(&mut self, request: export::Request, db: &DbBackend, settings: &AppSettings) {
         let style = &settings.plot_style;
         if style.show_gaps {
             self.state_a.load_gaps(db);
@@ -270,7 +270,7 @@ impl TabMultiFlow {
             .chain(&self.state_b.series)
             .filter_map(|s| s.info.as_ref().map(|i| i.name.as_str()))
             .collect();
-        let file_name = export::default_file_name(None, &metrics);
+        let file_stem = export::default_file_stem(None, &metrics);
         // Split plots each fit their own y range, so the figure fits its own
         let view = if self.merged_view && !self.split_series_view {
             self.view
@@ -280,13 +280,14 @@ impl TabMultiFlow {
                 ..self.view
             }
         };
-        if let Some(status) = export::export(
+        if let Some(status) = export::run(
+            request,
             db,
             &[(&self.state_a, "A:"), (&self.state_b, "B:")],
             merged_x_origin(&self.state_a, &self.state_b),
             view,
             style,
-            &file_name,
+            &file_stem,
         ) {
             self.export_status = Some(status);
         }

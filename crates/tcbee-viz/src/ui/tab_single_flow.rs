@@ -201,8 +201,8 @@ impl TabSingleFlow {
             self.needs_fit = true;
         }
         gap_marks::controls(ui, &mut self.show_gaps, &self.state.series);
-        if export::controls(ui, &self.export_status) {
-            self.export_figure(db, settings);
+        if let Some(request) = export::controls(ui, &self.export_status) {
+            self.export(request, db, settings);
         }
 
         ui.add_space(8.0);
@@ -441,7 +441,7 @@ impl TabSingleFlow {
         }
     }
 
-    fn export_figure(&mut self, db: &DbBackend, settings: &AppSettings) {
+    fn export(&mut self, request: export::Request, db: &DbBackend, settings: &AppSettings) {
         let style = &settings.plot_style;
         if style.show_gaps {
             self.state.load_gaps(db);
@@ -452,14 +452,15 @@ impl TabSingleFlow {
             .iter()
             .filter_map(|s| s.info.as_ref().map(|i| i.name.as_str()))
             .collect();
-        let file_name = export::default_file_name(self.state.flow_id, &metrics);
-        if let Some(status) = export::export(
+        let file_stem = export::default_file_stem(self.state.flow_id, &metrics);
+        if let Some(status) = export::run(
+            request,
             db,
             &[(&self.state, "")],
             self.state.data_x_min,
             self.view,
             style,
-            &file_name,
+            &file_stem,
         ) {
             self.export_status = Some(status);
         }
