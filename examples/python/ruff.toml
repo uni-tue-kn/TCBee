@@ -1,0 +1,4 @@
+extend = "../../python/pyproject.toml"
+
+[lint.isort]
+known-first-party = ["tcbee", "_plotting"]

@@ -1,0 +1,333 @@
+use egui::{Color32, RichText, Stroke, Ui, Vec2};
+use ts_storage::{ColType, SeriesInfo};
+
+use crate::{
+    backend::binding::series_label,
+    ui::{
+        table::{self, data_cell, header_cell, ROW_HEIGHT},
+        theme,
+    },
+};
+
+const COL_CHECK: f32 = 28.0;
+const COL_TYPE: f32 = 44.0;
+const COL_COUNT: f32 = 64.0;
+const FILTER_GAP: f32 = 4.0;
+
+/// What the user did in a `SeriesTable`
+#[derive(Clone, Debug, PartialEq)]
+pub enum SeriesAction {
+    /// A row was clicked
+    Toggle(i64),
+    /// "All" was clicked: the metrics that match the filter
+    Select(Vec<i64>),
+    /// "None" was clicked: the metrics that match the filter
+    Deselect(Vec<i64>),
+}
+
+/// A searchable, checkable table for selecting time series metrics.
+#[derive(Default)]
+pub struct SeriesTable {
+    pub filter: String,
+}
+
+impl SeriesTable {
+    pub fn reset(&mut self) {
+        self.filter.clear();
+    }
+
+    /// Render the table.
+    ///
+    /// `entries` — the catalog rows (with point counts) of the current flow.
+    /// `selected_ids` — currently checked series IDs.
+    /// `colors` — `(series_id, Color32)` for series that are already selected (used for the dot).
+    ///
+    /// Returns what the user clicked, if anything.
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        entries: &[SeriesInfo],
+        selected_ids: &[i64],
+        colors: &[(i64, Color32)],
+    ) -> Option<SeriesAction> {
+        self.show_with_id_salt(ui, entries, selected_ids, colors, "series_table")
+    }
+
+    /// Render the table with a caller-provided ID salt for repeated table instances.
+    pub fn show_with_id_salt(
+        &mut self,
+        ui: &mut Ui,
+        entries: &[SeriesInfo],
+        selected_ids: &[i64],
+        colors: &[(i64, Color32)],
+        id_salt: &'static str,
+    ) -> Option<SeriesAction> {
+        let mut action: Option<SeriesAction> = None;
+        let dark_mode = ui.visuals().dark_mode;
+
+        table::frame(dark_mode).show(ui, |ui| {
+            // All width measurements are taken inside the frame so the
+            // 1 px stroke on each side is already excluded.
+            let content_w = ui.available_width().max(1.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
+
+            // ── Filter bar ───────────────────────────────────────────────────
+            table::filter_bar(
+                ui,
+                &mut self.filter,
+                "Search metrics…",
+                None,
+                content_w * 0.9,
+                FILTER_GAP,
+            );
+
+            let visible = matching_series(entries, &self.filter);
+
+            // ── Selection bar ────────────────────────────────────────────────
+            let visible_ids: Vec<i64> = visible.iter().map(|ts| ts.id).collect();
+            ui.allocate_ui_with_layout(
+                Vec2::new(content_w, ROW_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(selection_count(&visible_ids, selected_ids, &self.filter))
+                            .size(11.5)
+                            .color(theme::muted_text(dark_mode)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
+                        let enabled = !visible_ids.is_empty();
+                        let hint = if self.filter.is_empty() {
+                            "all metrics"
+                        } else {
+                            "the metrics that match the filter"
+                        };
+                        if ui
+                            .add_enabled(enabled, egui::Button::new("None").small())
+                            .on_hover_text(format!("Deselect {hint}"))
+                            .clicked()
+                        {
+                            action = Some(SeriesAction::Deselect(visible_ids.clone()));
+                        }
+                        if ui
+                            .add_enabled(enabled, egui::Button::new("All").small())
+                            .on_hover_text(format!("Select {hint}"))
+                            .clicked()
+                        {
+                            action = Some(SeriesAction::Select(visible_ids.clone()));
+                        }
+                    });
+                },
+            );
+
+            ui.separator();
+
+            if visible.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("No metrics match the filter.")
+                        .color(theme::muted_text(dark_mode))
+                        .italics(),
+                );
+                ui.add_space(4.0);
+                return;
+            }
+
+            // ── Header ────────────────────────────────────────────────────────
+            let fixed_w = COL_CHECK + COL_TYPE + COL_COUNT;
+            let col_name = (content_w - fixed_w).max(40.0);
+
+            table::header_row(ui, content_w, |ui| {
+                header_cell(ui, "", COL_CHECK);
+                header_cell(ui, "Name", col_name);
+                header_cell(ui, "Type", COL_TYPE);
+                header_cell(ui, "Points", COL_COUNT);
+            });
+
+            ui.separator();
+
+            // ── Rows ──────────────────────────────────────────────────────────
+            egui::ScrollArea::vertical()
+                .id_salt((id_salt, "scroll"))
+                .auto_shrink([false, false])
+                .show_rows(ui, ROW_HEIGHT, visible.len(), |ui, range| {
+                    ui.set_width(content_w);
+                    for i in range {
+                        let ts = visible[i];
+                        let sid = ts.id;
+                        let is_selected = selected_ids.contains(&sid);
+                        let dot_color = colors.iter().find(|&&(id, _)| id == sid).map(|&(_, c)| c);
+
+                        let row_resp = ui.horizontal(|ui| {
+                            ui.set_width(content_w);
+                            ui.set_height(ROW_HEIGHT);
+                            let rect = ui.max_rect();
+                            let hovered = ui.rect_contains_pointer(rect);
+                            let bg = table::row_fill(dark_mode, i, is_selected, hovered);
+                            ui.painter().rect_filled(rect, 0.0, bg);
+
+                            // Checkbox / color dot cell
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(COL_CHECK, ROW_HEIGHT),
+                                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                |ui| {
+                                    if let Some(color) = dot_color {
+                                        let (r, _) = ui.allocate_exact_size(
+                                            Vec2::new(12.0, 12.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().circle_filled(r.center(), 5.0, color);
+                                        ui.painter().circle_stroke(
+                                            r.center(),
+                                            5.0,
+                                            Stroke::new(1.0, color.linear_multiply(0.6)),
+                                        );
+                                    } else {
+                                        let (r, _) = ui.allocate_exact_size(
+                                            Vec2::new(12.0, 12.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().rect_stroke(
+                                            r,
+                                            2.0,
+                                            Stroke::new(1.5, Color32::from_gray(160)),
+                                            egui::StrokeKind::Middle,
+                                        );
+                                    }
+                                },
+                            );
+
+                            data_cell(ui, &series_label(ts), col_name, is_selected);
+                            type_cell(ui, ts.value_type, COL_TYPE, is_selected);
+                            count_cell(ui, ts.n, COL_COUNT, is_selected);
+                        });
+
+                        // Clicking anywhere in the row toggles the series
+                        let row_rect = row_resp.response.rect;
+                        let row_click =
+                            table::row_click(ui, row_rect, ui.id().with((id_salt, "srow", sid)));
+                        if row_click.clicked() {
+                            action = Some(SeriesAction::Toggle(sid));
+                        }
+
+                        table::row_divider(ui, row_resp.response.rect);
+                    }
+                });
+        });
+
+        action
+    }
+}
+
+/// The series whose label contains `filter`, ignoring case
+fn matching_series<'a>(entries: &'a [SeriesInfo], filter: &str) -> Vec<&'a SeriesInfo> {
+    let filter = filter.to_lowercase();
+    entries
+        .iter()
+        .filter(|ts| series_label(ts).to_lowercase().contains(&filter))
+        .collect()
+}
+
+/// How many of the `visible` series are selected, the series that match the filter
+fn selection_count(visible: &[i64], selected: &[i64], filter: &str) -> String {
+    let count = visible.iter().filter(|id| selected.contains(id)).count();
+    let shown = if filter.is_empty() { "" } else { " shown" };
+    format!("{count} of {}{shown} selected", visible.len())
+}
+
+fn type_cell(ui: &mut Ui, val_type: ColType, width: f32, selected: bool) {
+    let (label, color) = type_display(val_type, selected);
+    ui.add_sized(
+        [width, ROW_HEIGHT],
+        egui::Label::new(RichText::new(label).color(color).size(11.5).monospace()),
+    );
+}
+
+fn count_cell(ui: &mut Ui, count: i64, width: f32, selected: bool) {
+    let color = if selected {
+        Color32::from_rgb(40, 60, 120)
+    } else {
+        Color32::from_gray(90)
+    };
+    let text = if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    };
+    ui.add_sized(
+        [width, ROW_HEIGHT],
+        egui::Label::new(RichText::new(text).color(color).size(11.5)),
+    );
+}
+
+fn type_display(val_type: ColType, selected: bool) -> (&'static str, Color32) {
+    let base = if selected { 220u8 } else { 255u8 };
+    let label = match val_type {
+        ColType::Bool => "bool",
+        ColType::U8 => "u8",
+        ColType::U16 => "u16",
+        ColType::U32 => "u32",
+        ColType::U64 => "u64",
+        ColType::I64 => "i64",
+        ColType::F64 => "f64",
+        ColType::Text => "str",
+    };
+    let color = match val_type {
+        ColType::F64 => Color32::from_rgb(60, 140, base),
+        ColType::Bool => Color32::from_rgb(140, 60, 160),
+        ColType::Text => Color32::from_rgb(60, 120, 60),
+        _ => Color32::from_rgb(180, 100, 20),
+    };
+    (label, color)
+}
+
+#[cfg(test)]
+mod tests {
+    use ts_storage::{Dir, SeriesKind};
+
+    use super::*;
+
+    fn info(id: i64, name: &str) -> SeriesInfo {
+        SeriesInfo {
+            id,
+            flow_id: 1,
+            kind: SeriesKind::Raw,
+            source: "sock".to_string(),
+            dir: Dir::Send,
+            name: name.to_string(),
+            value_type: ColType::U32,
+            tbl: Some("ev_sock".to_string()),
+            col: Some(name.to_string()),
+            n: 10,
+            t_min: Some(0),
+            t_max: Some(9),
+            v_min: Some(0.0),
+            v_max: Some(1.0),
+        }
+    }
+
+    #[test]
+    fn all_and_none_act_on_the_matching_series() {
+        let entries = [info(1, "snd_cwnd"), info(2, "srtt"), info(3, "snd_wnd")];
+        let ids = |filter| -> Vec<i64> {
+            matching_series(&entries, filter)
+                .iter()
+                .map(|ts| ts.id)
+                .collect()
+        };
+        assert_eq!(ids(""), vec![1, 2, 3]);
+        assert_eq!(ids("SND"), vec![1, 3]);
+        assert_eq!(ids("nothing"), Vec::<i64>::new());
+
+        assert_eq!(selection_count(&[1, 2, 3], &[2], ""), "1 of 3 selected");
+        // A selected series that is filtered out is not counted
+        assert_eq!(
+            selection_count(&[1, 3], &[2, 3], "snd"),
+            "1 of 2 shown selected"
+        );
+    }
+}

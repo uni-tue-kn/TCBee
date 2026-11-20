@@ -1,0 +1,7 @@
+# The Rust version that CI, the release and local builds use. Newer Cargo puts build script
+# output in target/<profile>/build/<pkg>/<hash>/out, where libduckdb-sys 1.10506 cannot find its
+# download directory (DUCKDB_DOWNLOAD_LIB=1). Raise this with a libduckdb-sys that handles it.
+[toolchain]
+channel = "1.99.0"
+# The tcbee-record build script runs rustfmt on the generated eBPF skeleton
+components = ["rustfmt"]

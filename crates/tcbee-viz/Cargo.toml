@@ -1,0 +1,34 @@
+[package]
+name = "tcbee-viz"
+version = "2.0.0"
+authors = ["ScatteredDrifter","MoritzFlu"]
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+egui_plot = "0.31"
+rand = "0.9.0"
+ts_storage.workspace = true
+tcbee-common.workspace = true
+rfd = "0.15.0"
+duckdb-cache.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+resvg = "0.45"
+# svg2pdf 0.13 uses usvg 0.45, as resvg 0.45 does
+svg2pdf = "0.13"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+# Storage engines, forwarded to ts_storage. Without `duckdb`, libduckdb-sys is never compiled
+# (`cargo build --no-default-features --features sqlite`). Opening a file of a disabled engine
+# shows an error in the UI.
+default = ["sqlite", "duckdb"]
+sqlite = ["ts_storage/sqlite"]
+duckdb = ["ts_storage/duckdb"]
+# Bundled C libraries of the enabled engines.
+bundled = ["ts_storage/bundled"]
