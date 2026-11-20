@@ -138,9 +138,6 @@ fn main() -> anyhow::Result<()> {
     } = args;
 
     let trace_headers = !iface.is_empty();
-    if !headers_at.is_empty() && !trace_headers {
-        return Err(anyhow!("--headers-at needs -H"));
-    }
     let headers_at = if headers_at.is_empty() {
         HeadersAt::default()
     } else {

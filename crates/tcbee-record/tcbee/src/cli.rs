@@ -173,7 +173,7 @@ pub fn parse_args(
         argparser.refer(&mut args.update_period).add_option(
             &["--tui-update-ms"],
             Store,
-            "Miliseconds between each TUI update. Default is 100ms, higher values may help with tearing.",
+            "Milliseconds between each TUI update. Default is 100ms, higher values may help with tearing.",
         );
         argparser.refer(&mut args.observation_window).add_option(
             &["--tui-observation-window-s"],
@@ -183,7 +183,7 @@ pub fn parse_args(
         argparser.refer(&mut args.cpus).add_option(
             &["-c", "--cpus"],
             Store,
-            "Number of CPUs to run TCBee on. One CPU should always be enough as the probes seem to be the bottleneck, will run at 100% load due to polling from eBPF maps.",
+            "Number of threads for control, signals and the terminal UI (not the writers, see --writer-cpus). Default is 1.",
         );
         argparser.refer(&mut args.quiet).add_option(
             &["-q", "--quiet"],
@@ -335,8 +335,8 @@ pub fn parse_args(
         // Without any argument there is nothing to record, so show what can be recorded
         if argv.len() <= 1 {
             // A closed pipe (| head) is no error
-            let _ = argparser.print_help("tcbee-record", out);
-            return Err(0);
+            let _ = argparser.print_help("tcbee-record", err);
+            return Err(2);
         }
         argparser.parse(argv, out, err)?;
     }
@@ -344,7 +344,36 @@ pub fn parse_args(
         let _ = writeln!(out, "{}", version_string());
         return Err(0);
     }
+    if let Err(message) = check_combinations(&args) {
+        let _ = writeln!(err, "tcbee-record: {message}");
+        return Err(2);
+    }
     Ok(args)
+}
+
+/// Refuses flags that would have no effect with the others given.
+fn check_combinations(args: &Args) -> Result<(), String> {
+    let defaults = Args::default();
+    if !args.headers_at.is_empty() && args.iface.is_empty() {
+        return Err("--headers-at needs -H".to_string());
+    }
+    if args.quiet
+        && (args.update_period != defaults.update_period
+            || args.observation_window != defaults.observation_window)
+    {
+        return Err(
+            "--tui-update-ms and --tui-observation-window-s need the terminal UI, drop -q"
+                .to_string(),
+        );
+    }
+    let sink = args.writer_sink.as_str();
+    if args.writer_no_prealloc && !matches!(sink, "direct" | "uring") {
+        return Err("--writer-no-prealloc needs --writer-sink direct or uring".to_string());
+    }
+    if args.writer_max_buffers.is_some() && !matches!(sink, "direct" | "buffered") {
+        return Err("--writer-max-buffers needs --writer-sink direct or buffered".to_string());
+    }
+    Ok(())
 }
 
 /// `tcbee-record <version> (<git sha>)`; the sha is set by the CI and release builds.
@@ -375,10 +404,45 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_print_the_help() {
-        let (result, out, _) = parse(&[]);
-        assert_eq!(result, Err(0));
-        assert!(out.contains("--sock-hooks"), "{out}");
+    fn no_arguments_print_the_help_as_an_error() {
+        let (result, out, err) = parse(&[]);
+        assert_eq!(result, Err(2));
+        assert!(out.is_empty());
+        assert!(err.contains("--sock-hooks"), "{err}");
+    }
+
+    #[test]
+    fn flags_without_effect_are_rejected() {
+        for argv in [
+            &["-k", "--headers-at", "driver"][..],
+            &["-k", "-q", "--tui-update-ms", "200"],
+            &["-k", "-q", "--tui-observation-window-s", "30"],
+            &["-k", "--writer-no-prealloc"],
+            &["-k", "--writer-sink", "buffered", "--writer-no-prealloc"],
+            &["-k", "--writer-max-buffers", "16"],
+            &["-k", "--writer-sink", "uring", "--writer-max-buffers", "16"],
+            &["-k", "--writer-sink", "sync", "--writer-no-prealloc"],
+            &["-k", "--writer-sink", "sync", "--writer-max-buffers", "16"],
+        ] {
+            let (result, _, err) = parse(argv);
+            assert_eq!(result, Err(2), "{argv:?}");
+            assert!(err.starts_with("tcbee-record: --"), "{err}");
+        }
+        for argv in [
+            &["-H", "eth0", "--headers-at", "driver"][..],
+            &["-k", "-q", "--duration", "5"],
+            &["-k", "--tui-update-ms", "200"],
+            &["-k", "--writer-sink", "uring", "--writer-no-prealloc"],
+            &[
+                "-k",
+                "--writer-sink",
+                "buffered",
+                "--writer-max-buffers",
+                "16",
+            ],
+        ] {
+            assert!(parse(argv).0.is_ok(), "{argv:?}");
+        }
     }
 
     #[test]

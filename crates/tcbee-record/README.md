@@ -73,7 +73,7 @@ At least one metric source is required.
 |---|---|---|
 | `-o DIR` | `/tmp/` | Output directory; the recording goes to `DIR/tcbee_YYYY-MM-DDTHH-MM-SS` |
 | `--duration SECS` | `0` | Stop after this many seconds; 0 records until Ctrl+C |
-| `-c N` | `1` | Number of CPUs used for processing |
+| `-c N` | `1` | Threads for control, signals and the terminal UI (not the writers, see `--writer-cpus`) |
 | `-q` | | Disable the terminal UI |
 | `--no-hook-seq` | off | Disable per-flow sequence numbering to reduce probe work. Records carry `hook_seq=0`; exact hook ordering across CPUs and loss detection from sequence gaps are unavailable. Aggregate drop counters remain. TCP event hooks retain tuple membership filtering. Writes `metadata.json` with `recorder.hook_seq_enabled=false` even without `--metadata`. |
 | `--metrics` | | Write a `metrics.json` summary file |
