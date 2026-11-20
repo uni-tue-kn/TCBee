@@ -298,7 +298,7 @@ impl TabProcess {
             .collect();
 
         if !self.split_plots || numeric.len() < 2 {
-            Plot::new("process_preview")
+            let response = Plot::new("process_preview")
                 .allow_boxed_zoom(true)
                 .allow_drag(true)
                 .allow_scroll(true)
@@ -310,6 +310,7 @@ impl TabProcess {
                     }
                     self.draw_event_markers(plot_ui);
                 });
+            event_labels::paint_labels(ui, &response.transform, &self.string_events());
             return;
         }
 
@@ -317,9 +318,9 @@ impl TabProcess {
         egui::ScrollArea::vertical()
             .id_salt("process_split_scroll")
             .show(ui, |ui| {
-                for &(s, new) in &numeric {
+                for (i, &(s, new)) in numeric.iter().enumerate() {
                     ui.label(RichText::new(line_name(s, new)).color(s.color).strong());
-                    Plot::new(("process_split", new, &s.name))
+                    let response = Plot::new(("process_split", i))
                         .allow_boxed_zoom(true)
                         .allow_drag(true)
                         .allow_scroll(true)
@@ -330,6 +331,7 @@ impl TabProcess {
                             draw_line(plot_ui, s, new);
                             self.draw_event_markers(plot_ui);
                         });
+                    event_labels::paint_labels(ui, &response.transform, &self.string_events());
                 }
             });
     }
@@ -344,12 +346,16 @@ impl TabProcess {
                 }
             }
         }
-        event_labels::draw(
-            plot_ui,
-            all()
-                .filter(|s| s.is_string_type())
-                .map(|s| (s.name.as_str(), s.color, s.string_points.as_slice())),
-        );
+        event_labels::draw_lines(plot_ui, &self.string_events());
+    }
+
+    fn string_events(&self) -> Vec<event_labels::Events<'_>> {
+        self.input_series
+            .iter()
+            .chain(&self.preview_series)
+            .filter(|s| s.is_string_type())
+            .map(|s| (s.name.as_str(), s.color, s.string_points.as_slice()))
+            .collect()
     }
 
     fn run_preview(&mut self, db: &DbBackend) {

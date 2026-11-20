@@ -375,6 +375,10 @@ impl TabSingleFlow {
         let mut needs_reload = false;
         let mut view = export::View::default();
 
+        let string_events: Vec<event_labels::Events> = string_markers
+            .iter()
+            .map(|(name, color, points)| (name.as_str(), *color, points.as_slice()))
+            .collect();
         let plot_response = plot.show(ui, |plot_ui| {
             if fit {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max(
@@ -427,13 +431,9 @@ impl TabSingleFlow {
                 }
             }
 
-            event_labels::draw(
-                plot_ui,
-                string_markers
-                    .iter()
-                    .map(|(name, color, points)| (name.as_str(), *color, points.as_slice())),
-            );
+            event_labels::draw_lines(plot_ui, &string_events);
         });
+        event_labels::paint_labels(ui, &plot_response.transform, &string_events);
 
         self.view = view;
 

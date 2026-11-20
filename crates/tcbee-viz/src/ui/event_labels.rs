@@ -1,63 +1,60 @@
 //! String events in a plot: a vertical line per event with a horizontal label.
 //! Labels that would overlap move into further rows below the plot's top edge.
+//!
+//! The lines are plot items ([`draw_lines`]). The labels are painted over the plot afterwards
+//! ([`paint_labels`]): as plot items their positions would widen the auto-bounds every frame.
 
-use egui::{Align2, Color32, TextStyle};
-use egui_plot::{PlotPoint, PlotUi, Text, VLine};
+use egui::{Color32, TextStyle};
+use egui_plot::{PlotTransform, PlotUi, VLine};
+
+/// The string events of one series: name, colour, and `(time, label)` pairs.
+pub type Events<'a> = (&'a str, Color32, &'a [(f64, String)]);
 
 /// Space between two labels in the same row and between the line and its label (px).
 const LABEL_GAP: f32 = 6.0;
 /// Space between the plot's top edge and the first row (px).
 const TOP_MARGIN: f32 = 4.0;
 
-/// Draws the string events of each `(name, colour, events)` series.
-pub fn draw<'a>(
-    plot_ui: &mut PlotUi,
-    series: impl IntoIterator<Item = (&'a str, Color32, &'a [(f64, String)])>,
-) {
-    let frame = *plot_ui.transform().frame();
-    let font = plot_ui.ctx().style().text_styles[&TextStyle::Small].clone();
-
-    // Lines for all events, labels only for the visible ones.
-    let mut labels: Vec<(f64, f32, f32, &str, Color32)> = Vec::new();
-    for (name, color, events) in series {
-        for (t, label) in events {
+/// Draws a vertical line per string event; call inside the plot.
+pub fn draw_lines(plot_ui: &mut PlotUi, series: &[Events]) {
+    for &(name, color, events) in series {
+        for (t, _) in events {
             plot_ui.vline(VLine::new(*t).color(color).name(name));
-            let x = plot_ui.screen_from_plot(PlotPoint::new(*t, 0.0)).x;
+        }
+    }
+}
+
+/// Paints the labels of the visible string events; call after the plot with its transform.
+/// Labels that find no free row in the plot's height are left out.
+pub fn paint_labels(ui: &egui::Ui, transform: &PlotTransform, series: &[Events]) {
+    let frame = *transform.frame();
+    let font = ui.style().text_styles[&TextStyle::Small].clone();
+    let line_height = ui.fonts(|fonts| fonts.row_height(&font)).max(1.0);
+    let row_count = ((frame.height() - TOP_MARGIN) / line_height)
+        .floor()
+        .max(0.0) as usize;
+
+    let mut galleys = Vec::new();
+    for &(_, color, events) in series {
+        for (t, label) in events {
+            let x = transform.position_from_point_x(*t);
             if x < frame.left() || x > frame.right() {
                 continue;
             }
-            labels.push((*t, x, 0.0, label, color));
+            let galley = ui.fonts(|fonts| fonts.layout_no_wrap(label.clone(), font.clone(), color));
+            galleys.push((x + LABEL_GAP / 2.0, galley));
         }
     }
-    if labels.is_empty() {
-        return;
-    }
+    galleys.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    let line_height = plot_ui
-        .ctx()
-        .fonts(|fonts| fonts.row_height(&font))
-        .max(1.0);
-    for label in &mut labels {
-        label.2 = plot_ui.ctx().fonts(|fonts| {
-            fonts
-                .layout_no_wrap(label.3.to_string(), font.clone(), Color32::WHITE)
-                .size()
-                .x
-        });
-    }
-    labels.sort_by(|a, b| a.1.total_cmp(&b.1));
-
-    let spans: Vec<(f32, f32)> = labels
-        .iter()
-        .map(|l| (l.1 + LABEL_GAP / 2.0, l.2))
-        .collect();
+    let spans: Vec<(f32, f32)> = galleys.iter().map(|(x, g)| (*x, g.size().x)).collect();
     let rows = label_rows(&spans, LABEL_GAP);
-    let row_count = (((frame.height() - TOP_MARGIN) / line_height).floor() as usize).max(1);
-
-    for ((_, x, _, label, color), row) in labels.into_iter().zip(rows) {
-        let y = frame.top() + TOP_MARGIN + (row % row_count) as f32 * line_height;
-        let pos = plot_ui.plot_from_screen(egui::pos2(x + LABEL_GAP / 2.0, y));
-        plot_ui.text(Text::new(pos, label).anchor(Align2::LEFT_TOP).color(color));
+    let painter = ui.painter_at(frame);
+    for ((x, galley), row) in galleys.into_iter().zip(rows) {
+        if row < row_count {
+            let y = frame.top() + TOP_MARGIN + row as f32 * line_height;
+            painter.galley(egui::pos2(x, y), galley, Color32::PLACEHOLDER);
+        }
     }
 }
 

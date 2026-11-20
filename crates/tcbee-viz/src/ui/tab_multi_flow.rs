@@ -362,6 +362,11 @@ impl TabMultiFlow {
         let mut new_x_min = self.state_a.x_min;
         let mut new_x_max = self.state_a.x_max;
 
+        let string_events: Vec<event_labels::Events> = string_markers_a
+            .iter()
+            .chain(&string_markers_b)
+            .map(|(name, color, points)| (name.as_str(), *color, points.as_slice()))
+            .collect();
         let plot_response = Plot::new("multi_merged")
             .allow_boxed_zoom(true)
             .allow_drag(true)
@@ -436,14 +441,9 @@ impl TabMultiFlow {
                     }
                 }
 
-                event_labels::draw(
-                    plot_ui,
-                    string_markers_a
-                        .iter()
-                        .chain(&string_markers_b)
-                        .map(|(name, color, points)| (name.as_str(), *color, points.as_slice())),
-                );
+                event_labels::draw_lines(plot_ui, &string_events);
             });
+        event_labels::paint_labels(ui, &plot_response.transform, &string_events);
 
         self.view = view;
         if plot_response.response.secondary_clicked() {
