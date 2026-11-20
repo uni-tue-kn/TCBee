@@ -72,8 +72,8 @@ Converts a recording into a database. The extension of `-o` picks the engine: `.
 
 ```bash
 tcbee process -o /tmp/myflow.duck                              # newest recording in /tmp
-tcbee process -s ~/rec -o /tmp/myflow.sqlite -f                # newest in ~/rec, replace the output
-tcbee process -s /tmp/tcbee_2026-10-05T18-16-22 -o /tmp/a.duck # one specific recording
+tcbee process -i ~/rec -o /tmp/myflow.sqlite -f                # newest in ~/rec, replace the output
+tcbee process -i /tmp/tcbee_2026-10-05T18-16-22 -o /tmp/a.duck # one specific recording
 ```
 
 An existing output file is only replaced with `-f`. More in [crates/tcbee-process/README.md](crates/tcbee-process/README.md).
@@ -86,7 +86,7 @@ Plots one flow, compares two, and adds derived series such as retransmissions or
 tcbee viz /tmp/myflow.duck    # or start without an argument and open a file from Home
 ```
 
-To try it without root, process the small recording in the repository: `tcbee process -s crates/tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`. Tabs and filter syntax are in [crates/tcbee-viz/README.md](crates/tcbee-viz/README.md).
+To try it without root, process the small recording in the repository: `tcbee process -i crates/tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`. Tabs and filter syntax are in [crates/tcbee-viz/README.md](crates/tcbee-viz/README.md).
 
 ### tcbee-live
 

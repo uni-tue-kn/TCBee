@@ -28,11 +28,11 @@ class ProcessorIntegration(unittest.TestCase):
                     subprocess.run(
                         [
                             os.environ["TCBEE_PROCESS"],
-                            "-s",
+                            "-i",
                             str(ROOT / "crates/tcbee-process/tests/fixtures/tcbee_small"),
                             "-o",
                             str(path),
-                            "-t",
+                            "-j",
                             "2",
                         ],
                         check=True,

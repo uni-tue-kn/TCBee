@@ -3,9 +3,9 @@
 Part of [TCBee](../../README.md). Converts a raw recording of `tcbee-record` (the `*.tcp` files) into a SQLite or DuckDB database that `tcbee-viz` and your own scripts can read.
 
 ```bash
-tcbee-process -o /tmp/myflow.duck                 # engine from the extension
-tcbee-process -q -o /tmp/myflow.sqlite -t 4 -f    # SQLite, 4 threads, replace an existing file
-tcbee-process -s ~/traces/tcbee_2026-10-05T18-16-22 -d
+tcbee-process -o /tmp/myflow.duck                    # engine from the extension
+tcbee-process --sqlite -o /tmp/myflow.sqlite -j 4 -f # SQLite, 4 threads, replace an existing file
+tcbee-process -i ~/traces/tcbee_2026-10-05T18-16-22 --duckdb
 ```
 
 `tcbee-process --help` prints the flags. The table layout is in [crates/ts-storage/README.md](../ts-storage/README.md#database-layout-schema-version-3).
@@ -14,18 +14,19 @@ tcbee-process -s ~/traces/tcbee_2026-10-05T18-16-22 -d
 
 | Flag | Default | Description |
 |---|---|---|
-| `-s DIR` | `/tmp/` | Recording directory (holds the `*.tcp` files), or a directory to search for the latest `tcbee_*` recording |
-| `-o FILE` | `/tmp/db.sqlite` with `-q`, `/tmp/db.duck` with `-d` | Output database file |
-| `-q`, `--sqlite` | | Write SQLite |
-| `-d`, `--duckdb` | | Write DuckDB |
-| `-t N`, `--threads N` | number of cores | Worker threads |
+| `-i DIR`, `--input DIR` | `/tmp/` | Recording directory (holds the `*.tcp` files), or a directory to search for the latest `tcbee_*` recording |
+| `-o FILE`, `--output FILE` | `/tmp/db.sqlite` with `--sqlite`, `/tmp/db.duck` with `--duckdb` | Output database file |
+| `--sqlite` | | Write SQLite |
+| `--duckdb` | | Write DuckDB |
+| `-j N`, `--threads N` | number of cores | Worker threads |
 | `-f`, `--force` | | Replace the output file if it exists |
+| `-V`, `--version` | | Print the version |
 
-Engine. `-q` or `-d` decide. Without them the extension of `-o` does: `.sqlite` and `.db` are SQLite, `.duck` and `.duckdb` DuckDB. If neither gives an engine the command fails. An engine that is not compiled in is an error too (see [Building](#building)).
+Engine. `--sqlite` or `--duckdb` decide. Without them the extension of `-o` does: `.sqlite` and `.db` are SQLite, `.duck` and `.duckdb` DuckDB. If neither gives an engine the command fails. An engine that is not compiled in is an error too (see [Building](#building)).
 
 Output. An existing output file is never touched without `-f`. The database is written to `<output>.partial` and renamed when everything succeeded, so a failed run leaves no half-written file. Files without a decoder (`tcp_retransmit_synack`, `tcp_bad_csum`) are skipped with a message. A truncated last record (the recorder was stopped mid-write) is dropped with a warning. Any other problem in a trace file (wrong divider, undecodable record, read error) stops the run. A summary line reports records, rows, flows, connections, owners (and those whose connection has no flow), series, time and output size.
 
-Exit codes. `0` is success (and `--help`), `1` means processing failed (unreadable or corrupt recording, existing output without `-f`, I/O or database error), `2` means wrong arguments.
+Exit codes. `0` is success (and `--help`, `--version`), `1` means processing failed (unreadable or corrupt recording, existing output without `-f`, I/O or database error), `2` means wrong arguments.
 
 Format. Databases use schema version 3: one table per record type (`ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_reno`, `ev_tcp4`, `ev_tcp6`, `ev_mptcp_pm`, `ev_tcp_event`; the header records of the driver hooks go to `ev_tcp4_driver` and `ev_tcp6_driver`, the socket records of the write timer, the ingress hook and the socket events to `ev_sock_timer`, `ev_sock_ingress` and `ev_sock_event`) with one row per record and one typed column per field, plus the `flows`, `connections`, `connection_flows`, `flow_owners` and `series` catalogs. Timestamps are exact integer nanoseconds. Send and receive samples of a flow are separate series. Databases written by earlier versions are not readable; process the recording again. Recordings in older record layouts (sock records without `ca_state`, the delivery and chrono fields, the rest of TCP_INFO or the send buffer and delivery rate fields, records without `conn_id`, cubic and bbr records without `hook`, cubic records without `new_state`, bbr records without the mode, gains and rate sample, header records without `ECN` and `TSTAMP`) are still decoded; the columns they lack are 0 and have no series. On-change files (`*_oc.tcp`) go to `ev_sock_oc` and `ev_cwnd_oc`, step series kept apart from the full ones.
 

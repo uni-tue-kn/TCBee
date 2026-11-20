@@ -369,7 +369,7 @@ class Rep:
             (self.dir / "run.json").write_text(json.dumps(info, indent=1))
             self.teardown()
         trace = next((self.dir / "trace").glob("tcbee_*"))
-        r = sh(a.process, "-s", trace, "-o", self.dir / "db.sqlite", "-f", check=False)
+        r = sh(a.process, "-i", trace, "-o", self.dir / "db.sqlite", "-f", check=False)
         (self.dir / "process.log").write_text(r.stdout + r.stderr)
         v = sh(sys.executable, HERE / "verify.py", self.dir, check=False)
         (self.dir / "verify.log").write_text(v.stdout + v.stderr)

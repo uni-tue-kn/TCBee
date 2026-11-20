@@ -15,7 +15,7 @@ python examples/python/plot_metrics.py recording.duck 1      # cwnd, RTT and goo
 python examples/python/compare_flows.py recording.duck       # goodput of the two largest flows
 ```
 
-No recording at hand? Process the test traces: `tcbee-process -s crates/tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`.
+No recording at hand? Process the test traces: `tcbee-process -i crates/tcbee-process/tests/fixtures/tcbee_small -o /tmp/small.duck`.
 
 Every script takes `--help`, reads SQLite and DuckDB, and saves PNG, SVG or PDF with `--output`.
 Without `--output` it opens a window.
