@@ -10,6 +10,7 @@ use crate::{
     export,
     settings::AppSettings,
     ui::{
+        event_labels,
         flow_table::FlowTable,
         gap_marks,
         series_table::SeriesTable,
@@ -426,18 +427,12 @@ impl TabSingleFlow {
                 }
             }
 
-            let bounds = plot_ui.plot_bounds();
-            let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
-            for (name, color, points) in &string_markers {
-                for (t, label) in points {
-                    plot_ui.vline(VLine::new(*t).color(*color).name(name));
-                    plot_ui.text(
-                        Text::new(PlotPoint::new(*t, marker_y), vertical_marker_label(label))
-                            .anchor(egui::Align2::LEFT_CENTER)
-                            .color(*color),
-                    );
-                }
-            }
+            event_labels::draw(
+                plot_ui,
+                string_markers
+                    .iter()
+                    .map(|(name, color, points)| (name.as_str(), *color, points.as_slice())),
+            );
         });
 
         self.view = view;
@@ -646,15 +641,6 @@ impl TabSingleFlow {
 /// Convert (f64, f64) pairs to egui_plot's expected [f64; 2] arrays.
 pub fn to_plot_points(pts: &[(f64, f64)]) -> Vec<[f64; 2]> {
     pts.iter().map(|&(x, y)| [x, y]).collect()
-}
-
-pub fn vertical_marker_label(label: &str) -> String {
-    label
-        .chars()
-        .rev()
-        .map(|ch| ch.to_string())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn points_after_outlier_removal(pts: &[(f64, f64)], remove_outliers: bool) -> &[(f64, f64)] {

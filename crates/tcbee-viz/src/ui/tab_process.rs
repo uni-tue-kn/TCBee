@@ -1,10 +1,6 @@
-use crate::ui::{
-    flow_table::FlowTable,
-    tab_single_flow::{to_plot_points, vertical_marker_label},
-    theme,
-};
+use crate::ui::{event_labels, flow_table::FlowTable, tab_single_flow::to_plot_points, theme};
 use egui::RichText;
-use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints, Text, VLine};
+use egui_plot::{Legend, Line, Plot, PlotPoints, VLine};
 use ts_storage::SeriesInfo;
 
 use crate::{
@@ -303,21 +299,14 @@ impl TabProcess {
                     }
                 }
 
-                let bounds = plot_ui.plot_bounds();
-                let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
-                for s in self.input_series.iter().chain(&self.preview_series) {
-                    if !s.is_string_type() {
-                        continue;
-                    }
-                    for (t, label) in &s.string_points {
-                        plot_ui.vline(VLine::new(*t).color(s.color).name(&s.name));
-                        plot_ui.text(
-                            Text::new(PlotPoint::new(*t, marker_y), vertical_marker_label(label))
-                                .anchor(egui::Align2::LEFT_CENTER)
-                                .color(s.color),
-                        );
-                    }
-                }
+                event_labels::draw(
+                    plot_ui,
+                    self.input_series
+                        .iter()
+                        .chain(&self.preview_series)
+                        .filter(|s| s.is_string_type())
+                        .map(|s| (s.name.as_str(), s.color, s.string_points.as_slice())),
+                );
             });
     }
 

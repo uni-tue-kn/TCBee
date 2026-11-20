@@ -1,5 +1,5 @@
 use egui::{RichText, ScrollArea};
-use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
+use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoints, VLine};
 use ts_storage::Flow;
 
 use crate::{
@@ -12,6 +12,7 @@ use crate::{
     export,
     settings::AppSettings,
     ui::{
+        event_labels,
         flow_table::FlowTable,
         gap_marks,
         series_table::SeriesTable,
@@ -19,7 +20,7 @@ use crate::{
         tab_single_flow::{
             compact_axis_label, compact_coordinates_formatter, plot_height_with_footer,
             seconds_grid_spacer, seconds_since_formatter, split_plot_height_with_footer,
-            to_plot_points, vertical_marker_label,
+            to_plot_points,
         },
         theme,
         x_range::{self, XRangeEditor},
@@ -435,18 +436,13 @@ impl TabMultiFlow {
                     }
                 }
 
-                let bounds = plot_ui.plot_bounds();
-                let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
-                for (name, color, points) in string_markers_a.iter().chain(&string_markers_b) {
-                    for (t, label) in points {
-                        plot_ui.vline(VLine::new(*t).color(*color).name(name));
-                        plot_ui.text(
-                            Text::new(PlotPoint::new(*t, marker_y), vertical_marker_label(label))
-                                .anchor(egui::Align2::LEFT_CENTER)
-                                .color(*color),
-                        );
-                    }
-                }
+                event_labels::draw(
+                    plot_ui,
+                    string_markers_a
+                        .iter()
+                        .chain(&string_markers_b)
+                        .map(|(name, color, points)| (name.as_str(), *color, points.as_slice())),
+                );
             });
 
         self.view = view;
