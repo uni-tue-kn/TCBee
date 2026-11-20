@@ -1,5 +1,5 @@
 //! The files tcbee-record writes next to the records: the run metadata (`--metadata`), stored
-//! as `run.*` rows of the meta table, and the names of the kernel's drop reasons (`--drops`).
+//! as `run.*` rows of the meta table, and the names of the kernel's drop reasons (`--tp +drops`).
 //! The metadata JSON is flattened: object members become dotted keys, array elements their
 //! index (`run.interfaces.0.name`), nulls are left out. Rows can be read with plain SQL and need
 //! no JSON support in the reader.
@@ -26,7 +26,7 @@ pub fn read(trace_dir: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(rows)
 }
 
-/// The names of the kernel's drop reasons by value, from the file `tcbee-record --drops`
+/// The names of the kernel's drop reasons by value, from the file `tcbee-record --tp +drops`
 /// writes; empty if there is none. Errors as for `read`.
 pub fn drop_reasons(trace_dir: &Path) -> Result<BTreeMap<u32, String>, String> {
     let path = trace_dir.join(DROP_REASONS_FILE);

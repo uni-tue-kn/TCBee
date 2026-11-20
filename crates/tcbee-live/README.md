@@ -61,14 +61,15 @@ sudo ./target/release/tcbee-live
 To automatically display flows on a specific port at startup:
 
 ```bash
-sudo ./target/release/tcbee-live --select-port 5001
+sudo ./target/release/tcbee-live --ports 5001
 ```
 
 ## CLI Options
 
-- `--select-port <PORT>` to auto-select and display any flow whose source or destination port matches `<PORT>`. The flag can be repeated for multiple ports.
+- `--ports <PORT,...>` to auto-select and display any flow whose source or destination port is one of the comma-separated ports. A value that is not a port number is an error.
 - `--combined-plot` to start with all selected flows shown on a single combined chart.
 - `--auto-fit-x` to start with the x-axis locked to `0 → now`, tracking the latest event in real time.
+- `-h`, `--help` prints the options and `-V`, `--version` the version; neither needs root.
 
 ## Using the GUI
 
@@ -89,5 +90,5 @@ Each checked flow is rendered as a coloured line. The x-axis shows time in secon
 - Requires `root` to load eBPF probes.
 - Requires Linux 5.8 or newer (6.0 on arm64) with BTF enabled (`CONFIG_DEBUG_INFO_BTF=y`).
 - The flow list keeps every flow seen since the start. On a host that opens thousands of connections per second it grows without bound.
-- At most 256 flows can be selected at a time. With `--select-port`, many short flows on that port use them up.
+- At most 256 flows can be selected at a time. With `--ports`, many short flows on those ports use them up.
 - Data is held in memory only; closing the window discards all recorded points.

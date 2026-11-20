@@ -10,6 +10,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Printed by the tools' --version
+  TCBEE_GIT_SHA: ${{ github.sha }}
 
 jobs:
   record:

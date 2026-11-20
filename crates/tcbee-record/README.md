@@ -23,9 +23,9 @@ No nightly toolchain or `bpf-linker` is needed.
 
 ```shell
 cargo build --release
-sudo ./target/release/tcbee-record -h eth0 -k
+sudo ./target/release/tcbee-record -H eth0 -k
 # or
-cargo run --release --config 'target."cfg(all())".runner="sudo -E"' -- -h eth0 -k
+cargo run --release --config 'target."cfg(all())".runner="sudo -E"' -- -H eth0 -k
 ```
 
 The build script compiles `tcbee/src/bpf/tcbee.bpf.c` with clang against the vendored
@@ -61,21 +61,20 @@ At least one metric source is required.
 
 | Flag | Description |
 |---|---|
-| `-h IFACE` | TCP headers on the given interface, via TC by default, see [Header records](#header-records) |
+| `-H IFACE` | TCP headers on the given interface, via TC by default, see [Header records](#header-records) |
 | `-t` | The TCP tracepoints: `tcp_probe` (most TCP metrics at every received segment), SYN-ACK retransmissions and bad checksums, and as discrete TCP events (`tcp_events.tcp`) retransmissions, RSTs sent and received, TCP state changes, congestion state changes (Open, Disorder, CWR, Recovery, Loss), retransmission timeouts and destroyed sockets. Each event hook is optional: one the kernel lacks or rejects is left out with a warning |
 | `--tp LIST` | The tracepoints of `-t` to record, implies `-t`. Names: `probe`, `synack`, `bad_csum`, `retransmit`, `rst_sent`, `rst_received`, `state`, `ca_state`, `rto`, `destroy`, and `drops`, which `-t` leaves out: the packets of TCP flows that the kernel drops (`kfree_skb`), with the drop reason, and `drop_reasons.json` with the reason names of the running kernel. `all` and `default` name the sets. The list works as described below the table, e.g. `--tp +drops,-probe` |
 | `-k` | The socket (all TCP metrics) at the hooks of `--sock-hooks`: by default after every run of the write timer (`timer_sock.tcp`, see below) and at TCP events (`event_sock.tcp`), none per packet. On a sender, `--sock-hooks +ingress` adds the state after every ACK |
 | `-w` | `snd_cwnd` only (best performance, single metric) |
 | `-a` | Congestion control internals of CUBIC, BBR and Reno, see [Congestion control records](#congestion-control-records) |
-| `-e`, `--drops` | Kept for old command lines: `-e` records the TCP events of `-t` only, `--drops` those and the drops |
-| `-m` | MPTCP (`-M` works too): path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
+| `-m` | MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake (`mptcp_pm.tcp`), and with `-k` or `-w` the token of its MPTCP connection in every record of a subflow (`conn_id`) |
 
 | Flag | Default | Description |
 |---|---|---|
-| `-d DIR` | `/tmp/` | Output directory; the recording goes to `DIR/tcbee_YYYY-MM-DDTHH-MM-SS` |
+| `-o DIR` | `/tmp/` | Output directory; the recording goes to `DIR/tcbee_YYYY-MM-DDTHH-MM-SS` |
 | `--duration SECS` | `0` | Stop after this many seconds; 0 records until Ctrl+C |
-| `-c N` | `1` | Number of CPUs used for processing |
-| `-q` | | Disable the terminal UI |
+| `-c N` | `1` | Threads for control, signals and the terminal UI (not the writers, see `--writer-cpus`) |
+| `-q` | | Disable the terminal UI (the `--tui-*` flags then are an error) |
 | `--no-hook-seq` | off | Disable per-flow sequence numbering to reduce probe work. Records carry `hook_seq=0`; exact hook ordering across CPUs and loss detection from sequence gaps are unavailable. Aggregate drop counters remain. TCP event hooks retain tuple membership filtering. Writes `metadata.json` with `recorder.hook_seq_enabled=false` even without `--metadata`. |
 | `--metrics` | | Write a `metrics.json` summary file |
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
@@ -86,10 +85,11 @@ At least one metric source is required.
 | `--writer-placement balanced\|round-robin` | `balanced` | Grow files on the least loaded writer CPU, or on the writer CPUs without a writer thread; writer threads do not move |
 | `--writer-sink mmap\|direct\|uring\|buffered\|sync` | `mmap` | How the trace files are written: memory-mapped, or from large buffers that I/O threads write with O_DIRECT (`direct`), that the writer submits to an io_uring (`uring`), or that go through the page cache and are written back right away (`buffered`), or from two 256 KiB buffers the writer writes itself through the page cache, without I/O threads, pushing the pages to the disk every 8 MiB (`sync`; raw spans of 16 KiB or more go straight from the ring buffer to the file). Same file bytes; `metrics.json` reports the writers' waits for buffers and for write-behind. On tmpfs `sync` costs the least CPU per MB; on a disk O_DIRECT (`direct`, `uring`) does |
 | `--writer-format records\|raw` | `records` | How records get into the trace files: one by one, packed and followed by a delimiter, or as the ring buffers' bytes copied in spans (`raw`, see [Raw trace files](#raw-trace-files)). tcbee-process reads both |
-| `--writer-no-prealloc` | | Do not allocate the trace files of the `direct` and `uring` sinks ahead of the writes |
+| `--writer-no-prealloc` | | Do not allocate the trace files of the `direct` and `uring` sinks ahead of the writes (an error with the other sinks) |
 | `--writer-io-cpus LIST` | | CPU ids for the I/O threads or io_uring workers of the `direct`, `uring` and `buffered` sinks; by default they run on the writer CPUs |
+| `--writer-max-buffers N` | `256` | With the `direct` and `buffered` sinks: how many 2 MiB buffers a trace file may hold while the disk is slow, instead of the writer waiting (quiet files keep 8) |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
-| `--headers-at HOOKS` | `tc` | With `-h`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
+| `--headers-at HOOKS` | `tc` | With `-H`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
 | `--yes` | | Do not ask for confirmation (`--headers-at tc,driver`) |
 | `--mptcp-modes LIST` | `pm`, `tag` with `-k`/`-w` | What `-m` records, comma-separated: `tag`, `pm` |
 | `--on-change FIELDS` | | `-k` and `-w` write a record only when a watched field changed, see [On-change mode](#on-change-mode) |
@@ -97,9 +97,9 @@ At least one metric source is required.
 | `--on-change-shadow` | | With `--on-change` and `-k`: write every run, with the decision in `ato` |
 | `--sock-hooks LIST` | `timer,state,ca-state,retransmit,restart,rcvbuf` | With `-k`: the kernel hooks to record the socket at. Per packet: `egress` (`send_sock.tcp`), `ingress-entry` (`recv_sock.tcp`) and `ingress` (`ingress_sock.tcp`, the state after each received segment: fexit on `tcp_rcv_established` and `tcp_rcv_state_process`; tcbee-process table `sock_ingress`). Not per packet: `timer` (`timer_sock.tcp`) and the socket event hooks `state`, `ca-state`, `retransmit`, `restart`, `rcvbuf` (`event_sock.tcp`, see [Socket event records](#socket-event-records)). The list works as described below the table, e.g. `+ingress` on a sender. With `--on-change` and `-k` the same as `--on-change-hooks` |
 | `--sock-fields LIST` | | With `-k` at `egress`, `ingress-entry` and `timer` only: record only these groups of socket fields, see [Field-selected sock records](#field-selected-sock-records) |
-| `--no-timer-hook` | | With `-k`: leave out the write timer records (`timer_sock.tcp`), see [Write timer records](#write-timer-records); same as `--sock-hooks -timer` |
 | `--no-owners` | | Do not record the processes of the connections (`flow_owners.tcp`, `flow_owners.json`), see [Flow owners](#flow-owners) |
 | `--owners-no-cmdline` | | Record the owners without the command lines of their processes |
+| `-V`, `--version` | | Print the version |
 
 `--tp`, `--sock-hooks`, `--sock-fields` and `--on-change-hooks` take the same kind of list: comma-separated
 names form the set; `+name` and `-name` items add to or remove from the plain names of the
@@ -110,7 +110,7 @@ are the same in names. A list that selects nothing is an error.
 Every probe output has one ring buffer per online CPU, so a probe never waits for another
 CPU to reserve space. The default sizes per CPU are 16 MiB for tcp4 and sock (which also
 sizes the ring of the `ingress` sock hook), 8 MiB for cwnd, cubic, bbr and reno, 4 MiB for
-tcp6, tcp_probe and tcp_events, 128 KiB for owners, and 1 MiB for the rest. `-h` needs about 40 MiB per CPU, as
+tcp6, tcp_probe and tcp_events, 128 KiB for owners, and 1 MiB for the rest. `-H` needs about 40 MiB per CPU, as
 much again for the driver hooks, and all rings together 181.1 MiB with the 128 KiB of the owners; the log at startup prints the
 total. Records of one flow come from several CPUs, so their file order is not their order at
 the hook: every record carries `hook_seq`, its position among the events of its flow
@@ -192,7 +192,7 @@ flows and a click selects one.
 
 ## Header records
 
-`-h IFACE` records the headers of the TCP packets on one interface: addresses, ports, sequence
+`-H IFACE` records the headers of the TCP packets on one interface: addresses, ports, sequence
 and ACK numbers, window, flags, the ECN codepoint of the IP header (`ecn`) and, for sent
 packets, `skb->tstamp` (`tstamp`), the earliest departure time that TCP or the qdisc (fq) set,
 in CLOCK_MONOTONIC like the record time; 0 if none was set and for received packets.
@@ -333,7 +333,7 @@ retransmission timeouts, loss probes, RACK reordering timeouts and zero window p
   timestamps. Its `hook_seq` counters take one more entry per flow in the `HOOK_SEQ` map
   (262144 entries for all hooks).
 - The hook is optional: if the kernel lacks the function or rejects the program, tcbee-record
-  runs without it and lists it as skipped in the metadata. `--no-timer-hook` leaves it out on
+  runs without it and lists it as skipped in the metadata. `--sock-hooks -timer` leaves it out on
   purpose, which the metadata lists too.
 - In on-change mode the `timer` hook writes into `recv_sock_oc.tcp` instead.
 - tcbee-process reads `timer_sock.tcp` into the table `sock_timer`, with the columns of
@@ -483,7 +483,7 @@ needed. Nothing runs per packet.
   is left out with a warning. Not recorded: a stale subflow becoming active again and the
   fallback on the server side (both run through inlined code on 6.8).
 - `--headers-at driver` uses XDP with multi-buffer support (`xdp.frags`, 5.18) in native mode.
-- `-h` attaches with tcx on 6.6 and newer. Older kernels use a clsact qdisc, which
+- `-H` attaches with tcx on 6.6 and newer. Older kernels use a clsact qdisc, which
   tcbee-record creates through netlink (no `tc` command needed) and removes again on exit
   if it created it.
 
@@ -491,7 +491,7 @@ needed. Nothing runs per packet.
 
 By default no filter is enabled, so probes only take the fast no-filter branch.
 
-Use `-p`/`--port` for the fastest filtered mode when you only need one local or remote port:
+Use `--port` for the fastest filtered mode when you only need one local or remote port:
 
 ```shell
 cargo run --release --config 'target."cfg(all())".runner="sudo -E"' -- -k --port 443

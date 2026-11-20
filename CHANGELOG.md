@@ -7,6 +7,15 @@
 - `tcbee-viz`: *Export figure…* previews the visible plot as a figure, lets you adjust its style, and saves it as PDF or PNG; the default style is set under *Settings → Figure export* (kept in `~/.config/tcbee/viz.toml`).
 - `tcbee-viz`: *Export data script…* saves a Python script that loads the plotted data and gaps with the tcbee package.
 - `ts-storage`: `Store::seq_gaps`; Python API: `Series.gaps()`.
+- All tools: `-V`/`--version`; `tcbee-live` and `tcbee-viz` print their help without starting (and `tcbee-live` without root).
+
+### Changed
+Command line flags, without aliases for the old names:
+- `tcbee-record`: `-h IFACE` → `-H IFACE` (`-h` is the help), `-d DIR` → `-o DIR`, `-p PORT` → `--port PORT`, `-M` → `-m`. `-e`, `--drops` and `--no-timer-hook` are gone, use `--tp` and `--sock-hooks -timer`. Flags without effect (`-q` with `--tui-*`, `--headers-at` without `-H`, writer buffer flags with a sink that ignores them) and a call without arguments exit with status 2.
+- `tcbee-process`: `-s DIR` → `-i DIR`, `-q` → `--sqlite`, `-d` → `--duckdb`, `-t N` → `-j N`.
+- `tcbee-live`: `--select-port P` (once per port) → `--ports P,Q`; unknown flags and bad ports are errors.
+- `tcbee-viz`: unknown flags and extra arguments are errors.
+- Python examples: `--dir` (send/recv) → `--direction`.
 
 ## 2.0.0
 

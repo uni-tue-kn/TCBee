@@ -12,7 +12,7 @@ use tcbee_common::stats::{
 /// A probe group, in the order its chart gets a slot
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
-    /// Packet headers at TC or in the driver (-h)
+    /// Packet headers at TC or in the driver (-H)
     Headers,
     /// Socket and cwnd hooks (-k, -w)
     Sock,
