@@ -4,7 +4,7 @@
     eval.py SCENARIO --reps N --out DIR [--sigstop] [--seconds S] [--pm-ring SIZE]
 
 Each repetition builds fresh client and server namespaces joined by two veth pairs (paths
-10.31.1.0/24 and 10.31.2.0/24), records with -k -w -M, and keeps everything in
+10.31.1.0/24 and 10.31.2.0/24), records with -k -w -m, and keeps everything in
 DIR/SCENARIO-repNN/:
   trace/tcbee_*/      the recording (metrics.json included)
   record.log          tcbee-record output
@@ -176,7 +176,7 @@ class Rep:
         out.mkdir()
         # verify.py reads the per-packet sock files
         cmd = [self.args.record, "-q", "--metrics", "-k", "--sock-hooks", "+egress,+ingress-entry",
-               "-w", "-m", "--ports", f"{MPTCP_PORT},{TCP_PORT}", "--poll", "wait", "-d", f"{out}/",
+               "-w", "-m", "--ports", f"{MPTCP_PORT},{TCP_PORT}", "--poll", "wait", "-o", f"{out}/",
                "--duration", f"{seconds:.0f}"]
         if self.args.pm_ring:
             cmd += ["--ringbuf-size", f"mptcp_pm={self.args.pm_ring}"]

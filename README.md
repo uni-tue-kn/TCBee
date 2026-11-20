@@ -29,7 +29,7 @@ Requirements:
 Record the packet headers on `eth0` and the socket state of the flows on port 5201 (e.g. an `iperf3` test), stop with Ctrl+C, then process and open the recording:
 
 ```bash
-sudo tcbee record -h eth0 -k -p 5201
+sudo tcbee record -H eth0 -k --port 5201
 tcbee process -o /tmp/myflow.duck
 tcbee viz /tmp/myflow.duck
 ```
@@ -44,7 +44,7 @@ Records what you select with one or more source flags:
 
 | Flag | Records |
 |---|---|
-| `-h IFACE` | Packet headers (TC; `--headers-at driver` for XDP) |
+| `-H IFACE` | Packet headers (TC; `--headers-at driver` for XDP) |
 | `-t` | TCP tracepoints: `tcp_probe`, retransmissions, resets, state changes |
 | `-k` | Full socket state at timers and TCP events |
 | `-w` | Congestion window only (lowest overhead) |
@@ -52,16 +52,16 @@ Records what you select with one or more source flags:
 | `-m` | MPTCP path manager events and subflows |
 
 ```bash
-sudo tcbee record -w -p 5201 --duration 30                  # cwnd of port 5201 for 30 s
-sudo tcbee record -k -a -p 5201                             # socket state and CC internals
+sudo tcbee record -w --port 5201 --duration 30              # cwnd of port 5201 for 30 s
+sudo tcbee record -k -a --port 5201                         # socket state and CC internals
 sudo tcbee record -k --on-change cc                         # write only when the CC state changes
-sudo tcbee record -t -p 5201                                # tracepoints: tcp_probe, retransmits, RSTs, state changes
+sudo tcbee record -t --port 5201                            # tracepoints: tcp_probe, retransmits, RSTs, state changes
 sudo tcbee record --tp retransmit,rto,state                 # only these tracepoints
 sudo tcbee record --tp +drops,-probe                        # default tracepoints plus drops, without tcp_probe
 sudo tcbee record -k --sock-hooks +ingress --no-owners      # add the per-segment socket hook, skip process owners
 sudo tcbee record -k --ports 80,443 --ips 10.0.0.1          # several ports and hosts
-sudo tcbee record -h eth0 -k -q --duration 60 --metadata    # no terminal UI, with host metadata
-sudo tcbee record -k -d ~/rec                               # write to ~/rec instead of /tmp
+sudo tcbee record -H eth0 -k -q --duration 60 --metadata    # no terminal UI, with host metadata
+sudo tcbee record -k -o ~/rec                               # write to ~/rec instead of /tmp
 ```
 
 `--tp` and `--sock-hooks` take a list: plain names replace the default set, `+name` and `-name` add to or remove from it. `tcbee record --help` lists all flags. Filters, on-change mode, process owners and kernel requirements are in [crates/tcbee-record/README.md](crates/tcbee-record/README.md).

@@ -111,8 +111,6 @@ fn main() -> anyhow::Result<()> {
         trace_algorithms,
         trace_cwnd,
         trace_mptcp,
-        trace_events,
-        trace_drops,
         tp,
         mptcp_modes,
         cpus,
@@ -131,17 +129,17 @@ fn main() -> anyhow::Result<()> {
         on_change,
         on_change_hooks,
         on_change_shadow,
-        no_timer_hook,
         sock_hooks,
         sock_fields,
         no_owners,
         no_hook_seq,
         owners_no_cmdline,
+        version: _,
     } = args;
 
     let trace_headers = !iface.is_empty();
     if !headers_at.is_empty() && !trace_headers {
-        return Err(anyhow!("--headers-at needs -h"));
+        return Err(anyhow!("--headers-at needs -H"));
     }
     let headers_at = if headers_at.is_empty() {
         HeadersAt::default()
@@ -153,7 +151,7 @@ fn main() -> anyhow::Result<()> {
         check_offloads(&iface, headers_at, &Offloads::read(&iface)).map_err(|e| anyhow!(e))?;
         confirm_both_header_hooks(&iface)?;
     }
-    let tracepoints = tracepoint_set(trace_tracepoints, &tp, trace_events, trace_drops)?;
+    let tracepoints = tracepoint_set(trace_tracepoints, &tp)?;
     let filter = FilterConfig {
         single_port: port,
         any_ports: parse_csv(&ports, "port")?,
@@ -240,7 +238,6 @@ fn main() -> anyhow::Result<()> {
         on_change: &on_change,
         on_change_hooks: &on_change_hooks,
         on_change_shadow,
-        no_timer_hook,
     }
     .resolve()?;
     let sock_fields = parse_sock_fields(&sock_fields, sock_hooks, on_change.is_some())?;

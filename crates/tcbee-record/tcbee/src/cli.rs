@@ -26,8 +26,6 @@ pub struct Args {
     pub trace_algorithms: bool,
     pub trace_cwnd: bool,
     pub trace_mptcp: bool,
-    pub trace_events: bool,
-    pub trace_drops: bool,
     pub tp: String,
     pub mptcp_modes: String,
     pub cpus: u16,
@@ -46,12 +44,12 @@ pub struct Args {
     pub on_change: String,
     pub on_change_hooks: String,
     pub on_change_shadow: bool,
-    pub no_timer_hook: bool,
     pub sock_hooks: String,
     pub sock_fields: String,
     pub no_owners: bool,
     pub no_hook_seq: bool,
     pub owners_no_cmdline: bool,
+    pub version: bool,
 }
 
 impl Default for Args {
@@ -76,8 +74,6 @@ impl Default for Args {
             trace_algorithms: false,
             trace_cwnd: false,
             trace_mptcp: false,
-            trace_events: false,
-            trace_drops: false,
             tp: String::new(),
             mptcp_modes: String::new(),
             cpus: 1,
@@ -96,12 +92,12 @@ impl Default for Args {
             on_change: String::new(),
             on_change_hooks: String::new(),
             on_change_shadow: false,
-            no_timer_hook: false,
             sock_hooks: String::new(),
             sock_fields: String::new(),
             no_owners: false,
             no_hook_seq: false,
             owners_no_cmdline: false,
+            version: false,
         }
     }
 }
@@ -120,14 +116,14 @@ pub fn parse_args(
             "TCBee: A High-Performance and Extensible Tool For TCP Connection Analysis Using eBPF",
         );
         argparser.refer(&mut args.iface).add_option(
-            &["-h", "--headers"],
+            &["-H", "--headers"],
             Store,
             "Record the TCP headers of received and sent packets on the specified interface, at TC by default, see --headers-at.",
         );
         argparser.refer(&mut args.headers_at).add_option(
             &["--headers-at"],
             Store,
-            "Where -h records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO, and net_dev_start_xmit for sent ones, after the qdisc and software GSO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off. tc,driver records both, into separate files, to compare a packet at the two hooks (qdisc and pacing delay); it asks for confirmation.",
+            "Where -H records the headers: tc (default) = TC ingress and egress, the packets as the stack sees them (after GRO, before GSO); driver = native XDP for received packets, before GRO, and net_dev_start_xmit for sent ones, after the qdisc and software GSO (tcp*_driver_*.tcp). driver needs a NIC driver with native XDP and LRO and rx-gro-hw off. tc,driver records both, into separate files, to compare a packet at the two hooks (qdisc and pacing delay); it asks for confirmation.",
         );
         argparser.refer(&mut args.yes).add_option(
             &["--yes"],
@@ -135,14 +131,14 @@ pub fn parse_args(
             "Do not ask for confirmation (--headers-at tc,driver), for scripts.",
         );
         argparser.refer(&mut args.dir).add_option(
-            &["-d", "--dir"],
+            &["-o", "--output"],
             Store,
             "Directory to store recording results in. Defaults to /tmp/",
         );
         argparser.refer(&mut args.port).add_option(
-            &["-p", "--port"],
+            &["--port"],
             Store,
-            "Fast single-port filter for remote or local port.",
+            "Fast single-port filter for a remote or local port. Other filter flags switch to the map-backed filter.",
         );
         argparser.refer(&mut args.ports).add_option(
             &["--ports"],
@@ -199,7 +195,6 @@ pub fn parse_args(
             StoreTrue,
             "Record send_cwnd from kernel function calls only. Testing mode for performance evaluation.",
         );
-        // --headers now takes the interface name as its argument
         argparser.refer(&mut args.trace_tracepoints).add_option(
             &["-t", "--tracepoints"],
             StoreTrue,
@@ -290,11 +285,6 @@ pub fn parse_args(
             StoreTrue,
             "With --on-change and -k: write every sock run anyway, with the decision as a reason code in bits 0-7 of the ato field (1 suppressed, 2 changed, 3 first or after a drop, 4 state change, 5 no socket storage).",
         );
-        argparser.refer(&mut args.no_timer_hook).add_option(
-            &["--no-timer-hook"],
-            StoreTrue,
-            "With -k: do not record the socket after each run of the write timer (timer_sock.tcp). Same as --sock-hooks -timer.",
-        );
         argparser.refer(&mut args.sock_hooks).add_option(
             &["--sock-hooks"],
             Store,
@@ -325,18 +315,8 @@ pub fn parse_args(
             StoreTrue,
             "Record the internals of the congestion control algorithms: CUBIC and BBR state, and Reno's congestion avoidance (also where DCTCP and others reuse it).",
         );
-        argparser.refer(&mut args.trace_events).add_option(
-            &["-e", "--events"],
-            StoreTrue,
-            "Record only the TCP events of -t. Kept for old command lines.",
-        );
-        argparser.refer(&mut args.trace_drops).add_option(
-            &["--drops"],
-            StoreTrue,
-            "Record the TCP events of -t and the packets of TCP flows that the kernel drops (kfree_skb). Kept for old command lines, use --tp +drops.",
-        );
         argparser.refer(&mut args.trace_mptcp).add_option(
-            &["-m", "-M", "--mptcp"],
+            &["-m", "--mptcp"],
             StoreTrue,
             "Record MPTCP: path manager and connection lifecycle events, stale subflows, sent MP_PRIO, data-level reinjections and the fallback to TCP in the handshake, and with -k or -w the token of its MPTCP connection in the records of each subflow.",
         );
@@ -344,6 +324,12 @@ pub fn parse_args(
             &["--mptcp-modes"],
             Store,
             "What -m records, comma-separated: tag (needs -k or -w), pm. Implies -m. Default is pm, plus tag with -k or -w.",
+        );
+
+        argparser.refer(&mut args.version).add_option(
+            &["-V", "--version"],
+            StoreTrue,
+            "Print the version and exit.",
         );
 
         // Without any argument there is nothing to record, so show what can be recorded
@@ -354,7 +340,20 @@ pub fn parse_args(
         }
         argparser.parse(argv, out, err)?;
     }
+    if args.version {
+        let _ = writeln!(out, "{}", version_string());
+        return Err(0);
+    }
     Ok(args)
+}
+
+/// `tcbee-record <version> (<git sha>)`; the sha is set by the CI and release builds.
+pub fn version_string() -> String {
+    format!(
+        "tcbee-record {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("TCBEE_GIT_SHA").unwrap_or("unknown")
+    )
 }
 
 #[cfg(test)]
@@ -397,5 +396,49 @@ mod tests {
         let (result, _, err) = parse(&["--no-such-flag"]);
         assert_eq!(result, Err(2));
         assert!(err.contains("--no-such-flag"), "{err}");
+    }
+
+    #[test]
+    fn renamed_flags_parse() {
+        let (result, _, _) = parse(&["-H", "eth0", "-o", "/data", "--port", "443", "-m"]);
+        let args = result.unwrap();
+        assert_eq!(args.iface, "eth0");
+        assert_eq!(args.dir, "/data");
+        assert_eq!(args.port, 443);
+        assert!(args.trace_mptcp);
+    }
+
+    #[test]
+    fn removed_flags_are_rejected() {
+        for flag in [
+            &["-h", "eth0"][..],
+            &["-d", "/data"],
+            &["--dir", "/data"],
+            &["-p", "443"],
+            &["-e"],
+            &["--events"],
+            &["--drops"],
+            &["--no-timer-hook"],
+            &["-M"],
+        ] {
+            let (result, _, _) = parse(flag);
+            assert!(result.is_err(), "{flag:?}");
+        }
+    }
+
+    #[test]
+    fn help_lists_h_once() {
+        let (result, out, _) = parse(&["--help"]);
+        assert_eq!(result, Err(0));
+        assert_eq!(out.matches("-h,").count(), 1, "{out}");
+        assert!(out.contains("-H,--headers"), "{out}");
+    }
+
+    #[test]
+    fn version_is_printed() {
+        let (result, out, _) = parse(&["-V"]);
+        assert_eq!(result, Err(0));
+        assert_eq!(out.trim(), version_string());
+        assert!(out.starts_with(&format!("tcbee-record {} (", env!("CARGO_PKG_VERSION"))));
     }
 }

@@ -37,7 +37,7 @@ use crate::{
 
 pub struct TCTracer {}
 
-/// A place where -h records the headers
+/// A place where -H records the headers
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderHook {
     /// The TC programs on the interface
@@ -46,7 +46,7 @@ pub enum HeaderHook {
     Driver,
 }
 
-/// Where -h records the headers (`--headers-at`): at TC, at the driver, or both
+/// Where -H records the headers (`--headers-at`): at TC, at the driver, or both
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HeadersAt {
     pub tc: bool,
@@ -120,7 +120,7 @@ impl NamedSet for HeadersAt {
     }
 }
 
-/// The driver hooks of -h (`--headers-at driver`): native XDP for received packets,
+/// The driver hooks of -H (`--headers-at driver`): native XDP for received packets,
 /// tp_btf/net_dev_start_xmit for sent ones
 pub struct DriverTracer {}
 

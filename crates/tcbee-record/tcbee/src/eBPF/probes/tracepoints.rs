@@ -96,18 +96,6 @@ impl TracepointSet {
         }
         TracepointSet(bits)
     };
-    /// The TCP events, which `-e` records: the ones it recorded before -t had them, and the
-    /// destroyed sockets, which came with -t
-    pub const EVENTS: TracepointSet = TracepointSet::of(&[
-        Tracepoint::Retransmit,
-        Tracepoint::RstSent,
-        Tracepoint::RstReceived,
-        Tracepoint::State,
-        Tracepoint::CaState,
-        Tracepoint::Rto,
-        Tracepoint::Destroy,
-    ]);
-
     pub const fn of(tracepoints: &[Tracepoint]) -> TracepointSet {
         let mut bits = 0;
         let mut i = 0;
@@ -116,10 +104,6 @@ impl TracepointSet {
             i += 1;
         }
         TracepointSet(bits)
-    }
-
-    pub fn union(self, other: TracepointSet) -> TracepointSet {
-        TracepointSet(self.0 | other.0)
     }
 
     pub fn contains(self, tracepoint: Tracepoint) -> bool {
