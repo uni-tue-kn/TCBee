@@ -74,7 +74,7 @@ At least one metric source is required.
 | `-o DIR` | `/tmp/` | Output directory; the recording goes to `DIR/tcbee_YYYY-MM-DDTHH-MM-SS` |
 | `--duration SECS` | `0` | Stop after this many seconds; 0 records until Ctrl+C |
 | `-c N` | `1` | Threads for control, signals and the terminal UI (not the writers, see `--writer-cpus`) |
-| `-q` | | Disable the terminal UI |
+| `-q` | | Disable the terminal UI (the `--tui-*` flags then are an error) |
 | `--no-hook-seq` | off | Disable per-flow sequence numbering to reduce probe work. Records carry `hook_seq=0`; exact hook ordering across CPUs and loss detection from sequence gaps are unavailable. Aggregate drop counters remain. TCP event hooks retain tuple membership filtering. Writes `metadata.json` with `recorder.hook_seq_enabled=false` even without `--metadata`. |
 | `--metrics` | | Write a `metrics.json` summary file |
 | `--metadata` | | Write `metadata.json` with the host, kernel, TCP sysctls, interfaces (MTU, offloads, qdiscs), the command line, skipped hooks, clock offsets and drop counters, at start and again at stop |
@@ -85,8 +85,9 @@ At least one metric source is required.
 | `--writer-placement balanced\|round-robin` | `balanced` | Grow files on the least loaded writer CPU, or on the writer CPUs without a writer thread; writer threads do not move |
 | `--writer-sink mmap\|direct\|uring\|buffered\|sync` | `mmap` | How the trace files are written: memory-mapped, or from large buffers that I/O threads write with O_DIRECT (`direct`), that the writer submits to an io_uring (`uring`), or that go through the page cache and are written back right away (`buffered`), or from two 256 KiB buffers the writer writes itself through the page cache, without I/O threads, pushing the pages to the disk every 8 MiB (`sync`; raw spans of 16 KiB or more go straight from the ring buffer to the file). Same file bytes; `metrics.json` reports the writers' waits for buffers and for write-behind. On tmpfs `sync` costs the least CPU per MB; on a disk O_DIRECT (`direct`, `uring`) does |
 | `--writer-format records\|raw` | `records` | How records get into the trace files: one by one, packed and followed by a delimiter, or as the ring buffers' bytes copied in spans (`raw`, see [Raw trace files](#raw-trace-files)). tcbee-process reads both |
-| `--writer-no-prealloc` | | Do not allocate the trace files of the `direct` and `uring` sinks ahead of the writes |
+| `--writer-no-prealloc` | | Do not allocate the trace files of the `direct` and `uring` sinks ahead of the writes (an error with the other sinks) |
 | `--writer-io-cpus LIST` | | CPU ids for the I/O threads or io_uring workers of the `direct`, `uring` and `buffered` sinks; by default they run on the writer CPUs |
+| `--writer-max-buffers N` | `256` | With the `direct` and `buffered` sinks: how many 2 MiB buffers a trace file may hold while the disk is slow, instead of the writer waiting (quiet files keep 8) |
 | `--ringbuf-size SIZE` | | Size of each CPU's ring buffer (K, M, G suffixes), one value or per group, see `--help` |
 | `--headers-at HOOKS` | `tc` | With `-H`: where the headers are recorded, `tc`, `driver` or `tc,driver`, see [Header records](#header-records) |
 | `--yes` | | Do not ask for confirmation (`--headers-at tc,driver`) |
@@ -98,6 +99,7 @@ At least one metric source is required.
 | `--sock-fields LIST` | | With `-k` at `egress`, `ingress-entry` and `timer` only: record only these groups of socket fields, see [Field-selected sock records](#field-selected-sock-records) |
 | `--no-owners` | | Do not record the processes of the connections (`flow_owners.tcp`, `flow_owners.json`), see [Flow owners](#flow-owners) |
 | `--owners-no-cmdline` | | Record the owners without the command lines of their processes |
+| `-V`, `--version` | | Print the version |
 
 `--tp`, `--sock-hooks`, `--sock-fields` and `--on-change-hooks` take the same kind of list: comma-separated
 names form the set; `+name` and `-name` items add to or remove from the plain names of the
