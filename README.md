@@ -93,7 +93,7 @@ To try it without root, process the small recording in the repository: `tcbee pr
 A live congestion window monitor with a GUI that writes no files. It needs Linux 5.8 or newer with BTF. See [crates/tcbee-live/README.md](crates/tcbee-live/README.md).
 
 ```bash
-sudo tcbee live --select-port 5201
+sudo tcbee live --ports 5201
 ```
 
 ## Building from source

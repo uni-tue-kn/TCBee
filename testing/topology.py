@@ -230,9 +230,9 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
     # Launch the selected tool.
     if tool == "live":
         select_arg = (
-            f"--select-port {PORT1} --select-port {PORT2} --combined-plot --auto-fit-x"
+            f"--ports {PORT1},{PORT2} --combined-plot --auto-fit-x"
             if double else
-            f"--select-port {PORT1}"
+            f"--ports {PORT1}"
         )
         info(f"*** Launching tcbee-live ({select_arg}, logs → /tmp/tcbee-live.log)\n")
         tcbee.cmd(

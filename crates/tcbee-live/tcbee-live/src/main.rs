@@ -1,5 +1,6 @@
 mod app;
 mod bpf;
+mod cli;
 mod types;
 mod worker;
 
@@ -24,6 +25,14 @@ fn libbpf_log(level: PrintLevel, msg: String) {
 }
 
 fn main() -> anyhow::Result<()> {
+    let args = match cli::parse_args(
+        std::env::args().collect(),
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    ) {
+        Ok(args) => args,
+        Err(code) => std::process::exit(code),
+    };
     env_logger::init();
     libbpf_rs::set_print(Some((PrintLevel::Debug, libbpf_log)));
 
@@ -70,13 +79,11 @@ fn main() -> anyhow::Result<()> {
 
     let maps = worker::WorkerMaps::new(&skel.maps, event_tx)?;
 
-    let select_ports: std::collections::HashSet<u16> = std::env::args()
-        .zip(std::env::args().skip(1))
-        .filter(|(flag, _)| flag == "--select-port")
-        .filter_map(|(_, val)| val.parse().ok())
-        .collect();
-    let combined_plot = std::env::args().any(|a| a == "--combined-plot");
-    let auto_fit_x    = std::env::args().any(|a| a == "--auto-fit-x");
+    let cli::Args {
+        ports: select_ports,
+        combined_plot,
+        auto_fit_x,
+    } = args;
     if select_ports.is_empty() {
         info!("No auto-select ports specified");
     } else {
