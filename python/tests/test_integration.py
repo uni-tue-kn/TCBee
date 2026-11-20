@@ -98,7 +98,7 @@ class ExampleIntegration(unittest.TestCase):
                         "1",
                         "--metric",
                         "sock.snd_cwnd",
-                        "--dir",
+                        "--direction",
                         "send",
                         "--output",
                         str(output),

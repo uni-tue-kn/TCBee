@@ -75,7 +75,7 @@ Use it when a metric has millions of samples.
 | Option | Meaning |
 |---|---|
 | `--metric SOURCE.NAME` | metric to plot; `list_flows.py -v` lists those of each flow |
-| `--dir send\|recv\|none` | needed for metrics recorded in several directions (`sock`, `cwnd`, `tcp4`) |
+| `--direction send\|recv\|none` | needed for metrics recorded in several directions (`sock`, `cwnd`, `tcp4`) |
 | `--bin` | goodput interval in seconds (default 0.5) |
 | `--start`, `--end` | time window in seconds |
 | `--output FILE` | save as `.png`, `.svg` or `.pdf` |

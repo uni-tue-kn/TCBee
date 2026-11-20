@@ -50,7 +50,7 @@ def add_output_options(parser):
     parser.add_argument("--start", type=seconds, help="first second to plot")
     parser.add_argument("--end", type=seconds, help="last second to plot (exclusive)")
     parser.add_argument(
-        "--dir",
+        "--direction",
         choices=("send", "recv", "none"),
         help="direction, only needed when a metric is recorded in several",
     )
@@ -83,7 +83,7 @@ def select_metric(flow, spec, direction=None):
             f"Flow {flow.id} has no {source}.{name}; list its metrics with list_flows.py -v"
         ) from None
     except tcbee.AmbiguousSelection:
-        raise ValueError(f"{spec} is recorded in several directions; pass --dir") from None
+        raise ValueError(f"{spec} is recorded in several directions; pass --direction") from None
     if series.value_type == "text":
         raise ValueError(f"{spec} is text; choose a numeric metric")
     return series
@@ -107,7 +107,7 @@ def read_metric(flow, spec, args, origin_ns):
     """Return times in seconds since origin_ns and scaled values for one metric."""
     import numpy as np
 
-    series = select_metric(flow, spec, args.dir)
+    series = select_metric(flow, spec, args.direction)
     start_ns, end_ns = time_window(args, origin_ns)
     data = series.read_numpy(start_ns=start_ns, end_ns=end_ns)
     if len(data["ts_ns"]) < (2 if spec == GOODPUT else 1):
