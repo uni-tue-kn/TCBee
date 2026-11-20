@@ -1,16 +1,25 @@
 mod app;
 mod backend;
+mod cli;
 mod data;
 mod export;
 mod plot_style;
 mod settings;
 mod ui;
 
-use std::path::PathBuf;
-
 use app::TcbeeApp;
 
 fn main() -> eframe::Result {
+    // A path that is not UTF-8 would make env::args panic; argparse takes strings
+    let Ok(argv) = std::env::args_os().map(|a| a.into_string()).collect() else {
+        eprintln!("tcbee-viz: arguments must be valid UTF-8");
+        std::process::exit(2);
+    };
+    let database_path = match cli::parse_args(argv, &mut std::io::stdout(), &mut std::io::stderr())
+    {
+        Ok(path) => path,
+        Err(code) => std::process::exit(code),
+    };
     let ascii_name = r#"
  ______________  ______   ____ _      __
 /_  __/ ___/ _ \/ __/ /  / __ \ | /| / /
@@ -18,7 +27,6 @@ fn main() -> eframe::Result {
 /_/  \___/_/  /_/ /____/\____/|__/|__/
 "#;
     println!("{}", ascii_name);
-    let database_path = parse_database_path_arg();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -32,27 +40,4 @@ fn main() -> eframe::Result {
         options,
         Box::new(|_cc| Ok(Box::new(TcbeeApp::new(database_path)))),
     )
-}
-
-fn parse_database_path_arg() -> Option<PathBuf> {
-    let mut args = std::env::args_os().skip(1);
-    let first = args.next()?;
-
-    if first == "--help" || first == "-h" {
-        let names: Vec<String> = backend::db::DB_EXTENSIONS
-            .iter()
-            .map(|e| format!("DATABASE.{e}"))
-            .collect();
-        println!("Usage: tcbee-viz [{}]", names.join("|"));
-        return None;
-    }
-
-    if let Some(extra) = args.next() {
-        eprintln!(
-            "Ignoring extra command line argument: {}",
-            extra.to_string_lossy()
-        );
-    }
-
-    Some(PathBuf::from(first))
 }

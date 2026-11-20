@@ -6,7 +6,7 @@ Part of [TCBee](../../README.md). A desktop viewer for the databases that `tcbee
 tcbee-viz /tmp/myflow.duck     # or start without an argument and open a file from Home
 ```
 
-It takes one database path (`.duck`, `.duckdb`, `.sqlite`, `.db`) or `-h` for help.
+It takes one database path (`.duck`, `.duckdb`, `.sqlite`, `.db`). `-h` prints the help and `-V` the version, both without opening a window.
 
 ## Tabs
 
