@@ -252,9 +252,13 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
         )
 
         if double:
+            info(f"*** Stream 2: tcbee:{PORT2} → recv:{PORT2} starts in 30 s\n")
+
             def _start_stream2():
                 time.sleep(30)
-                info(f"*** Stream 2: tcbee:{PORT2} → recv:{PORT2} (starting now)\n")
+                # The recorder's terminal UI owns the terminal by now
+                if tool == "live" or headless:
+                    info(f"*** Stream 2: tcbee:{PORT2} → recv:{PORT2} (starting now)\n")
                 tcbee.cmd(
                     f"nohup iperf3 -c {recv.IP()} -p {PORT2} -t 3600"
                     f" > /tmp/iperf3_2.log 2>&1 &"
