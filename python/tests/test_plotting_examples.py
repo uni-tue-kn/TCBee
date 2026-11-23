@@ -42,7 +42,16 @@ class PlottingExamples(unittest.TestCase):
                     ),
                     (
                         "compare_flows.py",
-                        ["1", "8", "--metric", "sock.snd_cwnd", "--direction", "send", "--align", "flow"],
+                        [
+                            "1",
+                            "8",
+                            "--metric",
+                            "sock.snd_cwnd",
+                            "--direction",
+                            "send",
+                            "--align",
+                            "flow",
+                        ],
                         ".svg",
                     ),
                     (
