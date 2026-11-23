@@ -5,7 +5,7 @@
 use std::fmt::Write;
 use std::path::Path;
 
-use super::{Sources, View};
+use super::{ExportPanel, Sources, View};
 use crate::plot_style::PlotStyle;
 
 const TEMPLATE: &str = include_str!("../../assets/view_template.py");
@@ -70,27 +70,32 @@ pub fn render(
         .replace("{{DB}}", &py_str(db))
 }
 
-/// The series of `sources` that the tcbee package can read, coloured as in the figure.
-pub fn series(sources: &Sources, style: &PlotStyle) -> Vec<ScriptSeries> {
-    let mut out = Vec::new();
-    for (prefix, sd, info) in super::exported(sources) {
+/// The series of `panels` of `sources` that the tcbee package can read, coloured as in the
+/// figure, each once.
+pub fn series(sources: &Sources, panels: &[ExportPanel], style: &PlotStyle) -> Vec<ScriptSeries> {
+    let mut out: Vec<ScriptSeries> = Vec::new();
+    for (prefix, sd, info) in super::panel_series(sources, panels).into_iter().flatten() {
+        let label = format!("{prefix}{}", sd.name);
+        if out.iter().any(|s| s.label == label) {
+            continue;
+        }
         out.push(ScriptSeries {
             flow_id: info.flow_id,
             source: info.source.clone(),
             name: info.name.clone(),
             direction: ["none", "send", "recv"][usize::from(info.dir.code()).min(2)],
-            label: format!("{prefix}{}", sd.name),
+            label,
             color: super::series_color(style, out.len(), sd),
         });
     }
     out
 }
 
-/// The script that loads the plotted `sources` of the database at `db_path` in the visible
-/// range of `view`.
+/// The script that loads the series of `panels` of the database at `db_path` in the visible
+/// range of `view`. It has one y range only for a single plot.
 pub fn text(
     db_path: Option<&Path>,
-    sources: &Sources,
+    (sources, panels): (&Sources, &[ExportPanel]),
     origin: f64,
     view: View,
     style: &PlotStyle,
@@ -105,8 +110,12 @@ pub fn text(
         &db.to_string_lossy(),
         range,
         origin.round() as i64,
-        view.y,
-        &series(sources, style),
+        match panels {
+            [panel] => panel.y,
+            [] => view.y,
+            _ => None,
+        },
+        &series(sources, panels, style),
     ))
 }
 

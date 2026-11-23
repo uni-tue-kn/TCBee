@@ -5,7 +5,7 @@ use crate::{
     data::{
         preprocessing::{
             bucket_min_max, compute_sample_interval, compute_skip_step, downsample, expand_steps,
-            generate_colors, MAX_RENDER_POINTS,
+            unused_color, MAX_RENDER_POINTS,
         },
         series_data::SeriesData,
     },
@@ -25,8 +25,6 @@ pub struct PlotState {
     /// Full extent of the flow — used for reset.
     pub data_x_min: f64,
     pub data_x_max: f64,
-    /// Display each series in its own subplot.
-    pub split_view: bool,
     /// Set to true inside the plot closure when the view has moved enough to reload.
     pub pending_reload: bool,
     /// Human-readable label for the flow (e.g. for legends).
@@ -44,7 +42,6 @@ impl Default for PlotState {
             x_max: 1.0,
             data_x_min: 0.0,
             data_x_max: 1.0,
-            split_view: false,
             pending_reload: false,
             flow_label: String::new(),
         }
@@ -73,6 +70,10 @@ impl PlotState {
             self.flow_label = format_flow(flow);
             // Counts and bounds come from the catalog rows.
             self.available_series = db.list_series_for_flow(flow_id);
+            // A saved series may reach past the flow's previous time range
+            if let Some((t_min, t_max)) = flow_x_bounds(&self.available_series) {
+                (self.data_x_min, self.data_x_max) = (t_min, t_max);
+            }
         }
         if let Some((t_min, t_max)) = flow_x_bounds(&self.available_series) {
             self.data_x_min = t_min;
@@ -80,6 +81,26 @@ impl PlotState {
             self.x_min = t_min;
             self.x_max = t_max;
         }
+    }
+
+    /// Reads the flow's catalog again after series were saved to the file, and the data of
+    /// the plotted series, some of which may have been replaced. Selection and zoom stay.
+    pub fn refresh_catalog(&mut self, db: &DbBackend, settings: &AppSettings) {
+        let Some(flow_id) = self.flow_id else { return };
+        self.available_series = db.list_series_for_flow(flow_id);
+        // A saved series may reach past the flow's previous time range
+        if let Some((t_min, t_max)) = flow_x_bounds(&self.available_series) {
+            (self.data_x_min, self.data_x_max) = (t_min, t_max);
+        }
+        // A replaced series keeps its id; its catalog row has the new counts and range
+        for sd in &mut self.series {
+            if let Some(info) = self.available_series.iter().find(|i| i.id == sd.series_id) {
+                let (y_min, y_max) = info.v_min.zip(info.v_max).unwrap_or((0.0, 1.0));
+                (sd.global_y_min, sd.global_y_max) = (y_min, y_max);
+                sd.info = Some(info.clone());
+            }
+        }
+        self.reload_visible_data(db, settings, None);
     }
 
     /// Toggle a series on/off. Assigns a color when added.
@@ -98,10 +119,9 @@ impl PlotState {
                 continue;
             }
             self.selected_series_ids.push(series_id);
-            // Assign the next color in the palette
-            let color_idx = self.series.len();
-            let colors = generate_colors(color_idx + 1);
-            let color = *colors.last().unwrap_or(&egui::Color32::WHITE);
+            // A colour no shown series has: counting would reuse one after a deselect
+            let used: Vec<egui::Color32> = self.series.iter().map(|s| s.color).collect();
+            let color = unused_color(&used);
 
             if let Some(info) = self.available_series.iter().find(|s| s.id == series_id) {
                 let mut sd = SeriesData::from_info(info, self.data_x_min, self.data_x_max, color);
@@ -129,25 +149,6 @@ impl PlotState {
         }
     }
 
-    /// Returns the combined y extent across all loaded series.
-    pub fn y_bounds(&self) -> (f64, f64) {
-        let y_min = self
-            .series
-            .iter()
-            .map(|s| s.global_y_min)
-            .fold(f64::MAX, f64::min);
-        let y_max = self
-            .series
-            .iter()
-            .map(|s| s.global_y_max)
-            .fold(f64::MIN, f64::max);
-        if y_min > y_max {
-            (0.0, 1.0)
-        } else {
-            (y_min, y_max)
-        }
-    }
-
     /// Returns true when the visible window has shifted more than 10% of the loaded span.
     pub fn needs_reload(&self, new_x_min: f64, new_x_max: f64) -> bool {
         if self.series.is_empty() {
@@ -159,7 +160,8 @@ impl PlotState {
             return false;
         };
 
-        match self.series.first().and_then(|s| s.loaded_range) {
+        // Every series counts: a plot may show none of the series that happen to come first
+        self.series.iter().any(|s| match s.loaded_range {
             None => true,
             Some((loaded_min, loaded_max)) => {
                 let loaded_span = loaded_max - loaded_min;
@@ -170,7 +172,7 @@ impl PlotState {
                 let shift_hi = (loaded_max - fetch_max).abs() / loaded_span;
                 shift_lo > 0.10 || shift_hi > 0.10
             }
-        }
+        })
     }
 
     /// Fetch data for all series in the given visible range + 20% margin.
@@ -197,7 +199,7 @@ impl PlotState {
         settings: &AppSettings,
         plot_width_px: f32,
     ) {
-        let Some((fetch_min, fetch_max)) = self.series.first().and_then(|s| s.loaded_range) else {
+        let Some((fetch_min, fetch_max)) = self.series.iter().find_map(|s| s.loaded_range) else {
             return;
         };
         let interval = compute_sample_interval(
@@ -361,5 +363,41 @@ mod tests {
         assert_eq!(selected(&state), (vec![1, 3], vec![1, 3]));
         state.toggle_series(&db, 1, &settings);
         assert_eq!(selected(&state), (vec![3], vec![3]));
+    }
+
+    #[test]
+    fn new_series_get_a_color_not_shown() {
+        let (db, settings) = (DbBackend::default(), AppSettings::default());
+        let mut state = state();
+        state.select_series(&db, &[1, 2, 3], &settings);
+        state.deselect_series(&[1]);
+        state.select_series(&db, &[4], &settings);
+        let colors: Vec<_> = state.series.iter().map(|s| s.color).collect();
+        assert!((0..colors.len()).all(|i| !colors[i + 1..].contains(&colors[i])));
+    }
+
+    fn loaded(state: &mut PlotState, ranges: &[Option<(f64, f64)>]) {
+        state.data_x_max = 100.0;
+        state.series = ranges
+            .iter()
+            .zip(1..)
+            .map(|(&range, id)| {
+                let mut sd = SeriesData::from_info(&info(id), 0.0, 100.0, egui::Color32::WHITE);
+                sd.loaded_range = range;
+                sd
+            })
+            .collect();
+    }
+
+    #[test]
+    fn reload_looks_at_every_series() {
+        let mut state = state();
+        // Visible 40..60 fetches 36..64
+        loaded(&mut state, &[Some((36.0, 64.0)), Some((36.0, 64.0))]);
+        assert!(!state.needs_reload(40.0, 60.0));
+        loaded(&mut state, &[Some((36.0, 64.0)), Some((0.0, 100.0))]);
+        assert!(state.needs_reload(40.0, 60.0));
+        loaded(&mut state, &[Some((36.0, 64.0)), None]);
+        assert!(state.needs_reload(40.0, 60.0));
     }
 }

@@ -1,6 +1,7 @@
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ts_storage::{
     ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, Gaps,
@@ -124,6 +125,10 @@ pub struct DbBackend {
     store: Option<Box<dyn Store>>,
     /// The open file
     path: Option<PathBuf>,
+    /// Differs for every opened file, also when the same path is opened again; 0 for none.
+    opened: u64,
+    /// Series saved to the file since it was opened, so views can read its catalog again.
+    saved: Cell<u64>,
     /// Flows never change while a file is open, so they are read once.
     flows: OnceCell<Vec<Flow>>,
     /// Same for connections and their flows.
@@ -146,11 +151,23 @@ pub struct DbBackend {
 impl DbBackend {
     pub fn open(path: PathBuf) -> Result<Self, OpenError> {
         let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e, &path))?;
+        static OPENED: AtomicU64 = AtomicU64::new(1);
         Ok(Self {
             store: Some(store),
             path: Some(path),
+            opened: OPENED.fetch_add(1, Ordering::Relaxed),
             ..Self::default()
         })
+    }
+
+    /// Counts the series saved to the file; it changes whenever its catalog does.
+    pub fn saved(&self) -> u64 {
+        self.saved.get()
+    }
+
+    /// Tells this open file from every other one, and from a file opened again.
+    pub fn opened(&self) -> u64 {
+        self.opened
     }
 
     /// The open file.
@@ -546,8 +563,9 @@ impl DbBackend {
     pub fn create_series_for_flow(&self, flow_id: i64, series: &SeriesData) -> Result<(), String> {
         let db = self.store.as_ref().ok_or("No database connection")?;
         db.create_derived(flow_id, &series.name, series.val_type, &to_points(series))
-            .map(|_| ())
-            .map_err(|e| format!("saving series {} failed: {}", series.name, e))
+            .map_err(|e| format!("saving series {} failed: {}", series.name, e))?;
+        self.saved.set(self.saved.get() + 1);
+        Ok(())
     }
 
     /// Replace the derived series of the same name (its id is kept), or create it if there is
@@ -557,10 +575,12 @@ impl DbBackend {
         let existing =
             self.existing_series_for_flow(flow_id, std::slice::from_ref(&series.name))?;
         match existing.first() {
-            Some(old) => db
-                .replace_derived(old, &to_points(series))
-                .map(|_| ())
-                .map_err(|e| format!("replacing series {} failed: {}", series.name, e)),
+            Some(old) => {
+                db.replace_derived(old, &to_points(series))
+                    .map_err(|e| format!("replacing series {} failed: {}", series.name, e))?;
+                self.saved.set(self.saved.get() + 1);
+                Ok(())
+            }
             None => self.create_series_for_flow(flow_id, series),
         }
     }
@@ -889,6 +909,16 @@ mod tests {
     }
 
     #[test]
+    fn opening_again_gives_a_new_open_number() {
+        for (engine, ext) in engines() {
+            let (dir, db) = fixture(engine, ext);
+            let again = DbBackend::open(dir.path().join(format!("t.{ext}"))).unwrap();
+            assert_ne!(db.opened(), again.opened());
+            assert_ne!(again.opened(), DbBackend::default().opened());
+        }
+    }
+
+    #[test]
     fn open_lists_flows_series_and_catalog_bounds() {
         for (engine, ext) in engines() {
             let (_d, db) = fixture(engine, ext);
@@ -1088,12 +1118,15 @@ mod tests {
             // A derived series named like a raw one does not count as a raw conflict.
             let names = vec!["SND_UNA".to_string()];
             assert!(db.existing_series_for_flow(1, &names).unwrap().is_empty());
+            assert_eq!(db.saved(), 0);
             db.replace_series_for_flow(1, &mk("SND_UNA", 5)).unwrap(); // nothing to replace: creates
+            assert_eq!(db.saved(), 1);
             let old = db.existing_series_for_flow(1, &names).unwrap();
             assert_eq!(old.len(), 1);
             assert_eq!(old[0].n, 5);
 
             db.replace_series_for_flow(1, &mk("SND_UNA", 8)).unwrap();
+            assert_eq!(db.saved(), 2);
             let new = db.existing_series_for_flow(1, &names).unwrap();
             assert_eq!(new.len(), 1);
             assert_eq!(new[0].id, old[0].id);

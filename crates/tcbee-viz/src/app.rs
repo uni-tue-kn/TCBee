@@ -49,6 +49,10 @@ pub struct TcbeeApp {
     tab_mptcp: TabMptcp,
     tab_process: TabProcess,
     tab_settings: TabSettings,
+    /// [`DbBackend::opened`] of the file the tabs show
+    tabs_opened: u64,
+    /// [`DbBackend::saved`] when the MPTCP tab read its catalogs
+    mptcp_saved: u64,
 }
 
 impl Default for TcbeeApp {
@@ -67,12 +71,27 @@ impl Default for TcbeeApp {
             tab_mptcp: TabMptcp::default(),
             tab_process: TabProcess::default(),
             tab_settings: TabSettings::default(),
+            tabs_opened: 0,
+            mptcp_saved: 0,
         }
     }
 }
 
 impl eframe::App for TcbeeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Another file, or the same one opened again, starts every tab afresh
+        if self.tabs_opened != self.db.opened() {
+            self.tabs_opened = self.db.opened();
+            for tab in TABS.iter().map(|(tab, _)| *tab) {
+                self.reset_tab(tab);
+            }
+        }
+        // The MPTCP tab caches the series of every subflow; series saved by the Process tab
+        // only show up once it reads them again
+        if self.mptcp_saved != self.db.saved() {
+            self.mptcp_saved = self.db.saved();
+            self.reset_tab(Tab::Mptcp);
+        }
         theme::apply(ctx, self.settings.dark_mode, self.settings.text_size);
         if let Some(style) = crate::export::take_default_style(ctx) {
             self.settings.plot_style = style;
@@ -133,7 +152,10 @@ impl eframe::App for TcbeeApp {
                             .add_enabled(enabled, button)
                             .on_disabled_hover_text(mptcp_hint);
                         if response.clicked() && !selected {
-                            self.reset_tab(self.active_tab);
+                            // The plot tabs keep their flows, metrics and zoom for coming back
+                            if !matches!(self.active_tab, Tab::Single | Tab::Multi | Tab::Mptcp) {
+                                self.reset_tab(self.active_tab);
+                            }
                             self.active_tab = tab;
                         }
                     }

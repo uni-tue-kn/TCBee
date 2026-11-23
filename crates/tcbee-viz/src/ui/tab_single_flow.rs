@@ -1,18 +1,20 @@
 use egui::{RichText, ScrollArea};
-use egui_plot::{
-    CoordinatesFormatter, Corner, GridInput, GridMark, Legend, Line, Plot, PlotBounds, PlotPoint,
-    PlotPoints, Text, VLine,
-};
+use egui_plot::{CoordinatesFormatter, GridInput, GridMark, PlotBounds, PlotPoint};
 
 use crate::{
     backend::db::DbBackend,
-    data::{plot_state::PlotState, preprocessing::remove_leading_outliers},
+    data::{
+        plot_groups::{FlowSlot, PlotGroups, Preset, SeriesKey},
+        plot_state::PlotState,
+        series_colors::SeriesColors,
+    },
     export,
     settings::AppSettings,
     ui::{
-        event_labels,
         flow_table::FlowTable,
         gap_marks,
+        group_editor::{self, SidebarTab},
+        grouped_plots,
         series_table::SeriesTable,
         sidebar::{self, apply_series_action, flow_picker, outliers_checkbox},
         theme,
@@ -21,7 +23,7 @@ use crate::{
 };
 
 const PLOT_AXIS_FOOTER: f32 = 36.0;
-type PlotDataBounds = ((f64, f64), (f64, f64));
+const SINGLE_PRESETS: &[Preset] = &[Preset::AllTogether, Preset::PerMetric];
 
 pub struct TabSingleFlow {
     state: PlotState,
@@ -36,8 +38,17 @@ pub struct TabSingleFlow {
     needs_fit: bool,
     remove_outliers: bool,
     show_gaps: bool,
+    /// Which metrics share a plot
+    groups: PlotGroups,
+    /// Colours picked in the View tab
+    colors: SeriesColors,
+    sidebar_tab: SidebarTab,
+    /// [`DbBackend::saved`] when the metric lists were read
+    catalog_saved: u64,
     /// The visible part of the plot, for the figure export
     view: export::View,
+    /// The drawn plots, for the figure export
+    export_panels: Vec<export::ExportPanel>,
     export_status: export::Status,
     /// The open export window
     preview: Option<export::Preview>,
@@ -59,7 +70,12 @@ impl Default for TabSingleFlow {
             needs_fit: false,
             remove_outliers: true,
             show_gaps: true,
+            groups: PlotGroups::default(),
+            colors: SeriesColors::default(),
+            sidebar_tab: SidebarTab::default(),
+            catalog_saved: 0,
             view: export::View::default(),
+            export_panels: Vec::new(),
             export_status: None,
             preview: None,
             script: None,
@@ -81,6 +97,9 @@ impl TabSingleFlow {
         self.x_range.reset();
         self.needs_fit = false;
         self.remove_outliers = true;
+        self.groups = PlotGroups::default();
+        self.colors = SeriesColors::default();
+        self.sidebar_tab = SidebarTab::default();
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
@@ -90,6 +109,13 @@ impl TabSingleFlow {
             });
             return;
         }
+        // The Process tab may have saved series since
+        if self.catalog_saved != db.saved() {
+            self.catalog_saved = db.saved();
+            self.state.refresh_catalog(db, settings);
+            self.flow_table.clear_stats_cache();
+        }
+        self.colors.apply(FlowSlot::Single, &mut self.state.series);
 
         egui::SidePanel::left("single_flow_sidebar")
             .resizable(true)
@@ -134,6 +160,22 @@ impl TabSingleFlow {
         settings: &AppSettings,
         sidebar_height: f32,
     ) {
+        group_editor::tab_strip(ui, &mut self.sidebar_tab);
+        if self.sidebar_tab == SidebarTab::View {
+            let selected = self.selected_colors();
+            if group_editor::show(
+                ui,
+                "single_groups",
+                (&mut self.groups, &mut self.colors),
+                &selected,
+                SINGLE_PRESETS,
+            ) {
+                self.needs_fit = true;
+            }
+            return;
+        }
+        let sidebar_height = sidebar_height - ui.cursor().top() + ui.min_rect().top();
+
         let top = ui.cursor().top();
 
         // ── Flow table ──────────────────────────────────────────────────
@@ -211,13 +253,6 @@ impl TabSingleFlow {
                 self.manual_x_max = self.state.data_x_max;
                 self.apply_manual_x = true;
             }
-            if ui
-                .checkbox(&mut self.state.split_view, "Split")
-                .on_hover_text("Show each metric in its own plot")
-                .changed()
-            {
-                self.needs_fit = true;
-            }
             if outliers_checkbox(ui, &mut self.remove_outliers) {
                 self.needs_fit = true;
             }
@@ -227,9 +262,12 @@ impl TabSingleFlow {
         if let Some(request) = export::controls(ui, &self.export_status) {
             self.export(request, db, settings);
         }
-        if let Some(status) =
-            export::show_preview(ui.ctx(), &mut self.preview, db, &[(&self.state, "")])
-        {
+        if let Some(status) = export::show_preview(
+            ui.ctx(),
+            &mut self.preview,
+            db,
+            (&[(&self.state, "")], &self.export_panels),
+        ) {
             self.export_status = Some(status);
         }
         let bounds = self.state.flow_id.map(|_| x_range::Bounds {
@@ -270,13 +308,7 @@ impl TabSingleFlow {
         }
 
         let has_string = self.state.series.iter().any(|s| s.is_string_type());
-        let split_view = self.state.split_view;
-
-        if split_view {
-            self.show_split_plots(ui, db, settings);
-        } else {
-            self.show_combined_plot(ui, db, settings);
-        }
+        self.show_plots(ui, db, settings);
 
         if has_string {
             let string_data: Vec<(String, egui::Color32, Vec<(f64, String)>)> = self
@@ -303,149 +335,50 @@ impl TabSingleFlow {
         }
     }
 
-    fn show_combined_plot(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
-        let apply_x = self.apply_manual_x;
-        let x_min = self.manual_x_min;
-        let x_max = self.manual_x_max;
-        self.apply_manual_x = false;
-
-        let fit = std::mem::take(&mut self.needs_fit);
-        let remove_outliers = self.remove_outliers;
-        let show_gaps = self.show_gaps;
-
-        let display: Vec<(Vec<[f64; 2]>, egui::Color32, String)> = self
-            .state
-            .series
-            .iter()
-            .filter(|s| !s.is_string_type() && !s.is_boolean_type())
-            .map(|s| {
-                let points = points_after_outlier_removal(&s.points, remove_outliers && !s.step);
-                (to_plot_points(points), s.color, s.name.clone())
-            })
-            .collect();
-        let bool_markers: Vec<(String, egui::Color32, Vec<f64>)> = self
-            .state
-            .series
-            .iter()
-            .filter(|s| s.is_boolean_type())
-            .map(|s| {
-                let timestamps = s
-                    .points
-                    .iter()
-                    .filter_map(|(t, value)| (*value >= 0.5).then_some(*t))
-                    .collect();
-                (s.name.clone(), s.color, timestamps)
-            })
-            .collect();
-        let string_markers: Vec<(String, egui::Color32, Vec<(f64, String)>)> = self
-            .state
-            .series
-            .iter()
-            .filter(|s| s.is_string_type())
-            .map(|s| (s.name.clone(), s.color, s.string_points.clone()))
-            .collect();
-        let ((fit_x_min, fit_x_max), (fit_y_min, fit_y_max)) = if remove_outliers {
-            display_bounds(&display).unwrap_or((
-                (self.state.data_x_min, self.state.data_x_max),
-                self.state.y_bounds(),
-            ))
-        } else {
-            (
-                (self.state.data_x_min, self.state.data_x_max),
-                self.state.y_bounds(),
-            )
-        };
-
-        let plot = Plot::new("single_combined")
-            .allow_boxed_zoom(true)
-            .allow_drag(true)
-            .allow_scroll(true)
-            .x_grid_spacer(seconds_grid_spacer(self.state.data_x_min))
-            .x_axis_formatter(seconds_since_formatter(self.state.data_x_min))
-            .y_axis_formatter(time_or_compact_formatter(self.state.data_x_min))
-            .coordinates_formatter(
-                Corner::LeftBottom,
-                time_or_compact_coordinates_formatter(self.state.data_x_min),
-            )
-            .legend(Legend::default())
-            .height(plot_height_with_footer(ui.available_height()));
-
-        let mut new_x_min = self.state.x_min;
-        let mut new_x_max = self.state.x_max;
-        let mut needs_reload = false;
-        let mut view = export::View::default();
-
-        let string_events: Vec<event_labels::Events> = string_markers
-            .iter()
-            .map(|(name, color, points)| (name.as_str(), *color, points.as_slice()))
-            .collect();
-        let plot_response = plot.show(ui, |plot_ui| {
-            if fit {
-                plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                    [fit_x_min, fit_y_min],
-                    [fit_x_max, fit_y_max],
-                ));
-                // Skip needs_reload: toggle_series already loaded data for the full
-                // range and set_plot_bounds hasn't propagated to plot_bounds() yet.
-            } else {
-                if apply_x {
-                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                        [x_min, f64::NEG_INFINITY],
-                        [x_max, f64::INFINITY],
-                    ));
-                }
-                let bounds = plot_ui.plot_bounds();
-                let vx_min = bounds.min()[0];
-                let vx_max = bounds.max()[0];
-                if self.state.needs_reload(vx_min, vx_max) {
-                    new_x_min = vx_min;
-                    new_x_max = vx_max;
-                    needs_reload = true;
-                }
-            }
-
-            let b = plot_ui.plot_bounds();
-            view = export::View {
-                x: Some((b.min()[0], b.max()[0])),
-                y: Some((b.min()[1], b.max()[1])),
-                ..export::View::default()
-            };
-
-            if show_gaps {
-                for s in &self.state.series {
-                    gap_marks::draw_series(plot_ui, s);
-                }
-            }
-
-            for (pts, color, name) in &display {
-                plot_ui.line(
-                    Line::new(PlotPoints::from(pts.clone()))
-                        .color(*color)
-                        .name(name),
-                );
-            }
-
-            for (name, color, timestamps) in &bool_markers {
-                for t in timestamps {
-                    plot_ui.vline(VLine::new(*t).color(*color).name(name));
-                }
-            }
-
-            event_labels::draw_lines(plot_ui, &string_events);
-        });
-        event_labels::paint_labels(ui, &plot_response.transform, &string_events);
-
-        self.view = view;
-
-        if plot_response.response.secondary_clicked() {
-            self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
+    fn show_plots(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
+        let flows = [grouped_plots::Flow {
+            slot: FlowSlot::Single,
+            state: &self.state,
+            prefix: "",
+        }];
+        let selected = grouped_plots::selected_keys(&flows);
+        self.groups.sync(&selected);
+        let groups = self.groups.resolve(&selected);
+        if groups.is_empty() {
+            // Zoom requests wait for a plot to apply them to; nothing shown, nothing to export
+            grouped_plots::all_hidden(ui);
+            self.export_panels.clear();
+            self.view.x = None;
+            return;
         }
+        let plot_settings = grouped_plots::Settings {
+            id: "single",
+            x_origin: self.state.data_x_min,
+            data_x: (self.state.data_x_min, self.state.data_x_max),
+            fit: std::mem::take(&mut self.needs_fit),
+            set_x: std::mem::take(&mut self.apply_manual_x)
+                .then_some((self.manual_x_min, self.manual_x_max)),
+            remove_outliers: self.remove_outliers,
+            show_gaps: self.show_gaps,
+        };
+        let outcome = grouped_plots::show(ui, &groups, &flows, &plot_settings);
 
-        if needs_reload {
-            self.state.x_min = new_x_min;
-            self.state.x_max = new_x_max;
+        let plot_width = ui.available_width().max(1.0);
+        self.export_panels = grouped_plots::export_panels(&groups, &flows, &outcome);
+        self.view = export::View {
+            x: outcome.x(),
+            // Each panel has its own
+            y: None,
+            remove_outliers: self.remove_outliers,
+        };
+        if outcome.right_clicked {
+            self.reset_to_full_autofit(db, settings, plot_width);
+        }
+        if let Some((x_min, x_max)) = outcome.reload[0] {
+            self.state.x_min = x_min;
+            self.state.x_max = x_max;
             self.state
-                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
+                .reload_visible_data(db, settings, Some(plot_width));
         }
     }
 
@@ -464,7 +397,7 @@ impl TabSingleFlow {
         match export::run(
             request,
             db,
-            &[(&self.state, "")],
+            (&[(&self.state, "")], &self.export_panels),
             self.state.data_x_min,
             export::View {
                 remove_outliers: self.remove_outliers,
@@ -480,150 +413,12 @@ impl TabSingleFlow {
         }
     }
 
-    fn show_split_plots(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
-        let apply_x = self.apply_manual_x;
-        let x_min = self.manual_x_min;
-        let x_max = self.manual_x_max;
-        self.apply_manual_x = false;
-
-        let fit = std::mem::take(&mut self.needs_fit);
-        let remove_outliers = self.remove_outliers;
-        let show_gaps = self.show_gaps;
-
-        let display: Vec<(i64, Vec<[f64; 2]>, egui::Color32, String, f64, f64)> = self
-            .state
-            .series
-            .iter()
-            .filter(|s| !s.is_string_type())
-            .map(|s| {
-                let points = points_after_outlier_removal(&s.points, remove_outliers && !s.step);
-                let pts = to_plot_points(points);
-                let (y_min, y_max) = if remove_outliers {
-                    points_bounds(&pts)
-                        .map(|(_, y)| y)
-                        .unwrap_or((s.global_y_min, s.global_y_max))
-                } else {
-                    (s.global_y_min, s.global_y_max)
-                };
-                (s.series_id, pts, s.color, s.name.clone(), y_min, y_max)
-            })
-            .collect();
-        let (fit_x_min, fit_x_max) = if remove_outliers {
-            merge_bounds(
-                display
-                    .iter()
-                    .filter_map(|(_, pts, _, _, _, _)| points_bounds(pts)),
-            )
-            .map(|(x, _)| x)
-            .unwrap_or((self.state.data_x_min, self.state.data_x_max))
-        } else {
-            (self.state.data_x_min, self.state.data_x_max)
-        };
-
-        let plot_height =
-            split_plot_height_with_footer(ui.available_height(), display.len().max(1));
-
-        let mut needs_reload = false;
-        let mut new_x_min = self.state.x_min;
-        let mut new_x_max = self.state.x_max;
-        let mut right_clicked = false;
-        // Each split plot has its own y range: the figure fits its own
-        let mut view = export::View::default();
-
-        ScrollArea::vertical()
-            .id_salt("split_scroll")
-            .show(ui, |ui| {
-                for (sid, pts, color, name, y_min, y_max) in &display {
-                    ui.label(RichText::new(name).color(*color).strong());
-
-                    let plot = Plot::new(format!("split_{}", sid))
-                        .allow_boxed_zoom(true)
-                        .allow_drag(true)
-                        .allow_scroll(true)
-                        .link_axis("single_x_axis", [true, false])
-                        .x_grid_spacer(seconds_grid_spacer(self.state.data_x_min))
-                        .x_axis_formatter(seconds_since_formatter(self.state.data_x_min))
-                        .y_axis_formatter(time_or_compact_formatter(self.state.data_x_min))
-                        .coordinates_formatter(
-                            Corner::LeftBottom,
-                            time_or_compact_coordinates_formatter(self.state.data_x_min),
-                        )
-                        .height(plot_height);
-
-                    let pr = plot.show(ui, |plot_ui| {
-                        if fit {
-                            // Fit both axes; skip needs_reload for same reason as combined view.
-                            let pad = (y_max - y_min).abs() * 0.05;
-                            plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                [fit_x_min, y_min - pad],
-                                [fit_x_max, y_max + pad],
-                            ));
-                        } else {
-                            if apply_x {
-                                let cur = plot_ui.plot_bounds();
-                                plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                    [x_min, cur.min()[1]],
-                                    [x_max, cur.max()[1]],
-                                ));
-                            }
-                            let bounds = plot_ui.plot_bounds();
-                            let vx_min = bounds.min()[0];
-                            let vx_max = bounds.max()[0];
-                            if self.state.needs_reload(vx_min, vx_max) {
-                                new_x_min = vx_min;
-                                new_x_max = vx_max;
-                                needs_reload = true;
-                            }
-                        }
-
-                        let b = plot_ui.plot_bounds();
-                        view.x = Some((b.min()[0], b.max()[0]));
-
-                        if show_gaps {
-                            if let Some(s) = self.state.series.iter().find(|s| s.series_id == *sid)
-                            {
-                                gap_marks::draw_series(plot_ui, s);
-                            }
-                        }
-
-                        plot_ui.line(
-                            Line::new(PlotPoints::from(pts.clone()))
-                                .color(*color)
-                                .name(name),
-                        );
-
-                        // Show fit y bounds in the lower-right corner for debugging.
-                        let vb = plot_ui.plot_bounds();
-                        plot_ui.text(
-                            Text::new(
-                                PlotPoint::new(vb.max()[0], vb.min()[1]),
-                                format!("Fit y: [{:.4}, {:.4}]", y_min, y_max),
-                            )
-                            .anchor(egui::Align2::RIGHT_BOTTOM)
-                            .color(egui::Color32::from_gray(150)),
-                        );
-                    });
-
-                    if pr.response.secondary_clicked() {
-                        right_clicked = true;
-                    }
-
-                    ui.add_space(4.0);
-                }
-            });
-
-        self.view = view;
-
-        if right_clicked {
-            self.reset_to_full_autofit(db, settings, ui.available_width().max(1.0));
-        }
-
-        if needs_reload {
-            self.state.x_min = new_x_min;
-            self.state.x_max = new_x_max;
-            self.state
-                .reload_visible_data(db, settings, Some(ui.available_width().max(1.0)));
-        }
+    fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {
+        grouped_plots::selected_colors(&[grouped_plots::Flow {
+            slot: FlowSlot::Single,
+            state: &self.state,
+            prefix: "",
+        }])
     }
 
     fn reset_to_full_autofit(&mut self, db: &DbBackend, settings: &AppSettings, plot_width: f32) {
@@ -641,41 +436,6 @@ impl TabSingleFlow {
 /// Convert (f64, f64) pairs to egui_plot's expected [f64; 2] arrays.
 pub fn to_plot_points(pts: &[(f64, f64)]) -> Vec<[f64; 2]> {
     pts.iter().map(|&(x, y)| [x, y]).collect()
-}
-
-fn points_after_outlier_removal(pts: &[(f64, f64)], remove_outliers: bool) -> &[(f64, f64)] {
-    if remove_outliers {
-        remove_leading_outliers(pts)
-    } else {
-        pts
-    }
-}
-
-fn display_bounds(display: &[(Vec<[f64; 2]>, egui::Color32, String)]) -> Option<PlotDataBounds> {
-    merge_bounds(display.iter().filter_map(|(pts, _, _)| points_bounds(pts)))
-}
-
-fn merge_bounds(bounds_iter: impl Iterator<Item = PlotDataBounds>) -> Option<PlotDataBounds> {
-    bounds_iter.fold(
-        None,
-        |bounds, ((x_min, x_max), (y_min, y_max))| match bounds {
-            None => Some(((x_min, x_max), (y_min, y_max))),
-            Some(((cur_x_min, cur_x_max), (cur_y_min, cur_y_max))) => Some((
-                (cur_x_min.min(x_min), cur_x_max.max(x_max)),
-                (cur_y_min.min(y_min), cur_y_max.max(y_max)),
-            )),
-        },
-    )
-}
-
-fn points_bounds(pts: &[[f64; 2]]) -> Option<PlotDataBounds> {
-    pts.iter().fold(None, |bounds, [x, y]| match bounds {
-        None => Some(((*x, *x), (*y, *y))),
-        Some(((x_min, x_max), (y_min, y_max))) => Some((
-            (x_min.min(*x), x_max.max(*x)),
-            (y_min.min(*y), y_max.max(*y)),
-        )),
-    })
 }
 
 pub fn seconds_since_formatter(
@@ -724,16 +484,6 @@ pub fn seconds_label_formatter(origin_ns: f64) -> impl Fn(&str, &PlotPoint) -> S
             format!("{name}\n{time}\n{value}")
         }
     }
-}
-
-pub fn compact_coordinates_formatter(origin_ns: f64) -> CoordinatesFormatter<'static> {
-    CoordinatesFormatter::new(move |point, bounds| {
-        format!(
-            "x: {}\ny: {}",
-            format_seconds_since_step(point.x, origin_ns, x_step(bounds)),
-            compact_axis_label(point.y)
-        )
-    })
 }
 
 fn format_seconds_since_step(value_ns: f64, origin_ns: f64, step_ns: f64) -> String {

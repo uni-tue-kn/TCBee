@@ -5,7 +5,10 @@ use ts_storage::Flow;
 
 use crate::{
     backend::db::DbBackend,
-    data::plot_state::PlotState,
+    data::{
+        plot_groups::{PlotGroups, Preset, SeriesKey},
+        plot_state::PlotState,
+    },
     settings::AppSettings,
     ui::{flow_table::FlowTable, series_table::SeriesAction, table, theme},
 };
@@ -144,4 +147,44 @@ pub fn outliers_checkbox(ui: &mut Ui, remove_outliers: &mut bool) -> bool {
             .changed()
     })
     .inner
+}
+
+/// A drop-down of the `presets` that sets the plot groups, showing "Custom" once they were
+/// edited. Returns true when a preset was picked.
+pub fn layout_picker(
+    ui: &mut Ui,
+    id_salt: &str,
+    groups: &mut PlotGroups,
+    selected: &[SeriesKey],
+    presets: &[Preset],
+) -> bool {
+    let mut picked = None;
+    let current = groups.auto().map_or("Custom", preset_label);
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for &preset in presets {
+                if ui
+                    .selectable_label(groups.auto() == Some(preset), preset_label(preset))
+                    .clicked()
+                {
+                    picked = Some(preset);
+                }
+            }
+        })
+        .response
+        .on_hover_text("Which metrics share a plot");
+    if let Some(preset) = picked {
+        groups.apply_preset(preset, selected);
+    }
+    picked.is_some()
+}
+
+pub fn preset_label(preset: Preset) -> &'static str {
+    match preset {
+        Preset::AllTogether => "All in one plot",
+        Preset::PerMetric => "One plot per metric",
+        Preset::PerFlow => "One plot per flow",
+        Preset::PerSeries => "One plot per metric and flow",
+    }
 }
