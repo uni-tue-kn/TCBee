@@ -419,7 +419,7 @@ pub fn run(
         )));
     }
     let Some(x) = view.x else {
-        return Some(Outcome::Saved(Err("the plot has not been drawn yet".into())));
+        return Some(Outcome::Saved(Err("no plot is shown".into())));
     };
     let status = match request {
         Request::Figure => {

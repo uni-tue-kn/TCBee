@@ -336,8 +336,10 @@ impl TabSingleFlow {
         self.groups.sync(&selected);
         let groups = self.groups.resolve(&selected);
         if groups.is_empty() {
-            // Zoom requests wait for a plot to apply them to
+            // Zoom requests wait for a plot to apply them to; nothing shown, nothing to export
             grouped_plots::all_hidden(ui);
+            self.export_panels.clear();
+            self.view.x = None;
             return;
         }
         let plot_settings = grouped_plots::Settings {
