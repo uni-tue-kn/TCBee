@@ -41,6 +41,12 @@ class ProcessorIntegration(unittest.TestCase):
                         timeout=60,
                     )
                     with tcbee.open(path) as db:
+                        meta = db.metadata
+                        self.assertEqual(
+                            int(meta["summary.events"]) + int(meta["summary.discarded"]),
+                            int(meta["summary.records"]),
+                        )
+                        self.assertEqual(int(meta["summary.flows"]), db.flows().count())
                         query = db.flows().with_series(
                             source="sock", name="snd_cwnd", direction="send"
                         )

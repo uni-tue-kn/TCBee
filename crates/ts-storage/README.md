@@ -21,7 +21,7 @@ One table per recorded event type, one row per record, one typed column per fiel
 
 | Table | Content |
 |---|---|
-| `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at`, and for recordings made with `--metadata` the run metadata as `run.*` rows (the JSON of `metadata.json` flattened to dotted keys, array elements by index, e.g. `run.kernel.release`, `run.interfaces.0.mtu`), and for recordings made with `--tp +drops` the names of the kernel's drop reasons as `drop_reason.<value>` rows |
+| `meta(key, value)` | `schema_version` (`3`), `writer`, `trace_dir`, `created_at`; the recording summary as `summary.*` rows (see below); with `--metadata` the run metadata as `run.*` rows (the JSON of `metadata.json` flattened to dotted keys, array elements by index, e.g. `run.kernel.release`, `run.interfaces.0.mtu`); with `--tp +drops` the names of the kernel's drop reasons as `drop_reason.<value>` rows |
 | `flows(id, src, dst, sport, dport, l4proto)` | one row per TCP flow (IP 5-tuple) |
 | `connections(id, kind, key, flow_id, start_ts, end_ts)` | connections that group flows, e.g. an MPTCP connection (`kind` `mptcp`, `key` its token); `flow_id` holds the connection's own series |
 | `connection_flows(connection_id, flow_id, subflow_id, first_ts, last_ts)` | the flows of each connection, e.g. the subflows of an MPTCP connection |
@@ -29,6 +29,17 @@ One table per recorded event type, one row per record, one typed column per fiel
 | `series(id, flow_id, kind, source, dir, name, value_type, tbl, col, n, t_min, t_max, v_min, v_max)` | catalog of all series with point count and bounds |
 | `ev_sock`, `ev_tcp_probe`, `ev_cwnd`, `ev_cubic`, `ev_bbr`, `ev_tcp4`, `ev_tcp6`, `ev_mptcp_pm`, `ev_tcp_event` | the recorded events, see below |
 | `derived_samples(series_id, ts, seq, v_int, v_float, v_bool, v_text)` | points of series created in the visualizer; one of the `v_*` columns is set |
+
+The `summary.*` rows of tcbee-process (databases written before them have none). Values are decimal integers or UTC times `YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ`; `_ns` times are the `ts` clock, nanoseconds since boot. The `_utc` rows need a recording made with `--metadata` and are missing without it.
+
+| Key | Value |
+|---|---|
+| `summary.span.first_ns`, `summary.span.last_ns`, `summary.span.duration_ns` | first and last event time over all raw series and their difference; missing without events |
+| `summary.span.first_utc`, `summary.span.last_utc` | the same as UTC, converted with the clock offset sampled at the recorder's start |
+| `summary.recorder.start_utc`, `summary.recorder.stop_utc`, `summary.recorder.duration_ns` | when the recorder started and stopped; the stop rows are missing if it did not stop cleanly |
+| `summary.events`, `summary.events_by_table.<source>` | rows in the event tables, in total and per source (`sock`, `tcp4`, ...) |
+| `summary.records`, `summary.discarded` | records in the trace files and those the recorder marked as discarded; `records = events + discarded` |
+| `summary.flows`, `summary.connections`, `summary.owners`, `summary.series` | rows of the `flows`, `connections`, `flow_owners` and `series` tables |
 
 Every `ev_*` table starts with `flow_id`, `dir`, `ts` and `seq`, followed by one column per field of the record (`ev_sock.snd_cwnd`, `ev_tcp_probe."SND_CWND"`, ...). Column names are the series names TCBee has always used, with their original case, so quote them in SQL.
 

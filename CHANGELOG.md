@@ -7,6 +7,7 @@
 - `tcbee-viz`: *Export figure…* previews the visible plot as a figure, lets you adjust its style, and saves it as PDF or PNG; the default style is set under *Settings → Figure export* (kept in `~/.config/tcbee/viz.toml`).
 - `tcbee-viz`: *Export data script…* saves a Python script that loads the plotted data and gaps with the tcbee package.
 - `ts-storage`: `Store::seq_gaps`; Python API: `Series.gaps()`.
+- `tcbee-process`: stores a recording summary as `summary.*` meta rows: first and last event (also in UTC with `--metadata`), recorder start and stop, events in total and per table, discarded records, flows, connections, owners and series. `tcbee-viz` shows it in the Overview tab.
 - All tools: `-V`/`--version`; `tcbee-live` and `tcbee-viz` print their help without starting (and `tcbee-live` without root).
 
 ### Changed
