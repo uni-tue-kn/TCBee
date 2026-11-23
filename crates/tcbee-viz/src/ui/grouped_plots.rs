@@ -22,12 +22,14 @@ use crate::{
     },
 };
 
+/// Space around the data when fitting, as a fraction of its x and y span.
 const PADDING_X: f64 = 0.02;
 const PADDING_Y: f64 = 0.06;
 /// Height of a group's name above its plot (px).
 const HEADING_HEIGHT: f32 = 22.0;
 /// Height of an empty group's drop strip (px).
 const EMPTY_HEIGHT: f32 = 36.0;
+/// Space below each plot (px).
 const PLOT_GAP: f32 = 4.0;
 
 type PlotDataBounds = ((f64, f64), (f64, f64));
@@ -54,13 +56,8 @@ impl Flow<'_> {
     }
 }
 
-/// The keys of the selected series of `flows` that can be grouped: text series are listed
-/// or marked separately and belong to no group.
-pub fn selected_keys(flows: &[Flow]) -> Vec<SeriesKey> {
-    selected_colors(flows).into_iter().map(|(k, _)| k).collect()
-}
-
-/// [`selected_keys`] with the plot colour of each series.
+/// The selected series of `flows` that can be grouped, with their plot colour: text series
+/// are listed or marked separately and belong to no group.
 pub fn selected_colors(flows: &[Flow]) -> Vec<(SeriesKey, egui::Color32)> {
     flows
         .iter()
@@ -72,6 +69,11 @@ pub fn selected_colors(flows: &[Flow]) -> Vec<(SeriesKey, egui::Color32)> {
                 .map(|s| (SeriesKey::of(f.slot, s), s.color))
         })
         .collect()
+}
+
+/// The keys of [`selected_colors`].
+pub fn selected_keys(flows: &[Flow]) -> Vec<SeriesKey> {
+    selected_colors(flows).into_iter().map(|(k, _)| k).collect()
 }
 
 pub struct Settings {
@@ -176,19 +178,26 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
         split_plot_height_with_footer(ui.available_height() - fixed, plot_count)
     };
 
+    // Linked plots must fit to the same x range, so it comes from all of them
+    let drawn: Vec<Vec<Drawn>> = groups
+        .iter()
+        .map(|g| group_series(g, flows, settings.remove_outliers))
+        .collect();
+    let fit_x = shared_fit_x(drawn.iter().flatten(), settings);
+
     let mut draw_all = |ui: &mut Ui| {
-        for group in groups {
+        for (group, drawn) in groups.iter().zip(&drawn) {
             if !single {
                 ui.label(RichText::new(&group.name).strong());
             }
             if group.members.is_empty() {
                 empty_strip(ui);
             } else {
-                let drawn = group_series(group, flows, settings.remove_outliers);
                 let view = show_plot(
                     ui,
                     group.id,
-                    &drawn,
+                    drawn,
+                    fit_x,
                     flows,
                     &string_events,
                     settings,
@@ -208,6 +217,16 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
             .show(ui, draw_all);
     }
     outcome
+}
+
+/// The plot area while every group is hidden.
+pub fn all_hidden(ui: &mut Ui) {
+    ui.centered_and_justified(|ui| {
+        ui.label(
+            RichText::new("All plot groups are hidden. Show one in the Groups tab.")
+                .color(egui::Color32::GRAY),
+        );
+    });
 }
 
 fn empty_strip(ui: &mut Ui) {
@@ -248,6 +267,7 @@ fn show_plot(
     ui: &mut Ui,
     group_id: u64,
     drawn: &[Drawn],
+    fit_x: (f64, f64),
     flows: &[Flow],
     string_events: &[event_labels::Events],
     settings: &Settings,
@@ -258,7 +278,7 @@ fn show_plot(
         .iter()
         .filter(|d| !d.series.is_boolean_type())
         .collect();
-    let fit_bounds = fit_bounds(&lines, settings);
+    let fit_bounds = (fit_x, fit_y(&lines));
     let mut view = export::View::default();
 
     let response = Plot::new(format!("{}_group_{}", settings.id, group_id))
@@ -332,21 +352,32 @@ fn show_plot(
     view
 }
 
-/// Bounds to fit a plot to: its lines (without leading outliers when they are removed), or
-/// the catalog's value range when nothing is loaded, padded a little.
-fn fit_bounds(lines: &[&Drawn], settings: &Settings) -> PlotDataBounds {
+/// The x range to fit all plots to: that of their lines when leading outliers are removed,
+/// else the data's, padded a little.
+fn shared_fit_x<'a>(drawn: impl Iterator<Item = &'a Drawn<'a>>, settings: &Settings) -> (f64, f64) {
+    let shown = settings
+        .remove_outliers
+        .then(|| {
+            merge_bounds(
+                drawn
+                    .filter(|d| !d.series.is_boolean_type())
+                    .filter_map(|d| points_bounds(&d.points)),
+            )
+        })
+        .flatten();
+    pad(shown.map_or(settings.data_x, |(x, _)| x), PADDING_X)
+}
+
+/// The y range to fit a plot to: that of its lines, or the catalog's value range when
+/// nothing is loaded, padded a little.
+fn fit_y(lines: &[&Drawn]) -> (f64, f64) {
     let shown = merge_bounds(lines.iter().filter_map(|d| points_bounds(&d.points)));
-    let catalog_y = lines
+    let catalog = lines
         .iter()
         .map(|d| (d.series.global_y_min, d.series.global_y_max))
         .reduce(|(a_min, a_max), (b_min, b_max)| (a_min.min(b_min), a_max.max(b_max)))
         .unwrap_or((0.0, 1.0));
-    let (x, y) = match shown {
-        Some((x, y)) if settings.remove_outliers => (x, y),
-        Some((_, y)) => (settings.data_x, y),
-        None => (settings.data_x, catalog_y),
-    };
-    (pad(x, PADDING_X), pad(y, PADDING_Y))
+    pad(shown.map_or(catalog, |(_, y)| y), PADDING_Y)
 }
 
 fn merge_bounds(bounds: impl Iterator<Item = PlotDataBounds>) -> Option<PlotDataBounds> {

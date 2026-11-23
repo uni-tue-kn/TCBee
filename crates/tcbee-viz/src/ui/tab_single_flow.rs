@@ -331,6 +331,11 @@ impl TabSingleFlow {
         let selected = grouped_plots::selected_keys(&flows);
         self.groups.sync(&selected);
         let groups = self.groups.resolve(&selected);
+        if groups.is_empty() {
+            // Zoom requests wait for a plot to apply them to
+            grouped_plots::all_hidden(ui);
+            return;
+        }
         let plot_settings = grouped_plots::Settings {
             id: "single",
             x_origin: self.state.data_x_min,
