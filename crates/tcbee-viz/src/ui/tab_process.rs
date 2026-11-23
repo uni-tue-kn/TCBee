@@ -1,10 +1,11 @@
 use crate::ui::{
+    event_labels,
     flow_table::FlowTable,
-    tab_single_flow::{to_plot_points, vertical_marker_label},
+    tab_single_flow::{split_plot_height_with_footer, to_plot_points},
     theme,
 };
 use egui::RichText;
-use egui_plot::{Legend, Line, Plot, PlotPoint, PlotPoints, Text, VLine};
+use egui_plot::{Legend, Line, Plot, PlotPoints, VLine};
 use ts_storage::SeriesInfo;
 
 use crate::{
@@ -23,7 +24,6 @@ struct InputBinding {
     selected_series_id: Option<i64>,
 }
 
-#[derive(Default)]
 pub struct TabProcess {
     flow_table: FlowTable,
     flow_id: Option<i64>,
@@ -40,6 +40,28 @@ pub struct TabProcess {
     save_status: String,
     show_overwrite_confirm: bool,
     overwrite_conflicts: Vec<String>,
+    /// Each numeric series in its own plot instead of all in one.
+    split_plots: bool,
+}
+
+impl Default for TabProcess {
+    fn default() -> Self {
+        Self {
+            flow_table: FlowTable::default(),
+            flow_id: None,
+            available: Vec::new(),
+            available_flow: None,
+            selected_plugin: None,
+            input_bindings: Vec::new(),
+            input_series: Vec::new(),
+            preview_series: Vec::new(),
+            status: String::new(),
+            save_status: String::new(),
+            show_overwrite_confirm: false,
+            overwrite_conflicts: Vec::new(),
+            split_plots: true,
+        }
+    }
 }
 
 impl TabProcess {
@@ -231,6 +253,8 @@ impl TabProcess {
         {
             self.run_preview(db);
         }
+        ui.checkbox(&mut self.split_plots, "Split plots")
+            .on_hover_text("Show each series in its own plot");
 
         if !self.status.is_empty() {
             ui.add_space(4.0);
@@ -265,60 +289,73 @@ impl TabProcess {
             return;
         }
 
-        Plot::new("process_preview")
-            .allow_boxed_zoom(true)
-            .allow_drag(true)
-            .allow_scroll(true)
-            .legend(Legend::default())
-            .height(ui.available_height())
-            .show(ui, |plot_ui| {
-                for s in &self.input_series {
-                    if s.is_boolean_type() || s.is_string_type() {
-                        continue;
-                    }
-                    let pts = PlotPoints::from(to_plot_points(&s.points));
-                    plot_ui.line(Line::new(pts).color(s.color).name(&s.name));
-                }
-                for s in &self.preview_series {
-                    if s.is_boolean_type() || s.is_string_type() {
-                        continue;
-                    }
-                    let pts = PlotPoints::from(to_plot_points(&s.points));
-                    plot_ui.line(
-                        Line::new(pts)
-                            .color(s.color)
-                            .name(format!("[new] {}", s.name))
-                            .style(egui_plot::LineStyle::dashed_dense()),
-                    );
-                }
+        let numeric: Vec<(&SeriesData, bool)> = self
+            .input_series
+            .iter()
+            .map(|s| (s, false))
+            .chain(self.preview_series.iter().map(|s| (s, true)))
+            .filter(|(s, _)| !s.is_boolean_type() && !s.is_string_type())
+            .collect();
 
-                for s in self.input_series.iter().chain(&self.preview_series) {
-                    if !s.is_boolean_type() {
-                        continue;
+        if !self.split_plots || numeric.len() < 2 {
+            let response = Plot::new("process_preview")
+                .allow_boxed_zoom(true)
+                .allow_drag(true)
+                .allow_scroll(true)
+                .legend(Legend::default())
+                .height(ui.available_height())
+                .show(ui, |plot_ui| {
+                    for &(s, new) in &numeric {
+                        draw_line(plot_ui, s, new);
                     }
-                    for (t, value) in &s.points {
-                        if *value >= 0.5 {
-                            plot_ui.vline(VLine::new(*t).color(s.color).name(&s.name));
-                        }
-                    }
-                }
+                    self.draw_event_markers(plot_ui);
+                });
+            event_labels::paint_labels(ui, &response.transform, &self.string_events());
+            return;
+        }
 
-                let bounds = plot_ui.plot_bounds();
-                let marker_y = (bounds.min()[1] + bounds.max()[1]) * 0.5;
-                for s in self.input_series.iter().chain(&self.preview_series) {
-                    if !s.is_string_type() {
-                        continue;
-                    }
-                    for (t, label) in &s.string_points {
-                        plot_ui.vline(VLine::new(*t).color(s.color).name(&s.name));
-                        plot_ui.text(
-                            Text::new(PlotPoint::new(*t, marker_y), vertical_marker_label(label))
-                                .anchor(egui::Align2::LEFT_CENTER)
-                                .color(s.color),
-                        );
-                    }
+        let plot_height = split_plot_height_with_footer(ui.available_height(), numeric.len());
+        egui::ScrollArea::vertical()
+            .id_salt("process_split_scroll")
+            .show(ui, |ui| {
+                for (i, &(s, new)) in numeric.iter().enumerate() {
+                    ui.label(RichText::new(line_name(s, new)).color(s.color).strong());
+                    let response = Plot::new(("process_split", i))
+                        .allow_boxed_zoom(true)
+                        .allow_drag(true)
+                        .allow_scroll(true)
+                        .link_axis("process_split_x_axis", [true, false])
+                        .link_cursor("process_split_x_axis", [true, false])
+                        .height(plot_height)
+                        .show(ui, |plot_ui| {
+                            draw_line(plot_ui, s, new);
+                            self.draw_event_markers(plot_ui);
+                        });
+                    event_labels::paint_labels(ui, &response.transform, &self.string_events());
                 }
             });
+    }
+
+    /// Boolean events as vertical lines and string events as labelled lines.
+    fn draw_event_markers(&self, plot_ui: &mut egui_plot::PlotUi) {
+        let all = || self.input_series.iter().chain(&self.preview_series);
+        for s in all().filter(|s| s.is_boolean_type()) {
+            for (t, value) in &s.points {
+                if *value >= 0.5 {
+                    plot_ui.vline(VLine::new(*t).color(s.color).name(&s.name));
+                }
+            }
+        }
+        event_labels::draw_lines(plot_ui, &self.string_events());
+    }
+
+    fn string_events(&self) -> Vec<event_labels::Events<'_>> {
+        self.input_series
+            .iter()
+            .chain(&self.preview_series)
+            .filter(|s| s.is_string_type())
+            .map(|s| (s.name.as_str(), s.color, s.string_points.as_slice()))
+            .collect()
     }
 
     fn run_preview(&mut self, db: &DbBackend) {
@@ -497,4 +534,24 @@ impl TabProcess {
                 });
             });
     }
+}
+
+/// The legend name of a series; plugin outputs are marked as new.
+fn line_name(series: &SeriesData, new: bool) -> String {
+    if new {
+        format!("[new] {}", series.name)
+    } else {
+        series.name.clone()
+    }
+}
+
+fn draw_line(plot_ui: &mut egui_plot::PlotUi, series: &SeriesData, new: bool) {
+    let points = PlotPoints::from(to_plot_points(&series.points));
+    let mut line = Line::new(points)
+        .color(series.color)
+        .name(line_name(series, new));
+    if new {
+        line = line.style(egui_plot::LineStyle::dashed_dense());
+    }
+    plot_ui.line(line);
 }
