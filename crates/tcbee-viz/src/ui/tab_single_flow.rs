@@ -101,6 +101,8 @@ impl TabSingleFlow {
             });
             return;
         }
+        self.groups
+            .apply_colors(FlowSlot::Single, &mut self.state.series);
 
         egui::SidePanel::left("single_flow_sidebar")
             .resizable(true)

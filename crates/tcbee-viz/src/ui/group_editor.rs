@@ -89,7 +89,8 @@ pub fn show(
         group_card(ui, id_salt, &card, selected, &targets, copying, &mut edits);
     }
 
-    changed |= !edits.is_empty();
+    // A new colour needs no new fit
+    changed |= edits.iter().any(|e| !matches!(e, Edit::SetColor(..)));
     for edit in edits {
         edit.apply(groups);
     }
@@ -105,6 +106,7 @@ enum Edit {
     /// Key, from, to.
     MoveMember(SeriesKey, u64, u64),
     CopyMember(SeriesKey, u64),
+    SetColor(SeriesKey, Color32),
 }
 
 /// What a dragged metric chip carries.
@@ -122,6 +124,7 @@ impl Edit {
             Edit::RemoveMember(key, from) => groups.remove_member(&key, from),
             Edit::MoveMember(key, from, to) => groups.move_member(&key, from, to),
             Edit::CopyMember(key, to) => groups.copy_member(&key, to),
+            Edit::SetColor(key, color) => groups.set_color(key, color),
         }
     }
 }
@@ -157,7 +160,20 @@ fn group_card(
                     key: key.clone(),
                     from: group.id,
                 };
-                ui.dnd_drag_source(id, payload, |ui| member_chip(ui, key, color))
+                if let Some(color) = color {
+                    let mut picked = color;
+                    if egui::color_picker::color_edit_button_srgba(
+                        ui,
+                        &mut picked,
+                        egui::color_picker::Alpha::Opaque,
+                    )
+                    .on_hover_text("Colour of this metric in every plot")
+                    .changed()
+                    {
+                        edits.push(Edit::SetColor(key.clone(), picked));
+                    }
+                }
+                ui.dnd_drag_source(id, payload, |ui| member_chip(ui, key, color.is_some()))
                     .response
                     .on_hover_cursor(CursorIcon::Grab);
                 member_menu(ui, key, group.id, targets, edits);
@@ -249,13 +265,10 @@ fn card_header(ui: &mut Ui, id_salt: &str, group: &PlotGroup, edits: &mut Vec<Ed
     });
 }
 
-/// A metric with its plot colour; dimmed while it is not selected.
-fn member_chip(ui: &mut Ui, key: &SeriesKey, color: Option<Color32>) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), 4.0, color.unwrap_or(Color32::GRAY));
+/// A metric's name; dimmed while it is not selected.
+fn member_chip(ui: &mut Ui, key: &SeriesKey, selected: bool) {
     let text = RichText::new(series_name(key));
-    if color.is_some() {
+    if selected {
         ui.label(text);
     } else {
         ui.label(text.weak())

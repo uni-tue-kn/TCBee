@@ -120,7 +120,7 @@ impl TabMultiFlow {
             return;
         }
 
-        apply_unified_multi_flow_colors(&mut self.state_a, &mut self.state_b);
+        self.apply_colors();
 
         egui::SidePanel::left("multi_flow_sidebar")
             .resizable(true)
@@ -151,7 +151,7 @@ impl TabMultiFlow {
             .frame(egui::Frame::new().fill(theme::panel_bg(settings.dark_mode)))
             .show_inside(ui, |ui| {
                 ui.add_space(4.0);
-                apply_unified_multi_flow_colors(&mut self.state_a, &mut self.state_b);
+                self.apply_colors();
                 self.show_plot_area(ui, db, settings);
             });
     }
@@ -380,6 +380,15 @@ impl TabMultiFlow {
                 state.reload_visible_data(db, settings, Some(plot_width));
             }
         }
+    }
+
+    /// Colours by position over both flows, then the ones the user picked.
+    fn apply_colors(&mut self) {
+        apply_unified_multi_flow_colors(&mut self.state_a, &mut self.state_b);
+        self.groups
+            .apply_colors(FlowSlot::A, &mut self.state_a.series);
+        self.groups
+            .apply_colors(FlowSlot::B, &mut self.state_b.series);
     }
 
     fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {
