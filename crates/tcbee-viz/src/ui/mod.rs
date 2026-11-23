@@ -1,6 +1,7 @@
 pub mod event_labels;
 pub mod flow_table;
 pub mod gap_marks;
+pub mod grouped_plots;
 pub mod series_table;
 pub mod sidebar;
 pub mod style_editor;

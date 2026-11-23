@@ -25,8 +25,6 @@ pub struct PlotState {
     /// Full extent of the flow — used for reset.
     pub data_x_min: f64,
     pub data_x_max: f64,
-    /// Display each series in its own subplot.
-    pub split_view: bool,
     /// Set to true inside the plot closure when the view has moved enough to reload.
     pub pending_reload: bool,
     /// Human-readable label for the flow (e.g. for legends).
@@ -44,7 +42,6 @@ impl Default for PlotState {
             x_max: 1.0,
             data_x_min: 0.0,
             data_x_max: 1.0,
-            split_view: false,
             pending_reload: false,
             flow_label: String::new(),
         }
