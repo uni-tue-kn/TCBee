@@ -159,7 +159,8 @@ impl PlotState {
             return false;
         };
 
-        match self.series.first().and_then(|s| s.loaded_range) {
+        // Every series counts: a plot may show none of the series that happen to come first
+        self.series.iter().any(|s| match s.loaded_range {
             None => true,
             Some((loaded_min, loaded_max)) => {
                 let loaded_span = loaded_max - loaded_min;
@@ -170,7 +171,7 @@ impl PlotState {
                 let shift_hi = (loaded_max - fetch_max).abs() / loaded_span;
                 shift_lo > 0.10 || shift_hi > 0.10
             }
-        }
+        })
     }
 
     /// Fetch data for all series in the given visible range + 20% margin.
@@ -197,7 +198,7 @@ impl PlotState {
         settings: &AppSettings,
         plot_width_px: f32,
     ) {
-        let Some((fetch_min, fetch_max)) = self.series.first().and_then(|s| s.loaded_range) else {
+        let Some((fetch_min, fetch_max)) = self.series.iter().find_map(|s| s.loaded_range) else {
             return;
         };
         let interval = compute_sample_interval(
@@ -361,5 +362,30 @@ mod tests {
         assert_eq!(selected(&state), (vec![1, 3], vec![1, 3]));
         state.toggle_series(&db, 1, &settings);
         assert_eq!(selected(&state), (vec![3], vec![3]));
+    }
+
+    fn loaded(state: &mut PlotState, ranges: &[Option<(f64, f64)>]) {
+        state.data_x_max = 100.0;
+        state.series = ranges
+            .iter()
+            .zip(1..)
+            .map(|(&range, id)| {
+                let mut sd = SeriesData::from_info(&info(id), 0.0, 100.0, egui::Color32::WHITE);
+                sd.loaded_range = range;
+                sd
+            })
+            .collect();
+    }
+
+    #[test]
+    fn reload_looks_at_every_series() {
+        let mut state = state();
+        // Visible 40..60 fetches 36..64
+        loaded(&mut state, &[Some((36.0, 64.0)), Some((36.0, 64.0))]);
+        assert!(!state.needs_reload(40.0, 60.0));
+        loaded(&mut state, &[Some((36.0, 64.0)), Some((0.0, 100.0))]);
+        assert!(state.needs_reload(40.0, 60.0));
+        loaded(&mut state, &[Some((36.0, 64.0)), None]);
+        assert!(state.needs_reload(40.0, 60.0));
     }
 }
