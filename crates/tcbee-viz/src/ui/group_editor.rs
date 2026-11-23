@@ -1,4 +1,4 @@
-//! The Groups tab of the flow tab sidebars: which selected metrics share a plot.
+//! The View tab of the flow tab sidebars: which selected metrics share a plot.
 
 use egui::{Color32, CursorIcon, DragAndDrop, RichText, Ui};
 
@@ -17,14 +17,14 @@ pub enum SidebarTab {
     #[default]
     Selection,
     /// Which metrics share a plot.
-    Groups,
+    View,
 }
 
 /// The tab strip at the top of a sidebar.
 pub fn tab_strip(ui: &mut Ui, tab: &mut SidebarTab) {
     ui.horizontal(|ui| {
         ui.selectable_value(tab, SidebarTab::Selection, "Selection");
-        ui.selectable_value(tab, SidebarTab::Groups, "Groups");
+        ui.selectable_value(tab, SidebarTab::View, "View");
     });
     ui.separator();
 }
@@ -249,30 +249,33 @@ fn card_header(ui: &mut Ui, id_salt: &str, group: &PlotGroup, edits: &mut Vec<Ed
             ui.label(RichText::new(&group.name).strong());
             return;
         }
-        let mut name = group.name.clone();
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut name)
-                .id_salt((id_salt, "group_name", group.id))
-                .desired_width(ui.available_width() - 64.0),
-        );
-        if response.changed() {
-            edits.push(Edit::Rename(group.id, name));
-        }
-        let (label, tip) = if group.hidden {
-            ("Show", "Draw and export this group again")
-        } else {
-            ("Hide", "Neither draw nor export this group for now")
-        };
-        if ui.small_button(label).on_hover_text(tip).clicked() {
-            edits.push(Edit::SetHidden(group.id, !group.hidden));
-        }
-        if ui
-            .small_button("🗑")
-            .on_hover_text("Delete the group; its metrics stay selected")
-            .clicked()
-        {
-            edits.push(Edit::Remove(group.id));
-        }
+        // Buttons first from the right, so the name field takes only the width left over
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("🗑")
+                .on_hover_text("Delete the group; its metrics stay selected")
+                .clicked()
+            {
+                edits.push(Edit::Remove(group.id));
+            }
+            let (label, tip) = if group.hidden {
+                ("Show", "Draw and export this group again")
+            } else {
+                ("Hide", "Neither draw nor export this group for now")
+            };
+            if ui.small_button(label).on_hover_text(tip).clicked() {
+                edits.push(Edit::SetHidden(group.id, !group.hidden));
+            }
+            let mut name = group.name.clone();
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut name)
+                    .id_salt((id_salt, "group_name", group.id))
+                    .desired_width(ui.available_width()),
+            );
+            if response.changed() {
+                edits.push(Edit::Rename(group.id, name));
+            }
+        });
     });
 }
 

@@ -223,7 +223,7 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
 pub fn all_hidden(ui: &mut Ui) {
     ui.centered_and_justified(|ui| {
         ui.label(
-            RichText::new("All plot groups are hidden. Show one in the Groups tab.")
+            RichText::new("All plot groups are hidden. Show one in the View tab.")
                 .color(egui::Color32::GRAY),
         );
     });
@@ -233,7 +233,7 @@ fn empty_strip(ui: &mut Ui) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_min_size(egui::vec2(ui.available_width(), EMPTY_HEIGHT - 12.0));
         ui.centered_and_justified(|ui| {
-            ui.label(RichText::new("Empty group: add metrics in the Groups tab").weak());
+            ui.label(RichText::new("Empty group: add metrics in the View tab").weak());
         });
     });
 }

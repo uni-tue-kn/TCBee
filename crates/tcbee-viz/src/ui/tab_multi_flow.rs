@@ -42,7 +42,7 @@ pub struct TabMultiFlow {
     series_table_b: SeriesTable,
     /// Which metrics share a plot
     groups: PlotGroups,
-    /// Colours picked in the Groups tab
+    /// Colours picked in the View tab
     colors: SeriesColors,
     sidebar_tab: SidebarTab,
     remove_outliers: bool,
@@ -169,7 +169,7 @@ impl TabMultiFlow {
         sidebar_height: f32,
     ) {
         group_editor::tab_strip(ui, &mut self.sidebar_tab);
-        if self.sidebar_tab == SidebarTab::Groups {
+        if self.sidebar_tab == SidebarTab::View {
             let selected = self.selected_colors();
             if group_editor::show(
                 ui,
