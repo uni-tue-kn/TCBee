@@ -89,15 +89,16 @@ pub fn show(
         group_card(ui, id_salt, &card, selected, &targets, copying, &mut edits);
     }
 
-    // A new colour needs no new fit
-    changed |= edits.iter().any(|e| !matches!(e, Edit::SetColor(..)));
+    // Only plots whose series changed need a new fit: renaming, hiding or recolouring
+    // keeps the zoom
+    changed |= edits.iter().any(Edit::changes_series);
     for edit in edits {
         edit.apply(groups);
     }
     changed
 }
 
-/// A change to the groups, applied after drawing them.
+/// A change to the groups, applied after drawing them: the cards borrow the groups.
 enum Edit {
     Rename(u64, String),
     SetHidden(u64, bool),
@@ -116,6 +117,13 @@ struct DraggedMember {
 }
 
 impl Edit {
+    fn changes_series(&self) -> bool {
+        matches!(
+            self,
+            Edit::Remove(_) | Edit::RemoveMember(..) | Edit::MoveMember(..) | Edit::CopyMember(..)
+        )
+    }
+
     fn apply(self, groups: &mut PlotGroups) {
         match self {
             Edit::Rename(id, name) => groups.rename(id, name),
