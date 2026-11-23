@@ -43,6 +43,8 @@ pub struct TabSingleFlow {
     /// Colours picked in the View tab
     colors: SeriesColors,
     sidebar_tab: SidebarTab,
+    /// [`DbBackend::saved`] when the metric lists were read
+    catalog_saved: u64,
     /// The visible part of the plot, for the figure export
     view: export::View,
     /// The drawn plots, for the figure export
@@ -71,6 +73,7 @@ impl Default for TabSingleFlow {
             groups: PlotGroups::default(),
             colors: SeriesColors::default(),
             sidebar_tab: SidebarTab::default(),
+            catalog_saved: 0,
             view: export::View::default(),
             export_panels: Vec::new(),
             export_status: None,
@@ -105,6 +108,12 @@ impl TabSingleFlow {
                 ui.label("No database loaded. Go to Home and select a database file.");
             });
             return;
+        }
+        // The Process tab may have saved series since
+        if self.catalog_saved != db.saved() {
+            self.catalog_saved = db.saved();
+            self.state.refresh_catalog(db, settings);
+            self.flow_table.clear_stats_cache();
         }
         self.colors.apply(FlowSlot::Single, &mut self.state.series);
 

@@ -45,6 +45,8 @@ pub struct TabMultiFlow {
     /// Colours picked in the View tab
     colors: SeriesColors,
     sidebar_tab: SidebarTab,
+    /// [`DbBackend::saved`] when the metric lists were read
+    catalog_saved: u64,
     remove_outliers: bool,
     show_gaps: bool,
     /// The visible part of the plots, for the figure export
@@ -77,6 +79,7 @@ impl Default for TabMultiFlow {
             groups: PlotGroups::default(),
             colors: SeriesColors::default(),
             sidebar_tab: SidebarTab::default(),
+            catalog_saved: 0,
             remove_outliers: true,
             show_gaps: true,
             view: export::View::default(),
@@ -123,6 +126,14 @@ impl TabMultiFlow {
                 ui.label("No database loaded. Go to Home and select a database file.");
             });
             return;
+        }
+        // The Process tab may have saved series since
+        if self.catalog_saved != db.saved() {
+            self.catalog_saved = db.saved();
+            self.state_a.refresh_catalog(db, settings);
+            self.state_b.refresh_catalog(db, settings);
+            self.table_a.clear_stats_cache();
+            self.table_b.clear_stats_cache();
         }
 
         self.apply_colors();

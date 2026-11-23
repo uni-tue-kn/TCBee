@@ -79,6 +79,22 @@ impl PlotState {
         }
     }
 
+    /// Reads the flow's catalog again after series were saved to the file, and the data of
+    /// the plotted series, some of which may have been replaced. Selection and zoom stay.
+    pub fn refresh_catalog(&mut self, db: &DbBackend, settings: &AppSettings) {
+        let Some(flow_id) = self.flow_id else { return };
+        self.available_series = db.list_series_for_flow(flow_id);
+        // A replaced series keeps its id; its catalog row has the new counts and range
+        for sd in &mut self.series {
+            if let Some(info) = self.available_series.iter().find(|i| i.id == sd.series_id) {
+                let (y_min, y_max) = info.v_min.zip(info.v_max).unwrap_or((0.0, 1.0));
+                (sd.global_y_min, sd.global_y_max) = (y_min, y_max);
+                sd.info = Some(info.clone());
+            }
+        }
+        self.reload_visible_data(db, settings, None);
+    }
+
     /// Toggle a series on/off. Assigns a color when added.
     pub fn toggle_series(&mut self, db: &DbBackend, series_id: i64, settings: &AppSettings) {
         if self.selected_series_ids.contains(&series_id) {
