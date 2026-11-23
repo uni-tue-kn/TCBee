@@ -6,6 +6,7 @@
 - `tcbee-viz`: shades where events of a series are missing according to hook_seq, with the count on hover and a *Show gaps* toggle.
 - `tcbee-viz`: *Export figure…* previews the visible plot as a figure, lets you adjust its style, and saves it as PDF or PNG; the default style is set under *Settings → Figure export* (kept in `~/.config/tcbee/viz.toml`).
 - `tcbee-viz`: *Export data script…* saves a Python script that loads the plotted data and gaps with the tcbee package.
+- `tcbee-viz`: plot groups in the Single and Multi Flow tabs. A *Groups* tab next to *Selection* sets which metrics share a plot, by layout presets or by dragging metrics between groups; a metric can be in several groups, groups can be hidden, and each metric's colour can be picked. Figure export stacks the shown groups as plots on one time axis.
 - `ts-storage`: `Store::seq_gaps`; Python API: `Series.gaps()`.
 - All tools: `-V`/`--version`; `tcbee-live` and `tcbee-viz` print their help without starting (and `tcbee-live` without root).
 
@@ -16,6 +17,10 @@ Command line flags, without aliases for the old names:
 - `tcbee-live`: `--select-port P` (once per port) → `--ports P,Q`; unknown flags and bad ports are errors.
 - `tcbee-viz`: unknown flags and extra arguments are errors.
 - Python examples: `--dir` (send/recv) → `--direction`.
+- `tcbee-viz`: the *Split* and *Merge* checkboxes are replaced by the layouts of the *Groups* tab.
+
+### Fixed
+- `tcbee-viz`: a metric selected after deselecting another no longer takes the colour of a shown one.
 
 ## 2.0.0
 
