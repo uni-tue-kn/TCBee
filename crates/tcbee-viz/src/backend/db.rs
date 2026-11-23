@@ -1,6 +1,7 @@
 use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ts_storage::{
     ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, Gaps,
@@ -124,6 +125,8 @@ pub struct DbBackend {
     store: Option<Box<dyn Store>>,
     /// The open file
     path: Option<PathBuf>,
+    /// Differs for every opened file, also when the same path is opened again; 0 for none.
+    opened: u64,
     /// Flows never change while a file is open, so they are read once.
     flows: OnceCell<Vec<Flow>>,
     /// Same for connections and their flows.
@@ -146,11 +149,18 @@ pub struct DbBackend {
 impl DbBackend {
     pub fn open(path: PathBuf) -> Result<Self, OpenError> {
         let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e, &path))?;
+        static OPENED: AtomicU64 = AtomicU64::new(1);
         Ok(Self {
             store: Some(store),
             path: Some(path),
+            opened: OPENED.fetch_add(1, Ordering::Relaxed),
             ..Self::default()
         })
+    }
+
+    /// Tells this open file from every other one, and from a file opened again.
+    pub fn opened(&self) -> u64 {
+        self.opened
     }
 
     /// The open file.
@@ -885,6 +895,16 @@ mod tests {
             let mut derived = una.clone();
             derived.tbl = None;
             assert_eq!(db.seq_gaps(&derived), Gaps::Unavailable);
+        }
+    }
+
+    #[test]
+    fn opening_again_gives_a_new_open_number() {
+        for (engine, ext) in engines() {
+            let (dir, db) = fixture(engine, ext);
+            let again = DbBackend::open(dir.path().join(format!("t.{ext}"))).unwrap();
+            assert_ne!(db.opened(), again.opened());
+            assert_ne!(again.opened(), DbBackend::default().opened());
         }
     }
 
