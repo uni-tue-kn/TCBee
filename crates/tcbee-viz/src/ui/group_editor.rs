@@ -1,6 +1,6 @@
 //! The Groups tab of the flow tab sidebars: which selected metrics share a plot.
 
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, CursorIcon, DragAndDrop, RichText, Ui};
 
 use crate::{
     data::plot_groups::{series_name, PlotGroup, PlotGroups, Preset, SeriesKey, UNGROUPED},
@@ -47,9 +47,12 @@ pub fn show(
         }
     });
     ui.label(
-        RichText::new("Each group is one plot. Metrics in no group share the Ungrouped plot.")
-            .small()
-            .color(theme::muted_text(ui.visuals().dark_mode)),
+        RichText::new(
+            "Each group is one plot; metrics in no group share the Ungrouped plot. Drag a \
+             metric to move it, hold Ctrl (Cmd) while dropping to copy it.",
+        )
+        .small()
+        .color(theme::muted_text(ui.visuals().dark_mode)),
     );
     ui.add_space(8.0);
 
@@ -61,9 +64,18 @@ pub fn show(
         );
     }
 
+    let copying = ui.input(|i| i.modifiers.command);
+    if copying && DragAndDrop::has_payload_of_type::<DraggedMember>(ui.ctx()) {
+        ui.ctx().set_cursor_icon(CursorIcon::Copy);
+    }
+    let targets: Vec<(u64, String)> = groups
+        .groups()
+        .iter()
+        .map(|g| (g.id, g.name.clone()))
+        .collect();
     let mut edits = Vec::new();
     for group in groups.groups() {
-        group_card(ui, id_salt, group, selected, &mut edits);
+        group_card(ui, id_salt, group, selected, &targets, copying, &mut edits);
         ui.add_space(6.0);
     }
     let ungrouped = groups.ungrouped(&keys);
@@ -74,7 +86,7 @@ pub fn show(
             members: ungrouped,
             hidden: false,
         };
-        group_card(ui, id_salt, &card, selected, &mut edits);
+        group_card(ui, id_salt, &card, selected, &targets, copying, &mut edits);
     }
 
     changed |= !edits.is_empty();
@@ -90,6 +102,15 @@ enum Edit {
     SetHidden(u64, bool),
     Remove(u64),
     RemoveMember(SeriesKey, u64),
+    /// Key, from, to.
+    MoveMember(SeriesKey, u64, u64),
+    CopyMember(SeriesKey, u64),
+}
+
+/// What a dragged metric chip carries.
+struct DraggedMember {
+    key: SeriesKey,
+    from: u64,
 }
 
 impl Edit {
@@ -99,36 +120,98 @@ impl Edit {
             Edit::SetHidden(id, hidden) => groups.set_hidden(id, hidden),
             Edit::Remove(id) => groups.remove_group(id),
             Edit::RemoveMember(key, from) => groups.remove_member(&key, from),
+            Edit::MoveMember(key, from, to) => groups.move_member(&key, from, to),
+            Edit::CopyMember(key, to) => groups.copy_member(&key, to),
         }
     }
 }
 
+/// A group's card, a drop target for metric chips. `targets` are all groups as (id, name),
+/// `copying` whether a drop copies instead of moving.
+#[allow(clippy::too_many_arguments)]
 fn group_card(
     ui: &mut Ui,
     id_salt: &str,
     group: &PlotGroup,
     selected: &[(SeriesKey, Color32)],
+    targets: &[(u64, String)],
+    copying: bool,
     edits: &mut Vec<Edit>,
 ) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
+    let frame = egui::Frame::group(ui.style());
+    let (_, dropped) = ui.dnd_drop_zone::<DraggedMember, _>(frame, |ui| {
         ui.set_width(ui.available_width());
         card_header(ui, id_salt, group, edits);
         if group.members.is_empty() {
-            ui.label(RichText::new("No metrics").color(Color32::GRAY).italics());
+            ui.label(
+                RichText::new("Drop metrics here")
+                    .color(Color32::GRAY)
+                    .italics(),
+            );
         }
         for key in &group.members {
             let color = selected.iter().find(|(k, _)| k == key).map(|(_, c)| *c);
             ui.horizontal(|ui| {
-                member_chip(ui, key, color);
-                if group.id != UNGROUPED
-                    && ui
-                        .small_button("✖")
-                        .on_hover_text("Remove from this group")
-                        .clicked()
-                {
-                    edits.push(Edit::RemoveMember(key.clone(), group.id));
+                let id = egui::Id::new((id_salt, "member", group.id, key));
+                let payload = DraggedMember {
+                    key: key.clone(),
+                    from: group.id,
+                };
+                ui.dnd_drag_source(id, payload, |ui| member_chip(ui, key, color))
+                    .response
+                    .on_hover_cursor(CursorIcon::Grab);
+                member_menu(ui, key, group.id, targets, edits);
+            });
+        }
+    });
+    if let Some(dropped) = dropped {
+        let key = dropped.key.clone();
+        let edit = if copying && group.id != UNGROUPED {
+            Edit::CopyMember(key, group.id)
+        } else {
+            Edit::MoveMember(key, dropped.from, group.id)
+        };
+        edits.push(edit);
+    }
+}
+
+/// Moving, copying and removing a metric without dragging.
+fn member_menu(
+    ui: &mut Ui,
+    key: &SeriesKey,
+    from: u64,
+    targets: &[(u64, String)],
+    edits: &mut Vec<Edit>,
+) {
+    ui.menu_button("☰", |ui| {
+        let others: Vec<&(u64, String)> = targets.iter().filter(|(id, _)| *id != from).collect();
+        ui.add_enabled_ui(!others.is_empty() || from != UNGROUPED, |ui| {
+            ui.menu_button("Move to", |ui| {
+                for (id, name) in &others {
+                    if ui.button(name).clicked() {
+                        edits.push(Edit::MoveMember(key.clone(), from, *id));
+                        ui.close_menu();
+                    }
+                }
+                if from != UNGROUPED && ui.button("Ungrouped").clicked() {
+                    edits.push(Edit::MoveMember(key.clone(), from, UNGROUPED));
+                    ui.close_menu();
                 }
             });
+        });
+        ui.add_enabled_ui(!others.is_empty(), |ui| {
+            ui.menu_button("Copy to", |ui| {
+                for (id, name) in &others {
+                    if ui.button(name).clicked() {
+                        edits.push(Edit::CopyMember(key.clone(), *id));
+                        ui.close_menu();
+                    }
+                }
+            });
+        });
+        if from != UNGROUPED && ui.button("Remove from group").clicked() {
+            edits.push(Edit::RemoveMember(key.clone(), from));
+            ui.close_menu();
         }
     });
 }
