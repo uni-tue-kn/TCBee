@@ -161,6 +161,96 @@ fn small_fixture_summary_counts_records_and_rows() {
     }
 }
 
+/// The `summary.*` meta rows agree with the run's counts and with what the store reads back.
+#[test]
+fn small_fixture_summary_meta_matches_the_store() {
+    for (engine, ext) in engines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (out, summary) = process(engine, ext, tmp.path(), &fixture("tcbee_small"), None);
+        let store = ts_storage::open(&out).unwrap();
+        let meta: BTreeMap<String, String> = store.meta().unwrap().into_iter().collect();
+        let num = |k: &str| -> i64 { meta[k].parse().unwrap_or_else(|e| panic!("{k}: {e}")) };
+
+        assert_eq!(num("summary.events"), summary.rows as i64);
+        assert_eq!(num("summary.records"), summary.records as i64);
+        assert_eq!(
+            num("summary.records"),
+            num("summary.events") + num("summary.discarded")
+        );
+        let by_table: i64 = meta
+            .iter()
+            .filter(|(k, _)| k.starts_with("summary.events_by_table."))
+            .map(|(_, v)| v.parse::<i64>().unwrap())
+            .sum();
+        assert_eq!(by_table, num("summary.events"));
+        for (table, n) in &summary.rows_by_table {
+            assert_eq!(num(&format!("summary.events_by_table.{table}")), *n as i64);
+        }
+
+        let flows = store.flows().unwrap();
+        assert_eq!(num("summary.flows"), flows.len() as i64);
+        assert!(num("summary.flows") > 0);
+        assert_eq!(num("summary.connections"), summary.connections as i64);
+        assert_eq!(num("summary.owners"), summary.owners as i64);
+        assert_eq!(num("summary.series"), summary.series as i64);
+
+        let series: Vec<_> = flows
+            .iter()
+            .flat_map(|f| store.series(f.id).unwrap())
+            .collect();
+        let first = series.iter().filter_map(|s| s.t_min).min().unwrap();
+        let last = series.iter().filter_map(|s| s.t_max).max().unwrap();
+        assert_eq!(num("summary.span.first_ns"), first);
+        assert_eq!(num("summary.span.last_ns"), last);
+        assert_eq!(num("summary.span.duration_ns"), last - first);
+        // No recorder metadata, no wall clock
+        assert!(!meta.keys().any(|k| k.ends_with("_utc")));
+    }
+}
+
+/// With the recorder's clock samples the summary has the wall-clock times as well.
+#[test]
+fn summary_meta_has_wall_clock_with_run_metadata() {
+    for (engine, ext) in engines() {
+        let dir = tempfile::tempdir().unwrap();
+        // Records at 1000..=1001 ns
+        let trace = write_tcp4_trace(dir.path(), "tcbee_clock", "tcp4_send.tcp", 6, &[]);
+        fs::write(
+            trace.join(tcbee_trace::METADATA_FILE),
+            r#"{"format":1,
+                "start":{"clock":{"monotonic_ns":900,"realtime_minus_monotonic_ns":1790000000000000000}},
+                "stop":{"clock":{"monotonic_ns":3000000900,"realtime_minus_monotonic_ns":1790000000000000000}}}"#,
+        )
+        .unwrap();
+        let (out, _) = process(engine, ext, dir.path(), &trace, None);
+        let meta: BTreeMap<String, String> = ts_storage::open(&out)
+            .unwrap()
+            .meta()
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(meta["summary.span.first_ns"], "1000");
+        assert_eq!(meta["summary.span.last_ns"], "1001");
+        assert_eq!(
+            meta["summary.span.first_utc"],
+            "2026-09-21T14:13:20.000001000Z"
+        );
+        assert_eq!(
+            meta["summary.span.last_utc"],
+            "2026-09-21T14:13:20.000001001Z"
+        );
+        assert_eq!(
+            meta["summary.recorder.start_utc"],
+            "2026-09-21T14:13:20.000000900Z"
+        );
+        assert_eq!(
+            meta["summary.recorder.stop_utc"],
+            "2026-09-21T14:13:23.000000900Z"
+        );
+        assert_eq!(meta["summary.recorder.duration_ns"], "3000000000");
+    }
+}
+
 #[test]
 fn small_fixture_series_cover_every_record() {
     for (engine, ext) in engines() {

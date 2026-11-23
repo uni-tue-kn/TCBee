@@ -21,7 +21,7 @@ Only completed schema-v3 files are supported. Missing paths are never created.
 | `tcbee.open(path)` | Context-managed `Database`; accepts a string or path-like object |
 | `db.path` | Resolved `pathlib.Path` |
 | `db.engine` | `"sqlite"` or `"duckdb"` |
-| `db.metadata` | `dict[str, str]` from `meta`, including available `run.*` metadata |
+| `db.metadata` | `dict[str, str]` from `meta`, including the `summary.*` recording summary (time span, events, flows, ...; see the [meta keys](../crates/ts-storage/README.md#database-layout-schema-version-3)) and available `run.*` metadata |
 | `db.tables` | Frozen set of table names, useful for detecting optional metadata |
 | `db.flows()` | Lazy, immutable `FlowQuery` |
 | `db.flow(id)` | One `Flow`, or `NotFound` |

@@ -9,6 +9,7 @@
 - `tcbee-viz`: plot groups in the Single and Multi Flow tabs. In the new *View* sidebar tab, metrics are dragged between groups, each drawn as one plot; a metric can be in several groups, groups can be hidden, and metric colours can be picked.
 - `tcbee-viz`: figure export stacks the shown plot groups on one time axis.
 - `ts-storage`: `Store::seq_gaps`; Python API: `Series.gaps()`.
+- `tcbee-process`: stores a recording summary as `summary.*` meta rows: first and last event (also in UTC with `--metadata`), recorder start and stop, events in total and per table, discarded records, flows, connections, owners and series. `tcbee-viz` shows it in the Overview tab.
 - All tools: `-V`/`--version`; `tcbee-live` and `tcbee-viz` print their help without starting (and `tcbee-live` without root).
 
 ### Changed

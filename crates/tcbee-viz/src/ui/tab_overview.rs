@@ -1,6 +1,7 @@
-//! Overview of the open database: what wrote it and, for recordings made with
-//! `tcbee-record --metadata`, the run metadata from the `run.*` meta rows: host, kernel, probes,
-//! clocks, sysctls, interfaces and the counters at start and stop.
+//! Overview of the open database: what wrote it, the recording summary of tcbee-process
+//! (`summary.*` meta rows) and, for recordings made with `tcbee-record --metadata`, the run
+//! metadata from the `run.*` meta rows: host, kernel, probes, clocks, sysctls, interfaces and
+//! the counters at start and stop.
 
 use std::collections::BTreeMap;
 
@@ -37,10 +38,19 @@ pub struct Table {
     pub rows: Vec<Vec<String>>,
 }
 
+/// The `summary.*` rows of tcbee-process
+#[derive(Debug, PartialEq)]
+pub struct RecordingSummary {
+    pub rows: Vec<(String, String)>,
+    pub events_by_table: Table,
+}
+
 /// Everything the tab shows, built from the meta rows
 #[derive(Debug, PartialEq, Default)]
 pub struct Overview {
     pub file: Vec<(String, String)>,
+    /// None for databases written before tcbee-process stored a summary
+    pub summary: Option<RecordingSummary>,
     pub has_metadata: bool,
     /// Set when the metadata has a layout this version does not know; rows may be missing
     pub unknown_format: Option<String>,
@@ -144,6 +154,110 @@ fn format_utc(ns: i64) -> String {
         day_secs / 60 % 60,
         day_secs % 60
     )
+}
+
+/// Seconds with millisecond precision of a nanosecond count
+fn seconds(ns: i64) -> String {
+    format!("{:.3} s", ns as f64 / 1e9)
+}
+
+/// A summary timestamp (`YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ`) to microseconds, as the clock
+/// section shows times
+fn readable_utc(iso: &str) -> String {
+    match iso.strip_suffix('Z').and_then(|t| t.split_once('T')) {
+        Some((date, time)) => format!("{date} {} UTC", time.get(..15).unwrap_or(time)),
+        None => iso.to_string(),
+    }
+}
+
+/// The `summary.*` rows, None if there are none (databases from before the summary)
+fn recording_summary(meta: &[(String, String)], run: &RunMeta) -> Option<RecordingSummary> {
+    let rows: BTreeMap<&str, &str> = meta
+        .iter()
+        .filter_map(|(k, v)| Some((k.strip_prefix("summary.")?, v.as_str())))
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    let get = |key: &str| rows.get(key).copied();
+    let int = |key: &str| get(key)?.parse::<i64>().ok();
+    let mut out = Vec::new();
+    match (get("span.first_utc"), get("span.last_utc")) {
+        (Some(first), Some(last)) => {
+            push(&mut out, "First event", Some(readable_utc(first)));
+            push(&mut out, "Last event", Some(readable_utc(last)));
+        }
+        _ => {
+            let since_boot = |ns: i64| format!("{} after boot (no wall clock)", seconds(ns));
+            push(
+                &mut out,
+                "First event",
+                int("span.first_ns").map(since_boot),
+            );
+            push(&mut out, "Last event", int("span.last_ns").map(since_boot));
+        }
+    }
+    let span = int("span.duration_ns");
+    push(&mut out, "Event span", span.map(seconds));
+    push(
+        &mut out,
+        "Recorder start",
+        get("recorder.start_utc").map(readable_utc),
+    );
+    push(
+        &mut out,
+        "Recorder stop",
+        get("recorder.stop_utc").map(readable_utc),
+    );
+    push(
+        &mut out,
+        "Recorder running",
+        int("recorder.duration_ns").map(seconds),
+    );
+    let events = int("events");
+    push(&mut out, "Events", events.map(|n| n.to_string()));
+    if let (Some(events), Some(span)) = (events, span.filter(|s| *s > 0)) {
+        let rate = events as f64 / (span as f64 / 1e9);
+        out.push(("Event rate".to_string(), format!("{rate:.0} events/s")));
+    }
+    push(
+        &mut out,
+        "Discarded records",
+        get("discarded").map(str::to_string),
+    );
+    let dropped: Vec<i64> = (0..run.len("stop.tcbee"))
+        .filter_map(|i| run.int(&format!("stop.tcbee.{i}.dropped")))
+        .collect();
+    if !dropped.is_empty() {
+        out.push((
+            "Ring buffer drops".to_string(),
+            dropped.iter().sum::<i64>().to_string(),
+        ));
+    }
+    for (label, key) in [
+        ("Flows", "flows"),
+        ("Connections", "connections"),
+        ("Flow owners", "owners"),
+        ("Series", "series"),
+    ] {
+        push(&mut out, label, get(key).map(str::to_string));
+    }
+    let events_by_table = Table {
+        header: vec!["Table", "Events"],
+        rows: rows
+            .iter()
+            .filter_map(|(k, v)| {
+                Some(vec![
+                    k.strip_prefix("events_by_table.")?.to_string(),
+                    v.to_string(),
+                ])
+            })
+            .collect(),
+    };
+    Some(RecordingSummary {
+        rows: out,
+        events_by_table,
+    })
 }
 
 /// Rows of the host section: label and key below `run.`
@@ -369,9 +483,11 @@ impl Overview {
             })
             .collect();
         let m = RunMeta::new(meta);
+        let summary = recording_summary(meta, &m);
         if m.rows.is_empty() {
             return Self {
                 file,
+                summary,
                 ..Self::default()
             };
         }
@@ -382,6 +498,7 @@ impl Overview {
             .collect();
         Self {
             file,
+            summary,
             has_metadata: true,
             unknown_format: m
                 .get("format")
@@ -441,6 +558,22 @@ impl TabOverview {
                         ui.heading("Database");
                         key_value_grid(ui, "overview_file", &overview.file);
                         ui.add_space(12.0);
+                        if let Some(summary) = &overview.summary {
+                            ui.heading("Summary");
+                            key_value_grid(ui, "overview_summary", &summary.rows);
+                            if !summary.events_by_table.rows.is_empty() {
+                                CollapsingHeader::new(RichText::new("Events per table").strong())
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        table_grid(
+                                            ui,
+                                            "overview_events_by_table",
+                                            &summary.events_by_table,
+                                        )
+                                    });
+                            }
+                            ui.add_space(12.0);
+                        }
                         if !overview.has_metadata {
                             ui.label(RichText::new(NO_METADATA_HINT).color(muted));
                             return;
@@ -672,6 +805,79 @@ mod tests {
             vec![vec!["TCP_SEND_SOCK_EVENTS", "10", "9", "1", "0"]]
         );
         assert_eq!(o.all.len(), 34);
+    }
+
+    fn summary_value(o: &Overview, key: &str) -> Option<String> {
+        o.summary
+            .as_ref()?
+            .rows
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn database_without_summary_has_no_summary_section() {
+        let o = Overview::new(&meta(&[("schema_version", "3"), ("run.format", "1")]));
+        assert_eq!(o.summary, None);
+    }
+
+    #[test]
+    fn summary_without_run_metadata_has_no_wall_clock() {
+        let o = Overview::new(&meta(&[
+            ("summary.events", "300"),
+            ("summary.events_by_table.sock", "200"),
+            ("summary.events_by_table.tcp4", "100"),
+            ("summary.discarded", "0"),
+            ("summary.flows", "4"),
+            ("summary.span.first_ns", "1500000000"),
+            ("summary.span.last_ns", "3500000000"),
+            ("summary.span.duration_ns", "2000000000"),
+        ]));
+        assert!(!o.has_metadata);
+        assert_eq!(
+            summary_value(&o, "First event").unwrap(),
+            "1.500 s after boot (no wall clock)"
+        );
+        assert_eq!(summary_value(&o, "Event span").unwrap(), "2.000 s");
+        assert_eq!(summary_value(&o, "Event rate").unwrap(), "150 events/s");
+        assert_eq!(summary_value(&o, "Flows").unwrap(), "4");
+        assert_eq!(summary_value(&o, "Recorder start"), None);
+        assert_eq!(summary_value(&o, "Ring buffer drops"), None);
+        assert_eq!(
+            o.summary.unwrap().events_by_table.rows,
+            vec![vec!["sock", "200"], vec!["tcp4", "100"]]
+        );
+    }
+
+    #[test]
+    fn summary_with_wall_clock_and_ring_buffer_drops() {
+        let o = Overview::new(&meta(&[
+            ("summary.events", "0"),
+            ("summary.span.first_utc", "2026-09-21T14:13:20.000001234Z"),
+            ("summary.span.last_utc", "2026-09-21T14:13:21.500000000Z"),
+            (
+                "summary.recorder.start_utc",
+                "2026-09-21T14:13:19.000000000Z",
+            ),
+            ("summary.recorder.duration_ns", "3000000000"),
+            ("run.format", "1"),
+            ("run.stop.tcbee.0.dropped", "2"),
+            ("run.stop.tcbee.1.dropped", "5"),
+        ]));
+        assert!(o.has_metadata);
+        assert_eq!(
+            summary_value(&o, "First event").unwrap(),
+            "2026-09-21 14:13:20.000001 UTC"
+        );
+        assert_eq!(
+            summary_value(&o, "Recorder start").unwrap(),
+            "2026-09-21 14:13:19.000000 UTC"
+        );
+        assert_eq!(summary_value(&o, "Recorder running").unwrap(), "3.000 s");
+        assert_eq!(summary_value(&o, "Ring buffer drops").unwrap(), "7");
+        // No events: no span, no rate
+        assert_eq!(summary_value(&o, "Event rate"), None);
     }
 
     #[test]
