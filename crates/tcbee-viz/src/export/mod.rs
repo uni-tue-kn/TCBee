@@ -136,12 +136,24 @@ pub fn collect(
 ) -> Figure {
     let (t0, t1) = x_range;
     let secs = |t: f64| (t - origin) / 1e9;
+    // Palette positions count the plotted series in order, each once, as the data script
+    let mut plotted: Vec<String> = Vec::new();
     let panels = panel_series(sources, panels)
         .into_iter()
         .zip(panels.iter().map(|p| p.y).chain(std::iter::repeat(view.y)))
         // A plot of only plugin outputs has nothing to export
         .filter(|(series, _)| !series.is_empty())
-        .map(|(series, y)| collect_panel(db, &series, (t0, t1), y, view, columns, &secs))
+        .map(|(series, y)| {
+            collect_panel(
+                db,
+                &series,
+                (t0, t1),
+                y,
+                (view, columns),
+                &secs,
+                &mut plotted,
+            )
+        })
         .collect();
     Figure {
         x_label: "Time (s)".into(),
@@ -155,9 +167,9 @@ fn collect_panel(
     exported: &[(&str, &SeriesData, &SeriesInfo)],
     (t0, t1): (f64, f64),
     y: Option<(f64, f64)>,
-    view: View,
-    columns: usize,
+    (view, columns): (View, usize),
     secs: &dyn Fn(f64) -> f64,
+    plotted: &mut Vec<String>,
 ) -> Panel {
     let mut series = Vec::new();
     let mut names = Vec::new();
@@ -186,8 +198,14 @@ fn collect_panel(
         };
         names.push(info.name.clone());
         flows.push(format!("flow {}", info.flow_id));
+        let label = format!("{prefix}{}", sd.name);
+        let palette = plotted.iter().position(|l| *l == label).unwrap_or_else(|| {
+            plotted.push(label.clone());
+            plotted.len() - 1
+        });
         series.push(FigureSeries {
-            label: format!("{prefix}{}", sd.name),
+            label,
+            palette,
             color: crate::plot_style::to_hex(sd.color),
             points: points.into_iter().map(|(t, v)| (secs(t), v)).collect(),
             gaps,
@@ -401,9 +419,7 @@ pub fn run(
         )));
     }
     let Some(x) = view.x else {
-        return Some(Outcome::Saved(
-            Err("the plot has not been drawn yet".into()),
-        ));
+        return Some(Outcome::Saved(Err("the plot has not been drawn yet".into())));
     };
     let status = match request {
         Request::Figure => {
@@ -549,6 +565,7 @@ mod tests {
                     points: vec![(0.0, 1.0), (1.0, 8.0), (2.0, 4.0)],
                     gaps: Some(vec![(0.5, 0.6)]),
                     step: false,
+                    palette: 0,
                 }],
             }],
         }

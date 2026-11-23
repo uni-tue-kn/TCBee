@@ -16,6 +16,9 @@ pub struct FigureSeries {
     pub gaps: Option<Vec<(f64, f64)>>,
     /// Drawn as steps (on-change series) rather than straight segments
     pub step: bool,
+    /// Position in the style's palette: one per plotted series, the same in every panel
+    /// and in the data script
+    pub palette: usize,
 }
 
 /// One plot of a figure, with its own y axis and legend.
@@ -58,6 +61,7 @@ impl Figure {
                         points: saw(2.5, 100.0),
                         gaps: Some(vec![(4.0, 4.6)]),
                         step: false,
+                        palette: 0,
                     },
                     FigureSeries {
                         label: "flow 2".into(),
@@ -65,6 +69,7 @@ impl Figure {
                         points: saw(3.3, 70.0),
                         gaps: None,
                         step: false,
+                        palette: 1,
                     },
                 ],
             }],
@@ -210,13 +215,12 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     );
     let _ = write!(s, r#"<rect width="{w}" height="{h}" fill="white"/>"#);
     let last = fig.panels.len().saturating_sub(1);
-    let palette = palette_indices(fig);
-    for (i, (panel, palette)) in fig.panels.iter().zip(&palette).enumerate() {
+    for (i, panel) in fig.panels.iter().enumerate() {
         let x_label = (i == last).then_some(fig.x_label.as_str());
         let top = panel_h * i as f64;
         panel_svg(
             &mut s,
-            (i, palette),
+            i,
             panel,
             (top, top + panel_h),
             x_label,
@@ -234,7 +238,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
 #[allow(clippy::too_many_arguments)]
 fn panel_svg(
     s: &mut String,
-    (index, palette): (usize, &[usize]),
+    index: usize,
     panel: &Panel,
     (top, bottom): (f64, f64),
     x_label: Option<&str>,
@@ -306,9 +310,9 @@ fn panel_svg(
     let _ = write!(s, r#"<g clip-path="url(#{area})">"#);
     if style.show_gaps {
         let _ = write!(s, r#"<g fill-opacity="{}">"#, style.gap_opacity);
-        for (i, f) in panel.series.iter().enumerate() {
+        for f in &panel.series {
             let color = if style.gaps_in_series_color {
-                line_color(style, palette[i], f)
+                line_color(style, f)
             } else {
                 &style.gap_color
             };
@@ -327,7 +331,7 @@ fn panel_svg(
         }
         s.push_str("</g>");
     }
-    for (i, f) in panel.series.iter().enumerate() {
+    for f in &panel.series {
         let mut d = String::new();
         let mut prev: Option<(f64, f64)> = None;
         for &(x, y) in &f.points {
@@ -348,7 +352,7 @@ fn panel_svg(
         let _ = write!(
             s,
             r#"<path d="{d}" fill="none" stroke="{}" stroke-width="{lw}" stroke-linejoin="round" stroke-linecap="round"/>"#,
-            escape(line_color(style, palette[i], f))
+            escape(line_color(style, f))
         );
     }
     s.push_str("</g>");
@@ -414,37 +418,16 @@ fn panel_svg(
         );
     }
     match above {
-        Some(rows) => legend_above(s, (panel, palette), &labels, &rows, style, (pl, top)),
-        None => legend(s, (panel, palette), &labels, style, (pl, pr, pt, pb)),
+        Some(rows) => legend_above(s, panel, &labels, &rows, style, (pl, top)),
+        None => legend(s, panel, &labels, style, (pl, pr, pt, pb)),
     }
 }
 
-/// The palette index of each series of each panel: series of the same label share one, the
-/// others count up in order of appearance, as in the data script.
-fn palette_indices(fig: &Figure) -> Vec<Vec<usize>> {
-    let mut seen: Vec<&str> = Vec::new();
-    fig.panels
-        .iter()
-        .map(|p| {
-            p.series
-                .iter()
-                .map(|f| match seen.iter().position(|l| *l == f.label) {
-                    Some(i) => i,
-                    None => {
-                        seen.push(&f.label);
-                        seen.len() - 1
-                    }
-                })
-                .collect()
-        })
-        .collect()
-}
-
-/// The colour of the `i`-th series `f`: its colour in the viewer, or the style's palette if
-/// the style asks for it.
-pub fn line_color<'a>(style: &'a PlotStyle, i: usize, f: &'a FigureSeries) -> &'a str {
+/// The colour of the series `f`: its colour in the viewer, or the style's palette if the
+/// style asks for it.
+pub fn line_color<'a>(style: &'a PlotStyle, f: &'a FigureSeries) -> &'a str {
     if style.use_palette {
-        style.palette_color(i)
+        style.palette_color(f.palette)
     } else {
         &f.color
     }
@@ -513,29 +496,23 @@ fn legend_entry(s: &mut String, (x, cy): (f64, f64), color: &str, label: &str, s
 /// The legend in rows above the plot area, which starts at `pl`, in a panel from `top`.
 fn legend_above(
     s: &mut String,
-    (panel, palette): (&Panel, &[usize]),
+    panel: &Panel,
     labels: &[String],
     rows: &[(f64, usize)],
     style: &PlotStyle,
     (pl, top): (f64, f64),
 ) {
     let fs = f64::from(style.font_size_pt);
-    for (i, ((label, f), (x, row))) in labels.iter().zip(&panel.series).zip(rows).enumerate() {
+    for ((label, f), (x, row)) in labels.iter().zip(&panel.series).zip(rows) {
         let cy = top + fs * 0.6 + fs * LEGEND_ROW * (*row as f64 + 0.5);
-        legend_entry(
-            s,
-            (pl + x, cy),
-            line_color(style, palette[i], f),
-            label,
-            style,
-        );
+        legend_entry(s, (pl + x, cy), line_color(style, f), label, style);
     }
 }
 
 /// The legend in a box inside a corner of the plot area.
 fn legend(
     s: &mut String,
-    (panel, palette): (&Panel, &[usize]),
+    panel: &Panel,
     labels: &[String],
     style: &PlotStyle,
     (pl, pr, pt, pb): (f64, f64, f64, f64),
@@ -565,13 +542,7 @@ fn legend(
     );
     for (i, (label, f)) in labels.iter().zip(&panel.series).enumerate() {
         let cy = by + fs * 0.2 + row * (i as f64 + 0.5);
-        legend_entry(
-            s,
-            (bx + fs * 0.4, cy),
-            line_color(style, palette[i], f),
-            label,
-            style,
-        );
+        legend_entry(s, (bx + fs * 0.4, cy), line_color(style, f), label, style);
     }
 }
 
@@ -630,6 +601,7 @@ mod tests {
                 points: vec![(0.0, 1.0), (1.0, 9.0)],
                 gaps: Some(vec![(0.4, 0.5)]),
                 step: false,
+                palette: 0,
             }],
         };
         let fig = Figure {
@@ -694,9 +666,5 @@ mod tests {
         assert_eq!(s2.matches("Time (s)").count(), 1);
         assert!(s2.contains(r#"clipPath id="area""#) && s2.contains(r#"clipPath id="area1""#));
         assert!(s2.contains(">rtt<") && s2.contains(">snd_cwnd<"));
-        // The same series share a palette colour, others count on across panels
-        let mut three = two.clone();
-        three.panels[1].series[1].label = "flow 3".into();
-        assert_eq!(palette_indices(&three), vec![vec![0, 1], vec![0, 2]]);
     }
 }
