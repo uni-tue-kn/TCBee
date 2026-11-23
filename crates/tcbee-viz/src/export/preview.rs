@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use super::{collect, figure::Figure, not_exported, write, Format, Sources, Status, View};
+use super::{
+    collect, figure::Figure, not_exported, write, ExportPanel, Format, Sources, Status, View,
+};
 use crate::{backend::db::DbBackend, plot_style::PlotStyle, ui::style_editor};
 
 /// Width on screen of one inch of the figure, in points.
@@ -13,10 +15,16 @@ const MAX_WIDTH: f32 = 800.0;
 /// Time slices of the previewed data, enough for the widest preview on a HiDPI screen
 const PREVIEW_COLUMNS: usize = 1600;
 
-/// The series of `sources` in plot order, to tell when the plot changed.
-fn series_ids(sources: &Sources) -> Vec<(i64, String)> {
-    super::exported(sources)
-        .map(|(prefix, sd, info)| (info.flow_id, format!("{prefix}{}", sd.name)))
+/// The series of each panel in plot order, to tell when the plots changed.
+fn series_ids(sources: &Sources, panels: &[ExportPanel]) -> Vec<Vec<(i64, String)>> {
+    super::panel_series(sources, panels)
+        .into_iter()
+        .map(|panel| {
+            panel
+                .into_iter()
+                .map(|(prefix, sd, info)| (info.flow_id, format!("{prefix}{}", sd.name)))
+                .collect()
+        })
         .collect()
 }
 
@@ -24,7 +32,9 @@ pub struct Preview {
     /// The data at preview resolution; saving reads it again at the file's
     figure: Figure,
     /// The series of `figure`, to notice when the tab plots others
-    series: Vec<(i64, String)>,
+    series: Vec<Vec<(i64, String)>>,
+    /// The plots of the figure, read again when saving
+    panels: Vec<ExportPanel>,
     origin: f64,
     x_range: (f64, f64),
     view: View,
@@ -214,17 +224,24 @@ pub enum Action {
 impl Preview {
     pub fn new(
         db: &DbBackend,
-        sources: &Sources,
+        (sources, panels): (&Sources, &[ExportPanel]),
         origin: f64,
         (x_range, view): ((f64, f64), View),
         style: &PlotStyle,
         file_stem: &str,
     ) -> Preview {
-        let figure = collect(db, sources, origin, (x_range, view), PREVIEW_COLUMNS);
+        let figure = collect(
+            db,
+            (sources, panels),
+            origin,
+            (x_range, view),
+            PREVIEW_COLUMNS,
+        );
         Preview {
             texts: Texts::of(&figure),
             figure,
-            series: series_ids(sources),
+            series: series_ids(sources, panels),
+            panels: panels.to_vec(),
             origin,
             x_range,
             view,
@@ -236,9 +253,10 @@ impl Preview {
         }
     }
 
-    /// Whether `sources` still plot the series of the figure.
-    pub fn shows(&self, sources: &Sources) -> bool {
-        self.series == series_ids(sources)
+    /// Whether `panels` of `sources` still plot the series of the figure. A plot zoomed in y
+    /// keeps the figure as it was opened.
+    pub fn shows(&self, sources: &Sources, panels: &[ExportPanel]) -> bool {
+        self.series == series_ids(sources, panels)
     }
 
     /// The window; `sources` are the tab's plotted flows, read again when saving.
@@ -347,7 +365,7 @@ impl Preview {
         };
         let mut fig = collect(
             db,
-            sources,
+            (sources, &self.panels),
             self.origin,
             (self.x_range, self.view),
             format.columns(&self.draft),

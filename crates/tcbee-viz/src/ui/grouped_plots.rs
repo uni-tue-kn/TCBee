@@ -106,6 +106,33 @@ impl Outcome {
     }
 }
 
+/// The drawn plots as export panels: each group's series by flow index and series id, and the
+/// y range the plot shows. Hidden and empty groups are left out, as on screen.
+pub fn export_panels(
+    groups: &[ResolvedGroup],
+    flows: &[Flow],
+    outcome: &Outcome,
+) -> Vec<export::ExportPanel> {
+    outcome
+        .views
+        .iter()
+        .filter_map(|(id, view)| {
+            let group = groups.iter().find(|g| g.id == *id)?;
+            let series = group
+                .members
+                .iter()
+                .filter_map(|key| {
+                    flows
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, f)| f.series(key).map(|s| (i, s.series_id)))
+                })
+                .collect();
+            Some(export::ExportPanel { series, y: view.y })
+        })
+        .collect()
+}
+
 /// A series as drawn in one plot.
 struct Drawn<'a> {
     series: &'a SeriesData,

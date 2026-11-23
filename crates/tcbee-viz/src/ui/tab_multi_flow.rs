@@ -46,6 +46,8 @@ pub struct TabMultiFlow {
     show_gaps: bool,
     /// The visible part of the plots, for the figure export
     view: export::View,
+    /// The drawn plots, for the figure export
+    export_panels: Vec<export::ExportPanel>,
     export_status: export::Status,
     /// The open export window
     preview: Option<export::Preview>,
@@ -74,6 +76,7 @@ impl Default for TabMultiFlow {
             remove_outliers: true,
             show_gaps: true,
             view: export::View::default(),
+            export_panels: Vec::new(),
             export_status: None,
             preview: None,
             script: None,
@@ -250,7 +253,10 @@ impl TabMultiFlow {
             ui.ctx(),
             &mut self.preview,
             db,
-            &[(&self.state_a, "A:"), (&self.state_b, "B:")],
+            (
+                &[(&self.state_a, "A:"), (&self.state_b, "B:")],
+                &self.export_panels,
+            ),
         ) {
             self.export_status = Some(status);
         }
@@ -287,7 +293,10 @@ impl TabMultiFlow {
         match export::run(
             request,
             db,
-            &[(&self.state_a, "A:"), (&self.state_b, "B:")],
+            (
+                &[(&self.state_a, "A:"), (&self.state_b, "B:")],
+                &self.export_panels,
+            ),
             merged_x_origin(&self.state_a, &self.state_b),
             view,
             style,
@@ -351,13 +360,11 @@ impl TabMultiFlow {
         let outcome = grouped_plots::show(ui, &groups, &flows, &plot_settings);
 
         let plot_width = ui.available_width().max(1.0);
+        self.export_panels = grouped_plots::export_panels(&groups, &flows, &outcome);
         self.view = export::View {
             x: outcome.x(),
-            // The figure keeps the y range of a single plot and fits its own otherwise
-            y: match outcome.views.as_slice() {
-                [(_, view)] => view.y,
-                _ => None,
-            },
+            // Each panel has its own
+            y: None,
             remove_outliers: self.remove_outliers,
         };
         if outcome.right_clicked {

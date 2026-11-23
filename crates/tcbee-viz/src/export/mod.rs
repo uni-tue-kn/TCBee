@@ -54,6 +54,40 @@ impl Format {
 /// The plotted flows of a tab: each with the prefix of its legend labels.
 pub type Sources<'a> = [(&'a PlotState, &'a str)];
 
+/// One plot as shown in a tab: its series as (index into the sources, series id), in legend
+/// order, and its visible y range.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExportPanel {
+    pub series: Vec<(usize, i64)>,
+    pub y: Option<(f64, f64)>,
+}
+
+/// The exported series of each of `panels`, with their legend prefix: as [`exported`], but
+/// only those in the panel. No panels means one with every exported series.
+fn panel_series<'a>(
+    sources: &'a Sources<'a>,
+    panels: &[ExportPanel],
+) -> Vec<Vec<(&'a str, &'a SeriesData, &'a SeriesInfo)>> {
+    if panels.is_empty() {
+        return vec![exported(sources).collect()];
+    }
+    panels
+        .iter()
+        .map(|panel| {
+            panel
+                .series
+                .iter()
+                .filter_map(|&(source, id)| {
+                    let (state, prefix) = sources.get(source)?;
+                    let sd = state.series.iter().find(|s| s.series_id == id)?;
+                    let info = sd.info.as_ref().filter(|_| !sd.is_string_type())?;
+                    Some((*prefix, sd, info))
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// The exported series of `sources` in plot order, with their legend prefix: the numeric
 /// series of the database.
 fn exported<'a>(
@@ -89,22 +123,46 @@ fn not_exported(sources: &Sources) -> Vec<String> {
         .collect()
 }
 
-/// The figure of the numeric series of `sources` in the time range `x_range` (ns), read from
-/// the database at the figure's resolution and filtered as in `view`. Times become seconds
-/// since `origin` (ns), as on the plot axis. A `view` without y range fits the data.
+/// The figure of the numeric series of `sources`, a panel per one of `panels`, in the time
+/// range `x_range` (ns), read from the database at the figure's resolution and filtered as in
+/// `view`. Times become seconds since `origin` (ns), as on the plot axis. A panel without y
+/// range fits its data, as does a single panel when `view` has none.
 pub fn collect(
     db: &DbBackend,
-    sources: &Sources,
+    (sources, panels): (&Sources, &[ExportPanel]),
     origin: f64,
     (x_range, view): ((f64, f64), View),
     columns: usize,
 ) -> Figure {
     let (t0, t1) = x_range;
     let secs = |t: f64| (t - origin) / 1e9;
+    let panels = panel_series(sources, panels)
+        .into_iter()
+        .zip(panels.iter().map(|p| p.y).chain(std::iter::repeat(view.y)))
+        // A plot of only plugin outputs has nothing to export
+        .filter(|(series, _)| !series.is_empty())
+        .map(|(series, y)| collect_panel(db, &series, (t0, t1), y, view, columns, &secs))
+        .collect();
+    Figure {
+        x_label: "Time (s)".into(),
+        x_range: (secs(t0), secs(t1)),
+        panels,
+    }
+}
+
+fn collect_panel(
+    db: &DbBackend,
+    exported: &[(&str, &SeriesData, &SeriesInfo)],
+    (t0, t1): (f64, f64),
+    y: Option<(f64, f64)>,
+    view: View,
+    columns: usize,
+    secs: &dyn Fn(f64) -> f64,
+) -> Panel {
     let mut series = Vec::new();
     let mut names = Vec::new();
     let mut flows = Vec::new();
-    for (prefix, sd, info) in exported(sources) {
+    for &(prefix, sd, info) in exported {
         let points = if sd.step {
             let end = db.flow_end(info.flow_id).map(|t| t.min(t1));
             let steps = expand_steps(&db.load_range_steps(info, t0, t1), end);
@@ -136,7 +194,7 @@ pub fn collect(
             step: sd.step,
         });
     }
-    let y_range = view.y.unwrap_or_else(|| fit(&series));
+    let y_range = y.unwrap_or_else(|| fit(&series));
     names.dedup();
     // The axis names a single metric, so the legend need only tell the flows apart
     let mut unique = flows.clone();
@@ -147,19 +205,15 @@ pub fn collect(
             f.label = flow;
         }
     }
-    Figure {
-        x_label: "Time (s)".into(),
-        x_range: (secs(t0), secs(t1)),
-        panels: vec![Panel {
-            // One metric names the axis; several are told apart by the legend.
-            y_label: if names.len() == 1 {
-                names.remove(0)
-            } else {
-                String::new()
-            },
-            y_range,
-            series,
-        }],
+    Panel {
+        // One metric names the axis; several are told apart by the legend.
+        y_label: if names.len() == 1 {
+            names.remove(0)
+        } else {
+            String::new()
+        },
+        y_range,
+        series,
     }
 }
 
@@ -308,7 +362,7 @@ pub fn default_file_stem(flow_id: Option<i64>, metrics: &[&str]) -> String {
     name
 }
 
-/// The visible part of a plot: x range (ns) and, for a single plot, its y range.
+/// The visible part of the plots: x range (ns) and, for a single plot, its y range.
 #[derive(Clone, Copy, Default)]
 pub struct View {
     pub x: Option<(f64, f64)>,
@@ -330,18 +384,18 @@ pub enum Outcome {
     Script(String),
 }
 
-/// Runs an export of the plotted `sources`: opens the preview of a figure or returns the text
+/// Runs an export of the `panels` of the plotted `sources`: opens the preview of a figure or returns the text
 /// of a data script. `file_stem` names the figure file by default.
 pub fn run(
     request: Request,
     db: &DbBackend,
-    sources: &Sources,
+    (sources, panels): (&Sources, &[ExportPanel]),
     origin: f64,
     view: View,
     style: &PlotStyle,
     file_stem: &str,
 ) -> Option<Outcome> {
-    if exported(sources).next().is_none() {
+    if panel_series(sources, panels).iter().all(Vec::is_empty) {
         return Some(Outcome::Saved(Err(
             "no numeric metric of the database is plotted".into(),
         )));
@@ -355,14 +409,14 @@ pub fn run(
         Request::Figure => {
             return Some(Outcome::Preview(Box::new(Preview::new(
                 db,
-                sources,
+                (sources, panels),
                 origin,
                 (x, view),
                 style,
                 file_stem,
             ))));
         }
-        Request::Script => script::text(db.path(), sources, origin, view, style),
+        Request::Script => script::text(db.path(), (sources, panels), origin, view, style),
     };
     let skipped = not_exported(sources);
     Some(match status {
@@ -417,9 +471,9 @@ pub fn show_preview(
     ctx: &egui::Context,
     preview: &mut Option<Preview>,
     db: &DbBackend,
-    sources: &Sources,
+    (sources, panels): (&Sources, &[ExportPanel]),
 ) -> Option<Result<String, String>> {
-    if !preview.as_ref()?.shows(sources) {
+    if !preview.as_ref()?.shows(sources, panels) {
         *preview = None;
         return Some(Err(
             "the plotted series changed, so the export window closed".into(),
@@ -587,15 +641,31 @@ mod selection_tests {
             .collect();
         assert_eq!(names, vec![state.series[1].name.as_str()]);
         assert_eq!(not_exported(&sources).len(), 2);
+        // A panel holds only its series, and only exportable ones
+        let panels = [
+            ExportPanel {
+                series: vec![(0, 2), (0, 1), (0, 3)],
+                y: None,
+            },
+            ExportPanel {
+                series: vec![(0, 2), (1, 2)],
+                y: Some((0.0, 1.0)),
+            },
+        ];
+        let per_panel: Vec<usize> = panel_series(&sources, &panels)
+            .iter()
+            .map(Vec::len)
+            .collect();
+        assert_eq!(per_panel, vec![1, 1]);
         let mut style = PlotStyle::default();
-        let script = script::series(&sources, &style);
+        let script = script::series(&sources, &[], &style);
         assert_eq!(script.len(), 1);
         assert_eq!(script[0].direction, "send");
         // The viewer's colour, or the palette's first one, as in the figure
         assert_eq!(script[0].color, "#000000");
         style.use_palette = true;
         assert_eq!(
-            script::series(&sources, &style)[0].color,
+            script::series(&sources, &[], &style)[0].color,
             style.palette_color(0)
         );
     }
