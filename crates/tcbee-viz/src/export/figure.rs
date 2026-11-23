@@ -18,13 +18,20 @@ pub struct FigureSeries {
     pub step: bool,
 }
 
+/// One plot of a figure, with its own y axis and legend.
+#[derive(Clone)]
+pub struct Panel {
+    pub y_label: String,
+    pub y_range: (f64, f64),
+    pub series: Vec<FigureSeries>,
+}
+
+/// Panels stacked on a shared time axis, each `style.height_in` high.
 #[derive(Clone)]
 pub struct Figure {
     pub x_label: String,
-    pub y_label: String,
     pub x_range: (f64, f64),
-    pub y_range: (f64, f64),
-    pub series: Vec<FigureSeries>,
+    pub panels: Vec<Panel>,
 }
 
 impl Figure {
@@ -40,25 +47,27 @@ impl Figure {
         };
         Figure {
             x_label: "Time (s)".into(),
-            y_label: "snd_cwnd".into(),
             x_range: (0.0, 10.0),
-            y_range: (0.0, 120.0),
-            series: vec![
-                FigureSeries {
-                    label: "flow 1".into(),
-                    color: "#1f77b4".into(),
-                    points: saw(2.5, 100.0),
-                    gaps: Some(vec![(4.0, 4.6)]),
-                    step: false,
-                },
-                FigureSeries {
-                    label: "flow 2".into(),
-                    color: "#d62728".into(),
-                    points: saw(3.3, 70.0),
-                    gaps: None,
-                    step: false,
-                },
-            ],
+            panels: vec![Panel {
+                y_label: "snd_cwnd".into(),
+                y_range: (0.0, 120.0),
+                series: vec![
+                    FigureSeries {
+                        label: "flow 1".into(),
+                        color: "#1f77b4".into(),
+                        points: saw(2.5, 100.0),
+                        gaps: Some(vec![(4.0, 4.6)]),
+                        step: false,
+                    },
+                    FigureSeries {
+                        label: "flow 2".into(),
+                        color: "#d62728".into(),
+                        points: saw(3.3, 70.0),
+                        gaps: None,
+                        step: false,
+                    },
+                ],
+            }],
         }
     }
 }
@@ -138,52 +147,123 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// The figure as an SVG document of `style.width_in` × `style.height_in`.
+/// Step between the first two of `ticks`, 0 for fewer.
+fn tick_step(ticks: &[f64]) -> f64 {
+    ticks.get(1).zip(ticks.first()).map_or(0.0, |(b, a)| b - a)
+}
+
+/// Horizontal layout shared by all panels, so their plot areas line up.
+struct Columns {
+    /// Left and right edge of the plot areas
+    pl: f64,
+    pr: f64,
+    x_ticks: Vec<f64>,
+    x_step: f64,
+}
+
+/// The figure as an SVG document, `style.width_in` wide and `style.height_in` high per panel.
+/// Only the lowest panel labels the time axis.
 pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     let w = f64::from(style.width_in) * 72.0;
-    let h = f64::from(style.height_in) * 72.0;
+    let panel_h = f64::from(style.height_in) * 72.0;
+    let h = panel_h * fig.panels.len().max(1) as f64;
     let fs = f64::from(style.font_size_pt);
-    let lw = f64::from(style.line_width_pt);
     let (x0, x1) = fig.x_range;
-    let (y0, y1) = fig.y_range;
     let x_ticks = ticks(x0, x1, 5);
-    let y_ticks = ticks(y0, y1, 5);
-    let x_step = x_ticks
-        .get(1)
-        .zip(x_ticks.first())
-        .map_or(0.0, |(b, a)| b - a);
-    let y_step = y_ticks
-        .get(1)
-        .zip(y_ticks.first())
-        .map_or(0.0, |(b, a)| b - a);
-    let y_labels: Vec<String> = y_ticks.iter().map(|v| tick_label(*v, y_step)).collect();
-    let widest = y_labels
+    let x_step = tick_step(&x_ticks);
+
+    // The widest y tick labels and any y label set the left edge of every panel
+    let widest = fig
+        .panels
         .iter()
-        .map(|l| l.chars().count())
+        .flat_map(|p| {
+            let t = ticks(p.y_range.0, p.y_range.1, 5);
+            let step = tick_step(&t);
+            t.into_iter()
+                .map(move |v| tick_label(v, step).chars().count())
+        })
         .max()
         .unwrap_or(1) as f64;
-
-    // Plot area
-    let y_label_space = if fig.y_label.is_empty() {
+    let y_label_space = if fig.panels.iter().all(|p| p.y_label.is_empty()) {
         0.0
     } else {
         fs * 1.4
     };
     let left = fs * 0.4 + y_label_space + widest * fs * CHAR_WIDTH + TICK_LEN + 2.0;
-    let x_label_space = if fig.x_label.is_empty() {
-        0.0
-    } else {
-        fs * 1.3
-    };
-    let bottom = TICK_LEN + 2.0 + fs * 1.1 + x_label_space + fs * 0.3;
     // Room for half of the last x tick label, which is centred on the right edge
     let last_x_label = x_ticks
         .last()
         .map_or(0, |x| tick_label(*x, x_step).chars().count());
     let right = (last_x_label as f64 * fs * CHAR_WIDTH / 2.0).max(fs * 0.9);
-    let mut labels: Vec<String> = fig.series.iter().map(|f| legend_label(f, style)).collect();
+    let columns = Columns {
+        pl: left,
+        pr: w - right,
+        x_ticks,
+        x_step,
+    };
+
+    let family = escape(&style.font_family);
+    let mut s = String::new();
+    let _ = write!(
+        s,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}pt" height="{h}pt" viewBox="0 0 {w} {h}" font-family="{family}, sans-serif" font-size="{fs}">"#
+    );
+    let _ = write!(s, r#"<rect width="{w}" height="{h}" fill="white"/>"#);
+    let last = fig.panels.len().saturating_sub(1);
+    for (i, panel) in fig.panels.iter().enumerate() {
+        let x_label = (i == last).then_some(fig.x_label.as_str());
+        let top = panel_h * i as f64;
+        panel_svg(
+            &mut s,
+            i,
+            panel,
+            (top, top + panel_h),
+            x_label,
+            fig.x_range,
+            &columns,
+            style,
+        );
+    }
+    s.push_str("</svg>");
+    s
+}
+
+/// Draws `panel` between the heights `top` and `bottom`; `x_label` is `Some` for the panel
+/// that labels the time axis.
+#[allow(clippy::too_many_arguments)]
+fn panel_svg(
+    s: &mut String,
+    index: usize,
+    panel: &Panel,
+    (top, bottom): (f64, f64),
+    x_label: Option<&str>,
+    (x0, x1): (f64, f64),
+    columns: &Columns,
+    style: &PlotStyle,
+) {
+    let fs = f64::from(style.font_size_pt);
+    let lw = f64::from(style.line_width_pt);
+    let (y0, y1) = panel.y_range;
+    let y_ticks = ticks(y0, y1, 5);
+    let y_step = tick_step(&y_ticks);
+    let y_labels: Vec<String> = y_ticks.iter().map(|v| tick_label(*v, y_step)).collect();
+    let (pl, pr) = (columns.pl, columns.pr);
+
+    // Plot area: panels above the lowest keep only a little space below
+    let below = match x_label {
+        Some(label) => {
+            let label_space = if label.is_empty() { 0.0 } else { fs * 1.3 };
+            TICK_LEN + 2.0 + fs * 1.1 + label_space + fs * 0.3
+        }
+        None => TICK_LEN + fs * 0.6,
+    };
+    let mut labels: Vec<String> = panel
+        .series
+        .iter()
+        .map(|f| legend_label(f, style))
+        .collect();
     let above = (style.legend == LegendPosition::Above && !labels.is_empty()).then(|| {
-        let width = w - left - right;
+        let width = pr - pl;
         for label in &mut labels {
             *label = shorten(label, fs, width);
         }
@@ -192,24 +272,22 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
     let legend_height = above.as_ref().map_or(0.0, |rows| {
         rows.iter().map(|(_, row)| row + 1).max().unwrap_or(0) as f64 * fs * LEGEND_ROW
     });
-    let top = fs * 0.6 + legend_height;
-    let (pl, pr, pt, pb) = (left, w - right, top, h - bottom);
+    let (pt, pb) = (top + fs * 0.6 + legend_height, bottom - below);
     let sx = |x: f64| pl + (x - x0) / (x1 - x0).max(f64::MIN_POSITIVE) * (pr - pl);
     let sy = |y: f64| pb - (y - y0) / (y1 - y0).max(f64::MIN_POSITIVE) * (pb - pt);
 
-    let family = escape(&style.font_family);
-    let mut s = String::new();
+    // A clip path per panel: ids are global to the document
+    let area = if index == 0 {
+        "area".to_string()
+    } else {
+        format!("area{index}")
+    };
     let _ = write!(
         s,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}pt" height="{h}pt" viewBox="0 0 {w} {h}" font-family="{family}, sans-serif" font-size="{fs}">"#
-    );
-    let _ = write!(
-        s,
-        r#"<defs><clipPath id="area"><rect x="{pl}" y="{pt}" width="{}" height="{}"/></clipPath></defs>"#,
+        r#"<defs><clipPath id="{area}"><rect x="{pl}" y="{pt}" width="{}" height="{}"/></clipPath></defs>"#,
         pr - pl,
         pb - pt
     );
-    let _ = write!(s, r#"<rect width="{w}" height="{h}" fill="white"/>"#);
 
     // Horizontal lines only: vertical ones would compete with the time series
     if style.grid {
@@ -224,10 +302,10 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         s.push_str("</g>");
     }
 
-    s.push_str(r#"<g clip-path="url(#area)">"#);
+    let _ = write!(s, r#"<g clip-path="url(#{area})">"#);
     if style.show_gaps {
         let _ = write!(s, r#"<g fill-opacity="{}">"#, style.gap_opacity);
-        for (i, f) in fig.series.iter().enumerate() {
+        for (i, f) in panel.series.iter().enumerate() {
             let color = if style.gaps_in_series_color {
                 line_color(style, i, f)
             } else {
@@ -248,7 +326,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         }
         s.push_str("</g>");
     }
-    for (i, f) in fig.series.iter().enumerate() {
+    for (i, f) in panel.series.iter().enumerate() {
         let mut d = String::new();
         let mut prev: Option<(f64, f64)> = None;
         for &(x, y) in &f.points {
@@ -280,7 +358,7 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         r#"<path d="M{pl} {pt}V{pb}H{pr}" fill="none" stroke="black" stroke-width="0.6"/>"#
     );
     s.push_str(r#"<g stroke="black" stroke-width="0.6">"#);
-    for x in &x_ticks {
+    for x in &columns.x_ticks {
         let _ = write!(
             s,
             r#"<line x1="{0}" y1="{pb}" x2="{0}" y2="{1}"/>"#,
@@ -297,14 +375,25 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
         );
     }
     s.push_str("</g>");
-    for x in &x_ticks {
-        let _ = write!(
-            s,
-            r#"<text x="{}" y="{}" text-anchor="middle">{}</text>"#,
-            sx(*x),
-            pb + TICK_LEN + 1.0 + fs,
-            escape(&tick_label(*x, x_step))
-        );
+    if let Some(x_label) = x_label {
+        for x in &columns.x_ticks {
+            let _ = write!(
+                s,
+                r#"<text x="{}" y="{}" text-anchor="middle">{}</text>"#,
+                sx(*x),
+                pb + TICK_LEN + 1.0 + fs,
+                escape(&tick_label(*x, columns.x_step))
+            );
+        }
+        if !x_label.is_empty() {
+            let _ = write!(
+                s,
+                r#"<text x="{}" y="{}" text-anchor="middle">{}</text>"#,
+                (pl + pr) / 2.0,
+                bottom - fs * 0.4,
+                escape(x_label)
+            );
+        }
     }
     for (y, label) in y_ticks.iter().zip(&y_labels) {
         let _ = write!(
@@ -315,29 +404,18 @@ pub fn svg(fig: &Figure, style: &PlotStyle) -> String {
             escape(label)
         );
     }
-    if !fig.x_label.is_empty() {
-        let _ = write!(
-            s,
-            r#"<text x="{}" y="{}" text-anchor="middle">{}</text>"#,
-            (pl + pr) / 2.0,
-            h - fs * 0.4,
-            escape(&fig.x_label)
-        );
-    }
-    if !fig.y_label.is_empty() {
+    if !panel.y_label.is_empty() {
         let (x, y) = (fs * 1.1, (pt + pb) / 2.0);
         let _ = write!(
             s,
             r#"<text x="{x}" y="{y}" text-anchor="middle" transform="rotate(-90 {x} {y})">{}</text>"#,
-            escape(&fig.y_label)
+            escape(&panel.y_label)
         );
     }
     match above {
-        Some(rows) => legend_above(&mut s, fig, &labels, &rows, style, pl),
-        None => legend(&mut s, fig, &labels, style, (pl, pr, pt, pb)),
+        Some(rows) => legend_above(s, panel, &labels, &rows, style, (pl, top)),
+        None => legend(s, panel, &labels, style, (pl, pr, pt, pb)),
     }
-    s.push_str("</svg>");
-    s
 }
 
 /// The colour of the `i`-th series `f`: its colour in the viewer, or the style's palette if
@@ -410,18 +488,18 @@ fn legend_entry(s: &mut String, (x, cy): (f64, f64), color: &str, label: &str, s
     );
 }
 
-/// The legend in rows above the plot area, which starts at `pl`.
+/// The legend in rows above the plot area, which starts at `pl`, in a panel from `top`.
 fn legend_above(
     s: &mut String,
-    fig: &Figure,
+    panel: &Panel,
     labels: &[String],
     rows: &[(f64, usize)],
     style: &PlotStyle,
-    pl: f64,
+    (pl, top): (f64, f64),
 ) {
     let fs = f64::from(style.font_size_pt);
-    for (i, ((label, f), (x, row))) in labels.iter().zip(&fig.series).zip(rows).enumerate() {
-        let cy = fs * 0.6 + fs * LEGEND_ROW * (*row as f64 + 0.5);
+    for (i, ((label, f), (x, row))) in labels.iter().zip(&panel.series).zip(rows).enumerate() {
+        let cy = top + fs * 0.6 + fs * LEGEND_ROW * (*row as f64 + 0.5);
         legend_entry(s, (pl + x, cy), line_color(style, i, f), label, style);
     }
 }
@@ -429,12 +507,12 @@ fn legend_above(
 /// The legend in a box inside a corner of the plot area.
 fn legend(
     s: &mut String,
-    fig: &Figure,
+    panel: &Panel,
     labels: &[String],
     style: &PlotStyle,
     (pl, pr, pt, pb): (f64, f64, f64, f64),
 ) {
-    if style.legend == LegendPosition::None || fig.series.is_empty() {
+    if style.legend == LegendPosition::None || panel.series.is_empty() {
         return;
     }
     let fs = f64::from(style.font_size_pt);
@@ -442,7 +520,7 @@ fn legend(
     let sample = fs * LEGEND_SAMPLE;
     let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f64;
     let bw = sample + fs * 0.9 + longest * fs * CHAR_WIDTH + fs * 0.4;
-    let bh = row * fig.series.len() as f64 + fs * 0.4;
+    let bh = row * panel.series.len() as f64 + fs * 0.4;
     let pad = fs * 0.4;
     let (bx, by) = match style.legend {
         LegendPosition::UpperLeft => (pl + pad, pt + pad),
@@ -457,7 +535,7 @@ fn legend(
         s,
         r##"<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" fill="white" fill-opacity="0.85" stroke="#bfbfbf" stroke-width="0.4"/>"##
     );
-    for (i, (label, f)) in labels.iter().zip(&fig.series).enumerate() {
+    for (i, (label, f)) in labels.iter().zip(&panel.series).enumerate() {
         let cy = by + fs * 0.2 + row * (i as f64 + 0.5);
         legend_entry(
             s,
@@ -515,10 +593,8 @@ mod tests {
 
     #[test]
     fn svg_has_series_gaps_labels_and_escapes() {
-        let fig = Figure {
-            x_label: "Time (s)".into(),
+        let panel = Panel {
             y_label: "cwnd <segments>".into(),
-            x_range: (0.0, 1.0),
             y_range: (0.0, 10.0),
             series: vec![FigureSeries {
                 label: "a & b".into(),
@@ -527,6 +603,11 @@ mod tests {
                 gaps: Some(vec![(0.4, 0.5)]),
                 step: false,
             }],
+        };
+        let fig = Figure {
+            x_label: "Time (s)".into(),
+            x_range: (0.0, 1.0),
+            panels: vec![panel.clone()],
         };
         let s = svg(&fig, &PlotStyle::default());
         assert!(s.starts_with("<svg") && s.ends_with("</svg>"));
@@ -546,13 +627,44 @@ mod tests {
         };
         assert!(!svg(&fig, &no_gaps).contains(r#"fill-opacity="0.25""#));
         let unknown = Figure {
-            series: vec![FigureSeries {
-                gaps: None,
-                ..fig.series.into_iter().next().unwrap()
+            panels: vec![Panel {
+                series: vec![FigureSeries {
+                    gaps: None,
+                    ..panel.series[0].clone()
+                }],
+                ..panel.clone()
             }],
-            ..fig
+            ..fig.clone()
         };
         assert!(svg(&unknown, &PlotStyle::default()).contains("a &amp; b (gaps n/a)"));
         assert!(!svg(&unknown, &no_gaps).contains("gaps n/a"));
+    }
+
+    #[test]
+    fn panels_stack_and_only_the_lowest_labels_time() {
+        let panel = Figure::sample().panels.remove(0);
+        let one = Figure {
+            x_label: "Time (s)".into(),
+            x_range: (0.0, 10.0),
+            panels: vec![panel.clone()],
+        };
+        let two = Figure {
+            panels: vec![
+                panel.clone(),
+                Panel {
+                    y_label: "rtt".into(),
+                    ..panel
+                },
+            ],
+            ..one.clone()
+        };
+        let style = PlotStyle::default();
+        let (s1, s2) = (svg(&one, &style), svg(&two, &style));
+        let h = f64::from(style.height_in) * 72.0;
+        assert!(s1.contains(&format!(r#"height="{h}pt""#)));
+        assert!(s2.contains(&format!(r#"height="{}pt""#, 2.0 * h)));
+        assert_eq!(s2.matches("Time (s)").count(), 1);
+        assert!(s2.contains(r#"clipPath id="area""#) && s2.contains(r#"clipPath id="area1""#));
+        assert!(s2.contains(">rtt<") && s2.contains(">snd_cwnd<"));
     }
 }

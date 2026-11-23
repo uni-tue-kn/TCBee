@@ -59,50 +59,76 @@ fn remember_figure(ctx: &egui::Context, figure: &Figure) {
     ctx.data_mut(|d| d.insert_temp(last_figure_id(), Arc::new(figure.clone())));
 }
 
-/// Texts of one figure that the user can replace: they hold for this export only.
+/// Texts of one figure that the user can replace: they hold for this export only. One
+/// y-axis label and one list of legend labels per panel.
 struct Texts {
-    y_label: String,
-    labels: Vec<String>,
+    y_labels: Vec<String>,
+    labels: Vec<Vec<String>>,
 }
 
 impl Texts {
     fn of(figure: &Figure) -> Texts {
         Texts {
-            y_label: figure.y_label.clone(),
-            labels: figure.series.iter().map(|f| f.label.clone()).collect(),
+            y_labels: figure.panels.iter().map(|p| p.y_label.clone()).collect(),
+            labels: figure
+                .panels
+                .iter()
+                .map(|p| p.series.iter().map(|f| f.label.clone()).collect())
+                .collect(),
         }
     }
 
     fn apply(&self, figure: &mut Figure) {
-        figure.y_label.clone_from(&self.y_label);
-        for (f, label) in figure.series.iter_mut().zip(&self.labels) {
-            f.label.clone_from(label);
+        for ((panel, y_label), labels) in figure
+            .panels
+            .iter_mut()
+            .zip(&self.y_labels)
+            .zip(&self.labels)
+        {
+            panel.y_label.clone_from(y_label);
+            for (f, label) in panel.series.iter_mut().zip(labels) {
+                f.label.clone_from(label);
+            }
         }
     }
 
     /// Text fields for the labels; returns whether any changed.
     fn edit(&mut self, ui: &mut egui::Ui, figure: &Figure) -> bool {
         let mut changed = false;
+        let several = figure.panels.len() > 1;
         egui::Grid::new("figure_texts")
             .num_columns(2)
             .spacing([40.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Y-axis label:");
-                changed |= ui
-                    .add(egui::TextEdit::singleline(&mut self.y_label).hint_text("none"))
-                    .changed();
-                ui.end_row();
-                for (i, (label, f)) in self.labels.iter_mut().zip(&figure.series).enumerate() {
-                    ui.label(if i == 0 { "Legend labels:" } else { "" });
-                    ui.horizontal(|ui| {
-                        if let Some(c) = crate::plot_style::parse_hex(&f.color) {
-                            let (rect, _) =
-                                ui.allocate_exact_size(egui::vec2(14.0, 3.0), egui::Sense::hover());
-                            ui.painter().rect_filled(rect, 0.0, c);
-                        }
-                        changed |= ui.text_edit_singleline(label).changed();
+                let panels = figure
+                    .panels
+                    .iter()
+                    .zip(&mut self.y_labels)
+                    .zip(&mut self.labels);
+                for (n, ((panel, y_label), labels)) in panels.enumerate() {
+                    ui.label(if several {
+                        format!("Plot {}, y-axis label:", n + 1)
+                    } else {
+                        "Y-axis label:".to_string()
                     });
+                    changed |= ui
+                        .add(egui::TextEdit::singleline(y_label).hint_text("none"))
+                        .changed();
                     ui.end_row();
+                    for (i, (label, f)) in labels.iter_mut().zip(&panel.series).enumerate() {
+                        ui.label(if i == 0 { "Legend labels:" } else { "" });
+                        ui.horizontal(|ui| {
+                            if let Some(c) = crate::plot_style::parse_hex(&f.color) {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(14.0, 3.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(rect, 0.0, c);
+                            }
+                            changed |= ui.text_edit_singleline(label).changed();
+                        });
+                        ui.end_row();
+                    }
                 }
             });
         changed
@@ -259,7 +285,7 @@ impl Preview {
             egui::RichText::new(format!(
                 "{:.1} × {:.1} in, shown at {:.0} %",
                 self.draft.width_in,
-                self.draft.height_in,
+                self.draft.height_in * self.figure.panels.len().max(1) as f32,
                 width / (self.draft.width_in * SCREEN_PER_INCH) * 100.0
             ))
             .small(),
@@ -339,12 +365,13 @@ mod tests {
     fn texts_replace_the_y_label_and_legend_labels() {
         let mut figure = Figure::sample();
         let mut texts = Texts::of(&figure);
-        assert_eq!(texts.y_label, "snd_cwnd");
-        texts.y_label = "Cwnd (segments)".into();
-        texts.labels[1] = "CUBIC".into();
+        assert_eq!(texts.y_labels, vec!["snd_cwnd"]);
+        texts.y_labels[0] = "Cwnd (segments)".into();
+        texts.labels[0][1] = "CUBIC".into();
         texts.apply(&mut figure);
-        assert_eq!(figure.y_label, "Cwnd (segments)");
-        assert_eq!(figure.series[0].label, "flow 1");
-        assert_eq!(figure.series[1].label, "CUBIC");
+        let panel = &figure.panels[0];
+        assert_eq!(panel.y_label, "Cwnd (segments)");
+        assert_eq!(panel.series[0].label, "flow 1");
+        assert_eq!(panel.series[1].label, "CUBIC");
     }
 }

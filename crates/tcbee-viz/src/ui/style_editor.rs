@@ -51,6 +51,7 @@ pub fn show(ui: &mut egui::Ui, style: &mut PlotStyle) -> bool {
                             .speed(0.05)
                             .suffix(" in"),
                     )
+                    .on_hover_text("Height of each plot; a figure of several plots stacks them")
                     .changed();
             });
             ui.end_row();

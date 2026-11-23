@@ -19,7 +19,7 @@ use crate::{
     },
     plot_style::PlotStyle,
 };
-use figure::{Figure, FigureSeries};
+use figure::{Figure, FigureSeries, Panel};
 pub use preview::Preview;
 
 /// Columns per inch of a PDF figure, for thinning its data.
@@ -149,15 +149,17 @@ pub fn collect(
     }
     Figure {
         x_label: "Time (s)".into(),
-        // One metric names the axis; several are told apart by the legend.
-        y_label: if names.len() == 1 {
-            names.remove(0)
-        } else {
-            String::new()
-        },
         x_range: (secs(t0), secs(t1)),
-        y_range,
-        series,
+        panels: vec![Panel {
+            // One metric names the axis; several are told apart by the legend.
+            y_label: if names.len() == 1 {
+                names.remove(0)
+            } else {
+                String::new()
+            },
+            y_range,
+            series,
+        }],
     }
 }
 
@@ -483,15 +485,17 @@ mod tests {
     fn fig() -> Figure {
         Figure {
             x_label: "Time (s)".into(),
-            y_label: "SND_CWND".into(),
             x_range: (0.0, 2.0),
-            y_range: (0.0, 10.0),
-            series: vec![FigureSeries {
-                label: "cwnd".into(),
-                color: "#0072b2".into(),
-                points: vec![(0.0, 1.0), (1.0, 8.0), (2.0, 4.0)],
-                gaps: Some(vec![(0.5, 0.6)]),
-                step: false,
+            panels: vec![Panel {
+                y_label: "SND_CWND".into(),
+                y_range: (0.0, 10.0),
+                series: vec![FigureSeries {
+                    label: "cwnd".into(),
+                    color: "#0072b2".into(),
+                    points: vec![(0.0, 1.0), (1.0, 8.0), (2.0, 4.0)],
+                    gaps: Some(vec![(0.5, 0.6)]),
+                    step: false,
+                }],
             }],
         }
     }
@@ -528,7 +532,7 @@ mod tests {
 
     #[test]
     fn fit_pads_the_value_range() {
-        let (lo, hi) = fit(&fig().series);
+        let (lo, hi) = fit(&fig().panels[0].series);
         assert!(lo < 1.0 && hi > 8.0);
         assert_eq!(fit(&[]), (0.0, 1.0));
     }
