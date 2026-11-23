@@ -37,12 +37,12 @@ class PlottingExamples(unittest.TestCase):
                 commands = [
                     (
                         "plot_metrics.py",
-                        ["1", "--metric", "sock.snd_cwnd", "--dir", "send"],
+                        ["1", "--metric", "sock.snd_cwnd", "--direction", "send"],
                         ".png",
                     ),
                     (
                         "compare_flows.py",
-                        ["1", "8", "--metric", "sock.snd_cwnd", "--dir", "send", "--align", "flow"],
+                        ["1", "8", "--metric", "sock.snd_cwnd", "--direction", "send", "--align", "flow"],
                         ".svg",
                     ),
                     (
@@ -51,7 +51,7 @@ class PlottingExamples(unittest.TestCase):
                             "1",
                             "--metric",
                             "sock.snd_cwnd",
-                            "--dir",
+                            "--direction",
                             "send",
                             "--bins",
                             "2",
@@ -131,7 +131,7 @@ class PlottingExamples(unittest.TestCase):
                 "1",
                 "--metric",
                 "sock.snd_cwnd",
-                "--dir",
+                "--direction",
                 "send",
                 "--start",
                 "2",

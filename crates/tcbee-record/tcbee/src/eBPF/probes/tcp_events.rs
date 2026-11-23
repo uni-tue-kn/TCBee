@@ -215,8 +215,18 @@ mod tests {
 
     const ALL: [bool; TCP_EVENT_HOOKS.len()] = [true; TCP_EVENT_HOOKS.len()];
 
+    /// The event tracepoints of -t, without tcp_probe, SYN-ACK retransmissions, bad
+    /// checksums and drops
     fn events() -> TracepointSet {
-        TracepointSet::EVENTS
+        TracepointSet::of(&[
+            Tracepoint::Retransmit,
+            Tracepoint::RstSent,
+            Tracepoint::RstReceived,
+            Tracepoint::State,
+            Tracepoint::CaState,
+            Tracepoint::Rto,
+            Tracepoint::Destroy,
+        ])
     }
 
     fn loaded(load: &[bool]) -> Vec<&'static str> {

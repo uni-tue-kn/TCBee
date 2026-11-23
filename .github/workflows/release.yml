@@ -7,6 +7,10 @@ on:
   # Manual runs build the archive and the packages of any branch as workflow artifacts, without a release
   workflow_dispatch:
 
+env:
+  # Printed by the tools' --version
+  TCBEE_GIT_SHA: ${{ github.sha }}
+
 jobs:
   tests:
     uses: ./.github/workflows/tcbee.yml

@@ -1174,9 +1174,9 @@ fn bin(args: &[&str]) -> std::process::Output {
 fn bad_flags_exit_with_2() {
     for bad in [
         &[][..],
-        &["-q", "-d"],
+        &["--sqlite", "--duckdb"],
         &["-o", "x.unknown"],
-        &["-q", "-t", "0"],
+        &["--sqlite", "-j", "0"],
         &["--bogus"],
     ] {
         assert_eq!(bin(bad).status.code(), Some(2), "{bad:?}");
@@ -1190,27 +1190,27 @@ fn binary_exit_codes() {
     let tmp = tempfile::tempdir().unwrap();
     let out = tmp.path().join(format!("o.{ext}"));
     let small = fixture("tcbee_small");
-    let ok = bin(&["-s", path_str(&small), "-o", path_str(&out), "-t", "2"]);
+    let ok = bin(&["-i", path_str(&small), "-o", path_str(&out), "-j", "2"]);
     assert_eq!(ok.status.code(), Some(0), "{}", stderr_of(&ok));
     assert!(stderr_of(&ok).contains("records"));
     let before = fs::read(&out).unwrap();
 
-    let again = bin(&["-s", path_str(&small), "-o", path_str(&out)]);
+    let again = bin(&["-i", path_str(&small), "-o", path_str(&out)]);
     assert_eq!(again.status.code(), Some(1));
     assert_eq!(fs::read(&out).unwrap(), before);
-    let forced = bin(&["-s", path_str(&small), "-o", path_str(&out), "-f"]);
+    let forced = bin(&["-i", path_str(&small), "-o", path_str(&out), "-f"]);
     assert_eq!(forced.status.code(), Some(0));
 
     let trace = corrupt_trace(tmp.path());
     let bad_out = tmp.path().join(format!("bad.{ext}"));
-    let bad = bin(&["-s", path_str(&trace), "-o", path_str(&bad_out)]);
+    let bad = bin(&["-i", path_str(&trace), "-o", path_str(&bad_out)]);
     assert_eq!(bad.status.code(), Some(1));
     assert!(stderr_of(&bad).contains("divider"));
     assert_no_output(&bad_out);
 
     let truncated = fixture("tcbee_truncated");
     let t_out = tmp.path().join(format!("t.{ext}"));
-    let trunc = bin(&["-s", path_str(&truncated), "-o", path_str(&t_out)]);
+    let trunc = bin(&["-i", path_str(&truncated), "-o", path_str(&t_out)]);
     assert_eq!(trunc.status.code(), Some(0));
     assert!(stderr_of(&trunc).contains("warning"));
 }

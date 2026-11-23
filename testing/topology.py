@@ -230,9 +230,9 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
     # Launch the selected tool.
     if tool == "live":
         select_arg = (
-            f"--select-port {PORT1} --select-port {PORT2} --combined-plot --auto-fit-x"
+            f"--ports {PORT1},{PORT2} --combined-plot --auto-fit-x"
             if double else
-            f"--select-port {PORT1}"
+            f"--ports {PORT1}"
         )
         info(f"*** Launching tcbee-live ({select_arg}, logs → /tmp/tcbee-live.log)\n")
         tcbee.cmd(
@@ -252,9 +252,13 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
         )
 
         if double:
+            info(f"*** Stream 2: tcbee:{PORT2} → recv:{PORT2} starts in 30 s\n")
+
             def _start_stream2():
                 time.sleep(30)
-                info(f"*** Stream 2: tcbee:{PORT2} → recv:{PORT2} (starting now)\n")
+                # The recorder's terminal UI owns the terminal by now
+                if tool == "live" or headless:
+                    info(f"*** Stream 2: tcbee:{PORT2} → recv:{PORT2} (starting now)\n")
                 tcbee.cmd(
                     f"nohup iperf3 -c {recv.IP()} -p {PORT2} -t 3600"
                     f" > /tmp/iperf3_2.log 2>&1 &"
@@ -280,7 +284,7 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
             test_ports = str(MPTCP_PORT)
             test_hosts = f"{TCBEE_IP},{RECV_IP},{TCBEE_IP2},{RECV_IP2}"
             # Path manager events and the connection of every subflow record
-            if not any(arg in ("-m", "-M", "--mptcp") for arg in shlex.split(record_args)):
+            if not any(arg in ("-m", "--mptcp") for arg in shlex.split(record_args)):
                 record_args = f"{record_args} -m"
         else:
             test_ports = f"{PORT1},{PORT2}" if double else str(PORT1)
@@ -295,7 +299,7 @@ def run(cc: str, double: bool, tool: str = "live", record_args: str = "",
             # No terminal UI; the recorder stops by itself
             full_args += ["-q", "--duration", str(duration or headless_seconds(double, mptcp))]
         cmd = [str(RECORD_BINARY)] + full_args
-        uses_headers = any(arg == "-h" or arg == "--headers" or arg.startswith("--headers=")
+        uses_headers = any(arg == "-H" or arg == "--headers" or arg.startswith("--headers=")
                            for arg in full_args)
         run_cmd = ["nsenter", f"--net=/proc/{tcbee.pid}/ns/net"] + cmd if uses_headers else cmd
         info(f"    Running: {' '.join(run_cmd)}\n")

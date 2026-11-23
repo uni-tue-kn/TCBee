@@ -7,6 +7,8 @@ DESTDIR ?=
 INSTALL ?= install
 # Version stamped into the tcbee script
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Commit printed by the tools' --version
+export TCBEE_GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null)
 # Extra cargo flags for tcbee-process and tcbee-viz, for example
 #   make process viz CARGO_FLAGS="--features bundled"
 #   make process viz CARGO_FLAGS="--no-default-features --features sqlite"

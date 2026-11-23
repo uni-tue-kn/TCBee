@@ -3,10 +3,7 @@ use std::net::{IpAddr, SocketAddr};
 use anyhow::anyhow;
 
 use crate::{
-    eBPF::probes::{
-        headers::HeadersAt,
-        tracepoints::{Tracepoint, TracepointSet},
-    },
+    eBPF::probes::{headers::HeadersAt, tracepoints::TracepointSet},
     writer::{Placement, PollMode, SinkConfig, WriterFormat},
 };
 use tcbee_common::{filter::*, stats::RINGBUFS};
@@ -254,62 +251,25 @@ impl MptcpModes {
     }
 }
 
-/// The tracepoints of `-t`, `--tp` and the old flags `-e` and `--drops`, which add the TCP
-/// events and the drops to them
-pub fn tracepoint_set(
-    tracepoints: bool,
-    tp: &str,
-    events: bool,
-    drops: bool,
-) -> anyhow::Result<TracepointSet> {
-    let mut set = if !tp.is_empty() {
+/// The tracepoints of `-t` and `--tp`
+pub fn tracepoint_set(tracepoints: bool, tp: &str) -> anyhow::Result<TracepointSet> {
+    Ok(if !tp.is_empty() {
         TracepointSet::parse(tp)?
     } else if tracepoints {
         TracepointSet::DEFAULT
     } else {
         TracepointSet::EMPTY
-    };
-    if events || drops {
-        set = set.union(TracepointSet::EVENTS);
-    }
-    if drops {
-        set = set.union(TracepointSet::of(&[Tracepoint::Drops]));
-    }
-    Ok(set)
+    })
 }
 
-/// `--no-timer-hook` switches off the write timer program of -k; on-change mode picks its
-/// hooks with `--on-change-hooks` instead
-fn check_no_timer_hook(no_timer_hook: bool, kernel: bool, on_change: bool) -> anyhow::Result<()> {
-    if !no_timer_hook {
-        return Ok(());
-    }
-    if !kernel {
-        return Err(anyhow!("--no-timer-hook needs -k"));
-    }
-    if on_change {
-        return Err(anyhow!(
-            "--no-timer-hook is for the default mode, use --on-change-hooks with --on-change"
-        ));
-    }
-    Ok(())
-}
-
-/// The hooks of `-k` without on-change: `--sock-hooks` (default the write timer and the
-/// socket events), less the timer with `--no-timer-hook`
-fn full_sock_hooks(spec: &str, no_timer_hook: bool) -> anyhow::Result<HookSet> {
-    let hooks = if spec.is_empty() {
-        HookSet::FULL_DEFAULT
+/// The hooks of `-k` without on-change: `--sock-hooks`, by default the write timer and the
+/// socket events
+fn full_sock_hooks(spec: &str) -> anyhow::Result<HookSet> {
+    if spec.is_empty() {
+        Ok(HookSet::FULL_DEFAULT)
     } else {
-        HookSet::parse(spec, HookSet::FULL_DEFAULT).map_err(|e| anyhow!("--sock-hooks: {}", e))?
-    };
-    if no_timer_hook {
-        if hooks == HookSet::of(&[Hook::Timer]) {
-            return Err(anyhow!("--no-timer-hook leaves -k without hooks"));
-        }
-        return Ok(hooks.without(Hook::Timer));
+        HookSet::parse(spec, HookSet::FULL_DEFAULT).map_err(|e| anyhow!("--sock-hooks: {}", e))
     }
-    Ok(hooks)
 }
 
 /// The hooks whose sock records can be field-selected (the default -k programs) and their
@@ -413,7 +373,6 @@ pub struct HookFlags<'a> {
     pub on_change: &'a str,
     pub on_change_hooks: &'a str,
     pub on_change_shadow: bool,
-    pub no_timer_hook: bool,
 }
 
 impl HookFlags<'_> {
@@ -445,9 +404,8 @@ impl HookFlags<'_> {
             self.kernel,
             self.cwnd,
         )?;
-        check_no_timer_hook(self.no_timer_hook, self.kernel, on_change.is_some())?;
         let full = if self.kernel && on_change.is_none() {
-            Some(full_sock_hooks(self.sock_hooks, self.no_timer_hook)?)
+            Some(full_sock_hooks(self.sock_hooks)?)
         } else {
             None
         };
@@ -762,6 +720,7 @@ impl EbpfRunnerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eBPF::probes::tracepoints::Tracepoint;
 
     /// An IPv4 address and its v4-mapped form select the same keys, whichever is given
     #[test]
@@ -823,28 +782,23 @@ mod tests {
 
     #[test]
     fn sock_hooks_without_on_change() {
-        assert_eq!(full_sock_hooks("", false).unwrap(), HookSet::FULL_DEFAULT);
+        assert_eq!(full_sock_hooks("").unwrap(), HookSet::FULL_DEFAULT);
         assert_eq!(
-            full_sock_hooks("", true).unwrap(),
+            full_sock_hooks("-timer").unwrap(),
             HookSet::FULL_DEFAULT.without(Hook::Timer)
         );
-        let sender = full_sock_hooks("+ingress", false).unwrap();
+        let sender = full_sock_hooks("+ingress").unwrap();
         assert!(sender.contains(Hook::Ingress) && sender.contains(Hook::State));
         assert_eq!(
-            full_sock_hooks("egress,ingress-entry,timer", true).unwrap(),
-            HookSet::of(&[Hook::Egress, Hook::IngressEntry])
-        );
-        assert!(full_sock_hooks("timer", true).is_err());
-        assert_eq!(
-            full_sock_hooks("ingress,timer", false).unwrap(),
+            full_sock_hooks("ingress,timer").unwrap(),
             HookSet::ON_CHANGE_DEFAULT
         );
-        assert!(full_sock_hooks("rx", false).is_err());
+        assert!(full_sock_hooks("rx").is_err());
         assert_eq!(
-            full_sock_hooks("timer,+ca_state", false).unwrap(),
+            full_sock_hooks("timer,+ca_state").unwrap(),
             HookSet::of(&[Hook::Timer, Hook::CaState])
         );
-        assert!(full_sock_hooks("-all", false).is_err());
+        assert!(full_sock_hooks("-all").is_err());
     }
 
     #[test]
@@ -859,24 +813,14 @@ mod tests {
         );
     }
 
-    /// -e and --drops record what they did before -t had the TCP events
     #[test]
-    fn old_event_flags() {
-        let events = TracepointSet::EVENTS;
-        assert_eq!(tracepoint_set(false, "", true, false).unwrap(), events);
+    fn tracepoint_flags() {
+        assert_eq!(tracepoint_set(true, "").unwrap(), TracepointSet::DEFAULT);
         assert_eq!(
-            tracepoint_set(false, "", false, true).unwrap(),
-            events.union(TracepointSet::of(&[Tracepoint::Drops]))
-        );
-        assert_eq!(
-            tracepoint_set(true, "", false, false).unwrap(),
-            TracepointSet::DEFAULT
-        );
-        assert_eq!(
-            tracepoint_set(false, "probe", false, false).unwrap(),
+            tracepoint_set(false, "probe").unwrap(),
             TracepointSet::of(&[Tracepoint::Probe])
         );
-        assert!(tracepoint_set(false, "", false, false).unwrap().is_empty());
+        assert!(tracepoint_set(false, "").unwrap().is_empty());
     }
 
     #[test]
@@ -942,14 +886,6 @@ mod tests {
         assert_eq!(get("TCP_SEND_SOCK_EVENTS"), 1 << 20);
     }
 
-    #[test]
-    fn no_timer_hook_only_for_the_default_sock_probe() {
-        assert!(check_no_timer_hook(false, false, false).is_ok());
-        assert!(check_no_timer_hook(true, true, false).is_ok());
-        assert!(check_no_timer_hook(true, false, false).is_err());
-        assert!(check_no_timer_hook(true, true, true).is_err());
-    }
-
     fn k() -> HookFlags<'static> {
         HookFlags {
             kernel: true,
@@ -968,18 +904,11 @@ mod tests {
         };
         assert!(flags.resolve().unwrap().1.unwrap().contains(Hook::Ingress));
         let flags = HookFlags {
-            no_timer_hook: true,
+            sock_hooks: "-timer",
             ..k()
         };
         let full = flags.resolve().unwrap().1;
         assert_eq!(full, Some(HookSet::FULL_DEFAULT.without(Hook::Timer)));
-        let flags = HookFlags {
-            sock_hooks: "egress,timer",
-            no_timer_hook: true,
-            ..k()
-        };
-        let full = flags.resolve().unwrap().1;
-        assert_eq!(full, Some(HookSet::of(&[Hook::Egress])));
     }
 
     #[test]
@@ -993,10 +922,6 @@ mod tests {
         for flags in [
             HookFlags {
                 sock_hooks: "egress",
-                ..w
-            },
-            HookFlags {
-                no_timer_hook: true,
                 ..w
             },
             // -w with on-change takes its hooks from --on-change-hooks only
@@ -1044,10 +969,6 @@ mod tests {
             HookFlags {
                 sock_hooks: "egress",
                 on_change_hooks: "egress",
-                ..flags
-            },
-            HookFlags {
-                no_timer_hook: true,
                 ..flags
             },
             HookFlags {

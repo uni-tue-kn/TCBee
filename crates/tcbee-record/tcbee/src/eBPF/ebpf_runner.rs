@@ -879,7 +879,7 @@ impl EbpfRunner {
             .is_some_and(|hooks| !hooks.contains(Hook::Timer))
         {
             self.skipped
-                .push("write timer hook: off (--sock-hooks, --no-timer-hook)".to_string());
+                .push("write timer hook: off (--sock-hooks)".to_string());
         }
         if !self.config.owners {
             self.skipped.push("owners: off (--no-owners)".to_string());

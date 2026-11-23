@@ -71,7 +71,7 @@ def main():
 
     with tcbee.open(args.database) as db:
         flow = db.flow(args.flow_id)
-        series = select_metric(flow, args.metric, args.dir)
+        series = select_metric(flow, args.metric, args.direction)
         scale = LABELS.get(args.metric, (None, 1))[1]
         if flow.start_ns is None or series.start_ns is None or series.end_ns is None:
             raise ValueError("The selected metric has no recorded samples")

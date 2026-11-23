@@ -40,16 +40,17 @@ pub fn parse_args(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> 
     let mut duckdb = false;
     let mut threads: Option<usize> = None;
     let mut force = false;
+    let mut version = false;
 
     {
         let mut p = ArgumentParser::new();
         p.set_description(
             "Converts a TCBee recording into a SQLite or DuckDB database. The engine follows \
-             -q/-d, or else the extension of the output file (.sqlite/.db, .duck/.duckdb). \
+             --sqlite/--duckdb, or else the extension of the output file (.sqlite/.db, .duck/.duckdb). \
              Exit status: 0 success, 1 processing failed, 2 wrong arguments.",
         );
         p.refer(&mut source).add_option(
-            &["-s", "--source"],
+            &["-i", "--input"],
             Store,
             "TCBee recording directory, or a directory to search for the latest tcbee_* \
              recording. Defaults to /tmp/",
@@ -57,15 +58,15 @@ pub fn parse_args(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> 
         p.refer(&mut output).add_option(
             &["-o", "--output"],
             StoreOption,
-            "Path of the output database file. Defaults to /tmp/db.sqlite with -q and \
-             /tmp/db.duck with -d",
+            "Path of the output database file. Defaults to /tmp/db.sqlite with --sqlite and \
+             /tmp/db.duck with --duckdb",
         );
         p.refer(&mut sqlite)
-            .add_option(&["-q", "--sqlite"], StoreTrue, "Write a SQLite database");
+            .add_option(&["--sqlite"], StoreTrue, "Write a SQLite database");
         p.refer(&mut duckdb)
-            .add_option(&["-d", "--duckdb"], StoreTrue, "Write a DuckDB database");
+            .add_option(&["--duckdb"], StoreTrue, "Write a DuckDB database");
         p.refer(&mut threads).add_option(
-            &["-t", "--threads"],
+            &["-j", "--threads"],
             StoreOption,
             "Worker threads (default: number of cores)",
         );
@@ -74,9 +75,19 @@ pub fn parse_args(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> 
             StoreTrue,
             "Replace the output file if it exists",
         );
+        p.refer(&mut version).add_option(
+            &["-V", "--version"],
+            StoreTrue,
+            "Print the version and exit.",
+        );
         let mut full = vec!["tcbee-process".to_string()];
         full.extend_from_slice(argv);
         p.parse(full, out, err)?;
+    }
+
+    if version {
+        let _ = writeln!(out, "{}", version_string());
+        return Err(0);
     }
 
     let mut fail = |msg: &str| -> i32 {
@@ -131,6 +142,15 @@ pub fn parse_args(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> 
     })
 }
 
+/// `tcbee-process <version> (<git sha>)`; the sha is set by the CI and release builds.
+pub fn version_string() -> String {
+    format!(
+        "tcbee-process {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("TCBEE_GIT_SHA").unwrap_or("unknown")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,7 +170,7 @@ mod tests {
     fn engine_follows_flags_extension_and_defaults() {
         #[cfg(feature = "sqlite")]
         {
-            let a = parse(&["-q"]).unwrap();
+            let a = parse(&["--sqlite"]).unwrap();
             assert_eq!(a.engine, Engine::Sqlite);
             assert_eq!(a.output, Path::new("/tmp/db.sqlite"));
             assert_eq!(a.source, Path::new("/tmp/"));
@@ -160,16 +180,16 @@ mod tests {
             }
             // A flag wins over the extension.
             assert_eq!(
-                parse(&["-q", "-o", "x.duck"]).unwrap().engine,
+                parse(&["--sqlite", "-o", "x.duck"]).unwrap().engine,
                 Engine::Sqlite
             );
-            let a = parse(&["-s", "d", "-o", "o.db", "-t", "3", "-f"]).unwrap();
+            let a = parse(&["-i", "d", "-o", "o.db", "-j", "3", "-f"]).unwrap();
             assert_eq!((a.threads, a.force), (Some(3), true));
             assert_eq!(a.source, Path::new("d"));
         }
         #[cfg(feature = "duckdb")]
         {
-            let a = parse(&["-d"]).unwrap();
+            let a = parse(&["--duckdb"]).unwrap();
             assert_eq!(a.engine, Engine::DuckDb);
             assert_eq!(a.output, Path::new("/tmp/db.duck"));
             for name in ["x.duck", "x.duckdb"] {
@@ -182,13 +202,18 @@ mod tests {
     fn flag_errors_exit_with_2() {
         for bad in [
             &[][..],
-            &["-q", "-d"],
+            &["--sqlite", "--duckdb"],
             &["-o", "out.dat"],
             &["-o", "noext"],
-            &["-q", "-t", "0"],
-            &["-q", "-t", "x"],
-            &["-q", "--nonsense"],
-            &["-q", "-s"],
+            &["--sqlite", "-j", "0"],
+            &["--sqlite", "-j", "x"],
+            &["--sqlite", "--nonsense"],
+            &["--sqlite", "-i"],
+            // Old names
+            &["-q"],
+            &["-d"],
+            &["-o", "x.db", "-s", "d"],
+            &["-o", "x.db", "-t", "2"],
         ] {
             let (code, msg) = parse(bad).unwrap_err();
             assert_eq!(code, 2, "{bad:?}: {msg}");
@@ -203,10 +228,17 @@ mod tests {
         assert!(msg.contains("--threads"));
     }
 
+    #[test]
+    fn version_exits_with_0() {
+        let (code, msg) = parse(&["-V"]).unwrap_err();
+        assert_eq!(code, 0);
+        assert_eq!(msg.trim(), version_string());
+    }
+
     #[cfg(not(feature = "duckdb"))]
     #[test]
     fn engine_not_built_in_is_a_clear_error() {
-        let (code, msg) = parse(&["-d"]).unwrap_err();
+        let (code, msg) = parse(&["--duckdb"]).unwrap_err();
         assert_eq!(code, 2);
         assert!(msg.contains("no DuckDB support"), "{msg}");
         assert_eq!(parse(&["-o", "x.duck"]).unwrap_err().0, 2);
@@ -215,7 +247,7 @@ mod tests {
     #[cfg(not(feature = "sqlite"))]
     #[test]
     fn sqlite_not_built_in_is_a_clear_error() {
-        let (code, msg) = parse(&["-q"]).unwrap_err();
+        let (code, msg) = parse(&["--sqlite"]).unwrap_err();
         assert_eq!(code, 2);
         assert!(msg.contains("no SQLite support"), "{msg}");
     }
