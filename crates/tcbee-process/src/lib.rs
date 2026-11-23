@@ -16,6 +16,7 @@ mod owners;
 mod pipeline;
 mod raw;
 mod registry;
+mod summary_meta;
 
 use std::path::PathBuf;
 

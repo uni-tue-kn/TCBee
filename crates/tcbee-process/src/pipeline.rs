@@ -34,7 +34,7 @@ use crate::{
     decode::{RangeError, RowError},
     metadata, owners, raw,
     registry::FlowRegistry,
-    Args,
+    summary_meta, Args,
 };
 
 /// Records per work unit.
@@ -709,6 +709,8 @@ pub fn run(args: &Args) -> Result<Summary> {
     summary.unmatched_snapshot = unmatched.snapshot;
     summary.flows = catalog.flows.len();
     summary.series = catalog.series.len();
+    let summary_rows = summary_meta::rows(&catalog, &summary);
+    catalog.meta.extend(summary_rows);
     session
         .finish(catalog)
         .with_context(|| format!("cannot finish {}", args.output.display()))?;
