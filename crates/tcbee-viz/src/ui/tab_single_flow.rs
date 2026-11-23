@@ -466,16 +466,6 @@ pub fn seconds_label_formatter(origin_ns: f64) -> impl Fn(&str, &PlotPoint) -> S
     }
 }
 
-pub fn compact_coordinates_formatter(origin_ns: f64) -> CoordinatesFormatter<'static> {
-    CoordinatesFormatter::new(move |point, bounds| {
-        format!(
-            "x: {}\ny: {}",
-            format_seconds_since_step(point.x, origin_ns, x_step(bounds)),
-            compact_axis_label(point.y)
-        )
-    })
-}
-
 fn format_seconds_since_step(value_ns: f64, origin_ns: f64, step_ns: f64) -> String {
     let seconds = (value_ns - origin_ns) / 1_000_000_000.0;
     let step_seconds = (step_ns / 1_000_000_000.0).abs();

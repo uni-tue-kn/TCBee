@@ -125,25 +125,6 @@ impl PlotState {
         }
     }
 
-    /// Returns the combined y extent across all loaded series.
-    pub fn y_bounds(&self) -> (f64, f64) {
-        let y_min = self
-            .series
-            .iter()
-            .map(|s| s.global_y_min)
-            .fold(f64::MAX, f64::min);
-        let y_max = self
-            .series
-            .iter()
-            .map(|s| s.global_y_max)
-            .fold(f64::MIN, f64::max);
-        if y_min > y_max {
-            (0.0, 1.0)
-        } else {
-            (y_min, y_max)
-        }
-    }
-
     /// Returns true when the visible window has shifted more than 10% of the loaded span.
     pub fn needs_reload(&self, new_x_min: f64, new_x_max: f64) -> bool {
         if self.series.is_empty() {
