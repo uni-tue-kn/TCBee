@@ -2,9 +2,6 @@
 //! several groups, and selected series in no group are drawn together in an implicit
 //! "Ungrouped" plot. Groups live for the session only.
 
-use std::collections::HashMap;
-
-use egui::Color32;
 use ts_storage::{Dir, SeriesInfo};
 
 use crate::data::series_data::SeriesData;
@@ -95,8 +92,6 @@ pub struct PlotGroups {
     /// While set, the groups follow this preset as the selection changes. Editing a group by
     /// hand ends it.
     auto: Option<Preset>,
-    /// Colours the user picked, in place of the automatic ones.
-    colors: HashMap<SeriesKey, Color32>,
 }
 
 impl Default for PlotGroups {
@@ -105,7 +100,6 @@ impl Default for PlotGroups {
             groups: Vec::new(),
             next_id: UNGROUPED + 1,
             auto: Some(Preset::AllTogether),
-            colors: HashMap::new(),
         }
     }
 }
@@ -118,19 +112,6 @@ impl PlotGroups {
     /// The preset the groups follow, `None` once edited by hand.
     pub fn auto(&self) -> Option<Preset> {
         self.auto
-    }
-
-    pub fn set_color(&mut self, key: SeriesKey, color: Color32) {
-        self.colors.insert(key, color);
-    }
-
-    /// Gives the series of `slot` the colours the user picked for them.
-    pub fn apply_colors(&self, slot: FlowSlot, series: &mut [SeriesData]) {
-        for sd in series {
-            if let Some(color) = self.colors.get(&SeriesKey::of(slot, sd)) {
-                sd.color = *color;
-            }
-        }
     }
 
     /// Follows the selection while a preset is active. Call once per frame before drawing.
@@ -532,34 +513,5 @@ mod tests {
         groups.remove_group(ids[1]);
         let new = groups.add_group();
         assert!(!ids.contains(&new) && new != UNGROUPED);
-    }
-
-    #[test]
-    fn picked_colours_replace_the_automatic_ones() {
-        let sd = |name: &str| {
-            let mut sd = SeriesData::new(
-                name.into(),
-                1,
-                ts_storage::ValueKind::Float,
-                0.0,
-                1.0,
-                0.0,
-                1.0,
-                Color32::WHITE,
-            );
-            sd.info = None;
-            sd
-        };
-        let mut series = vec![sd("cwnd"), sd("rtt")];
-        let mut groups = PlotGroups::default();
-        let cwnd = SeriesKey::of(FlowSlot::A, &series[0]);
-        groups.set_color(cwnd, Color32::RED);
-        groups.apply_colors(FlowSlot::B, &mut series);
-        assert_eq!(series[0].color, Color32::WHITE);
-        groups.apply_colors(FlowSlot::A, &mut series);
-        assert_eq!(
-            (series[0].color, series[1].color),
-            (Color32::RED, Color32::WHITE)
-        );
     }
 }

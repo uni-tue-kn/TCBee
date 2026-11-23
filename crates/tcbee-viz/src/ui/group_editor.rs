@@ -3,7 +3,10 @@
 use egui::{Color32, CursorIcon, DragAndDrop, RichText, Ui};
 
 use crate::{
-    data::plot_groups::{series_name, PlotGroup, PlotGroups, Preset, SeriesKey, UNGROUPED},
+    data::{
+        plot_groups::{series_name, PlotGroup, PlotGroups, Preset, SeriesKey, UNGROUPED},
+        series_colors::SeriesColors,
+    },
     ui::{sidebar::layout_picker, tab_single_flow::section_heading, theme},
 };
 
@@ -31,7 +34,7 @@ pub fn tab_strip(ui: &mut Ui, tab: &mut SidebarTab) {
 pub fn show(
     ui: &mut Ui,
     id_salt: &str,
-    groups: &mut PlotGroups,
+    (groups, colors): (&mut PlotGroups, &mut SeriesColors),
     selected: &[(SeriesKey, Color32)],
     presets: &[Preset],
 ) -> bool {
@@ -93,7 +96,7 @@ pub fn show(
     // keeps the zoom
     changed |= edits.iter().any(Edit::changes_series);
     for edit in edits {
-        edit.apply(groups);
+        edit.apply(groups, colors);
     }
     changed
 }
@@ -124,7 +127,7 @@ impl Edit {
         )
     }
 
-    fn apply(self, groups: &mut PlotGroups) {
+    fn apply(self, groups: &mut PlotGroups, colors: &mut SeriesColors) {
         match self {
             Edit::Rename(id, name) => groups.rename(id, name),
             Edit::SetHidden(id, hidden) => groups.set_hidden(id, hidden),
@@ -132,7 +135,7 @@ impl Edit {
             Edit::RemoveMember(key, from) => groups.remove_member(&key, from),
             Edit::MoveMember(key, from, to) => groups.move_member(&key, from, to),
             Edit::CopyMember(key, to) => groups.copy_member(&key, to),
-            Edit::SetColor(key, color) => groups.set_color(key, color),
+            Edit::SetColor(key, color) => colors.set(key, color),
         }
     }
 }

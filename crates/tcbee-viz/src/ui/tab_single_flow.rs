@@ -6,6 +6,7 @@ use crate::{
     data::{
         plot_groups::{FlowSlot, PlotGroups, Preset, SeriesKey},
         plot_state::PlotState,
+        series_colors::SeriesColors,
     },
     export,
     settings::AppSettings,
@@ -39,6 +40,8 @@ pub struct TabSingleFlow {
     show_gaps: bool,
     /// Which metrics share a plot
     groups: PlotGroups,
+    /// Colours picked in the Groups tab
+    colors: SeriesColors,
     sidebar_tab: SidebarTab,
     /// The visible part of the plot, for the figure export
     view: export::View,
@@ -66,6 +69,7 @@ impl Default for TabSingleFlow {
             remove_outliers: true,
             show_gaps: true,
             groups: PlotGroups::default(),
+            colors: SeriesColors::default(),
             sidebar_tab: SidebarTab::default(),
             view: export::View::default(),
             export_panels: Vec::new(),
@@ -91,6 +95,7 @@ impl TabSingleFlow {
         self.needs_fit = false;
         self.remove_outliers = true;
         self.groups = PlotGroups::default();
+        self.colors = SeriesColors::default();
         self.sidebar_tab = SidebarTab::default();
     }
 
@@ -101,8 +106,7 @@ impl TabSingleFlow {
             });
             return;
         }
-        self.groups
-            .apply_colors(FlowSlot::Single, &mut self.state.series);
+        self.colors.apply(FlowSlot::Single, &mut self.state.series);
 
         egui::SidePanel::left("single_flow_sidebar")
             .resizable(true)
@@ -153,7 +157,7 @@ impl TabSingleFlow {
             if group_editor::show(
                 ui,
                 "single_groups",
-                &mut self.groups,
+                (&mut self.groups, &mut self.colors),
                 &selected,
                 SINGLE_PRESETS,
             ) {

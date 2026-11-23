@@ -7,6 +7,7 @@ use crate::{
         plot_groups::{FlowSlot, PlotGroups, Preset, SeriesKey},
         plot_state::PlotState,
         preprocessing::generate_colors,
+        series_colors::SeriesColors,
     },
     export,
     settings::AppSettings,
@@ -41,6 +42,8 @@ pub struct TabMultiFlow {
     series_table_b: SeriesTable,
     /// Which metrics share a plot
     groups: PlotGroups,
+    /// Colours picked in the Groups tab
+    colors: SeriesColors,
     sidebar_tab: SidebarTab,
     remove_outliers: bool,
     show_gaps: bool,
@@ -72,6 +75,7 @@ impl Default for TabMultiFlow {
             series_table_a: SeriesTable::default(),
             series_table_b: SeriesTable::default(),
             groups: PlotGroups::default(),
+            colors: SeriesColors::default(),
             sidebar_tab: SidebarTab::default(),
             remove_outliers: true,
             show_gaps: true,
@@ -102,6 +106,7 @@ impl TabMultiFlow {
         self.series_table_a.reset();
         self.series_table_b.reset();
         self.groups = PlotGroups::default();
+        self.colors = SeriesColors::default();
         self.sidebar_tab = SidebarTab::default();
         self.remove_outliers = true;
         self.show_gaps = true;
@@ -169,7 +174,7 @@ impl TabMultiFlow {
             if group_editor::show(
                 ui,
                 "multi_groups",
-                &mut self.groups,
+                (&mut self.groups, &mut self.colors),
                 &selected,
                 MULTI_PRESETS,
             ) {
@@ -390,10 +395,8 @@ impl TabMultiFlow {
     /// Colours by position over both flows, then the ones the user picked.
     fn apply_colors(&mut self) {
         apply_unified_multi_flow_colors(&mut self.state_a, &mut self.state_b);
-        self.groups
-            .apply_colors(FlowSlot::A, &mut self.state_a.series);
-        self.groups
-            .apply_colors(FlowSlot::B, &mut self.state_b.series);
+        self.colors.apply(FlowSlot::A, &mut self.state_a.series);
+        self.colors.apply(FlowSlot::B, &mut self.state_b.series);
     }
 
     fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {
