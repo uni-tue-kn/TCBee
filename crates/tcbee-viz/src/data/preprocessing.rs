@@ -36,6 +36,19 @@ pub fn generate_colors(n: usize) -> Vec<Color32> {
         .collect()
 }
 
+/// The first colour of [`generate_colors`] that is not in `used`.
+pub fn unused_color(used: &[Color32]) -> Color32 {
+    (0..)
+        .map(|i| {
+            DISTINCT_PALETTE
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| generated_color(i))
+        })
+        .find(|c| !used.contains(c))
+        .unwrap_or(Color32::WHITE)
+}
+
 fn generated_color(index: usize) -> Color32 {
     let hue = ((index - DISTINCT_PALETTE.len()) as f64 * 0.618_033_988_75) % 1.0;
     let (r, g, b) = hsl_to_rgb(hue, 0.72, 0.46);

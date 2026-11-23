@@ -5,7 +5,7 @@ use crate::{
     data::{
         preprocessing::{
             bucket_min_max, compute_sample_interval, compute_skip_step, downsample, expand_steps,
-            generate_colors, MAX_RENDER_POINTS,
+            unused_color, MAX_RENDER_POINTS,
         },
         series_data::SeriesData,
     },
@@ -95,10 +95,9 @@ impl PlotState {
                 continue;
             }
             self.selected_series_ids.push(series_id);
-            // Assign the next color in the palette
-            let color_idx = self.series.len();
-            let colors = generate_colors(color_idx + 1);
-            let color = *colors.last().unwrap_or(&egui::Color32::WHITE);
+            // A colour no shown series has: counting would reuse one after a deselect
+            let used: Vec<egui::Color32> = self.series.iter().map(|s| s.color).collect();
+            let color = unused_color(&used);
 
             if let Some(info) = self.available_series.iter().find(|s| s.id == series_id) {
                 let mut sd = SeriesData::from_info(info, self.data_x_min, self.data_x_max, color);
@@ -359,6 +358,17 @@ mod tests {
         assert_eq!(selected(&state), (vec![1, 3], vec![1, 3]));
         state.toggle_series(&db, 1, &settings);
         assert_eq!(selected(&state), (vec![3], vec![3]));
+    }
+
+    #[test]
+    fn new_series_get_a_colour_not_shown() {
+        let (db, settings) = (DbBackend::default(), AppSettings::default());
+        let mut state = state();
+        state.select_series(&db, &[1, 2, 3], &settings);
+        state.deselect_series(&[1]);
+        state.select_series(&db, &[4], &settings);
+        let colors: Vec<_> = state.series.iter().map(|s| s.color).collect();
+        assert!((0..colors.len()).all(|i| !colors[i + 1..].contains(&colors[i])));
     }
 
     fn loaded(state: &mut PlotState, ranges: &[Option<(f64, f64)>]) {
