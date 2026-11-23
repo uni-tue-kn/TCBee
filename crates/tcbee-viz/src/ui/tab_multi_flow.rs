@@ -12,9 +12,11 @@ use crate::{
     settings::AppSettings,
     ui::{
         flow_table::FlowTable,
-        gap_marks, grouped_plots,
+        gap_marks,
+        group_editor::{self, SidebarTab},
+        grouped_plots,
         series_table::SeriesTable,
-        sidebar::{self, apply_series_action, flow_picker, layout_picker, outliers_checkbox},
+        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox},
         theme,
         x_range::{self, XRangeEditor},
     },
@@ -39,6 +41,7 @@ pub struct TabMultiFlow {
     series_table_b: SeriesTable,
     /// Which metrics share a plot
     groups: PlotGroups,
+    sidebar_tab: SidebarTab,
     remove_outliers: bool,
     show_gaps: bool,
     /// The visible part of the plots, for the figure export
@@ -67,6 +70,7 @@ impl Default for TabMultiFlow {
             series_table_a: SeriesTable::default(),
             series_table_b: SeriesTable::default(),
             groups: PlotGroups::default(),
+            sidebar_tab: SidebarTab::default(),
             remove_outliers: true,
             show_gaps: true,
             view: export::View::default(),
@@ -95,6 +99,7 @@ impl TabMultiFlow {
         self.series_table_a.reset();
         self.series_table_b.reset();
         self.groups = PlotGroups::default();
+        self.sidebar_tab = SidebarTab::default();
         self.remove_outliers = true;
         self.show_gaps = true;
         self.manual_x_min = 0.0;
@@ -155,6 +160,22 @@ impl TabMultiFlow {
         settings: &AppSettings,
         sidebar_height: f32,
     ) {
+        group_editor::tab_strip(ui, &mut self.sidebar_tab);
+        if self.sidebar_tab == SidebarTab::Groups {
+            let selected = self.selected_colors();
+            if group_editor::show(
+                ui,
+                "multi_groups",
+                &mut self.groups,
+                &selected,
+                MULTI_PRESETS,
+            ) {
+                self.needs_fit = true;
+            }
+            return;
+        }
+        let sidebar_height = sidebar_height - ui.cursor().top() + ui.min_rect().top();
+
         let flows = db.list_flows();
         // Each flow gets half of the sidebar, less the space between them
         let half_h = ((sidebar_height - 20.0) / 2.0).max(220.0);
@@ -211,16 +232,6 @@ impl TabMultiFlow {
                 self.manual_x_min = x_min;
                 self.manual_x_max = x_max;
                 self.apply_manual_x = true;
-            }
-            let selected = self.selected_keys();
-            if layout_picker(
-                ui,
-                "multi_layout",
-                &mut self.groups,
-                &selected,
-                MULTI_PRESETS,
-            ) {
-                self.needs_fit = true;
             }
             if outliers_checkbox(ui, &mut self.remove_outliers) {
                 self.needs_fit = true;
@@ -364,8 +375,8 @@ impl TabMultiFlow {
         }
     }
 
-    fn selected_keys(&self) -> Vec<SeriesKey> {
-        grouped_plots::selected_keys(&[
+    fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {
+        grouped_plots::selected_colors(&[
             grouped_plots::Flow {
                 slot: FlowSlot::A,
                 state: &self.state_a,

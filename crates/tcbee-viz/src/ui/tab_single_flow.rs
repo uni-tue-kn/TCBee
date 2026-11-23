@@ -4,16 +4,18 @@ use egui_plot::{CoordinatesFormatter, GridInput, GridMark, PlotBounds, PlotPoint
 use crate::{
     backend::db::DbBackend,
     data::{
-        plot_groups::{FlowSlot, PlotGroups, Preset},
+        plot_groups::{FlowSlot, PlotGroups, Preset, SeriesKey},
         plot_state::PlotState,
     },
     export,
     settings::AppSettings,
     ui::{
         flow_table::FlowTable,
-        gap_marks, grouped_plots,
+        gap_marks,
+        group_editor::{self, SidebarTab},
+        grouped_plots,
         series_table::SeriesTable,
-        sidebar::{self, apply_series_action, flow_picker, layout_picker, outliers_checkbox},
+        sidebar::{self, apply_series_action, flow_picker, outliers_checkbox},
         theme,
         x_range::{self, XRangeEditor},
     },
@@ -37,6 +39,7 @@ pub struct TabSingleFlow {
     show_gaps: bool,
     /// Which metrics share a plot
     groups: PlotGroups,
+    sidebar_tab: SidebarTab,
     /// The visible part of the plot, for the figure export
     view: export::View,
     export_status: export::Status,
@@ -61,6 +64,7 @@ impl Default for TabSingleFlow {
             remove_outliers: true,
             show_gaps: true,
             groups: PlotGroups::default(),
+            sidebar_tab: SidebarTab::default(),
             view: export::View::default(),
             export_status: None,
             preview: None,
@@ -84,6 +88,7 @@ impl TabSingleFlow {
         self.needs_fit = false;
         self.remove_outliers = true;
         self.groups = PlotGroups::default();
+        self.sidebar_tab = SidebarTab::default();
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
@@ -137,6 +142,22 @@ impl TabSingleFlow {
         settings: &AppSettings,
         sidebar_height: f32,
     ) {
+        group_editor::tab_strip(ui, &mut self.sidebar_tab);
+        if self.sidebar_tab == SidebarTab::Groups {
+            let selected = self.selected_colors();
+            if group_editor::show(
+                ui,
+                "single_groups",
+                &mut self.groups,
+                &selected,
+                SINGLE_PRESETS,
+            ) {
+                self.needs_fit = true;
+            }
+            return;
+        }
+        let sidebar_height = sidebar_height - ui.cursor().top() + ui.min_rect().top();
+
         let top = ui.cursor().top();
 
         // ── Flow table ──────────────────────────────────────────────────
@@ -213,20 +234,6 @@ impl TabSingleFlow {
                 self.manual_x_min = self.state.data_x_min;
                 self.manual_x_max = self.state.data_x_max;
                 self.apply_manual_x = true;
-            }
-            let selected = grouped_plots::selected_keys(&[grouped_plots::Flow {
-                slot: FlowSlot::Single,
-                state: &self.state,
-                prefix: "",
-            }]);
-            if layout_picker(
-                ui,
-                "single_layout",
-                &mut self.groups,
-                &selected,
-                SINGLE_PRESETS,
-            ) {
-                self.needs_fit = true;
             }
             if outliers_checkbox(ui, &mut self.remove_outliers) {
                 self.needs_fit = true;
@@ -378,6 +385,14 @@ impl TabSingleFlow {
             Some(export::Outcome::Script(text)) => self.script = Some(text),
             None => {}
         }
+    }
+
+    fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {
+        grouped_plots::selected_colors(&[grouped_plots::Flow {
+            slot: FlowSlot::Single,
+            state: &self.state,
+            prefix: "",
+        }])
     }
 
     fn reset_to_full_autofit(&mut self, db: &DbBackend, settings: &AppSettings, plot_width: f32) {

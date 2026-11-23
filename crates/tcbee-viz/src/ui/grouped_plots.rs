@@ -57,6 +57,11 @@ impl Flow<'_> {
 /// The keys of the selected series of `flows` that can be grouped: text series are listed
 /// or marked separately and belong to no group.
 pub fn selected_keys(flows: &[Flow]) -> Vec<SeriesKey> {
+    selected_colors(flows).into_iter().map(|(k, _)| k).collect()
+}
+
+/// [`selected_keys`] with the plot colour of each series.
+pub fn selected_colors(flows: &[Flow]) -> Vec<(SeriesKey, egui::Color32)> {
     flows
         .iter()
         .flat_map(|f| {
@@ -64,7 +69,7 @@ pub fn selected_keys(flows: &[Flow]) -> Vec<SeriesKey> {
                 .series
                 .iter()
                 .filter(|s| !s.is_string_type())
-                .map(|s| SeriesKey::of(f.slot, s))
+                .map(|s| (SeriesKey::of(f.slot, s), s.color))
         })
         .collect()
 }
