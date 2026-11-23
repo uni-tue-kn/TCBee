@@ -70,6 +70,10 @@ impl PlotState {
             self.flow_label = format_flow(flow);
             // Counts and bounds come from the catalog rows.
             self.available_series = db.list_series_for_flow(flow_id);
+            // A saved series may reach past the flow's previous time range
+            if let Some((t_min, t_max)) = flow_x_bounds(&self.available_series) {
+                (self.data_x_min, self.data_x_max) = (t_min, t_max);
+            }
         }
         if let Some((t_min, t_max)) = flow_x_bounds(&self.available_series) {
             self.data_x_min = t_min;
@@ -84,6 +88,10 @@ impl PlotState {
     pub fn refresh_catalog(&mut self, db: &DbBackend, settings: &AppSettings) {
         let Some(flow_id) = self.flow_id else { return };
         self.available_series = db.list_series_for_flow(flow_id);
+        // A saved series may reach past the flow's previous time range
+        if let Some((t_min, t_max)) = flow_x_bounds(&self.available_series) {
+            (self.data_x_min, self.data_x_max) = (t_min, t_max);
+        }
         // A replaced series keeps its id; its catalog row has the new counts and range
         for sd in &mut self.series {
             if let Some(info) = self.available_series.iter().find(|i| i.id == sd.series_id) {

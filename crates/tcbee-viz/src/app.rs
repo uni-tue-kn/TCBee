@@ -51,6 +51,8 @@ pub struct TcbeeApp {
     tab_settings: TabSettings,
     /// [`DbBackend::opened`] of the file the tabs show
     tabs_opened: u64,
+    /// [`DbBackend::saved`] when the MPTCP tab read its catalogs
+    mptcp_saved: u64,
 }
 
 impl Default for TcbeeApp {
@@ -70,6 +72,7 @@ impl Default for TcbeeApp {
             tab_process: TabProcess::default(),
             tab_settings: TabSettings::default(),
             tabs_opened: 0,
+            mptcp_saved: 0,
         }
     }
 }
@@ -82,6 +85,12 @@ impl eframe::App for TcbeeApp {
             for tab in TABS.iter().map(|(tab, _)| *tab) {
                 self.reset_tab(tab);
             }
+        }
+        // The MPTCP tab caches the series of every subflow; series saved by the Process tab
+        // only show up once it reads them again
+        if self.mptcp_saved != self.db.saved() {
+            self.mptcp_saved = self.db.saved();
+            self.reset_tab(Tab::Mptcp);
         }
         theme::apply(ctx, self.settings.dark_mode, self.settings.text_size);
         if let Some(style) = crate::export::take_default_style(ctx) {
