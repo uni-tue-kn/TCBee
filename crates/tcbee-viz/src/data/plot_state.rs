@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn new_series_get_a_colour_not_shown() {
+    fn new_series_get_a_color_not_shown() {
         let (db, settings) = (DbBackend::default(), AppSettings::default());
         let mut state = state();
         state.select_series(&db, &[1, 2, 3], &settings);

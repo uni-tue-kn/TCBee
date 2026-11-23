@@ -514,4 +514,37 @@ mod tests {
         let new = groups.add_group();
         assert!(!ids.contains(&new) && new != UNGROUPED);
     }
+
+    #[test]
+    fn presets_keep_hidden_groups_hidden() {
+        let selected = vec![single("cwnd"), single("rtt")];
+        let mut groups = PlotGroups::default();
+        groups.apply_preset(Preset::PerMetric, &selected);
+        let rtt = groups.groups()[1].id;
+        groups.set_hidden(rtt, true);
+        groups.sync(&selected);
+        assert_eq!(
+            names(&groups.resolve(&selected)),
+            vec![("cwnd · sock · send", vec!["cwnd"])]
+        );
+        groups.set_hidden(groups.groups()[0].id, true);
+        assert!(groups.resolve(&selected).is_empty());
+    }
+
+    #[test]
+    fn moving_to_and_from_ungrouped() {
+        let selected = vec![single("cwnd"), single("rtt")];
+        let mut groups = PlotGroups::default();
+        let own = groups.add_group();
+        groups.move_member(&single("rtt"), UNGROUPED, own);
+        assert_eq!(
+            names(&groups.resolve(&selected)),
+            vec![("Group 1", vec!["rtt"]), ("Ungrouped", vec!["cwnd"])]
+        );
+        groups.move_member(&single("rtt"), own, UNGROUPED);
+        assert_eq!(
+            names(&groups.resolve(&selected)),
+            vec![("Group 1", vec![]), ("Ungrouped", vec!["cwnd", "rtt"])]
+        );
+    }
 }
