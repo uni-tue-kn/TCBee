@@ -111,7 +111,8 @@ impl Outcome {
 }
 
 /// The drawn plots as export panels: each group's series by flow index and series id, and the
-/// y range the plot shows. Hidden and empty groups are left out, as on screen.
+/// y range the plot shows. A key that several flows share (the subflows of an MPTCP
+/// connection) gives a series per flow. Hidden and empty groups are left out, as on screen.
 pub fn export_panels(
     groups: &[ResolvedGroup],
     flows: &[Flow],
@@ -125,11 +126,11 @@ pub fn export_panels(
             let series = group
                 .members
                 .iter()
-                .filter_map(|key| {
+                .flat_map(|key| {
                     flows
                         .iter()
                         .enumerate()
-                        .find_map(|(i, f)| f.series(key).map(|s| (i, s.series_id)))
+                        .filter_map(|(i, f)| f.series(key).map(|s| (i, s.series_id)))
                 })
                 .collect();
             Some(export::ExportPanel { series, y: view.y })
@@ -269,6 +270,8 @@ fn empty_strip(ui: &mut Ui) {
     });
 }
 
+/// The series of a group's members, one per flow that has the key: flows of different slots
+/// never share a key, the subflows of an MPTCP connection all do.
 fn group_series<'a>(
     group: &ResolvedGroup,
     flows: &'a [Flow],
@@ -277,8 +280,8 @@ fn group_series<'a>(
     group
         .members
         .iter()
-        .filter_map(|key| {
-            flows.iter().find_map(|f| {
+        .flat_map(|key| {
+            flows.iter().filter_map(move |f| {
                 f.series(key).map(|s| Drawn {
                     series: s,
                     name: format!("{}{}", f.prefix, s.name),
@@ -449,5 +452,80 @@ mod tests {
         assert_eq!(points_bounds(&[]), None);
         assert_eq!(pad((0.0, 10.0), 0.1), (-1.0, 11.0));
         assert_eq!(pad((3.0, 3.0), 0.5), (2.5, 3.5));
+    }
+
+    fn state_with(names: &[&str]) -> PlotState {
+        let mut state = PlotState::default();
+        for (i, name) in names.iter().enumerate() {
+            state.series.push(SeriesData::new(
+                name.to_string(),
+                i as i64,
+                ts_storage::ValueKind::Float,
+                0.0,
+                1.0,
+                0.0,
+                1.0,
+                egui::Color32::WHITE,
+            ));
+        }
+        state
+    }
+
+    fn group(members: Vec<SeriesKey>) -> ResolvedGroup {
+        ResolvedGroup {
+            id: 1,
+            name: "g".into(),
+            members,
+        }
+    }
+
+    fn key(slot: FlowSlot, name: &str) -> SeriesKey {
+        SeriesKey::of(slot, &state_with(&[name]).series[0])
+    }
+
+    #[test]
+    fn a_key_draws_once_per_flow_of_its_slot() {
+        let (a, b) = (state_with(&["cwnd"]), state_with(&["cwnd"]));
+        let flows = [
+            Flow {
+                slot: FlowSlot::A,
+                state: &a,
+                prefix: "A: ",
+            },
+            Flow {
+                slot: FlowSlot::B,
+                state: &b,
+                prefix: "B: ",
+            },
+        ];
+        let drawn = group_series(&group(vec![key(FlowSlot::A, "cwnd")]), &flows, false);
+        let names: Vec<&str> = drawn.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["A: cwnd"]);
+
+        let flows = [
+            Flow {
+                slot: FlowSlot::Single,
+                state: &a,
+                prefix: "sf0: ",
+            },
+            Flow {
+                slot: FlowSlot::Single,
+                state: &b,
+                prefix: "sf1: ",
+            },
+        ];
+        let g = group(vec![key(FlowSlot::Single, "cwnd")]);
+        let names: Vec<String> = group_series(&g, &flows, false)
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, ["sf0: cwnd", "sf1: cwnd"]);
+
+        let outcome = Outcome {
+            views: vec![(1, export::View::default())],
+            ..Outcome::default()
+        };
+        let panels = export_panels(&[g], &flows, &outcome);
+        assert_eq!(panels[0].series, [(0, 0), (1, 0)]);
     }
 }
