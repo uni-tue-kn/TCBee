@@ -106,13 +106,14 @@ pub type PlotPaint<'a> = &'a dyn Fn(&Ui, &PlotTransform, usize);
 /// The hover text of a plot from the series name and the point under the pointer.
 pub type PlotLabel<'a> = &'a dyn Fn(&str, &PlotPoint) -> String;
 
-/// What a tab adds to its plots beyond the series, for the MPTCP tab's events. The default
-/// adds nothing.
+/// What a tab adds to its plots beyond the series, and how they draw and react. The default
+/// is the flow tabs' plots; the MPTCP tab adds its events and draws records with pauses.
 pub struct Hooks<'a> {
     /// Draws after the series, e.g. lines at events
     pub draw: Option<PlotOverlay<'a>>,
     /// Paints after the plot, e.g. labels along its top
     pub paint: Option<PlotPaint<'a>>,
+    /// Hover text instead of the coordinates, e.g. with the events under the pointer
     pub label: Option<PlotLabel<'a>>,
     /// Link the pointer across the plots and with others on [`x_axis_link`]
     pub link_cursor: bool,
