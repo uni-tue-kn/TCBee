@@ -15,7 +15,8 @@ use super::model::{
     centered_x, event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name,
     lane_y, place_labels, row_name, EventGroup, LabelSpan,
 };
-use super::{TabMptcp, Y_AXIS_WIDTH};
+use super::TabMptcp;
+use crate::ui::plot_frame::Y_AXIS_WIDTH;
 use crate::{
     settings::AppSettings,
     ui::{

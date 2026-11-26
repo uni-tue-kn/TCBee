@@ -14,6 +14,7 @@ use crate::{
     export,
     ui::{
         event_labels, gap_marks,
+        plot_frame::Y_AXIS_WIDTH,
         tab_single_flow::{
             plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter,
             split_plot_height_with_footer, time_or_compact_coordinates_formatter,
@@ -293,6 +294,8 @@ fn show_plot(
             Corner::LeftBottom,
             time_or_compact_coordinates_formatter(settings.x_origin),
         )
+        // Same width in every plot of the stack, so the time axes line up
+        .y_axis_min_width(Y_AXIS_WIDTH)
         .legend(Legend::default())
         .height(height)
         .show(ui, |plot_ui| {

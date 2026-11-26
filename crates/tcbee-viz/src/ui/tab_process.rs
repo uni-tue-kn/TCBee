@@ -1,6 +1,7 @@
 use crate::ui::{
     event_labels,
     flow_table::FlowTable,
+    plot_frame::Y_AXIS_WIDTH,
     tab_single_flow::{split_plot_height_with_footer, to_plot_points},
     theme,
 };
@@ -326,6 +327,7 @@ impl TabProcess {
                         .allow_scroll(true)
                         .link_axis("process_split_x_axis", [true, false])
                         .link_cursor("process_split_x_axis", [true, false])
+                        .y_axis_min_width(Y_AXIS_WIDTH)
                         .height(plot_height)
                         .show(ui, |plot_ui| {
                             draw_line(plot_ui, s, new);

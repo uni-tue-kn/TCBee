@@ -3,6 +3,7 @@ pub mod flow_table;
 pub mod gap_marks;
 pub mod group_editor;
 pub mod grouped_plots;
+pub mod plot_frame;
 pub mod series_table;
 pub mod sidebar;
 pub mod style_editor;

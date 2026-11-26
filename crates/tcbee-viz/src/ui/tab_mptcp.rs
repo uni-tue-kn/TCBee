@@ -33,6 +33,7 @@ use crate::{
     },
     settings::AppSettings,
     ui::{
+        plot_frame::Y_AXIS_WIDTH,
         tab_single_flow::{
             seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
             split_plot_height_with_footer, time_or_compact_formatter,
@@ -53,8 +54,6 @@ const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
 
 /// Smallest height of a metric plot; more plots scroll
 const MIN_PLOT_HEIGHT: f32 = 120.0;
-/// Width of the value axis of every metric plot and the lane
-const Y_AXIS_WIDTH: f32 = 56.0;
 /// Columns of the subflow table, left to right
 #[derive(Clone, Copy, PartialEq)]
 enum SubflowColumn {
