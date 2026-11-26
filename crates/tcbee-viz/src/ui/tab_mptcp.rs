@@ -1,22 +1,20 @@
-//! MPTCP connections: one connection at a time, its path manager events in a lane, a plot per
-//! chosen metric with all subflows and lines at the events, and below them a table of the
-//! subflows with their bytes and share, and a list of the events.
+//! MPTCP connections: one connection at a time, its path manager events in a lane, the plot
+//! groups of the chosen metrics with a line per subflow and lines at the events, and below
+//! them a table of the subflows with their bytes and share, and a list of the events.
 
 mod event_list;
 mod lane;
 mod markers;
 mod model;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
 use egui::{RichText, ScrollArea, Vec2};
-use egui_plot::{Line, LineStyle, Plot, PlotBounds, PlotPoints, Points, VLine};
+use egui_plot::{LineStyle, PlotPoint, PlotTransform, PlotUi, VLine};
 use tcbee_common::records::{TCBEE_MPTCP_MP_PRIO_SENT, TCBEE_MPTCP_REINJECTED};
-use ts_storage::{
-    ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind, ValueKind,
-};
+use ts_storage::{ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind};
 
 use markers::kind_color;
 use model::{
@@ -25,22 +23,21 @@ use model::{
 };
 
 use crate::{
-    backend::db::{flow_x_bounds, format_flow, DbBackend},
+    backend::db::{format_flow, DbBackend},
     data::{
-        plot_state::{fetch_range, load_series_window},
+        plot_groups::{FlowSlot, PlotGroups, Preset, SeriesKey},
+        plot_state::PlotState,
         preprocessing::generate_colors,
-        segments::{gap_threshold, segments, HELD_ALPHA},
-        series_data::SeriesData,
+        series_styles::SeriesStyles,
     },
     settings::AppSettings,
     ui::{
         flow_table::flow_matches,
-        plot_frame::{plot_title, PlotStack, Y_AXIS_WIDTH},
+        group_editor::{self, SidebarTab},
+        grouped_plots,
+        series_table::{SeriesAction, SeriesTable},
         sidebar,
-        tab_single_flow::{
-            seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
-            section_heading_text, time_or_compact_formatter,
-        },
+        tab_single_flow::{seconds_label_formatter, section_heading},
         table::{
             self, data_cell, header_cell, number_cell, number_header_cell, text_cell,
             text_header_cell, ROW_HEIGHT,
@@ -54,9 +51,16 @@ pub const NO_MPTCP_HINT: &str =
     "No MPTCP was recorded in this database. Record with tcbee-record -m to see MPTCP connections.";
 /// Plotted first if the subflows have it
 const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
-
-/// Smallest height of a metric plot; more plots scroll
-const MIN_METRIC_PLOT_HEIGHT: f32 = 120.0;
+/// Salt of the plot ids, see [`grouped_plots::Settings::id`]
+const PLOTS_ID: &str = "mptcp";
+const MPTCP_PRESETS: &[Preset] = &[Preset::AllTogether, Preset::PerMetric];
+// The lines at path manager events in the plots, and at the one picked in the event list
+const EVENT_LINE_WIDTH: f32 = 1.5;
+const EVENT_LINE_STYLE: LineStyle = LineStyle::Dotted { spacing: 5.0 };
+const SELECTED_EVENT_WIDTH: f32 = 2.5;
+const SELECTED_EVENT_STYLE: LineStyle = LineStyle::Dashed { length: 5.0 };
+/// Share of the sidebar's height the metric table may take
+const METRIC_TABLE_SHARE: f32 = 0.6;
 /// Columns of the subflow table, left to right
 #[derive(Clone, Copy, PartialEq)]
 enum SubflowColumn {
@@ -195,35 +199,36 @@ pub fn has_mptcp(db: &DbBackend) -> bool {
         .any(|c| c.kind == ConnectionInfo::KIND_MPTCP)
 }
 
-/// A series that every subflow may have: (source, dir, name)
-type MetricKey = (String, Dir, String);
-
-fn metric_key(s: &SeriesInfo) -> MetricKey {
-    (s.source.clone(), s.dir, s.name.clone())
-}
-
-fn metric_label((source, dir, name): &MetricKey) -> String {
-    match dir {
-        Dir::None => format!("{name} · {source}"),
-        _ => format!("{name} · {source} · {}", format!("{dir:?}").to_lowercase()),
-    }
-}
-
-/// The metrics whose label contains every term of `filter`, grouped by source
-fn group_metrics<'a>(metrics: &'a [MetricKey], filter: &str) -> Vec<(&'a str, Vec<&'a MetricKey>)> {
-    let filter = filter.to_lowercase();
-    let mut groups: Vec<(&str, Vec<&MetricKey>)> = Vec::new();
-    for m in metrics {
-        let label = metric_label(m).to_lowercase();
-        if !filter.split_whitespace().all(|term| label.contains(term)) {
-            continue;
-        }
-        match groups.iter_mut().find(|(source, _)| *source == m.0) {
-            Some((_, group)) => group.push(m),
-            None => groups.push((&m.0, vec![m])),
+/// The metrics of the subflows for the metric table: one catalog row per metric that a
+/// subflow has records of, the first subflow's that has it, in the order they come
+fn metric_catalog<'a>(catalogs: impl IntoIterator<Item = &'a [SeriesInfo]>) -> Vec<SeriesInfo> {
+    let mut metrics: Vec<SeriesInfo> = Vec::new();
+    for info in catalogs.into_iter().flatten() {
+        let plotted =
+            info.kind == SeriesKind::Raw && info.value_type != ColType::Text && info.n > 0;
+        if plotted && info.source != "mptcp_pm" && !metrics.iter().any(|m| same_metric(m, info)) {
+            metrics.push(info.clone());
         }
     }
-    groups
+    metrics
+}
+
+fn same_metric(a: &SeriesInfo, b: &SeriesInfo) -> bool {
+    a.source == b.source && a.dir == b.dir && a.name == b.name
+}
+
+/// The key of a metric of every subflow, see [`grouped_plots::Flow`]
+fn metric_key(info: &SeriesInfo) -> SeriesKey {
+    SeriesKey::from_info(FlowSlot::Single, info)
+}
+
+/// The rows of `metrics` whose metric is loaded in one of the subflows of `loaded`
+fn selected_metric_ids(metrics: &[SeriesInfo], loaded: &[SeriesKey]) -> Vec<i64> {
+    metrics
+        .iter()
+        .filter(|m| loaded.contains(&metric_key(m)))
+        .map(|m| m.id)
+        .collect()
 }
 
 /// The value of a catalog series of a flow: the largest value of `name` over both directions
@@ -440,13 +445,15 @@ fn event_address(family: i64, port: i64, words: [i64; 4]) -> Option<String> {
 /// One subflow of the selected connection with its catalog
 struct Subflow {
     member: ConnectionFlow,
-    /// Legend name
-    label: String,
     /// Same in every plot and table
     color: egui::Color32,
     /// Its flow, for the table
     flow: String,
     series: Vec<SeriesInfo>,
+    /// Its loaded metrics, limited to the connection's time
+    state: PlotState,
+    /// Before its series names in the legends
+    prefix: String,
     /// Bytes acknowledged by the peer and received, and the share of the connection's bytes
     acked: Option<f64>,
     received: Option<f64>,
@@ -460,10 +467,17 @@ struct Subflow {
 }
 
 impl Subflow {
-    fn find(&self, (source, dir, name): &MetricKey) -> Option<&SeriesInfo> {
-        self.series
+    /// Its catalog row of `key`
+    fn find(&self, key: &SeriesKey) -> Option<&SeriesInfo> {
+        self.series.iter().find(|s| metric_key(s) == *key)
+    }
+
+    /// The keys of its loaded metrics
+    fn loaded(&self) -> impl Iterator<Item = SeriesKey> + '_ {
+        self.state
+            .series
             .iter()
-            .find(|s| &s.source == source && s.dir == *dir && &s.name == name)
+            .map(|s| SeriesKey::of(FlowSlot::Single, s))
     }
 
     /// The last value of a socket counter: its catalog maximum
@@ -480,17 +494,8 @@ enum BottomTab {
     Events,
 }
 
-/// One plotted metric: a series per subflow that has it, with the subflow's index
-struct MetricPlot {
-    series: Vec<(usize, SeriesData)>,
-    /// Drawn before; until then its values are fitted once, its time range comes from the
-    /// other plots
-    shown: bool,
-}
-
 /// The tab is reset whenever another tab is shown, and the database only changes on the Home
 /// tab, so its state always belongs to the open database.
-#[derive(Default)]
 pub struct TabMptcp {
     /// The MPTCP connections of the database, read when the tab is first shown
     connections: Vec<ConnectionSummary>,
@@ -502,13 +507,18 @@ pub struct TabMptcp {
     catalogs: HashMap<i64, Vec<SeriesInfo>>,
     connection: Option<ConnectionInfo>,
     subflows: Vec<Subflow>,
-    /// The metrics that at least one subflow has
-    metrics: Vec<MetricKey>,
-    metric_filter: String,
-    /// Plotted metrics, top to bottom
-    selected: Vec<MetricKey>,
-    /// The loaded plots, in the order of `selected`; the last ones may still be missing
-    plots: Vec<MetricPlot>,
+    /// The metrics that at least one subflow has, see [`metric_catalog`]
+    metrics: Vec<SeriesInfo>,
+    series_table: SeriesTable,
+    /// Which metrics share a plot
+    groups: PlotGroups,
+    /// Line widths picked in the View tab; the colours are the subflows'
+    styles: SeriesStyles,
+    sidebar_tab: SidebarTab,
+    /// Grid lines in the plots, set in the View tab
+    show_grid: bool,
+    /// The time range the plots showed in the last frame
+    shown_x: Option<(f64, f64)>,
     /// Path manager events, in time order; shared with the lane's hover label
     events: Arc<[PmEvent]>,
     /// The event types among them: code and whether failed
@@ -525,6 +535,38 @@ pub struct TabMptcp {
     needs_fit: bool,
 }
 
+impl Default for TabMptcp {
+    fn default() -> Self {
+        let mut groups = PlotGroups::default();
+        // One plot per metric, the subflows together
+        groups.apply_preset(Preset::PerMetric, &[]);
+        Self {
+            connections: Vec::new(),
+            connections_read: false,
+            connection_filter: String::new(),
+            choosing_connection: false,
+            catalogs: HashMap::new(),
+            connection: None,
+            subflows: Vec::new(),
+            metrics: Vec::new(),
+            series_table: SeriesTable::default(),
+            groups,
+            styles: SeriesStyles::default(),
+            sidebar_tab: SidebarTab::default(),
+            show_grid: true,
+            shown_x: None,
+            events: Arc::default(),
+            event_keys: Vec::new(),
+            lane_ns_per_px: 0.0,
+            bottom_tab: BottomTab::default(),
+            event_filter: String::new(),
+            selected_event: None,
+            focus: None,
+            needs_fit: false,
+        }
+    }
+}
+
 impl TabMptcp {
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -535,7 +577,7 @@ impl TabMptcp {
             self.connections = connection_summaries(db, &mut self.catalogs);
             self.connections_read = true;
             if let Some(first) = self.connections.first().map(|c| c.id) {
-                self.select_connection(db, first);
+                self.select_connection(db, settings, first);
             }
         }
         if self.connections.is_empty() {
@@ -553,13 +595,14 @@ impl TabMptcp {
             .default_width(460.0)
             .frame(theme::sidebar_frame(settings.dark_mode))
             .show_inside(ui, |ui| {
+                let sidebar_height = ui.available_height();
                 ScrollArea::vertical()
                     .id_salt("mptcp_sidebar_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         egui::Frame::NONE
                             .inner_margin(egui::Margin::symmetric(SIDEBAR_MARGIN, 8))
-                            .show(ui, |ui| self.show_sidebar(ui, db));
+                            .show(ui, |ui| self.show_sidebar(ui, db, settings, sidebar_height));
                     });
             });
 
@@ -571,7 +614,32 @@ impl TabMptcp {
             });
     }
 
-    fn show_sidebar(&mut self, ui: &mut egui::Ui, db: &DbBackend) {
+    fn show_sidebar(
+        &mut self,
+        ui: &mut egui::Ui,
+        db: &DbBackend,
+        settings: &AppSettings,
+        sidebar_height: f32,
+    ) {
+        group_editor::tab_strip(ui, &mut self.sidebar_tab);
+        if self.sidebar_tab == SidebarTab::View {
+            let selected = self.selected_colors();
+            if group_editor::show(
+                ui,
+                "mptcp_groups",
+                (&mut self.groups, &mut self.styles),
+                &mut self.show_grid,
+                grouped_plots::plot_stack_id(PLOTS_ID),
+                &selected,
+                MPTCP_PRESETS,
+                // A line's colour is its subflow's
+                false,
+            ) {
+                self.needs_fit = true;
+            }
+            return;
+        }
+
         section_heading(ui, "Connection");
         if let Some(row) = self
             .connection
@@ -591,7 +659,7 @@ impl TabMptcp {
         if self.connection.is_none() || self.choosing_connection {
             if let Some(id) = self.show_connection_table(ui, db) {
                 self.choosing_connection = false;
-                self.select_connection(db, id);
+                self.select_connection(db, settings, id);
             }
         }
 
@@ -600,49 +668,98 @@ impl TabMptcp {
         }
         ui.add_space(12.0);
         section_heading(ui, "Metrics of every subflow");
-        let width = ui.available_width();
-        table::filter_bar(
-            ui,
-            &mut self.metric_filter,
-            "Filter, e.g. cwnd send",
-            None,
-            width,
-            FILTER_GAP,
-        );
-        let mut toggled = None;
-        for (source, metrics) in group_metrics(&self.metrics, &self.metric_filter) {
-            let selected = metrics.iter().filter(|m| self.selected.contains(m)).count();
-            let title = if selected > 0 {
-                format!("{source} ({selected})")
-            } else {
-                source.to_string()
-            };
-            egui::CollapsingHeader::new(title)
-                .id_salt(("mptcp_metric_group", source))
-                .default_open(source == DEFAULT_METRIC.0)
-                .show(ui, |ui| {
-                    for m in metrics {
-                        let mut on = self.selected.contains(m);
-                        if ui.checkbox(&mut on, metric_label(m)).changed() {
-                            toggled = Some(m.clone());
-                        }
-                    }
-                });
+        let loaded = self.loaded_keys();
+        let selected_ids = selected_metric_ids(&self.metrics, &loaded);
+        // A metric has a line per subflow: no single colour to show
+        let muted = theme::muted_text(settings.dark_mode);
+        let colors: Vec<(i64, egui::Color32)> =
+            selected_ids.iter().map(|&id| (id, muted)).collect();
+        let mut action = None;
+        egui::Frame::NONE.show(ui, |ui| {
+            ui.set_max_height((sidebar_height * METRIC_TABLE_SHARE).max(160.0));
+            action = self.series_table.show_with_id_salt(
+                ui,
+                &self.metrics,
+                &selected_ids,
+                &colors,
+                "mptcp_series_table",
+            );
+        });
+        if let Some(action) = action {
+            self.apply_metric_action(db, settings, action);
         }
-        if let Some(m) = toggled {
-            match self.selected.iter().position(|s| *s == m) {
-                Some(i) => {
-                    self.selected.remove(i);
-                    if i < self.plots.len() {
-                        self.plots.remove(i);
-                    }
+    }
+
+    /// The metrics loaded in any subflow, each once
+    fn loaded_keys(&self) -> Vec<SeriesKey> {
+        let mut keys: Vec<SeriesKey> = Vec::new();
+        for key in self.subflows.iter().flat_map(Subflow::loaded) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        keys
+    }
+
+    /// The loaded metrics with a colour for the View tab: the first subflow's that has it
+    fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {
+        let mut selected: Vec<(SeriesKey, egui::Color32)> = Vec::new();
+        for sub in &self.subflows {
+            for key in sub.loaded() {
+                if !selected.iter().any(|(k, _)| *k == key) {
+                    selected.push((key, sub.color));
                 }
-                // Loaded by show_connection, at the width of the plots. It takes the time range
-                // of the others and fits its values itself; only the first one fits the view.
-                None => {
-                    self.needs_fit |= self.selected.is_empty();
-                    self.selected.push(m);
-                }
+            }
+        }
+        selected
+    }
+
+    /// Selects or deselects the metrics of the rows of `action` in every subflow that has
+    /// them. A row toggles on if no subflow has its metric loaded.
+    fn apply_metric_action(
+        &mut self,
+        db: &DbBackend,
+        settings: &AppSettings,
+        action: SeriesAction,
+    ) {
+        let keys_of = |ids: &[i64]| -> Vec<SeriesKey> {
+            self.metrics
+                .iter()
+                .filter(|m| ids.contains(&m.id))
+                .map(metric_key)
+                .collect()
+        };
+        let (keys, on) = match action {
+            SeriesAction::Toggle(id) => {
+                let keys = keys_of(&[id]);
+                let on = !keys.iter().any(|k| self.loaded_keys().contains(k));
+                (keys, on)
+            }
+            SeriesAction::Select(ids) => (keys_of(&ids), true),
+            SeriesAction::Deselect(ids) => (keys_of(&ids), false),
+        };
+        self.set_metrics(db, settings, &keys, on);
+        self.needs_fit = true;
+    }
+
+    /// Loads or drops `keys` in every subflow that has them
+    fn set_metrics(
+        &mut self,
+        db: &DbBackend,
+        settings: &AppSettings,
+        keys: &[SeriesKey],
+        on: bool,
+    ) {
+        for sub in &mut self.subflows {
+            let ids: Vec<i64> = keys
+                .iter()
+                .filter_map(|k| sub.find(k))
+                .map(|info| info.id)
+                .collect();
+            if on {
+                sub.state.select_series(db, &ids, settings);
+            } else {
+                sub.state.deselect_series(&ids);
             }
         }
     }
@@ -751,7 +868,7 @@ impl TabMptcp {
 
     /// Reads the subflows of a connection and their catalogs, the metrics they share and the
     /// path manager events.
-    fn select_connection(&mut self, db: &DbBackend, connection_id: i64) {
+    fn select_connection(&mut self, db: &DbBackend, settings: &AppSettings, connection_id: i64) {
         if self
             .connection
             .as_ref()
@@ -767,6 +884,8 @@ impl TabMptcp {
         else {
             return;
         };
+        // Keep the plotted metrics when switching connections, as far as the new one has them
+        let mut keep = self.loaded_keys();
         self.subflows.clear();
         self.events = Arc::default();
         // The picked event belonged to the old connection
@@ -787,9 +906,20 @@ impl TabMptcp {
                 Some(id) => format!("subflow {id}"),
                 None => format!("flow {}", m.flow_id),
             };
+            let label = format!("{label} ({}:{})", flow.tuple.src, flow.tuple.sport);
+            let mut state = PlotState::default();
+            state.select_flow(db, m.flow_id);
+            // A flow tuple may also belong to other connections: only this one's time span
+            state.data_x_min = state.data_x_min.max(connection.start_ts as f64);
+            state.data_x_max = state.data_x_max.min(connection.end_ts as f64);
+            if state.data_x_min > state.data_x_max {
+                (state.data_x_min, state.data_x_max) =
+                    (connection.start_ts as f64, connection.end_ts as f64);
+            }
+            (state.x_min, state.x_max) = (state.data_x_min, state.data_x_max);
             self.subflows.push(Subflow {
                 member: m.clone(),
-                label: format!("{label} ({}:{})", flow.tuple.src, flow.tuple.sport),
+                prefix: format!("{label}: "),
                 color,
                 flow: format_flow(flow),
                 series: self
@@ -797,6 +927,7 @@ impl TabMptcp {
                     .entry(m.flow_id)
                     .or_insert_with(|| db.list_series_for_flow(m.flow_id))
                     .clone(),
+                state,
                 acked: None,
                 received: None,
                 share: None,
@@ -806,30 +937,22 @@ impl TabMptcp {
             });
         }
 
-        let metrics: BTreeSet<MetricKey> = self
-            .subflows
-            .iter()
-            .flat_map(|s| s.series.iter())
-            .filter(|s| s.kind == SeriesKind::Raw && s.value_type != ColType::Text && s.n > 0)
-            .filter(|s| s.source != "mptcp_pm")
-            .map(metric_key)
-            .collect();
-        self.metrics = metrics.into_iter().collect();
-        let default = (
-            DEFAULT_METRIC.0.to_string(),
-            DEFAULT_METRIC.1,
-            DEFAULT_METRIC.2.to_string(),
-        );
-        // Keep the plotted metrics when switching connections, as far as the new one has them
-        self.selected.retain(|m| self.metrics.contains(m));
-        if self.selected.is_empty() {
-            self.selected = if self.metrics.contains(&default) {
-                vec![default]
-            } else {
-                self.metrics.first().cloned().into_iter().collect()
-            };
+        self.metrics = metric_catalog(self.subflows.iter().map(|s| s.series.as_slice()));
+        let has = |k: &SeriesKey| self.metrics.iter().any(|m| metric_key(m) == *k);
+        keep.retain(|k| has(k));
+        if keep.is_empty() {
+            let (source, dir, name) = DEFAULT_METRIC;
+            keep = self
+                .metrics
+                .iter()
+                .find(|m| m.source == source && m.dir == dir && m.name == name)
+                .or(self.metrics.first())
+                .map(metric_key)
+                .into_iter()
+                .collect();
         }
-        self.plots.clear();
+        self.set_metrics(db, settings, &keep, true);
+        self.shown_x = None;
         self.needs_fit = true;
 
         for sub in &mut self.subflows {
@@ -862,48 +985,6 @@ impl TabMptcp {
         self.connection = Some(connection);
     }
 
-    /// Loads `metric` of every subflow over the whole connection.
-    fn load_metric(
-        &self,
-        db: &DbBackend,
-        settings: &AppSettings,
-        metric: &MetricKey,
-        width: f32,
-    ) -> MetricPlot {
-        let mut plot = MetricPlot {
-            series: Vec::new(),
-            shown: false,
-        };
-        let infos: Vec<(usize, &Subflow, &SeriesInfo)> = self
-            .subflows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| s.find(metric).map(|info| (i, s, info)))
-            .collect();
-        let Some(connection) = &self.connection else {
-            return plot;
-        };
-        // A flow tuple may also belong to other connections: only this one's time span
-        let Some((t_min, t_max)) = flow_x_bounds(infos.iter().map(|(_, _, info)| *info))
-            .map(|(lo, hi)| {
-                (
-                    lo.max(connection.start_ts as f64),
-                    hi.min(connection.end_ts as f64),
-                )
-            })
-            .filter(|(lo, hi)| lo <= hi)
-        else {
-            return plot;
-        };
-        for (index, sub, info) in infos {
-            let mut sd = SeriesData::from_info(info, t_min, t_max, sub.color);
-            sd.name = sub.label.clone();
-            fetch_range(db, &mut sd, t_min, t_max, settings, Some(width));
-            plot.series.push((index, sd));
-        }
-        plot
-    }
-
     fn show_connection(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
         if self.connection.is_none() {
             ui.centered_and_justified(|ui| {
@@ -913,11 +994,6 @@ impl TabMptcp {
                 );
             });
             return;
-        }
-        while self.plots.len() < self.selected.len() {
-            let metric = &self.selected[self.plots.len()];
-            let plot = self.load_metric(db, settings, metric, ui.available_width());
-            self.plots.push(plot);
         }
         // The panel takes its space first, the plots get the rest. Its height is chosen once;
         // after that it keeps what the user resized it to.
@@ -942,14 +1018,25 @@ impl TabMptcp {
                 match self.bottom_tab {
                     BottomTab::Subflows => {
                         if let Some(index) = self.show_subflow_table(ui) {
-                            let sub = &mut self.subflows[index];
-                            sub.hidden = !sub.hidden;
+                            self.toggle_hidden(db, settings, index);
                         }
                     }
                     BottomTab::Events => self.show_event_table(ui),
                 }
             });
-        self.show_plots(ui, db, settings, ui.available_height());
+        self.show_plots(ui, db, settings);
+    }
+
+    /// Shows or hides a subflow in the plots. A hidden one is not reloaded while the view
+    /// moves, so it catches up when shown again.
+    fn toggle_hidden(&mut self, db: &DbBackend, settings: &AppSettings, index: usize) {
+        let shown_x = self.shown_x;
+        let sub = &mut self.subflows[index];
+        sub.hidden = !sub.hidden;
+        if let (false, Some((x_min, x_max))) = (sub.hidden, shown_x) {
+            (sub.state.x_min, sub.state.x_max) = (x_min, x_max);
+            sub.state.reload_visible_data(db, settings, None);
+        }
     }
 
     /// Hover text of a metric plot: the value under the pointer, and the events of `marked`
@@ -980,62 +1067,46 @@ impl TabMptcp {
         row > 0 && self.subflows.get(row - 1).is_some_and(|s| s.hidden)
     }
 
-    /// The value range a plot is fitted to: its visible subflows' values and 0, with some room
-    fn value_range(&self, plot: &MetricPlot) -> (f64, f64) {
-        let (lo, hi) = plot
-            .series
-            .iter()
-            .filter(|(i, _)| !self.subflows[*i].hidden)
-            .fold((0.0_f64, 1.0_f64), |(lo, hi), (_, s)| {
-                (lo.min(s.global_y_min), hi.max(s.global_y_max))
-            });
-        (lo * 1.05, hi * 1.05)
-    }
-
-    /// One plot per selected metric, stacked, with a shared time axis
-    fn show_plots(
-        &mut self,
-        ui: &mut egui::Ui,
-        db: &DbBackend,
-        settings: &AppSettings,
-        height: f32,
-    ) {
+    /// The plot groups of the selected metrics, a line per visible subflow, below the event
+    /// lane and with lines at its events
+    fn show_plots(&mut self, ui: &mut egui::Ui, db: &DbBackend, settings: &AppSettings) {
         let Some(connection) = &self.connection else {
             return;
         };
         // Time 0 is the start of the connection
         let origin = connection.start_ts as f64;
-        let (fit_x_min, fit_x_max) = (connection.start_ts as f64, connection.end_ts as f64);
+        let data_x = (connection.start_ts as f64, connection.end_ts as f64);
         let fit = std::mem::take(&mut self.needs_fit);
         let width = ui.available_width().max(1.0);
+        for sub in &mut self.subflows {
+            sub.state.reload_if_sampling_changed(db, settings, width);
+            // Line widths from the View tab; a line's colour stays its subflow's, as in the
+            // tables and the lane
+            self.styles.apply(FlowSlot::Single, &mut sub.state.series);
+            for sd in &mut sub.state.series {
+                sd.color = sub.color;
+            }
+        }
+        let selected: Vec<SeriesKey> = self.loaded_keys();
+        self.groups.sync(&selected);
+        let groups = self.groups.resolve(&selected);
 
         let lane = self.show_event_lane(ui, settings, fit, origin);
-        let mut reset = lane.reset;
-        let height = height - lane.height;
-        if self.selected.is_empty() {
-            ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
+        if selected.is_empty() || groups.is_empty() {
+            if selected.is_empty() {
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         RichText::new("Select metrics in the sidebar.")
                             .color(theme::muted_text(settings.dark_mode)),
                     );
                 });
-            });
-            self.needs_fit |= reset;
+            } else {
+                grouped_plots::all_hidden(ui);
+            }
+            self.needs_fit |= lane.reset;
             return;
         }
-        let plot_ids: Vec<egui::Id> = self
-            .selected
-            .iter()
-            .map(|metric| egui::Id::new(("mptcp_metric_height", metric_label(metric))))
-            .collect();
-        let stack = PlotStack::new(
-            ui,
-            egui::Id::new("mptcp_metric_stack"),
-            plot_ids,
-            height,
-            MIN_METRIC_PLOT_HEIGHT,
-        );
+
         let dark_mode = settings.dark_mode;
         // Dotted, so that they look like neither grid lines nor the steps of a series
         let event_lines: Vec<(f64, egui::Color32)> = self
@@ -1044,7 +1115,6 @@ impl TabMptcp {
             .filter(|e| self.marks_plots(e))
             .map(|e| (e.t, kind_color(e.kind(), dark_mode)))
             .collect();
-
         let selected_time = self
             .selected_event
             .and_then(|i| self.events.get(i))
@@ -1057,137 +1127,78 @@ impl TabMptcp {
             .filter(|e| self.marks_plots(e))
             .map(|e| (e.t, e.label.clone()))
             .collect();
-        let mut visible = None;
-        ScrollArea::vertical()
-            .id_salt("mptcp_plots_scroll")
-            .max_height(height)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for (index, (metric, plot)) in self.selected.iter().zip(&self.plots).enumerate() {
-                    let (y_min, y_max) = self.value_range(plot);
-                    let plot_height = stack.height(index);
-                    plot_title(ui, section_heading_text(ui, &metric_label(metric)));
-                    let response = Plot::new(("mptcp_metric", metric_label(metric)))
-                        .allow_boxed_zoom(true)
-                        .allow_drag(true)
-                        // The wheel scrolls the stack, not the values
-                        .allow_scroll([true, false])
-                        // Its auto bounds would spread to the linked plots and unlink their
-                        // time; a double-click resets the whole view instead, see below
-                        .allow_double_click_reset(false)
-                        .link_axis("mptcp_time", [true, false])
-                        .link_cursor("mptcp_time", [true, false])
-                        .x_grid_spacer(seconds_grid_spacer(origin))
-                        .x_axis_formatter(seconds_since_formatter(origin))
-                        .y_axis_formatter(time_or_compact_formatter(origin))
-                        // Same width in every plot, so the time axes line up
-                        .y_axis_min_width(Y_AXIS_WIDTH)
-                        .label_formatter(Self::plot_label_formatter(
-                            origin,
-                            lane.tol,
-                            Arc::clone(&marked),
-                        ))
-                        .height(plot_height)
-                        .show(ui, |plot_ui| {
-                            if fit {
-                                plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                    [fit_x_min, y_min],
-                                    [fit_x_max, y_max],
-                                ));
-                            } else if !plot.shown {
-                                // Otherwise its values stay on auto bounds and rescale with
-                                // every detail load while panning
-                                let (x_min, x_max) = lane.time_range;
-                                plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                    [x_min, y_min],
-                                    [x_max, y_max],
-                                ));
-                            } else if visible.is_none() {
-                                let bounds = plot_ui.plot_bounds();
-                                visible = Some((bounds.min()[0], bounds.max()[0]));
-                            }
-                            for (_, s) in plot
-                                .series
-                                .iter()
-                                .filter(|(i, _)| !self.subflows[*i].hidden)
-                            {
-                                // Counters and states hold their value until the next record.
-                                // Not booleans: only their true records are loaded.
-                                let step = s.val_type == ValueKind::Int;
-                                let gap = gap_threshold(&s.points, s.loaded_sample_interval);
-                                for segment in segments(&s.points, gap, step) {
-                                    if segment.held {
-                                        // No records over the pause, the value only held
-                                        plot_ui.line(
-                                            Line::new(PlotPoints::from(segment.points))
-                                                .color(s.color.gamma_multiply(HELD_ALPHA))
-                                                .style(LineStyle::dashed_dense())
-                                                .name(&s.name),
-                                        );
-                                    } else if segment.points.len() == 1 {
-                                        plot_ui.points(
-                                            Points::new(PlotPoints::from(segment.points))
-                                                .color(s.color)
-                                                .radius(2.0)
-                                                .name(&s.name),
-                                        );
-                                    } else {
-                                        plot_ui.line(
-                                            Line::new(PlotPoints::from(segment.points))
-                                                .color(s.color)
-                                                .name(&s.name),
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(t) = selected_time {
-                                plot_ui.vline(
-                                    VLine::new(t)
-                                        .color(theme::text(dark_mode))
-                                        .width(2.5)
-                                        .style(LineStyle::dashed_dense()),
-                                );
-                            }
-                            for &(t, color) in &event_lines {
-                                plot_ui.vline(
-                                    VLine::new(t)
-                                        .color(color)
-                                        .width(1.5)
-                                        .style(LineStyle::dotted_dense()),
-                                );
-                            }
-                        });
-                    // The top plot names the lines
-                    if index == 0 {
-                        self.paint_plot_labels(ui, &response.transform, &lane.groups, dark_mode);
-                    }
-                    reset |=
-                        response.response.secondary_clicked() || response.response.double_clicked();
-                    stack.resize_handle(ui, index);
-                }
-            });
-        for plot in &mut self.plots {
-            plot.shown = true;
-        }
-        if reset {
+        let draw_events = |plot_ui: &mut PlotUi, _: usize| {
+            if let Some(t) = selected_time {
+                plot_ui.vline(
+                    VLine::new(t)
+                        .color(theme::text(dark_mode))
+                        .width(SELECTED_EVENT_WIDTH)
+                        .style(SELECTED_EVENT_STYLE),
+                );
+            }
+            for &(t, color) in &event_lines {
+                plot_ui.vline(
+                    VLine::new(t)
+                        .color(color)
+                        .width(EVENT_LINE_WIDTH)
+                        .style(EVENT_LINE_STYLE),
+                );
+            }
+        };
+        // The top plot names the lines
+        let paint_labels = |ui: &egui::Ui, transform: &PlotTransform, index: usize| {
+            if index == 0 {
+                self.paint_plot_labels(ui, transform, &lane.groups, dark_mode);
+            }
+        };
+        let hover = Self::plot_label_formatter(origin, lane.tol, marked);
+        let label = |name: &str, point: &PlotPoint| hover(name, point);
+
+        // Hidden subflows are left out; `shown[i]` is the subflow of flow i
+        let shown: Vec<usize> = (0..self.subflows.len())
+            .filter(|&i| !self.subflows[i].hidden)
+            .collect();
+        let flows: Vec<grouped_plots::Flow> = shown
+            .iter()
+            .map(|&i| grouped_plots::Flow {
+                slot: FlowSlot::Single,
+                state: &self.subflows[i].state,
+                prefix: &self.subflows[i].prefix,
+            })
+            .collect();
+        let plot_settings = grouped_plots::Settings {
+            id: PLOTS_ID,
+            x_origin: origin,
+            data_x,
+            fit,
+            set_x: None,
+            remove_outliers: false,
+            show_gaps: false,
+            show_grid: self.show_grid,
+            hooks: grouped_plots::Hooks {
+                draw: Some(&draw_events),
+                paint: Some(&paint_labels),
+                label: Some(&label),
+                link_cursor: true,
+                // The wheel scrolls the stack, not the values
+                scroll_y: false,
+                double_click_reset: false,
+                split_at_gaps: true,
+            },
+        };
+        let outcome = grouped_plots::show(ui, &groups, &flows, &plot_settings);
+        drop(flows);
+
+        if outcome.right_clicked || lane.reset {
             self.needs_fit = true;
         }
-
-        // Panned or zoomed in: load the visible part of the data in more detail. The plots
-        // share the time axis, so one of them gives the visible range of all.
-        if let Some((x_min, x_max)) = visible {
-            for (_, sd) in self.plots.iter_mut().flat_map(|p| p.series.iter_mut()) {
-                let lo = x_min.max(sd.global_t_min);
-                let hi = x_max.min(sd.global_t_max);
-                if lo >= hi {
-                    continue;
-                }
-                let stale = sd.loaded_range.is_none_or(|(loaded_lo, loaded_hi)| {
-                    lo < loaded_lo || hi > loaded_hi || (hi - lo) * 4.0 < loaded_hi - loaded_lo
-                });
-                if stale {
-                    load_series_window(db, sd, x_min, x_max, settings, Some(width));
-                }
+        self.shown_x = outcome.x().or(self.shown_x);
+        // Panned or zoomed in: load the visible part in more detail
+        for (&index, reload) in shown.iter().zip(&outcome.reload) {
+            if let Some((x_min, x_max)) = *reload {
+                let state = &mut self.subflows[index].state;
+                (state.x_min, state.x_max) = (x_min, x_max);
+                state.reload_visible_data(db, settings, Some(width));
             }
         }
     }
@@ -1375,31 +1386,47 @@ mod tests {
         assert_eq!(event_address(0, 0, [0; 4]), None);
     }
 
-    #[test]
-    fn metrics_group_by_source_and_filter() {
-        let key = |source: &str, dir, name: &str| (source.to_string(), dir, name.to_string());
-        let metrics = vec![
-            key("cwnd", Dir::None, "snd_cwnd"),
-            key("sock", Dir::Send, "backoff"),
-            key("sock", Dir::Send, "snd_cwnd"),
-            key("sock", Dir::Recv, "snd_cwnd"),
-        ];
-        let groups = group_metrics(&metrics, "");
-        let sizes: Vec<(&str, usize)> = groups.iter().map(|(s, g)| (*s, g.len())).collect();
-        assert_eq!(sizes, vec![("cwnd", 1), ("sock", 3)]);
-        let groups = group_metrics(&metrics, "CWND send");
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].1, vec![&metrics[2]]);
-        assert!(group_metrics(&metrics, "rtt").is_empty());
+    fn info(id: i64, source: &str, dir: Dir, name: &str, n: i64) -> SeriesInfo {
+        SeriesInfo {
+            id,
+            flow_id: id / 10,
+            kind: SeriesKind::Raw,
+            source: source.into(),
+            dir,
+            name: name.into(),
+            value_type: ColType::I64,
+            tbl: None,
+            col: None,
+            n,
+            t_min: Some(0),
+            t_max: Some(1),
+            v_min: Some(0.0),
+            v_max: Some(1.0),
+        }
     }
 
     #[test]
-    fn metric_labels() {
-        let key = ("sock".to_string(), Dir::Send, "snd_cwnd".to_string());
-        assert_eq!(metric_label(&key), "snd_cwnd · sock · send");
-        let key = ("tcp_probe".to_string(), Dir::None, "SRTT".to_string());
-        assert_eq!(metric_label(&key), "SRTT · tcp_probe");
-        let key = ("tcp4".to_string(), Dir::Recv, "ACK_NUM".to_string());
-        assert_eq!(metric_label(&key), "ACK_NUM · tcp4 · recv");
+    fn metrics_of_all_subflows_once() {
+        // Subflow 1 lacks srtt and has no cwnd records; subflow 2 has both
+        let first = [
+            info(10, "sock", Dir::Send, "snd_cwnd", 0),
+            info(11, "mptcp_pm", Dir::None, "event", 4),
+        ];
+        let mut text = info(22, "sock", Dir::None, "state", 3);
+        text.value_type = ColType::Text;
+        let second = [
+            info(20, "sock", Dir::Send, "snd_cwnd", 5),
+            info(21, "sock", Dir::Send, "srtt", 5),
+            text,
+        ];
+        let third = [info(30, "sock", Dir::Send, "srtt", 5)];
+        let metrics = metric_catalog([&first[..], &second[..], &third[..]]);
+        let ids: Vec<i64> = metrics.iter().map(|m| m.id).collect();
+        assert_eq!(ids, [20, 21]);
+
+        // A metric counts as selected while any subflow has it loaded
+        let loaded = [metric_key(&third[0])];
+        assert_eq!(selected_metric_ids(&metrics, &loaded), [21]);
+        assert!(selected_metric_ids(&metrics, &[]).is_empty());
     }
 }

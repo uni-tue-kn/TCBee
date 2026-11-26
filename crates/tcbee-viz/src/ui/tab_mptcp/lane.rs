@@ -15,11 +15,12 @@ use super::model::{
     centered_x, event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name,
     lane_y, place_labels, row_name, EventGroup, LabelSpan,
 };
-use super::TabMptcp;
+use super::{TabMptcp, PLOTS_ID};
 use crate::ui::plot_frame::{plot_title, TITLE_INSET, Y_AXIS_WIDTH};
 use crate::{
     settings::AppSettings,
     ui::{
+        grouped_plots,
         tab_single_flow::{seconds_grid_spacer, section_heading_text},
         theme,
     },
@@ -49,12 +50,8 @@ const MARKER_RADIUS: f32 = 6.0;
 /// What the event lane reports to the plots below it
 #[derive(Default)]
 pub(super) struct LaneResponse {
-    /// Height it took, with its title and legend
-    pub height: f32,
     /// Right-clicked to reset the view
     pub reset: bool,
-    /// The time range it shows, which all plots share
-    pub time_range: (f64, f64),
     /// Its groups of close events
     pub groups: Arc<[EventGroup]>,
     /// Time (ns) within which events group, a few pixels at the current zoom
@@ -74,7 +71,6 @@ impl TabMptcp {
         let Some(connection) = &self.connection else {
             return LaneResponse::default();
         };
-        let top = ui.cursor().top();
         let rows = self.subflows.len() + 1;
         let pitch = MIN_ROW_PITCH.max(ui.text_style_height(&egui::TextStyle::Body) + 6.0);
         // The rows, half a row of margin and the (empty) time axis
@@ -93,8 +89,8 @@ impl TabMptcp {
             .allow_scroll([true, false])
             .allow_boxed_zoom(false)
             .allow_double_click_reset(false)
-            .link_axis("mptcp_time", [true, false])
-            .link_cursor("mptcp_time", [true, false])
+            .link_axis(grouped_plots::x_axis_link(PLOTS_ID), [true, false])
+            .link_cursor(grouped_plots::x_axis_link(PLOTS_ID), [true, false])
             // Hover needs one of the two; the label shows the event, not the coordinates
             .show_x(true)
             .show_y(false)
@@ -123,7 +119,10 @@ impl TabMptcp {
                 let (start, end) = (connection.start_ts as f64, connection.end_ts as f64);
                 let (y_min, y_max) = (-0.6, rows as f64 - 0.4);
                 if fit {
-                    plot_ui.set_plot_bounds(PlotBounds::from_min_max([start, y_min], [end, y_max]));
+                    // The same time range as the plots fit to, which share the axis
+                    let (x_min, x_max) = grouped_plots::fit_x((start, end));
+                    plot_ui
+                        .set_plot_bounds(PlotBounds::from_min_max([x_min, y_min], [x_max, y_max]));
                 }
                 // An event picked in the list: the plots below follow through the linked axis
                 if let Some(t) = focus {
@@ -191,8 +190,6 @@ impl TabMptcp {
         LaneResponse {
             groups,
             tol,
-            height: ui.cursor().top() - top,
-            time_range: (bounds.min()[0], bounds.max()[0]),
             // Like on the metric plots
             reset: response.response.secondary_clicked() || response.response.double_clicked(),
         }

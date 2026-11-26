@@ -44,6 +44,7 @@ pub fn show(
     plot_stack: egui::Id,
     selected: &[(SeriesKey, Color32)],
     presets: &[Preset],
+    pick_colors: bool,
 ) -> bool {
     let keys: Vec<SeriesKey> = selected.iter().map(|(k, _)| k.clone()).collect();
     let mut changed = false;
@@ -98,7 +99,14 @@ pub fn show(
     let mut edits = Vec::new();
     for group in groups.groups() {
         group_card(
-            ui, id_salt, group, selected, &targets, styles, copying, &mut edits,
+            ui,
+            id_salt,
+            group,
+            (selected, pick_colors),
+            &targets,
+            styles,
+            copying,
+            &mut edits,
         );
         ui.add_space(6.0);
     }
@@ -111,7 +119,14 @@ pub fn show(
             hidden: false,
         };
         group_card(
-            ui, id_salt, &card, selected, &targets, styles, copying, &mut edits,
+            ui,
+            id_salt,
+            &card,
+            (selected, pick_colors),
+            &targets,
+            styles,
+            copying,
+            &mut edits,
         );
     }
 
@@ -165,14 +180,15 @@ impl Edit {
     }
 }
 
-/// A group's card, a drop target for metric chips. `targets` are all groups as (id, name),
+/// A group's card, a drop target for metric chips. `selected` are the selected metrics with
+/// their colours and whether to offer picking one, `targets` all groups as (id, name),
 /// `copying` whether a drop copies instead of moving.
 #[allow(clippy::too_many_arguments)]
 fn group_card(
     ui: &mut Ui,
     id_salt: &str,
     group: &PlotGroup,
-    selected: &[(SeriesKey, Color32)],
+    (selected, pick_colors): (&[(SeriesKey, Color32)], bool),
     targets: &[(u64, String)],
     styles: &SeriesStyles,
     copying: bool,
@@ -197,7 +213,7 @@ fn group_card(
                     key: key.clone(),
                     from: group.id,
                 };
-                if let Some(color) = color {
+                if let Some(color) = color.filter(|_| pick_colors) {
                     let mut picked = color;
                     if egui::color_picker::color_edit_button_srgba(
                         ui,

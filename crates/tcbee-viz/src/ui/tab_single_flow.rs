@@ -174,6 +174,7 @@ impl TabSingleFlow {
                 grouped_plots::plot_stack_id("single"),
                 &selected,
                 SINGLE_PRESETS,
+                true,
             ) {
                 self.needs_fit = true;
             }

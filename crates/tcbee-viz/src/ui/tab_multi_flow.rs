@@ -193,6 +193,7 @@ impl TabMultiFlow {
                 grouped_plots::plot_stack_id("multi"),
                 &selected,
                 MULTI_PRESETS,
+                true,
             ) {
                 self.needs_fit = true;
             }

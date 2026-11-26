@@ -505,6 +505,12 @@ fn draw_segments(plot_ui: &mut PlotUi, d: &Drawn) {
     }
 }
 
+/// The x range the plots fit to without leading outliers removed, for another plot that
+/// fits with them, see [`x_axis_link`].
+pub fn fit_x(data_x: (f64, f64)) -> (f64, f64) {
+    pad(data_x, PADDING_X)
+}
+
 /// The x range to fit all plots to: that of their lines when leading outliers are removed,
 /// else the data's, padded a little.
 fn shared_fit_x<'a>(drawn: impl Iterator<Item = &'a Drawn<'a>>, settings: &Settings) -> (f64, f64) {
@@ -518,7 +524,7 @@ fn shared_fit_x<'a>(drawn: impl Iterator<Item = &'a Drawn<'a>>, settings: &Setti
             )
         })
         .flatten();
-    pad(shown.map_or(settings.data_x, |(x, _)| x), PADDING_X)
+    shown.map_or(fit_x(settings.data_x), |(x, _)| pad(x, PADDING_X))
 }
 
 /// The y range to fit a plot to: that of its lines, or the catalog's value range when
