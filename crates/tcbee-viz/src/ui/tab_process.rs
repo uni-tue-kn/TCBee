@@ -1,8 +1,8 @@
 use crate::ui::{
     event_labels,
     flow_table::FlowTable,
-    plot_frame::{plot_title, Y_AXIS_WIDTH},
-    tab_single_flow::{split_plot_height_with_footer, to_plot_points},
+    plot_frame::{plot_title, PlotStack, MIN_PLOT_HEIGHT, Y_AXIS_WIDTH},
+    tab_single_flow::to_plot_points,
     theme,
 };
 use egui::RichText;
@@ -315,11 +315,22 @@ impl TabProcess {
             return;
         }
 
-        let plot_height = split_plot_height_with_footer(ui.available_height(), numeric.len());
+        let plot_ids: Vec<egui::Id> = numeric
+            .iter()
+            .map(|&(s, new)| egui::Id::new(("process_split_height", line_name(s, new))))
+            .collect();
+        let stack = PlotStack::new(
+            ui,
+            egui::Id::new("process_split_stack"),
+            plot_ids,
+            ui.available_height(),
+            MIN_PLOT_HEIGHT,
+        );
         egui::ScrollArea::vertical()
             .id_salt("process_split_scroll")
             .show(ui, |ui| {
                 for (i, &(s, new)) in numeric.iter().enumerate() {
+                    let plot_height = stack.height(i);
                     plot_title(ui, RichText::new(line_name(s, new)).color(s.color).strong());
                     let response = Plot::new(("process_split", i))
                         .allow_boxed_zoom(true)
@@ -334,6 +345,7 @@ impl TabProcess {
                             self.draw_event_markers(plot_ui);
                         });
                     event_labels::paint_labels(ui, &response.transform, &self.string_events());
+                    stack.resize_handle(ui, i);
                 }
             });
     }

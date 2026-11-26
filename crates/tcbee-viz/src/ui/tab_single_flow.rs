@@ -15,6 +15,7 @@ use crate::{
         gap_marks,
         group_editor::{self, SidebarTab},
         grouped_plots,
+        plot_frame::{MIN_PLOT_HEIGHT, PLOT_AXIS_FOOTER},
         series_table::SeriesTable,
         sidebar::{self, apply_series_action, flow_picker, outliers_checkbox},
         theme,
@@ -22,7 +23,6 @@ use crate::{
     },
 };
 
-const PLOT_AXIS_FOOTER: f32 = 36.0;
 const SINGLE_PRESETS: &[Preset] = &[Preset::AllTogether, Preset::PerMetric];
 
 pub struct TabSingleFlow {
@@ -171,6 +171,7 @@ impl TabSingleFlow {
                 "single_groups",
                 (&mut self.groups, &mut self.styles),
                 &mut self.show_grid,
+                grouped_plots::plot_stack_id("single"),
                 &selected,
                 SINGLE_PRESETS,
             ) {
@@ -648,12 +649,7 @@ fn range_looks_like_ktime_ns(range: &std::ops::RangeInclusive<f64>, origin_ns: f
 }
 
 pub fn plot_height_with_footer(available_height: f32) -> f32 {
-    (available_height - PLOT_AXIS_FOOTER).max(80.0)
-}
-
-pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -> f32 {
-    let count = plot_count.max(1) as f32;
-    ((available_height - PLOT_AXIS_FOOTER) / count).max(80.0)
+    (available_height - PLOT_AXIS_FOOTER).max(MIN_PLOT_HEIGHT)
 }
 
 pub fn section_heading(ui: &mut egui::Ui, label: &str) {

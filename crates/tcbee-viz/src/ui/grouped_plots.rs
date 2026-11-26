@@ -14,11 +14,13 @@ use crate::{
     export,
     ui::{
         event_labels, gap_marks,
-        plot_frame::{plot_title, TITLE_SPACING, Y_AXIS_WIDTH},
+        plot_frame::{
+            plot_title, title_height, PlotStack, MIN_PLOT_HEIGHT, RESIZE_HANDLE_HEIGHT,
+            Y_AXIS_WIDTH,
+        },
         tab_single_flow::{
             plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter,
-            split_plot_height_with_footer, time_or_compact_coordinates_formatter,
-            time_or_compact_formatter, to_plot_points,
+            time_or_compact_coordinates_formatter, time_or_compact_formatter, to_plot_points,
         },
     },
 };
@@ -26,12 +28,10 @@ use crate::{
 /// Space around the data when fitting, as a fraction of its x and y span.
 const PADDING_X: f64 = 0.02;
 const PADDING_Y: f64 = 0.06;
-/// Height of a group's name above its plot (px).
-const HEADING_HEIGHT: f32 = 22.0;
 /// Height of an empty group's drop strip (px).
 const EMPTY_HEIGHT: f32 = 36.0;
-/// Space below each plot (px).
-const PLOT_GAP: f32 = 4.0;
+/// Space below each plot, where its resize handle is (px).
+const PLOT_GAP: f32 = RESIZE_HANDLE_HEIGHT;
 
 type PlotDataBounds = ((f64, f64), (f64, f64));
 /// The string events of a series with its legend name.
@@ -171,14 +171,33 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
     // One group fills the area like a single plot; more groups share it and scroll when
     // they get too small
     let single = groups.len() == 1;
-    let plot_count = groups.iter().filter(|g| !g.members.is_empty()).count();
-    let plot_height = if single {
-        plot_height_with_footer(ui.available_height())
-    } else {
-        let fixed = groups.len() as f32 * (HEADING_HEIGHT + TITLE_SPACING + PLOT_GAP)
-            + (groups.len() - plot_count) as f32 * EMPTY_HEIGHT;
-        split_plot_height_with_footer(ui.available_height() - fixed, plot_count)
-    };
+    // Per group, the index of its plot in the stack; empty groups have none
+    let mut plotted = 0;
+    let stack_index: Vec<Option<usize>> = groups
+        .iter()
+        .map(|g| {
+            (!g.members.is_empty()).then(|| {
+                plotted += 1;
+                plotted - 1
+            })
+        })
+        .collect();
+    let stack = (!single).then(|| {
+        let ids = groups
+            .iter()
+            .filter(|g| !g.members.is_empty())
+            .map(|g| egui::Id::new((settings.id, "group_plot", g.id)))
+            .collect();
+        let empty = (groups.len() - plotted) as f32 * (title_height(ui) + EMPTY_HEIGHT + PLOT_GAP);
+        PlotStack::new(
+            ui,
+            plot_stack_id(settings.id),
+            ids,
+            ui.available_height() - empty,
+            MIN_PLOT_HEIGHT,
+        )
+    });
+    let single_height = plot_height_with_footer(ui.available_height());
 
     // Linked plots must fit to the same x range, so it comes from all of them
     let drawn: Vec<Vec<Drawn>> = groups
@@ -188,27 +207,32 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
     let fit_x = shared_fit_x(drawn.iter().flatten(), settings);
 
     let mut draw_all = |ui: &mut Ui| {
-        for (group, drawn) in groups.iter().zip(&drawn) {
+        for ((group, drawn), index) in groups.iter().zip(&drawn).zip(&stack_index) {
             if !single {
                 plot_title(ui, RichText::new(&group.name).strong());
             }
-            if group.members.is_empty() {
+            let Some(index) = *index else {
                 empty_strip(ui);
-            } else {
-                let view = show_plot(
-                    ui,
-                    group.id,
-                    drawn,
-                    fit_x,
-                    flows,
-                    &string_events,
-                    settings,
-                    plot_height,
-                    &mut outcome,
-                );
-                outcome.views.push((group.id, view));
+                ui.add_space(PLOT_GAP);
+                continue;
+            };
+            let plot_height = stack.as_ref().map_or(single_height, |s| s.height(index));
+            let view = show_plot(
+                ui,
+                group.id,
+                drawn,
+                fit_x,
+                flows,
+                &string_events,
+                settings,
+                plot_height,
+                &mut outcome,
+            );
+            outcome.views.push((group.id, view));
+            match &stack {
+                Some(stack) => stack.resize_handle(ui, index),
+                None => ui.add_space(PLOT_GAP),
             }
-            ui.add_space(PLOT_GAP);
         }
     };
     if single {
@@ -219,6 +243,11 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
             .show(ui, draw_all);
     }
     outcome
+}
+
+/// Id of the stack of group plots of the tab `tab_id`, see [`Settings::id`].
+pub fn plot_stack_id(tab_id: &str) -> egui::Id {
+    egui::Id::new((tab_id, "plot_stack"))
 }
 
 /// The plot area while every group is hidden.

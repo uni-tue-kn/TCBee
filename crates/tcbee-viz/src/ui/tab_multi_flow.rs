@@ -190,6 +190,7 @@ impl TabMultiFlow {
                 "multi_groups",
                 (&mut self.groups, &mut self.styles),
                 &mut self.show_grid,
+                grouped_plots::plot_stack_id("multi"),
                 &selected,
                 MULTI_PRESETS,
             ) {

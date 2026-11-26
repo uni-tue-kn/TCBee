@@ -7,7 +7,12 @@ use crate::{
         plot_groups::{series_name, PlotGroup, PlotGroups, Preset, SeriesKey, UNGROUPED},
         series_styles::{SeriesStyles, LINE_WIDTH_RANGE},
     },
-    ui::{sidebar::layout_picker, tab_single_flow::section_heading, theme},
+    ui::{
+        plot_frame::{heights_are_picked, reset_heights},
+        sidebar::layout_picker,
+        tab_single_flow::section_heading,
+        theme,
+    },
 };
 
 /// The tabs of the flow tab sidebars.
@@ -36,6 +41,7 @@ pub fn show(
     id_salt: &str,
     (groups, styles): (&mut PlotGroups, &mut SeriesStyles),
     show_grid: &mut bool,
+    plot_stack: egui::Id,
     selected: &[(SeriesKey, Color32)],
     presets: &[Preset],
 ) -> bool {
@@ -48,6 +54,17 @@ pub fn show(
         if ui.button("New group").clicked() {
             groups.add_group();
             changed = true;
+        }
+        let resized = heights_are_picked(ui.ctx(), plot_stack);
+        if ui
+            .add_enabled(resized, egui::Button::new("Reset heights"))
+            .on_hover_text("Let the plots fill the window again")
+            .on_disabled_hover_text(
+                "The plots fill the window; drag a plot's lower edge to resize it",
+            )
+            .clicked()
+        {
+            reset_heights(ui.ctx(), plot_stack);
         }
     });
     ui.checkbox(show_grid, "Grid lines");

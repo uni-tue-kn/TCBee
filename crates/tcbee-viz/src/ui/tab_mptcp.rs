@@ -33,10 +33,10 @@ use crate::{
     },
     settings::AppSettings,
     ui::{
-        plot_frame::{plot_title, TITLE_SPACING, Y_AXIS_WIDTH},
+        plot_frame::{plot_title, PlotStack, Y_AXIS_WIDTH},
         tab_single_flow::{
             seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
-            section_heading_text, split_plot_height_with_footer, time_or_compact_formatter,
+            section_heading_text, time_or_compact_formatter,
         },
         table::{
             self, data_cell, header_cell, number_cell, number_header_cell, text_cell,
@@ -53,7 +53,7 @@ pub const NO_MPTCP_HINT: &str =
 const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
 
 /// Smallest height of a metric plot; more plots scroll
-const MIN_PLOT_HEIGHT: f32 = 120.0;
+const MIN_METRIC_PLOT_HEIGHT: f32 = 120.0;
 /// Columns of the subflow table, left to right
 #[derive(Clone, Copy, PartialEq)]
 enum SubflowColumn {
@@ -970,10 +970,18 @@ impl TabMptcp {
             self.needs_fit |= reset;
             return;
         }
-        // Room for the metric name above each plot
-        let plot_height =
-            (split_plot_height_with_footer(height, self.selected.len()) - 18.0 - TITLE_SPACING)
-                .max(MIN_PLOT_HEIGHT);
+        let plot_ids: Vec<egui::Id> = self
+            .selected
+            .iter()
+            .map(|metric| egui::Id::new(("mptcp_metric_height", metric_label(metric))))
+            .collect();
+        let stack = PlotStack::new(
+            ui,
+            egui::Id::new("mptcp_metric_stack"),
+            plot_ids,
+            height,
+            MIN_METRIC_PLOT_HEIGHT,
+        );
         let dark_mode = settings.dark_mode;
         // Dotted, so that they look like neither grid lines nor the steps of a series
         let event_lines: Vec<(f64, egui::Color32)> = self
@@ -1003,6 +1011,7 @@ impl TabMptcp {
             .show(ui, |ui| {
                 for (index, (metric, plot)) in self.selected.iter().zip(&self.plots).enumerate() {
                     let (y_min, y_max) = self.value_range(plot);
+                    let plot_height = stack.height(index);
                     plot_title(ui, section_heading_text(ui, &metric_label(metric)));
                     let response = Plot::new(("mptcp_metric", metric_label(metric)))
                         .allow_boxed_zoom(true)
@@ -1100,7 +1109,7 @@ impl TabMptcp {
                     }
                     reset |=
                         response.response.secondary_clicked() || response.response.double_clicked();
-                    ui.add_space(4.0);
+                    stack.resize_handle(ui, index);
                 }
             });
         for plot in &mut self.plots {
