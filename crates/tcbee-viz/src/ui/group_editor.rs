@@ -34,8 +34,10 @@ pub fn tab_strip(ui: &mut Ui, tab: &mut SidebarTab) {
     ui.separator();
 }
 
-/// The group editor. `selected` are the groupable selected series with their plot colours.
-/// Returns true when the plots should fit their data again.
+/// The group editor. `selected` are the groupable selected series with their plot colours,
+/// `pick_colors` whether the user may change them. Returns true when the plots should fit
+/// their data again.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     id_salt: &str,
@@ -102,7 +104,8 @@ pub fn show(
             ui,
             id_salt,
             group,
-            (selected, pick_colors),
+            selected,
+            pick_colors,
             &targets,
             styles,
             copying,
@@ -122,7 +125,8 @@ pub fn show(
             ui,
             id_salt,
             &card,
-            (selected, pick_colors),
+            selected,
+            pick_colors,
             &targets,
             styles,
             copying,
@@ -180,15 +184,15 @@ impl Edit {
     }
 }
 
-/// A group's card, a drop target for metric chips. `selected` are the selected metrics with
-/// their colours and whether to offer picking one, `targets` all groups as (id, name),
+/// A group's card, a drop target for metric chips. `targets` are all groups as (id, name),
 /// `copying` whether a drop copies instead of moving.
 #[allow(clippy::too_many_arguments)]
 fn group_card(
     ui: &mut Ui,
     id_salt: &str,
     group: &PlotGroup,
-    (selected, pick_colors): (&[(SeriesKey, Color32)], bool),
+    selected: &[(SeriesKey, Color32)],
+    pick_colors: bool,
     targets: &[(u64, String)],
     styles: &SeriesStyles,
     copying: bool,

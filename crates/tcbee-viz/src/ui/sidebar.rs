@@ -67,7 +67,7 @@ fn selected_flow_card(
     } else {
         label.to_string()
     };
-    picker_card(ui, &label, &db.owner_label(flow_id), choosing)
+    picker_card(ui, &label, db.owner_label(flow_id), choosing)
 }
 
 /// A picked item as a card: `title`, and `detail` below it unless empty. The button reads
