@@ -385,6 +385,7 @@ impl TabMultiFlow {
             remove_outliers: self.remove_outliers,
             show_gaps: self.show_gaps,
             show_grid: self.show_grid,
+            hooks: grouped_plots::Hooks::default(),
         };
         let outcome = grouped_plots::show(ui, &groups, &flows, &plot_settings);
 

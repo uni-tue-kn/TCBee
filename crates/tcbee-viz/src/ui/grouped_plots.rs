@@ -2,7 +2,9 @@
 //! The tabs keep the zoom state; this module draws and reports what changed.
 
 use egui::{RichText, ScrollArea, Ui};
-use egui_plot::{Corner, Legend, Line, Plot, PlotBounds, PlotPoints, VLine};
+use egui_plot::{
+    Corner, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, PlotTransform, PlotUi, VLine,
+};
 
 use crate::{
     data::{
@@ -41,7 +43,7 @@ type NamedEvents<'a> = (String, egui::Color32, &'a [(f64, String)]);
 pub struct Flow<'a> {
     pub slot: FlowSlot,
     pub state: &'a PlotState,
-    pub prefix: &'static str,
+    pub prefix: &'a str,
 }
 
 impl Flow<'_> {
@@ -77,7 +79,7 @@ pub fn selected_keys(flows: &[Flow]) -> Vec<SeriesKey> {
     selected_colors(flows).into_iter().map(|(k, _)| k).collect()
 }
 
-pub struct Settings {
+pub struct Settings<'a> {
     /// Salt of the plot ids and the x axis link, unique per tab.
     pub id: &'static str,
     /// Time of the x axis's zero.
@@ -91,6 +93,51 @@ pub struct Settings {
     pub remove_outliers: bool,
     pub show_gaps: bool,
     pub show_grid: bool,
+    pub hooks: Hooks<'a>,
+}
+
+/// Draws into a plot; gets the index of the plot in the stack, 0 for the top one.
+pub type PlotOverlay<'a> = &'a dyn Fn(&mut PlotUi, usize);
+/// Paints over a plot after it is shown, clipped to its frame by the caller.
+pub type PlotPaint<'a> = &'a dyn Fn(&Ui, &PlotTransform, usize);
+/// The hover text of a plot from the series name and the point under the pointer.
+pub type PlotLabel<'a> = &'a dyn Fn(&str, &PlotPoint) -> String;
+
+/// What a tab adds to its plots beyond the series, for the MPTCP tab's events. The default
+/// adds nothing.
+pub struct Hooks<'a> {
+    /// Draws after the series, e.g. lines at events
+    pub draw: Option<PlotOverlay<'a>>,
+    /// Paints after the plot, e.g. labels along its top
+    pub paint: Option<PlotPaint<'a>>,
+    pub label: Option<PlotLabel<'a>>,
+    /// Link the pointer across the plots and with others on [`x_axis_link`]
+    pub link_cursor: bool,
+    /// Let the mouse wheel zoom the values too, not only the time
+    pub scroll_y: bool,
+    /// Let a double-click reset one plot to its auto bounds. Off, a double-click is
+    /// reported like a right click, so the tab fits all plots: the auto bounds of one plot
+    /// would spread to the linked ones and break their shared time.
+    pub double_click_reset: bool,
+}
+
+impl Default for Hooks<'_> {
+    fn default() -> Self {
+        Self {
+            draw: None,
+            paint: None,
+            label: None,
+            link_cursor: false,
+            scroll_y: true,
+            double_click_reset: true,
+        }
+    }
+}
+
+/// Id of the x axis link of the plots of the tab `tab_id`, see [`Settings::id`]: another
+/// plot on it moves in time with them.
+pub fn x_axis_link(tab_id: &str) -> String {
+    format!("{tab_id}_x_axis")
 }
 
 /// What the user did in the plots this frame.
@@ -98,6 +145,7 @@ pub struct Settings {
 pub struct Outcome {
     /// Per flow, in the order given: the visible x range when its data must be reloaded.
     pub reload: Vec<Option<(f64, f64)>>,
+    /// Right-clicked, or double-clicked without [`Hooks::double_click_reset`]
     pub right_clicked: bool,
     /// The visible part of each drawn group's plot, in group order.
     pub views: Vec<(u64, export::View)>,
@@ -221,6 +269,7 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
             let view = show_plot(
                 ui,
                 group.id,
+                index,
                 drawn,
                 fit_x,
                 flows,
@@ -300,6 +349,7 @@ fn group_series<'a>(
 fn show_plot(
     ui: &mut Ui,
     group_id: u64,
+    index: usize,
     drawn: &[Drawn],
     fit_x: (f64, f64),
     flows: &[Flow],
@@ -315,11 +365,20 @@ fn show_plot(
     let fit_bounds = (fit_x, fit_y(&lines));
     let mut view = export::View::default();
 
-    let response = Plot::new(format!("{}_group_{}", settings.id, group_id))
+    let hooks = &settings.hooks;
+    let mut plot = Plot::new(format!("{}_group_{}", settings.id, group_id))
         .allow_boxed_zoom(true)
         .allow_drag(true)
-        .allow_scroll(true)
-        .link_axis(format!("{}_x_axis", settings.id), [true, false])
+        .allow_scroll([true, hooks.scroll_y])
+        .allow_double_click_reset(hooks.double_click_reset)
+        .link_axis(x_axis_link(settings.id), [true, false]);
+    if hooks.link_cursor {
+        plot = plot.link_cursor(x_axis_link(settings.id), [true, false]);
+    }
+    if let Some(label) = hooks.label {
+        plot = plot.label_formatter(label);
+    }
+    let response = plot
         .x_grid_spacer(seconds_grid_spacer(settings.x_origin))
         .x_axis_formatter(seconds_since_formatter(settings.x_origin))
         .y_axis_formatter(time_or_compact_formatter(settings.x_origin))
@@ -382,9 +441,17 @@ fn show_plot(
                 }
             }
             event_labels::draw_lines(plot_ui, string_events);
+            if let Some(draw) = hooks.draw {
+                draw(plot_ui, index);
+            }
         });
     event_labels::paint_labels(ui, &response.transform, string_events);
-    if response.response.secondary_clicked() {
+    if let Some(paint) = hooks.paint {
+        paint(ui, &response.transform, index);
+    }
+    if response.response.secondary_clicked()
+        || (!hooks.double_click_reset && response.response.double_clicked())
+    {
         outcome.right_clicked = true;
     }
     view
