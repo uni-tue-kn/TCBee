@@ -27,6 +27,9 @@ pub enum Tab {
     Settings,
 }
 
+/// Height of the logo in the 48 px top bar
+const LOGO_HEIGHT: f32 = 28.0;
+
 const TABS: &[(Tab, &str)] = &[
     (Tab::Home, "Home"),
     (Tab::Overview, "Overview"),
@@ -53,6 +56,8 @@ pub struct TcbeeApp {
     tabs_opened: u64,
     /// [`DbBackend::saved`] when the MPTCP tab read its catalogs
     mptcp_saved: u64,
+    /// The logo in the top bar, loaded on the first frame; None inside if it did not decode
+    logo: Option<Option<egui::TextureHandle>>,
 }
 
 impl Default for TcbeeApp {
@@ -73,6 +78,7 @@ impl Default for TcbeeApp {
             tab_settings: TabSettings::default(),
             tabs_opened: 0,
             mptcp_saved: 0,
+            logo: None,
         }
     }
 }
@@ -107,12 +113,21 @@ impl eframe::App for TcbeeApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new("TCBee")
-                            .strong()
-                            .size(self.settings.text_size + 2.0)
-                            .color(theme::TOP_BAR_TEXT),
-                    );
+                    match self.logo.get_or_insert_with(|| crate::logo::header(ctx)) {
+                        Some(logo) => {
+                            let size = egui::vec2(LOGO_HEIGHT * logo.aspect_ratio(), LOGO_HEIGHT);
+                            ui.add(egui::Image::new((logo.id(), size)))
+                                .on_hover_text("TCBee");
+                        }
+                        None => {
+                            ui.label(
+                                egui::RichText::new("TCBee")
+                                    .strong()
+                                    .size(self.settings.text_size + 2.0)
+                                    .color(theme::TOP_BAR_TEXT),
+                            );
+                        }
+                    }
                     ui.add_space(16.0);
 
                     let has_mptcp = tab_mptcp::has_mptcp(&self.db);

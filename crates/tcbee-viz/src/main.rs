@@ -3,6 +3,7 @@ mod backend;
 mod cli;
 mod data;
 mod export;
+mod logo;
 mod plot_style;
 mod settings;
 mod ui;
