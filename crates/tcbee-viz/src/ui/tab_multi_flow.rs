@@ -7,7 +7,7 @@ use crate::{
         plot_groups::{FlowSlot, PlotGroups, Preset, SeriesKey},
         plot_state::PlotState,
         preprocessing::generate_colors,
-        series_colors::SeriesColors,
+        series_styles::SeriesStyles,
     },
     export,
     settings::AppSettings,
@@ -42,8 +42,8 @@ pub struct TabMultiFlow {
     series_table_b: SeriesTable,
     /// Which metrics share a plot
     groups: PlotGroups,
-    /// Colours picked in the View tab
-    colors: SeriesColors,
+    /// Colours and line widths picked in the View tab
+    styles: SeriesStyles,
     sidebar_tab: SidebarTab,
     /// [`DbBackend::saved`] when the metric lists were read
     catalog_saved: u64,
@@ -77,7 +77,7 @@ impl Default for TabMultiFlow {
             series_table_a: SeriesTable::default(),
             series_table_b: SeriesTable::default(),
             groups: PlotGroups::default(),
-            colors: SeriesColors::default(),
+            styles: SeriesStyles::default(),
             sidebar_tab: SidebarTab::default(),
             catalog_saved: 0,
             remove_outliers: true,
@@ -109,7 +109,7 @@ impl TabMultiFlow {
         self.series_table_a.reset();
         self.series_table_b.reset();
         self.groups = PlotGroups::default();
-        self.colors = SeriesColors::default();
+        self.styles = SeriesStyles::default();
         self.sidebar_tab = SidebarTab::default();
         self.remove_outliers = true;
         self.show_gaps = true;
@@ -136,7 +136,7 @@ impl TabMultiFlow {
             self.table_b.clear_stats_cache();
         }
 
-        self.apply_colors();
+        self.apply_styles();
 
         egui::SidePanel::left("multi_flow_sidebar")
             .resizable(true)
@@ -167,7 +167,7 @@ impl TabMultiFlow {
             .frame(egui::Frame::new().fill(theme::panel_bg(settings.dark_mode)))
             .show_inside(ui, |ui| {
                 ui.add_space(4.0);
-                self.apply_colors();
+                self.apply_styles();
                 self.show_plot_area(ui, db, settings);
             });
     }
@@ -185,7 +185,7 @@ impl TabMultiFlow {
             if group_editor::show(
                 ui,
                 "multi_groups",
-                (&mut self.groups, &mut self.colors),
+                (&mut self.groups, &mut self.styles),
                 &selected,
                 MULTI_PRESETS,
             ) {
@@ -405,11 +405,11 @@ impl TabMultiFlow {
         }
     }
 
-    /// Colours by position over both flows, then the ones the user picked.
-    fn apply_colors(&mut self) {
+    /// Colours by position over both flows, then the colours and line widths the user picked.
+    fn apply_styles(&mut self) {
         apply_unified_multi_flow_colors(&mut self.state_a, &mut self.state_b);
-        self.colors.apply(FlowSlot::A, &mut self.state_a.series);
-        self.colors.apply(FlowSlot::B, &mut self.state_b.series);
+        self.styles.apply(FlowSlot::A, &mut self.state_a.series);
+        self.styles.apply(FlowSlot::B, &mut self.state_b.series);
     }
 
     fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {

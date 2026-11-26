@@ -336,6 +336,7 @@ fn show_plot(
                 plot_ui.line(
                     Line::new(PlotPoints::from(d.points.clone()))
                         .color(d.series.color)
+                        .width(d.series.line_width)
                         .name(&d.name),
                 );
             }

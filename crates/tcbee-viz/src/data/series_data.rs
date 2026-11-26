@@ -3,6 +3,9 @@ use ts_storage::{DataValue, Gaps, SeriesInfo, ValueKind};
 
 use crate::backend::binding::series_label;
 
+/// Line width of a series nobody picked one for (px).
+pub const DEFAULT_LINE_WIDTH: f32 = 1.5;
+
 /// A single time series with its currently-loaded window of data points.
 /// `points` only contains data for the visible time window; the full dataset lives in the DB.
 pub struct SeriesData {
@@ -24,6 +27,8 @@ pub struct SeriesData {
     pub global_y_min: f64,
     pub global_y_max: f64,
     pub color: Color32,
+    /// Width of its line in the plots (px).
+    pub line_width: f32,
     /// The time range that is currently loaded in `points` / `string_points`.
     pub loaded_range: Option<(f64, f64)>,
     /// Minimum time distance used when loading the current points.
@@ -60,6 +65,7 @@ impl SeriesData {
             global_y_min,
             global_y_max,
             color,
+            line_width: DEFAULT_LINE_WIDTH,
             loaded_range: None,
             loaded_sample_interval: 0.0,
             step: false,

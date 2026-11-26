@@ -6,7 +6,7 @@ use crate::{
     data::{
         plot_groups::{FlowSlot, PlotGroups, Preset, SeriesKey},
         plot_state::PlotState,
-        series_colors::SeriesColors,
+        series_styles::SeriesStyles,
     },
     export,
     settings::AppSettings,
@@ -40,8 +40,8 @@ pub struct TabSingleFlow {
     show_gaps: bool,
     /// Which metrics share a plot
     groups: PlotGroups,
-    /// Colours picked in the View tab
-    colors: SeriesColors,
+    /// Colours and line widths picked in the View tab
+    styles: SeriesStyles,
     sidebar_tab: SidebarTab,
     /// [`DbBackend::saved`] when the metric lists were read
     catalog_saved: u64,
@@ -71,7 +71,7 @@ impl Default for TabSingleFlow {
             remove_outliers: true,
             show_gaps: true,
             groups: PlotGroups::default(),
-            colors: SeriesColors::default(),
+            styles: SeriesStyles::default(),
             sidebar_tab: SidebarTab::default(),
             catalog_saved: 0,
             view: export::View::default(),
@@ -98,7 +98,7 @@ impl TabSingleFlow {
         self.needs_fit = false;
         self.remove_outliers = true;
         self.groups = PlotGroups::default();
-        self.colors = SeriesColors::default();
+        self.styles = SeriesStyles::default();
         self.sidebar_tab = SidebarTab::default();
     }
 
@@ -115,7 +115,7 @@ impl TabSingleFlow {
             self.state.refresh_catalog(db, settings);
             self.flow_table.clear_stats_cache();
         }
-        self.colors.apply(FlowSlot::Single, &mut self.state.series);
+        self.styles.apply(FlowSlot::Single, &mut self.state.series);
 
         egui::SidePanel::left("single_flow_sidebar")
             .resizable(true)
@@ -166,7 +166,7 @@ impl TabSingleFlow {
             if group_editor::show(
                 ui,
                 "single_groups",
-                (&mut self.groups, &mut self.colors),
+                (&mut self.groups, &mut self.styles),
                 &selected,
                 SINGLE_PRESETS,
             ) {

@@ -5,7 +5,7 @@ use egui::{Color32, CursorIcon, DragAndDrop, RichText, Ui};
 use crate::{
     data::{
         plot_groups::{series_name, PlotGroup, PlotGroups, Preset, SeriesKey, UNGROUPED},
-        series_colors::SeriesColors,
+        series_styles::{SeriesStyles, LINE_WIDTH_RANGE},
     },
     ui::{sidebar::layout_picker, tab_single_flow::section_heading, theme},
 };
@@ -34,7 +34,7 @@ pub fn tab_strip(ui: &mut Ui, tab: &mut SidebarTab) {
 pub fn show(
     ui: &mut Ui,
     id_salt: &str,
-    (groups, colors): (&mut PlotGroups, &mut SeriesColors),
+    (groups, styles): (&mut PlotGroups, &mut SeriesStyles),
     selected: &[(SeriesKey, Color32)],
     presets: &[Preset],
 ) -> bool {
@@ -78,7 +78,9 @@ pub fn show(
         .collect();
     let mut edits = Vec::new();
     for group in groups.groups() {
-        group_card(ui, id_salt, group, selected, &targets, copying, &mut edits);
+        group_card(
+            ui, id_salt, group, selected, &targets, styles, copying, &mut edits,
+        );
         ui.add_space(6.0);
     }
     let ungrouped = groups.ungrouped(&keys);
@@ -89,14 +91,16 @@ pub fn show(
             members: ungrouped,
             hidden: false,
         };
-        group_card(ui, id_salt, &card, selected, &targets, copying, &mut edits);
+        group_card(
+            ui, id_salt, &card, selected, &targets, styles, copying, &mut edits,
+        );
     }
 
     // Only plots whose series changed need a new fit: renaming, hiding or recolouring
     // keeps the zoom
     changed |= edits.iter().any(Edit::changes_series);
     for edit in edits {
-        edit.apply(groups, colors);
+        edit.apply(groups, styles);
     }
     changed
 }
@@ -111,6 +115,7 @@ enum Edit {
     MoveMember(SeriesKey, u64, u64),
     CopyMember(SeriesKey, u64),
     SetColor(SeriesKey, Color32),
+    SetLineWidth(SeriesKey, f32),
 }
 
 /// What a dragged metric chip carries.
@@ -127,7 +132,7 @@ impl Edit {
         )
     }
 
-    fn apply(self, groups: &mut PlotGroups, colors: &mut SeriesColors) {
+    fn apply(self, groups: &mut PlotGroups, styles: &mut SeriesStyles) {
         match self {
             Edit::Rename(id, name) => groups.rename(id, name),
             Edit::SetHidden(id, hidden) => groups.set_hidden(id, hidden),
@@ -135,7 +140,8 @@ impl Edit {
             Edit::RemoveMember(key, from) => groups.remove_member(&key, from),
             Edit::MoveMember(key, from, to) => groups.move_member(&key, from, to),
             Edit::CopyMember(key, to) => groups.copy_member(&key, to),
-            Edit::SetColor(key, color) => colors.set(key, color),
+            Edit::SetColor(key, color) => styles.set_color(key, color),
+            Edit::SetLineWidth(key, width) => styles.set_line_width(key, width),
         }
     }
 }
@@ -149,6 +155,7 @@ fn group_card(
     group: &PlotGroup,
     selected: &[(SeriesKey, Color32)],
     targets: &[(u64, String)],
+    styles: &SeriesStyles,
     copying: bool,
     edits: &mut Vec<Edit>,
 ) {
@@ -187,7 +194,7 @@ fn group_card(
                 ui.dnd_drag_source(id, payload, |ui| member_chip(ui, key, color.is_some()))
                     .response
                     .on_hover_cursor(CursorIcon::Grab);
-                member_menu(ui, key, group.id, targets, edits);
+                member_menu(ui, key, group.id, targets, styles, edits);
             });
         }
     });
@@ -208,9 +215,23 @@ fn member_menu(
     key: &SeriesKey,
     from: u64,
     targets: &[(u64, String)],
+    styles: &SeriesStyles,
     edits: &mut Vec<Edit>,
 ) {
     ui.menu_button("☰", |ui| {
+        let mut width = styles.line_width(key);
+        if ui
+            .add(
+                egui::Slider::new(&mut width, LINE_WIDTH_RANGE)
+                    .step_by(0.5)
+                    .suffix(" px")
+                    .text("Line width"),
+            )
+            .changed()
+        {
+            edits.push(Edit::SetLineWidth(key.clone(), width));
+        }
+        ui.separator();
         let others: Vec<&(u64, String)> = targets.iter().filter(|(id, _)| *id != from).collect();
         ui.add_enabled_ui(!others.is_empty() || from != UNGROUPED, |ui| {
             ui.menu_button("Move to", |ui| {
