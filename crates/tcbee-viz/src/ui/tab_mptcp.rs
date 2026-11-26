@@ -624,7 +624,10 @@ impl TabMptcp {
     ) {
         group_editor::tab_strip(ui, &mut self.sidebar_tab);
         if self.sidebar_tab == SidebarTab::View {
-            let selected = self.selected_colors();
+            // A metric has a line per subflow: no single colour to show
+            let muted = theme::muted_text(settings.dark_mode);
+            let selected: Vec<(SeriesKey, egui::Color32)> =
+                self.loaded_keys().into_iter().map(|k| (k, muted)).collect();
             if group_editor::show(
                 ui,
                 "mptcp_groups",
@@ -693,20 +696,13 @@ impl TabMptcp {
 
     /// The metrics loaded in any subflow, each once
     fn loaded_keys(&self) -> Vec<SeriesKey> {
-        self.selected_colors().into_iter().map(|(k, _)| k).collect()
-    }
-
-    /// The loaded metrics with a colour for the View tab: the first subflow's that has it
-    fn selected_colors(&self) -> Vec<(SeriesKey, egui::Color32)> {
-        let mut selected: Vec<(SeriesKey, egui::Color32)> = Vec::new();
-        for sub in &self.subflows {
-            for key in sub.loaded() {
-                if !selected.iter().any(|(k, _)| *k == key) {
-                    selected.push((key, sub.color));
-                }
+        let mut keys: Vec<SeriesKey> = Vec::new();
+        for key in self.subflows.iter().flat_map(Subflow::loaded) {
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
-        selected
+        keys
     }
 
     /// Selects or deselects the metrics of the rows of `action` in every subflow that has
@@ -1087,16 +1083,24 @@ impl TabMptcp {
         let groups = self.groups.resolve(&selected);
 
         let lane = self.show_event_lane(ui, settings, fit, origin);
-        if selected.is_empty() || groups.is_empty() {
-            if selected.is_empty() {
-                ui.centered_and_justified(|ui| {
-                    ui.label(
-                        RichText::new("Select metrics in the sidebar.")
-                            .color(theme::muted_text(settings.dark_mode)),
-                    );
-                });
-            } else {
-                grouped_plots::all_hidden(ui);
+        let all_hidden = self.subflows.iter().all(|s| s.hidden);
+        let hint = if self.metrics.is_empty() {
+            Some("The subflows have no recorded metrics.")
+        } else if selected.is_empty() {
+            Some("Select metrics in the sidebar.")
+        } else if all_hidden {
+            Some("All subflows are hidden. Click a row in the Subflows table to show one.")
+        } else {
+            None
+        };
+        if hint.is_some() || groups.is_empty() {
+            match hint {
+                Some(hint) => {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(RichText::new(hint).color(theme::muted_text(settings.dark_mode)));
+                    });
+                }
+                None => grouped_plots::all_hidden(ui),
             }
             self.needs_fit |= lane.reset;
             return;
