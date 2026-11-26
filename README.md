@@ -7,7 +7,7 @@
  <img alt="tcbee-record while recording" width="800" src="docs/assets/record-dark.png"/>
 </div>
 
-TCBee monitors TCP flows at up to 5M events/s. It records packet headers and kernel TCP state with eBPF, stores them in a DuckDB or SQLite database and plots them. Linux only.
+TCBee monitors TCP flows at more than 20M events/s. It records packet headers and kernel TCP state with eBPF, stores them in a DuckDB or SQLite database and plots them. Linux only.
 
 ## Quick Start
 
