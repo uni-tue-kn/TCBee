@@ -34,7 +34,9 @@ use crate::{
     },
     settings::AppSettings,
     ui::{
+        flow_table::flow_matches,
         plot_frame::{plot_title, PlotStack, Y_AXIS_WIDTH},
+        sidebar,
         tab_single_flow::{
             seconds_grid_spacer, seconds_label_formatter, seconds_since_formatter, section_heading,
             section_heading_text, time_or_compact_formatter,
@@ -161,8 +163,16 @@ const TAB_BAR_HEIGHT: f32 = 28.0;
 
 /// Space between the filter box, its icon and buttons
 const FILTER_GAP: f32 = 4.0;
-const CONNECTION_FILTER_HELP: &str = "Plain text searches the token (hex or decimal), the \
-first subflow and the side.\nCombine terms with spaces, e.g. 10.31.1.1 client";
+const CONNECTION_FILTER_HELP: &str = "Filter syntax:\n\
+Plain text searches the token (hex or decimal), the first subflow, the side and the columns \
+and processes of every subflow.\n\
+Use column:value to limit a term:\n\
+  token:0x3fa1\n\
+  side:client\n\
+  conn:3\n\
+and the flow table's columns, which match if any subflow does:\n\
+  src:, dst:, sport:, dport:, port:, id:, proc:, pid:, uid:, cmd:\n\
+Combine terms with spaces, e.g. side:server dport:5201";
 
 /// Horizontal margin of the sidebar's content
 const SIDEBAR_MARGIN: i8 = 16;
@@ -286,6 +296,7 @@ fn connection_summaries(
             side: None,
             peer: None,
             subflows: members.len(),
+            subflow_ids: members.iter().map(|m| m.flow_id).collect(),
             events,
             start_s: (c.start_ts - origin) as f64 / 1e9,
             duration_s: (c.end_ts - c.start_ts) as f64 / 1e9,
@@ -485,6 +496,8 @@ pub struct TabMptcp {
     connections: Vec<ConnectionSummary>,
     connections_read: bool,
     connection_filter: String,
+    /// The connection table is shown below the picked connection
+    choosing_connection: bool,
     /// Series catalog of each subflow, read once
     catalogs: HashMap<i64, Vec<SeriesInfo>>,
     connection: Option<ConnectionInfo>,
@@ -559,9 +572,27 @@ impl TabMptcp {
     }
 
     fn show_sidebar(&mut self, ui: &mut egui::Ui, db: &DbBackend) {
-        section_heading(ui, "Connections");
-        if let Some(id) = self.show_connection_table(ui) {
-            self.select_connection(db, id);
+        section_heading(ui, "Connection");
+        if let Some(row) = self
+            .connection
+            .as_ref()
+            .and_then(|c| self.connections.iter().find(|r| r.id == c.id))
+        {
+            let side = row
+                .side
+                .map_or(String::new(), |s| format!(" · {}", s.label()));
+            let title = format!("{}{side}", row.token_text());
+            let detail = format!("{} · {} subflows", row.first_subflow, row.subflows);
+            if sidebar::picker_card(ui, &title, &detail, self.choosing_connection) {
+                self.choosing_connection = !self.choosing_connection;
+            }
+            ui.add_space(4.0);
+        }
+        if self.connection.is_none() || self.choosing_connection {
+            if let Some(id) = self.show_connection_table(ui, db) {
+                self.choosing_connection = false;
+                self.select_connection(db, id);
+            }
         }
 
         if self.connection.is_none() {
@@ -617,7 +648,7 @@ impl TabMptcp {
     }
 
     /// The filterable connection table. Returns the id of a newly clicked connection.
-    fn show_connection_table(&mut self, ui: &mut egui::Ui) -> Option<i64> {
+    fn show_connection_table(&mut self, ui: &mut egui::Ui, db: &DbBackend) -> Option<i64> {
         let dark_mode = ui.visuals().dark_mode;
         let selected_id = self.connection.as_ref().map(|c| c.id);
         let mut clicked = None;
@@ -627,7 +658,7 @@ impl TabMptcp {
             table::filter_bar(
                 ui,
                 &mut self.connection_filter,
-                "Filter, e.g. 0x3fa1 server",
+                "Filter, e.g. side:server dport:5201",
                 Some(CONNECTION_FILTER_HELP),
                 content_w,
                 FILTER_GAP,
@@ -636,7 +667,21 @@ impl TabMptcp {
             let visible: Vec<&ConnectionSummary> = self
                 .connections
                 .iter()
-                .filter(|c| c.matches(&filter))
+                .filter(|c| {
+                    c.matches(&filter, |term| {
+                        c.subflow_ids
+                            .iter()
+                            .filter_map(|&id| db.get_flow_by_id(id))
+                            .any(|f| {
+                                flow_matches(
+                                    f,
+                                    db.connection_label(f.id),
+                                    db.flow_owners(f.id),
+                                    term,
+                                )
+                            })
+                    })
+                })
                 .collect();
             let fixed = COL_TOKEN + COL_SIDE + COL_SUBFLOWS + COL_EVENTS + COL_DURATION;
             let col_flow = (content_w - fixed).max(COL_FIRST_SUBFLOW_MIN);
@@ -693,7 +738,8 @@ impl TabMptcp {
                         let click =
                             table::row_click(ui, rect, ui.id().with(("mptcp_connection", row.id)))
                                 .on_hover_text(connection_tooltip(row));
-                        if click.clicked() && !selected {
+                        // Clicking the picked one again only hides the table
+                        if click.clicked() {
                             clicked = Some(row.id);
                         }
                         table::row_divider(ui, rect);
@@ -706,6 +752,13 @@ impl TabMptcp {
     /// Reads the subflows of a connection and their catalogs, the metrics they share and the
     /// path manager events.
     fn select_connection(&mut self, db: &DbBackend, connection_id: i64) {
+        if self
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.id == connection_id)
+        {
+            return;
+        }
         let Some(connection) = db
             .list_connections()
             .iter()

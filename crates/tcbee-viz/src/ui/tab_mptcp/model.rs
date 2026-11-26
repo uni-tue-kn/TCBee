@@ -464,6 +464,8 @@ pub struct ConnectionSummary {
     /// Connection id of the other end, if recorded too
     pub peer: Option<i64>,
     pub subflows: usize,
+    /// Flow ids of the subflows, in the order they started
+    pub subflow_ids: Vec<i64>,
     /// Path manager records on the subflows' tuples
     pub events: i64,
     pub start_s: f64,
@@ -475,18 +477,27 @@ impl ConnectionSummary {
         format!("{:#010x}", self.token)
     }
 
-    /// Whether the row matches every whitespace-separated term of a lowercase filter
-    pub fn matches(&self, filter: &str) -> bool {
-        let text = format!(
-            "#{} {} {} {} {}",
-            self.id,
-            self.token_text(),
-            self.token,
-            self.first_subflow,
-            self.side.map_or("", Side::label)
-        )
-        .to_lowercase();
-        filter.split_whitespace().all(|term| text.contains(term))
+    /// Whether the row matches every whitespace-separated term of a lowercase filter, as in
+    /// the flow table: a term matches the connection's columns or, through `subflow_matches`,
+    /// one of its subflows, so `dport:5201` or `proc:iperf3` work as there.
+    pub fn matches(&self, filter: &str, subflow_matches: impl Fn(&str) -> bool) -> bool {
+        filter
+            .split_whitespace()
+            .all(|term| self.term_matches(term) || subflow_matches(term))
+    }
+
+    fn term_matches(&self, term: &str) -> bool {
+        let token = format!("{} {}", self.token_text(), self.token);
+        let side = self.side.map_or("", Side::label).to_lowercase();
+        match term.split_once(':') {
+            Some(("token", value)) => token.contains(value),
+            Some(("side", value)) => side.contains(value),
+            Some(("conn", value)) => value.is_empty() || self.id.to_string() == value,
+            Some(_) => false,
+            None => format!("#{} {token} {} {side}", self.id, self.first_subflow)
+                .to_lowercase()
+                .contains(term),
+        }
     }
 }
 
@@ -821,15 +832,24 @@ mod tests {
             side: Some(Side::Server),
             peer: Some(1),
             subflows: 3,
+            subflow_ids: vec![4, 5, 6],
             events: 12,
             start_s: 0.05,
             duration_s: 22.4,
         };
-        assert!(row.matches(""));
-        assert!(row.matches("0x5a4b server"));
-        assert!(row.matches("10.31.1.1 #2"));
-        assert!(row.matches(&0x5a4bd6e2_i64.to_string()));
-        assert!(!row.matches("client"));
-        assert!(!row.matches("5501 10.99"));
+        let none = |_: &str| false;
+        assert!(row.matches("", none));
+        assert!(row.matches("0x5a4b server", none));
+        assert!(row.matches("10.31.1.1 #2", none));
+        assert!(row.matches(&0x5a4bd6e2_i64.to_string(), none));
+        assert!(row.matches("token:0x5a4b side:server conn:2", none));
+        assert!(!row.matches("client", none));
+        assert!(!row.matches("side:client", none));
+        assert!(!row.matches("conn:20", none));
+        assert!(!row.matches("5501 10.99", none));
+        // Terms the connection lacks go to its subflows; all terms must match
+        let iperf = |term: &str| term == "proc:iperf3";
+        assert!(row.matches("server proc:iperf3", iperf));
+        assert!(!row.matches("client proc:iperf3", iperf));
     }
 }

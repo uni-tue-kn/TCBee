@@ -291,7 +291,7 @@ fn flow_stats(db: &DbBackend, flow: &Flow) -> FlowStats {
 
 /// `conn` is the flow's connection label, see `DbBackend::connection_label`, `owners` its
 /// processes, `DbBackend::flow_owners`
-fn flow_matches(flow: &Flow, conn: &str, owners: &[FlowOwner], filter: &str) -> bool {
+pub fn flow_matches(flow: &Flow, conn: &str, owners: &[FlowOwner], filter: &str) -> bool {
     if filter.is_empty() {
         return true;
     }
