@@ -12,7 +12,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use egui::{RichText, ScrollArea, Vec2};
-use egui_plot::{LineStyle, PlotPoint, PlotTransform, PlotUi, VLine};
+use egui_plot::{LineStyle, PlotTransform, PlotUi, VLine};
 use tcbee_common::records::{TCBEE_MPTCP_MP_PRIO_SENT, TCBEE_MPTCP_REINJECTED};
 use ts_storage::{ColType, ConnectionFlow, ConnectionInfo, DataValue, Dir, SeriesInfo, SeriesKind};
 
@@ -54,7 +54,8 @@ const DEFAULT_METRIC: (&str, Dir, &str) = ("sock", Dir::Send, "snd_cwnd");
 /// Salt of the plot ids, see [`grouped_plots::Settings::id`]
 const PLOTS_ID: &str = "mptcp";
 const MPTCP_PRESETS: &[Preset] = &[Preset::AllTogether, Preset::PerMetric];
-// The lines at path manager events in the plots, and at the one picked in the event list
+// The lines at path manager events in the plots, and at the one picked in the event list.
+// Dotted, so that they look like neither grid lines nor the steps of a series.
 const EVENT_LINE_WIDTH: f32 = 1.5;
 const EVENT_LINE_STYLE: LineStyle = LineStyle::Dotted { spacing: 5.0 };
 const SELECTED_EVENT_WIDTH: f32 = 2.5;
@@ -692,13 +693,7 @@ impl TabMptcp {
 
     /// The metrics loaded in any subflow, each once
     fn loaded_keys(&self) -> Vec<SeriesKey> {
-        let mut keys: Vec<SeriesKey> = Vec::new();
-        for key in self.subflows.iter().flat_map(Subflow::loaded) {
-            if !keys.contains(&key) {
-                keys.push(key);
-            }
-        }
-        keys
+        self.selected_colors().into_iter().map(|(k, _)| k).collect()
     }
 
     /// The loaded metrics with a colour for the View tab: the first subflow's that has it
@@ -1108,11 +1103,9 @@ impl TabMptcp {
         }
 
         let dark_mode = settings.dark_mode;
-        // Dotted, so that they look like neither grid lines nor the steps of a series
-        let event_lines: Vec<(f64, egui::Color32)> = self
-            .events
+        let marking: Vec<&PmEvent> = self.events.iter().filter(|e| self.marks_plots(e)).collect();
+        let event_lines: Vec<(f64, egui::Color32)> = marking
             .iter()
-            .filter(|e| self.marks_plots(e))
             .map(|e| (e.t, kind_color(e.kind(), dark_mode)))
             .collect();
         let selected_time = self
@@ -1121,12 +1114,7 @@ impl TabMptcp {
             .filter(|e| !self.is_hidden_row(e.row))
             .map(|e| e.t);
         // The events with a line, for the hover text of every plot
-        let marked: Arc<[(f64, String)]> = self
-            .events
-            .iter()
-            .filter(|e| self.marks_plots(e))
-            .map(|e| (e.t, e.label.clone()))
-            .collect();
+        let marked: Arc<[(f64, String)]> = marking.iter().map(|e| (e.t, e.label.clone())).collect();
         let draw_events = |plot_ui: &mut PlotUi, _: usize| {
             if let Some(t) = selected_time {
                 plot_ui.vline(
@@ -1152,7 +1140,6 @@ impl TabMptcp {
             }
         };
         let hover = Self::plot_label_formatter(origin, lane.tol, marked);
-        let label = |name: &str, point: &PlotPoint| hover(name, point);
 
         // Hidden subflows are left out; `shown[i]` is the subflow of flow i
         let shown: Vec<usize> = (0..self.subflows.len())
@@ -1178,7 +1165,7 @@ impl TabMptcp {
             hooks: grouped_plots::Hooks {
                 draw: Some(&draw_events),
                 paint: Some(&paint_labels),
-                label: Some(&label),
+                label: Some(&hover),
                 link_cursor: true,
                 // The wheel scrolls the stack, not the values
                 scroll_y: false,

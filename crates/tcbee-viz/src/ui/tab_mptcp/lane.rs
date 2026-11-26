@@ -392,7 +392,9 @@ enum LineSample {
     Held,
     /// A record with no neighbour close enough to join
     Lone,
+    /// A path manager event
     Event,
+    /// The event picked in the event list
     SelectedEvent,
 }
 
