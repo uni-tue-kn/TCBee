@@ -132,14 +132,26 @@ The database is a plain SQLite or DuckDB file. Rust programs can use the `ts-sto
 
 ## Screenshots
 
-<picture>
- <source media="(prefers-color-scheme: dark)" srcset="docs/assets/visualize-single-dark.png"/>
- <img alt="CWND, SSTHRESH and retransmissions of one Reno flow" src="docs/assets/visualize-single-light.png"/>
-</picture>
-<picture>
- <source media="(prefers-color-scheme: dark)" srcset="docs/assets/visualize-multi-dark.png"/>
- <img alt="Two Cubic flows sharing a bottleneck in one plot" src="docs/assets/visualize-multi-light.png"/>
-</picture>
+<table>
+ <tr>
+  <td><img alt="One flow: cwnd and ssthresh, retransmissions and srtt" src="docs/assets/single_flow_metrics.png"/></td>
+  <td><img alt="Two flows compared on one time axis" src="docs/assets/multi_flow.png"/></td>
+ </tr>
+ <tr>
+  <td align="center">One flow: cwnd, retransmissions, srtt</td>
+  <td align="center">Two flows on one time axis</td>
+ </tr>
+ <tr>
+  <td><img alt="MPTCP subflows below the path manager events" src="docs/assets/mptcp.png"/></td>
+  <td><img alt="A plugin computing the usable send window" src="docs/assets/process.png"/></td>
+ </tr>
+ <tr>
+  <td align="center">MPTCP subflows and path manager events</td>
+  <td align="center">Plugins compute derived series</td>
+ </tr>
+</table>
+
+All tabs: [tcbee-viz screenshots](crates/tcbee-viz/README.md#screenshots).
 
 ## License and credits
 
