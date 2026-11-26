@@ -90,6 +90,7 @@ pub struct Settings {
     pub set_x: Option<(f64, f64)>,
     pub remove_outliers: bool,
     pub show_gaps: bool,
+    pub show_grid: bool,
 }
 
 /// What the user did in the plots this frame.
@@ -296,6 +297,7 @@ fn show_plot(
         )
         // Same width in every plot of the stack, so the time axes line up
         .y_axis_min_width(Y_AXIS_WIDTH)
+        .show_grid(settings.show_grid)
         .legend(Legend::default())
         .height(height)
         .show(ui, |plot_ui| {

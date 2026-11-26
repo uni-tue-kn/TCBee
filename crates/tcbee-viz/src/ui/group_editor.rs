@@ -35,6 +35,7 @@ pub fn show(
     ui: &mut Ui,
     id_salt: &str,
     (groups, styles): (&mut PlotGroups, &mut SeriesStyles),
+    show_grid: &mut bool,
     selected: &[(SeriesKey, Color32)],
     presets: &[Preset],
 ) -> bool {
@@ -49,6 +50,7 @@ pub fn show(
             changed = true;
         }
     });
+    ui.checkbox(show_grid, "Grid lines");
     ui.label(
         RichText::new(
             "Each group is one plot; metrics in no group share the Ungrouped plot. Drag a \

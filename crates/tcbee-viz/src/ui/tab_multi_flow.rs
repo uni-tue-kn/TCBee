@@ -45,6 +45,8 @@ pub struct TabMultiFlow {
     /// Colours and line widths picked in the View tab
     styles: SeriesStyles,
     sidebar_tab: SidebarTab,
+    /// Grid lines in the plots, set in the View tab
+    show_grid: bool,
     /// [`DbBackend::saved`] when the metric lists were read
     catalog_saved: u64,
     remove_outliers: bool,
@@ -79,6 +81,7 @@ impl Default for TabMultiFlow {
             groups: PlotGroups::default(),
             styles: SeriesStyles::default(),
             sidebar_tab: SidebarTab::default(),
+            show_grid: true,
             catalog_saved: 0,
             remove_outliers: true,
             show_gaps: true,
@@ -186,6 +189,7 @@ impl TabMultiFlow {
                 ui,
                 "multi_groups",
                 (&mut self.groups, &mut self.styles),
+                &mut self.show_grid,
                 &selected,
                 MULTI_PRESETS,
             ) {
@@ -379,6 +383,7 @@ impl TabMultiFlow {
                 .then_some((self.manual_x_min, self.manual_x_max)),
             remove_outliers: self.remove_outliers,
             show_gaps: self.show_gaps,
+            show_grid: self.show_grid,
         };
         let outcome = grouped_plots::show(ui, &groups, &flows, &plot_settings);
 
