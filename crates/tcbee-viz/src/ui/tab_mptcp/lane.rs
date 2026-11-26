@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use egui::{RichText, Vec2};
 use egui_plot::{
-    AxisHints, GridMark, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, PlotTransform,
-    Points, Polygon,
+    AxisHints, GridMark, LineStyle, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints,
+    PlotTransform, Points, Polygon,
 };
 
 use super::markers::{key_color, kind_color, paint_marker, SMALL_MARKER_RADIUS};
@@ -15,7 +15,14 @@ use super::model::{
     centered_x, event_type, event_type_name, group_at, group_events, lane_row_at, lane_row_name,
     lane_y, place_labels, row_name, EventGroup, LabelSpan,
 };
-use super::{TabMptcp, PLOTS_ID};
+use super::{
+    TabMptcp, EVENT_LINE_STYLE, EVENT_LINE_WIDTH, PLOTS_ID, SELECTED_EVENT_STYLE,
+    SELECTED_EVENT_WIDTH,
+};
+use crate::data::{
+    segments::{HELD_ALPHA, POINT_RADIUS_PER_WIDTH},
+    series_data::DEFAULT_LINE_WIDTH,
+};
 use crate::ui::plot_frame::{plot_title, TITLE_INSET, Y_AXIS_WIDTH};
 use crate::{
     settings::AppSettings,
@@ -186,6 +193,7 @@ impl TabMptcp {
         self.show_hovered_group(ui, &response, &groups, rows, tol, origin);
         self.paint_lane_labels(ui, &response.transform, &groups, rows, dark_mode);
         self.show_event_legend(ui, dark_mode);
+        show_line_legend(ui, dark_mode);
         ui.add_space(4.0);
         LaneResponse {
             groups,
@@ -373,4 +381,87 @@ fn paint_placed(painter: &egui::Painter, mut labels: Vec<PlacedLabel>) {
             painter.galley(label.pos, label.galley, label.color);
         }
     }
+}
+
+/// What a line in the metric plots looks like, for the legend below the events
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LineSample {
+    /// A series between its records
+    Records,
+    /// A value held over a pause without records, see `segments`
+    Held,
+    /// A record with no neighbour close enough to join
+    Lone,
+    Event,
+    SelectedEvent,
+}
+
+const LINE_LEGEND: [(LineSample, &str); 5] = [
+    (LineSample::Records, "records"),
+    (LineSample::Held, "no records, last value held"),
+    (LineSample::Lone, "single record"),
+    (LineSample::Event, "path manager event"),
+    (LineSample::SelectedEvent, "event picked in the list"),
+];
+
+/// Explains the lines and points of the metric plots, below the event legend
+fn show_line_legend(ui: &mut egui::Ui, dark_mode: bool) {
+    let color = theme::muted_text(dark_mode);
+    ui.horizontal(|ui| {
+        ui.add_space(TITLE_INSET);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = LEGEND_ENTRY_GAP;
+            for (sample, name) in LINE_LEGEND {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let size = Vec2::new(2.0 * LEGEND_SWATCH, LEGEND_SWATCH);
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    paint_line_sample(ui.painter(), rect, sample, color);
+                    ui.label(RichText::new(name).size(LEGEND_TEXT_SIZE).color(color));
+                });
+            }
+        });
+    });
+}
+
+/// Paints `sample` into `rect` as the plots draw it: series lines across, event lines upright
+fn paint_line_sample(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    sample: LineSample,
+    color: egui::Color32,
+) {
+    let across = [rect.left_center(), rect.right_center()];
+    let upright = [rect.center_top(), rect.center_bottom()];
+    let line = |style: LineStyle, width: f32, color: egui::Color32, path: [egui::Pos2; 2]| {
+        let stroke = egui::Stroke::new(width, color);
+        match style {
+            LineStyle::Solid => vec![egui::Shape::line_segment(path, stroke)],
+            LineStyle::Dashed { length } => {
+                egui::Shape::dashed_line(&path, stroke, length, length / 2.0)
+            }
+            LineStyle::Dotted { spacing } => {
+                egui::Shape::dotted_line(&path, color, spacing, width / 2.0)
+            }
+        }
+    };
+    let shapes = match sample {
+        LineSample::Records => line(LineStyle::Solid, DEFAULT_LINE_WIDTH, color, across),
+        LineSample::Held => line(
+            LineStyle::dashed_dense(),
+            DEFAULT_LINE_WIDTH,
+            color.gamma_multiply(HELD_ALPHA),
+            across,
+        ),
+        LineSample::Lone => vec![egui::Shape::circle_filled(
+            rect.center(),
+            DEFAULT_LINE_WIDTH * POINT_RADIUS_PER_WIDTH,
+            color,
+        )],
+        LineSample::Event => line(EVENT_LINE_STYLE, EVENT_LINE_WIDTH, color, upright),
+        LineSample::SelectedEvent => {
+            line(SELECTED_EVENT_STYLE, SELECTED_EVENT_WIDTH, color, upright)
+        }
+    };
+    painter.extend(shapes);
 }
