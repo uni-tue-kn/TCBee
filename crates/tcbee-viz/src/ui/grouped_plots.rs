@@ -3,14 +3,17 @@
 
 use egui::{RichText, ScrollArea, Ui};
 use egui_plot::{
-    Corner, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, PlotTransform, PlotUi, VLine,
+    Corner, Legend, Line, LineStyle, Plot, PlotBounds, PlotPoint, PlotPoints, PlotTransform,
+    PlotUi, Points, VLine,
 };
+use ts_storage::ValueKind;
 
 use crate::{
     data::{
         plot_groups::{FlowSlot, ResolvedGroup, SeriesKey},
         plot_state::PlotState,
         preprocessing::remove_leading_outliers,
+        segments::{self, gap_threshold, HELD_ALPHA, POINT_RADIUS_PER_WIDTH},
         series_data::SeriesData,
     },
     export,
@@ -119,6 +122,9 @@ pub struct Hooks<'a> {
     /// reported like a right click, so the tab fits all plots: the auto bounds of one plot
     /// would spread to the linked ones and break their shared time.
     pub double_click_reset: bool,
+    /// Break lines where records pause, hold a value faint across a pause and show lone
+    /// records as points (see [`segments`])
+    pub split_at_gaps: bool,
 }
 
 impl Default for Hooks<'_> {
@@ -130,6 +136,7 @@ impl Default for Hooks<'_> {
             link_cursor: false,
             scroll_y: true,
             double_click_reset: true,
+            split_at_gaps: false,
         }
     }
 }
@@ -426,12 +433,16 @@ fn show_plot(
                 }
             }
             for d in &lines {
-                plot_ui.line(
-                    Line::new(PlotPoints::from(d.points.clone()))
-                        .color(d.series.color)
-                        .width(d.series.line_width)
-                        .name(&d.name),
-                );
+                if hooks.split_at_gaps {
+                    draw_segments(plot_ui, d);
+                } else {
+                    plot_ui.line(
+                        Line::new(PlotPoints::from(d.points.clone()))
+                            .color(d.series.color)
+                            .width(d.series.line_width)
+                            .name(&d.name),
+                    );
+                }
             }
             for d in drawn.iter().filter(|d| d.series.is_boolean_type()) {
                 for (t, value) in &d.series.points {
@@ -455,6 +466,43 @@ fn show_plot(
         outcome.right_clicked = true;
     }
     view
+}
+
+/// Draws a series in the parts of [`segments::segments`]. Only its solid parts are named, so
+/// its legend entry does not take the faint colour of a held value.
+fn draw_segments(plot_ui: &mut PlotUi, d: &Drawn) {
+    let s = d.series;
+    let points: Vec<(f64, f64)> = d.points.iter().map(|&[x, y]| (x, y)).collect();
+    // Counters and states hold their value until the next record. Not booleans: only their
+    // true records are loaded.
+    let step = s.step || s.val_type == ValueKind::Int;
+    let gap = gap_threshold(&points, s.loaded_sample_interval);
+    for segment in segments::segments(&points, gap, step) {
+        let lone = segment.points.len() == 1;
+        let plot_points = PlotPoints::from(segment.points);
+        if segment.held {
+            plot_ui.line(
+                Line::new(plot_points)
+                    .color(s.color.gamma_multiply(HELD_ALPHA))
+                    .width(s.line_width)
+                    .style(LineStyle::dashed_dense()),
+            );
+        } else if lone {
+            plot_ui.points(
+                Points::new(plot_points)
+                    .color(s.color)
+                    .radius(s.line_width * POINT_RADIUS_PER_WIDTH)
+                    .name(&d.name),
+            );
+        } else {
+            plot_ui.line(
+                Line::new(plot_points)
+                    .color(s.color)
+                    .width(s.line_width)
+                    .name(&d.name),
+            );
+        }
+    }
 }
 
 /// The x range to fit all plots to: that of their lines when leading outliers are removed,

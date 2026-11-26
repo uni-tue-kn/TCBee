@@ -20,8 +20,8 @@ use ts_storage::{
 
 use markers::kind_color;
 use model::{
-    byte_shares, carries_backup, event_type, format_bytes, gap_threshold, infer_sides,
-    is_connection_event, segments, sort_subflows, ConnectionSummary, PmEvent, SideInput,
+    byte_shares, carries_backup, event_type, format_bytes, infer_sides, is_connection_event,
+    sort_subflows, ConnectionSummary, PmEvent, SideInput,
 };
 
 use crate::{
@@ -29,6 +29,7 @@ use crate::{
     data::{
         plot_state::{fetch_range, load_series_window},
         preprocessing::generate_colors,
+        segments::{gap_threshold, segments, HELD_ALPHA},
         series_data::SeriesData,
     },
     settings::AppSettings,
@@ -1066,7 +1067,7 @@ impl TabMptcp {
                                         // No records over the pause, the value only held
                                         plot_ui.line(
                                             Line::new(PlotPoints::from(segment.points))
-                                                .color(s.color.gamma_multiply(0.4))
+                                                .color(s.color.gamma_multiply(HELD_ALPHA))
                                                 .style(LineStyle::dashed_dense())
                                                 .name(&s.name),
                                         );
