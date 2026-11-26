@@ -14,7 +14,7 @@ use crate::{
     export,
     ui::{
         event_labels, gap_marks,
-        plot_frame::Y_AXIS_WIDTH,
+        plot_frame::{plot_title, TITLE_SPACING, Y_AXIS_WIDTH},
         tab_single_flow::{
             plot_height_with_footer, seconds_grid_spacer, seconds_since_formatter,
             split_plot_height_with_footer, time_or_compact_coordinates_formatter,
@@ -174,7 +174,7 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
     let plot_height = if single {
         plot_height_with_footer(ui.available_height())
     } else {
-        let fixed = groups.len() as f32 * (HEADING_HEIGHT + PLOT_GAP)
+        let fixed = groups.len() as f32 * (HEADING_HEIGHT + TITLE_SPACING + PLOT_GAP)
             + (groups.len() - plot_count) as f32 * EMPTY_HEIGHT;
         split_plot_height_with_footer(ui.available_height() - fixed, plot_count)
     };
@@ -189,7 +189,7 @@ pub fn show(ui: &mut Ui, groups: &[ResolvedGroup], flows: &[Flow], settings: &Se
     let mut draw_all = |ui: &mut Ui| {
         for (group, drawn) in groups.iter().zip(&drawn) {
             if !single {
-                ui.label(RichText::new(&group.name).strong());
+                plot_title(ui, RichText::new(&group.name).strong());
             }
             if group.members.is_empty() {
                 empty_strip(ui);

@@ -16,11 +16,11 @@ use super::model::{
     lane_y, place_labels, row_name, EventGroup, LabelSpan,
 };
 use super::TabMptcp;
-use crate::ui::plot_frame::Y_AXIS_WIDTH;
+use crate::ui::plot_frame::{plot_title, TITLE_INSET, Y_AXIS_WIDTH};
 use crate::{
     settings::AppSettings,
     ui::{
-        tab_single_flow::{seconds_grid_spacer, section_heading},
+        tab_single_flow::{seconds_grid_spacer, section_heading_text},
         theme,
     },
 };
@@ -42,7 +42,7 @@ const REGROUP_SCALE_CHANGE: f64 = 0.01;
 // Legend entries: the marker's box, the name's size and the space to the next entry
 const LEGEND_SWATCH: f32 = 14.0;
 const LEGEND_TEXT_SIZE: f32 = 11.5;
-const LEGEND_ENTRY_GAP: f32 = 8.0;
+const LEGEND_ENTRY_GAP: f32 = 12.0;
 /// Radius of an event marker
 const MARKER_RADIUS: f32 = 6.0;
 
@@ -80,7 +80,7 @@ impl TabMptcp {
         // The rows, half a row of margin and the (empty) time axis
         let lane_height = (rows.min(MAX_LANE_ROWS) as f32 + 0.5) * pitch + 12.0;
         let dark_mode = settings.dark_mode;
-        section_heading(ui, "Path manager events");
+        plot_title(ui, section_heading_text(ui, "Path manager events"));
         // Groups use the scale of the last frame; the first frame groups nothing
         let tol = GROUP_PX * self.lane_ns_per_px;
         // An event picked in the list, shown once
@@ -322,24 +322,31 @@ impl TabMptcp {
 
     /// Marker and name of each event type of the connection
     fn show_event_legend(&self, ui: &mut egui::Ui, dark_mode: bool) {
-        ui.horizontal_wrapped(|ui| {
-            for &(code, failed) in &self.event_keys {
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::splat(LEGEND_SWATCH), egui::Sense::hover());
-                paint_marker(
-                    ui.painter(),
-                    rect.center(),
-                    event_type(code).shape,
-                    key_color(code, failed, dark_mode),
-                    SMALL_MARKER_RADIUS,
-                );
-                ui.label(
-                    RichText::new(event_type_name(code, failed))
-                        .size(LEGEND_TEXT_SIZE)
-                        .color(theme::muted_text(dark_mode)),
-                );
-                ui.add_space(LEGEND_ENTRY_GAP);
-            }
+        ui.horizontal(|ui| {
+            ui.add_space(TITLE_INSET);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = LEGEND_ENTRY_GAP;
+                for &(code, failed) in &self.event_keys {
+                    // One unit, so a line never breaks between marker and name
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let (rect, _) = ui
+                            .allocate_exact_size(Vec2::splat(LEGEND_SWATCH), egui::Sense::hover());
+                        paint_marker(
+                            ui.painter(),
+                            rect.center(),
+                            event_type(code).shape,
+                            key_color(code, failed, dark_mode),
+                            SMALL_MARKER_RADIUS,
+                        );
+                        ui.label(
+                            RichText::new(event_type_name(code, failed))
+                                .size(LEGEND_TEXT_SIZE)
+                                .color(theme::muted_text(dark_mode)),
+                        );
+                    });
+                }
+            });
         });
     }
 }

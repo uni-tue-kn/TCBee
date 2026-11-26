@@ -1,7 +1,7 @@
 use crate::ui::{
     event_labels,
     flow_table::FlowTable,
-    plot_frame::Y_AXIS_WIDTH,
+    plot_frame::{plot_title, Y_AXIS_WIDTH},
     tab_single_flow::{split_plot_height_with_footer, to_plot_points},
     theme,
 };
@@ -320,7 +320,7 @@ impl TabProcess {
             .id_salt("process_split_scroll")
             .show(ui, |ui| {
                 for (i, &(s, new)) in numeric.iter().enumerate() {
-                    ui.label(RichText::new(line_name(s, new)).color(s.color).strong());
+                    plot_title(ui, RichText::new(line_name(s, new)).color(s.color).strong());
                     let response = Plot::new(("process_split", i))
                         .allow_boxed_zoom(true)
                         .allow_drag(true)

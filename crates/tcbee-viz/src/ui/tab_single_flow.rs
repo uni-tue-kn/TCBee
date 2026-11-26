@@ -652,14 +652,16 @@ pub fn split_plot_height_with_footer(available_height: f32, plot_count: usize) -
 }
 
 pub fn section_heading(ui: &mut egui::Ui, label: &str) {
-    let dark_mode = ui.visuals().dark_mode;
-    ui.label(
-        RichText::new(label)
-            .strong()
-            .size(12.5)
-            .color(theme::muted_text(dark_mode)),
-    );
+    ui.label(section_heading_text(ui, label));
     ui.add_space(4.0);
+}
+
+/// The text of a section heading.
+pub fn section_heading_text(ui: &egui::Ui, label: &str) -> RichText {
+    RichText::new(label)
+        .strong()
+        .size(12.5)
+        .color(theme::muted_text(ui.visuals().dark_mode))
 }
 
 #[cfg(test)]
