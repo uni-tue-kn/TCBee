@@ -29,10 +29,14 @@ fn main() -> eframe::Result {
 "#;
     println!("{}", ascii_name);
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("TCBee — TCP Flow Visualizer")
+        .with_inner_size([1280.0, 800.0]);
+    if let Some(icon) = logo::icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("TCBee — TCP Flow Visualizer")
-            .with_inner_size([1280.0, 800.0]),
+        viewport,
         ..Default::default()
     };
 
