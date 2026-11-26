@@ -20,6 +20,7 @@ use crate::viz::{
     format,
     history::{window_name, window_step, window_steps, Span, WINDOWS},
     layout::{grid, Fit, MIN_HEIGHT, MIN_WIDTH},
+    logo::Logo,
     model::Model,
 };
 
@@ -195,6 +196,7 @@ pub fn render(
     context: &RunContext,
     ui: &UiState,
     flows: &Flows,
+    logo: Option<&Logo>,
 ) -> Areas {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
@@ -241,7 +243,7 @@ pub fn render(
         graph::render(frame, &model.charts[*slot], slot + 1, span, bottom, *rect);
     }
 
-    status::render(frame, model, context, ui.expanded, fit, left);
+    status::render(frame, model, context, ui.expanded, fit, logo, left);
 
     let span = match span {
         Span::Whole => "whole run".to_string(),
@@ -378,8 +380,8 @@ mod tests {
     use crate::viz::{
         flow_owners::{observer, SharedOwners},
         test_support::{
-            busy_model, contains, context, ep, flow, many_flows, record, row, screen, snapshot,
-            TC_RINGS,
+            busy_model, contains, context, ep, flow, many_flows, record, row, screen,
+            screen_with_logo, snapshot, TC_RINGS,
         },
     };
 
@@ -943,6 +945,23 @@ mod tests {
         let (lines, areas) = screen(60, 20, &model, &view, &UiState::default(), &flows);
         assert_eq!(areas.flow_rows, Rect::default());
         assert!(contains(&lines, "TCBee  00:00:19"));
+    }
+
+    #[test]
+    fn logo_replaces_the_name_where_it_fits() {
+        let model = busy_model(&TC_RINGS);
+        let view = context(&TC_RINGS);
+        let flows = Flows::default();
+        let logo = Logo::for_test();
+        let ui = UiState::default();
+        let (lines, _) = screen_with_logo(160, 45, &model, &view, &ui, &flows, Some(&logo));
+        assert!(!contains(&lines, "TCBee"));
+        assert!(contains(&lines, "\u{250c} 00:00:01 "));
+        assert!(contains(&lines, "/data/run1"));
+        assert!(contains(&lines, "eth0 \u{b7} 8 CPUs"));
+        // The minimal column has no room for it
+        let (lines, _) = screen_with_logo(60, 20, &model, &view, &ui, &flows, Some(&logo));
+        assert!(contains(&lines, "TCBee  00:00:01"));
     }
 
     #[test]

@@ -7,14 +7,25 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph, Wrap},
     Frame,
 };
+use ratatui_image::Image;
 
 use crate::viz::{
     context::RunContext,
     format,
     groups::{ring_label, Group},
     layout::Fit,
+    logo::{Logo, LOGO_ROWS},
     model::{Counters, Model, RingStats, ROW_HISTORY},
 };
+
+/// Columns the run lines keep beside the logo
+const MIN_RUN_WIDTH: u16 = 16;
+
+/// Whether the logo fits in the run block `area` beside the run lines
+fn logo_fits(logo: &Logo, area: Rect) -> bool {
+    let inner = block(Line::default()).inner(area);
+    inner.height >= LOGO_ROWS && inner.width >= logo.cols + 1 + MIN_RUN_WIDTH
+}
 
 /// The column for a terminal of `fit`. The groups get sparklines when no chart is shown.
 pub fn render(
@@ -23,6 +34,7 @@ pub fn render(
     run: &RunContext,
     expanded: bool,
     fit: Fit,
+    logo: Option<&Logo>,
     area: Rect,
 ) {
     // Inside the borders and the padding
@@ -48,11 +60,34 @@ pub fn render(
     ])
     .areas(area);
 
-    let title = format!("TCBee  {}", format::clock(model.elapsed()));
-    frame.render_widget(
-        Paragraph::new(context).block(block(bold_title(title).into())),
-        context_area,
-    );
+    // The logo stands in for the name, right of the run lines, when they keep some room
+    let clock = format::clock(model.elapsed());
+    let logo = logo.filter(|logo| fit != Fit::Minimal && logo_fits(logo, context_area));
+    let title = match logo {
+        Some(_) => clock,
+        None => format!("TCBee  {clock}"),
+    };
+    let run_block = block(bold_title(title).into());
+    let inner_area = run_block.inner(context_area);
+    frame.render_widget(run_block, context_area);
+    let text_area = match logo {
+        Some(logo) => {
+            let [text_area, _, logo_area] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(logo.cols),
+            ])
+            .areas(inner_area);
+            let logo_area = Rect {
+                height: LOGO_ROWS,
+                ..logo_area
+            };
+            frame.render_widget(Image::new(&logo.protocol), logo_area);
+            text_area
+        }
+        None => inner_area,
+    };
+    frame.render_widget(Paragraph::new(context), text_area);
     let title = column_title("Health", &HEALTH_LABELS, &HEALTH_WIDTHS, inner);
     frame.render_widget(Paragraph::new(health).block(block(title)), health_area);
 

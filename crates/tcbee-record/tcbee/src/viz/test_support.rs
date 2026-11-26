@@ -18,6 +18,7 @@ use crate::{
         context::RunContext,
         flow_owners::Endpoint,
         flow_tracker::{Flow, Flows},
+        logo::Logo,
         model::Model,
         view::{render, Areas, UiState},
     },
@@ -78,10 +79,23 @@ pub fn screen(
     ui: &UiState,
     flows: &Flows,
 ) -> (Vec<String>, Areas) {
+    screen_with_logo(width, height, model, context, ui, flows, None)
+}
+
+/// [`screen`] on a terminal that shows the logo
+pub fn screen_with_logo(
+    width: u16,
+    height: u16,
+    model: &Model,
+    context: &RunContext,
+    ui: &UiState,
+    flows: &Flows,
+    logo: Option<&Logo>,
+) -> (Vec<String>, Areas) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut areas = Areas::default();
     terminal
-        .draw(|frame| areas = render(frame, model, context, ui, flows))
+        .draw(|frame| areas = render(frame, model, context, ui, flows, logo))
         .unwrap();
     let buffer = terminal.backend().buffer();
     let lines = (0..height)

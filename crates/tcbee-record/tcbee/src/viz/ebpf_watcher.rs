@@ -25,6 +25,7 @@ use crate::{
         context::RunContext,
         flow_owners::SharedOwners,
         flow_tracker::FlowTracker,
+        logo::Logo,
         model::Model,
         view::{render, Areas, UiState},
     },
@@ -39,6 +40,8 @@ pub struct EBPFWatcher {
     update_period: u128,
     token: CancellationToken,
     terminal: Option<DefaultTerminal>,
+    /// The logo, when the terminal has a graphics protocol
+    logo: Option<Logo>,
     model: Model,
     context: RunContext,
 }
@@ -54,13 +57,14 @@ impl EBPFWatcher {
         context: RunContext,
         do_tui: bool,
     ) -> anyhow::Result<EBPFWatcher> {
-        let terminal: Option<DefaultTerminal> = match do_tui {
+        let (terminal, logo): (Option<DefaultTerminal>, _) = match do_tui {
             true => {
                 let term = ratatui::init();
+                let logo = Logo::query();
                 execute!(io::stdout(), EnableMouseCapture)?;
-                Some(term)
+                (Some(term), logo)
             }
-            false => None,
+            false => (None, None),
         };
 
         Ok(EBPFWatcher {
@@ -71,6 +75,7 @@ impl EBPFWatcher {
             update_period,
             token,
             terminal,
+            logo,
             model: Model::new(&context.active_rings),
             context,
         })
@@ -117,7 +122,14 @@ impl EBPFWatcher {
         let mut areas = Areas::default();
         let flows = &self.flow_tracker.flows;
         let _ = self.terminal.as_mut().unwrap().draw(|frame| {
-            areas = render(frame, &self.model, &self.context, ui, flows);
+            areas = render(
+                frame,
+                &self.model,
+                &self.context,
+                ui,
+                flows,
+                self.logo.as_ref(),
+            );
         });
         areas
     }
