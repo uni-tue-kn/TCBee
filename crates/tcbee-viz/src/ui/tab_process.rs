@@ -1,12 +1,6 @@
-use crate::ui::{
-    event_labels,
-    flow_table::FlowTable,
-    plot_frame::{plot_title, PlotStack, MIN_PLOT_HEIGHT, Y_AXIS_WIDTH},
-    tab_single_flow::to_plot_points,
-    theme,
-};
+use crate::ui::{flow_table::FlowTable, grouped_plots, theme};
 use egui::RichText;
-use egui_plot::{Legend, Line, Plot, PlotPoints, VLine};
+use egui_plot::VLine;
 use ts_storage::SeriesInfo;
 
 use crate::{
@@ -15,7 +9,12 @@ use crate::{
         db::DbBackend,
         plugin::PluginKind,
     },
-    data::{preprocessing::generate_colors, series_data::SeriesData},
+    data::{
+        plot_groups::{FlowSlot, ResolvedGroup, SeriesKey},
+        plot_state::PlotState,
+        preprocessing::generate_colors,
+        series_data::SeriesData,
+    },
     settings::AppSettings,
 };
 
@@ -33,10 +32,12 @@ pub struct TabProcess {
     available_flow: Option<i64>,
     selected_plugin: Option<PluginKind>,
     input_bindings: Vec<InputBinding>,
-    /// Input series loaded from the database (raw_data populated).
-    input_series: Vec<SeriesData>,
+    /// Input series loaded from the database.
+    inputs: PlotState,
     /// Output series produced by the plugin.
-    preview_series: Vec<SeriesData>,
+    outputs: PlotState,
+    /// Fit the preview plots to the data next frame.
+    needs_fit: bool,
     status: String,
     save_status: String,
     show_overwrite_confirm: bool,
@@ -54,8 +55,9 @@ impl Default for TabProcess {
             available_flow: None,
             selected_plugin: None,
             input_bindings: Vec::new(),
-            input_series: Vec::new(),
-            preview_series: Vec::new(),
+            inputs: PlotState::default(),
+            outputs: PlotState::default(),
+            needs_fit: false,
             status: String::new(),
             save_status: String::new(),
             show_overwrite_confirm: false,
@@ -145,8 +147,8 @@ impl TabProcess {
         if let Some(flow_id) = clicked.filter(|&id| self.flow_id != Some(id)) {
             self.flow_id = Some(flow_id);
             self.input_bindings.clear();
-            self.input_series.clear();
-            self.preview_series.clear();
+            self.inputs = PlotState::default();
+            self.outputs = PlotState::default();
             self.status.clear();
             self.save_status.clear();
             self.show_overwrite_confirm = false;
@@ -182,8 +184,8 @@ impl TabProcess {
             if ui.selectable_label(selected, kind.label()).clicked() {
                 self.selected_plugin = Some(*kind);
                 self.input_bindings.clear();
-                self.input_series.clear();
-                self.preview_series.clear();
+                self.inputs = PlotState::default();
+                self.outputs = PlotState::default();
                 self.status.clear();
                 self.save_status.clear();
                 self.show_overwrite_confirm = false;
@@ -267,7 +269,7 @@ impl TabProcess {
             ui.label(RichText::new(&self.status).color(color));
         }
 
-        if !self.preview_series.is_empty() {
+        if !self.outputs.series.is_empty() {
             ui.add_space(8.0);
             let can_save = self.flow_id.is_some();
             if ui
@@ -282,94 +284,95 @@ impl TabProcess {
         }
     }
 
-    fn show_preview_plot(&self, ui: &mut egui::Ui) {
-        if self.input_series.is_empty() && self.preview_series.is_empty() {
+    fn show_preview_plot(&mut self, ui: &mut egui::Ui) {
+        if self.inputs.series.is_empty() && self.outputs.series.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label("Select a flow and plugin, then click \"Load & Preview\".");
             });
             return;
         }
 
-        let numeric: Vec<(&SeriesData, bool)> = self
-            .input_series
+        let flows = [
+            grouped_plots::Flow {
+                slot: FlowSlot::Single,
+                state: &self.inputs,
+                prefix: "",
+            },
+            grouped_plots::Flow {
+                slot: FlowSlot::A,
+                state: &self.outputs,
+                prefix: NEW_PREFIX,
+            },
+        ];
+        // Booleans are drawn in every plot below, not as a group of their own
+        let lines: Vec<(SeriesKey, String)> = flows
             .iter()
-            .map(|s| (s, false))
-            .chain(self.preview_series.iter().map(|s| (s, true)))
-            .filter(|(s, _)| !s.is_boolean_type() && !s.is_string_type())
+            .flat_map(|f| {
+                f.state
+                    .series
+                    .iter()
+                    .filter(|s| !s.is_boolean_type() && !s.is_string_type())
+                    .map(|s| (SeriesKey::of(f.slot, s), format!("{}{}", f.prefix, s.name)))
+            })
             .collect();
+        let groups: Vec<ResolvedGroup> = if self.split_plots {
+            lines
+                .into_iter()
+                .map(|(key, name)| ResolvedGroup {
+                    // By name, so a resized plot keeps its height for the same series
+                    id: egui::Id::new(("process_group", &name)).value(),
+                    name,
+                    members: vec![key],
+                })
+                .collect()
+        } else {
+            vec![ResolvedGroup {
+                id: 0,
+                name: "Preview".to_string(),
+                members: lines.into_iter().map(|(key, _)| key).collect(),
+            }]
+        };
 
-        if !self.split_plots || numeric.len() < 2 {
-            let response = Plot::new("process_preview")
-                .allow_boxed_zoom(true)
-                .allow_drag(true)
-                .allow_scroll(true)
-                .legend(Legend::default())
-                .height(ui.available_height())
-                .show(ui, |plot_ui| {
-                    for &(s, new) in &numeric {
-                        draw_line(plot_ui, s, new);
-                    }
-                    self.draw_event_markers(plot_ui);
-                });
-            event_labels::paint_labels(ui, &response.transform, &self.string_events());
+        if groups.iter().all(|g| g.members.is_empty()) {
+            ui.centered_and_justified(|ui| {
+                ui.label("The preview has no numeric series to plot.");
+            });
             return;
         }
 
-        let plot_ids: Vec<egui::Id> = numeric
-            .iter()
-            .map(|&(s, new)| egui::Id::new(("process_split_height", line_name(s, new))))
-            .collect();
-        let stack = PlotStack::new(
-            ui,
-            egui::Id::new("process_split_stack"),
-            plot_ids,
-            ui.available_height(),
-            MIN_PLOT_HEIGHT,
-        );
-        egui::ScrollArea::vertical()
-            .id_salt("process_split_scroll")
-            .show(ui, |ui| {
-                for (i, &(s, new)) in numeric.iter().enumerate() {
-                    let plot_height = stack.height(i);
-                    plot_title(ui, RichText::new(line_name(s, new)).color(s.color).strong());
-                    let response = Plot::new(("process_split", i))
-                        .allow_boxed_zoom(true)
-                        .allow_drag(true)
-                        .allow_scroll(true)
-                        .link_axis("process_split_x_axis", [true, false])
-                        .link_cursor("process_split_x_axis", [true, false])
-                        .y_axis_min_width(Y_AXIS_WIDTH)
-                        .height(plot_height)
-                        .show(ui, |plot_ui| {
-                            draw_line(plot_ui, s, new);
-                            self.draw_event_markers(plot_ui);
-                        });
-                    event_labels::paint_labels(ui, &response.transform, &self.string_events());
-                    stack.resize_handle(ui, i);
-                }
-            });
-    }
-
-    /// Boolean events as vertical lines and string events as labelled lines.
-    fn draw_event_markers(&self, plot_ui: &mut egui_plot::PlotUi) {
-        let all = || self.input_series.iter().chain(&self.preview_series);
-        for s in all().filter(|s| s.is_boolean_type()) {
-            for (t, value) in &s.points {
-                if *value >= 0.5 {
-                    plot_ui.vline(VLine::new(*t).color(s.color).name(&s.name));
+        let draw_events = |plot_ui: &mut egui_plot::PlotUi, _: usize| {
+            for f in &flows {
+                for s in f.state.series.iter().filter(|s| s.is_boolean_type()) {
+                    let name = format!("{}{}", f.prefix, s.name);
+                    for (t, value) in &s.points {
+                        if *value >= 0.5 {
+                            plot_ui.vline(VLine::new(*t).color(s.color).name(&name));
+                        }
+                    }
                 }
             }
+        };
+        let data_x = merged_x(&self.inputs, &self.outputs);
+        let settings = grouped_plots::Settings {
+            id: "process",
+            x_origin: data_x.0,
+            data_x,
+            fit: std::mem::take(&mut self.needs_fit),
+            set_x: None,
+            // The preview shows the plugin's input as it is
+            remove_outliers: false,
+            show_gaps: false,
+            show_grid: true,
+            hooks: grouped_plots::Hooks {
+                draw: Some(&draw_events),
+                ..grouped_plots::Hooks::default()
+            },
+        };
+        let outcome = grouped_plots::show(ui, &groups, &flows, &settings);
+        // All data is in memory, so outcome.reload is ignored
+        if outcome.right_clicked {
+            self.needs_fit = true;
         }
-        event_labels::draw_lines(plot_ui, &self.string_events());
-    }
-
-    fn string_events(&self) -> Vec<event_labels::Events<'_>> {
-        self.input_series
-            .iter()
-            .chain(&self.preview_series)
-            .filter(|s| s.is_string_type())
-            .map(|s| (s.name.as_str(), s.color, s.string_points.as_slice()))
-            .collect()
     }
 
     fn run_preview(&mut self, db: &DbBackend) {
@@ -397,20 +400,21 @@ impl TabProcess {
 
         // A failed read stops here: the plugin never runs on missing data and nothing is saved.
         let colors = generate_colors(series_ids.len());
-        self.input_series.clear();
-        self.preview_series.clear();
+        self.inputs = PlotState::default();
+        self.outputs = PlotState::default();
         match db.load_inputs(&self.available, &series_ids, &colors) {
-            Ok(inputs) => self.input_series = inputs,
+            Ok(inputs) => self.inputs = full_state(inputs),
             Err(e) => {
                 self.status = format!("Error: {e}");
                 return;
             }
         }
 
-        match plugin.compute(&self.input_series) {
+        match plugin.compute(&self.inputs.series) {
             Ok(results) => {
-                self.preview_series = results;
-                self.status = format!("OK — {} new series computed.", self.preview_series.len());
+                self.outputs = full_state(results);
+                self.needs_fit = true;
+                self.status = format!("OK — {} new series computed.", self.outputs.series.len());
             }
             Err(e) => {
                 self.status = format!("Error: {}", e);
@@ -470,7 +474,8 @@ impl TabProcess {
         };
 
         let names = self
-            .preview_series
+            .outputs
+            .series
             .iter()
             .map(|series| series.name.clone())
             .collect::<Vec<_>>();
@@ -497,7 +502,7 @@ impl TabProcess {
 
         let mut saved = 0;
         let mut errors = Vec::new();
-        for series in &self.preview_series {
+        for series in &self.outputs.series {
             let result = if overwrite {
                 db.replace_series_for_flow(flow_id, series)
             } else {
@@ -550,22 +555,29 @@ impl TabProcess {
     }
 }
 
-/// The legend name of a series; plugin outputs are marked as new.
-fn line_name(series: &SeriesData, new: bool) -> String {
-    if new {
-        format!("[new] {}", series.name)
-    } else {
-        series.name.clone()
-    }
+/// Legend prefix of the plugin outputs.
+const NEW_PREFIX: &str = "[new] ";
+
+/// The time span of the series of both states.
+fn merged_x(a: &PlotState, b: &PlotState) -> (f64, f64) {
+    a.series
+        .iter()
+        .chain(&b.series)
+        .flat_map(|s| s.points.iter().map(|(t, _)| *t))
+        .fold(None, |acc: Option<(f64, f64)>, t| {
+            Some(acc.map_or((t, t), |(lo, hi)| (lo.min(t), hi.max(t))))
+        })
+        .unwrap_or((0.0, 1.0))
 }
 
-fn draw_line(plot_ui: &mut egui_plot::PlotUi, series: &SeriesData, new: bool) {
-    let points = PlotPoints::from(to_plot_points(&series.points));
-    let mut line = Line::new(points)
-        .color(series.color)
-        .name(line_name(series, new));
-    if new {
-        line = line.style(egui_plot::LineStyle::dashed_dense());
-    }
-    plot_ui.line(line);
+/// The series as a fully loaded plot state, so its view never asks for a reload.
+fn full_state(series: Vec<SeriesData>) -> PlotState {
+    let mut state = PlotState {
+        series,
+        ..PlotState::default()
+    };
+    let (lo, hi) = merged_x(&state, &PlotState::default());
+    (state.data_x_min, state.data_x_max) = (lo, hi);
+    (state.x_min, state.x_max) = (lo, hi);
+    state
 }
