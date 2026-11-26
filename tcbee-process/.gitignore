@@ -1,4 +1,0 @@
-target/
-*.sqlite
-*.sqlite-journal
-Cargo.lock

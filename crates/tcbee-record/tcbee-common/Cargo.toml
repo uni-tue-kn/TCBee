@@ -1,0 +1,16 @@
+[package]
+name = "tcbee-common"
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0.217", features = ["serde_derive"] }
+tcbee-trace = { path = "../tcbee-trace" }
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+# Only the records_gen test regenerates src/records_gen.rs, see there
+bindgen = { version = "0.73", default-features = false, features = ["runtime"] }

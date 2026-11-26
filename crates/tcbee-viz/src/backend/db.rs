@@ -1,0 +1,1241 @@
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use ts_storage::{
+    ConnectionFlow, ConnectionInfo, DataPoint, DataValue, Engine, Flow, FlowOwner, Gaps,
+    SeriesInfo, SeriesKind, Store, StoreError,
+};
+
+use crate::{
+    backend::binding::series_label,
+    data::{preprocessing::Envelope, series_data::SeriesData},
+};
+
+/// File extensions the file dialog and the usage text offer.
+pub const DB_EXTENSIONS: &[&str] = &["sqlite", "db", "duck", "duckdb"];
+
+/// `.sqlite, .db, .duck or .duckdb`
+pub fn extensions_text() -> String {
+    let (last, init) = DB_EXTENSIONS.split_last().expect("extensions");
+    let init: Vec<String> = init.iter().map(|e| format!(".{e}")).collect();
+    format!("{} or .{}", init.join(", "), last)
+}
+
+/// Display name and cargo feature of an engine.
+fn engine_info(engine: Engine) -> (&'static str, &'static str) {
+    match engine {
+        Engine::Sqlite => ("SQLite", "sqlite"),
+        Engine::DuckDb => ("DuckDB", "duckdb"),
+    }
+}
+
+pub fn engine_name(engine: Engine) -> &'static str {
+    engine_info(engine).0
+}
+
+/// Error text for the UI. Only a disabled engine gets a message of its own; the other errors
+/// are shown as ts-storage words them (a v1 file already says to reprocess the trace).
+pub fn describe_open_error(e: &StoreError, path: &Path) -> OpenError {
+    match e {
+        StoreError::EngineDisabled(engine) => {
+            let (name, feature) = engine_info(*engine);
+            OpenError::short(format!(
+                "This file is a {name} database, but this build does not include {name} \
+                 support. Rebuild with `--features {feature}`."
+            ))
+        }
+        StoreError::UnsupportedSchema { .. } => OpenError::short(e.to_string()),
+        other => {
+            let full = other.to_string();
+            if full.contains("WAL") && wal_path(path).exists() {
+                let name = file_name(path);
+                return OpenError {
+                    summary: format!(
+                        "Could not open {name}: the {name}.wal next to it cannot be replayed. \
+                         Delete it if it belongs to an older database."
+                    ),
+                    details: Some(full),
+                };
+            }
+            OpenError::from_text(full)
+        }
+    }
+}
+
+/// `x.duck` -> `x.duck.wal`
+fn wal_path(path: &Path) -> PathBuf {
+    let mut wal = path.as_os_str().to_owned();
+    wal.push(".wal");
+    PathBuf::from(wal)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Longest summary line shown to the user; the rest goes into the details.
+const SUMMARY_CHARS: usize = 140;
+
+/// An error of opening a file: one line for the user, the full text on request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenError {
+    pub summary: String,
+    pub details: Option<String>,
+}
+
+impl OpenError {
+    fn short(summary: String) -> Self {
+        Self {
+            summary,
+            details: None,
+        }
+    }
+
+    /// The first line of `full` (cut to `SUMMARY_CHARS`) is the summary. The full text is kept as
+    /// details when it has more than that.
+    fn from_text(full: String) -> Self {
+        let first = full
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
+        let summary = if first.chars().count() > SUMMARY_CHARS {
+            let cut: String = first.chars().take(SUMMARY_CHARS).collect();
+            format!("{}…", cut.trim_end())
+        } else {
+            first.to_string()
+        };
+        let details = (summary != full.trim()).then_some(full);
+        Self { summary, details }
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.summary)
+    }
+}
+
+#[derive(Default)]
+pub struct DbBackend {
+    store: Option<Box<dyn Store>>,
+    /// The open file
+    path: Option<PathBuf>,
+    /// Differs for every opened file, also when the same path is opened again; 0 for none.
+    opened: u64,
+    /// Series saved to the file since it was opened, so views can read its catalog again.
+    saved: Cell<u64>,
+    /// Flows never change while a file is open, so they are read once.
+    flows: OnceCell<Vec<Flow>>,
+    /// Same for connections and their flows.
+    connections: OnceCell<Vec<ConnectionInfo>>,
+    connection_flows: OnceCell<Vec<ConnectionFlow>>,
+    /// Flow id to "connection/subflow" labels, see `connection_label`
+    connection_labels: OnceCell<HashMap<i64, String>>,
+    /// The owners of each flow with their label, see `owner_label`; read on first use
+    owners: OnceCell<HashMap<i64, (String, Vec<FlowOwner>)>>,
+    /// The meta table, read on first use
+    meta: OnceCell<Vec<(String, String)>>,
+    /// (source, dir code, watched fields) of the on-change files, from the catalog meta
+    step_sources: OnceCell<Vec<(String, u8, Vec<String>)>>,
+    /// Gaps per (table, flow, dir code): one hook_seq counter, shared by the columns of a table
+    gaps: RefCell<HashMap<(String, i64, u8), Gaps>>,
+    /// Last read error that was logged, so a failing plot reload logs once, not every frame.
+    last_error: RefCell<Option<String>>,
+}
+
+impl DbBackend {
+    pub fn open(path: PathBuf) -> Result<Self, OpenError> {
+        let store = ts_storage::open(&path).map_err(|e| describe_open_error(&e, &path))?;
+        static OPENED: AtomicU64 = AtomicU64::new(1);
+        Ok(Self {
+            store: Some(store),
+            path: Some(path),
+            opened: OPENED.fetch_add(1, Ordering::Relaxed),
+            ..Self::default()
+        })
+    }
+
+    /// Counts the series saved to the file; it changes whenever its catalog does.
+    pub fn saved(&self) -> u64 {
+        self.saved.get()
+    }
+
+    /// Tells this open file from every other one, and from a file opened again.
+    pub fn opened(&self) -> u64 {
+        self.opened
+    }
+
+    /// The open file.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// The engine of the open file.
+    pub fn engine(&self) -> Option<Engine> {
+        self.store.as_ref().map(|s| s.engine())
+    }
+
+    /// Logs an error unless it is the same as the previous one.
+    fn report(&self, msg: String) {
+        let mut last = self.last_error.borrow_mut();
+        if last.as_deref() != Some(msg.as_str()) {
+            eprintln!("tcbee-viz: {msg}");
+            *last = Some(msg);
+        }
+    }
+
+    /// All flows, read from the file on first use.
+    pub fn list_flows(&self) -> &[Flow] {
+        let Some(db) = &self.store else { return &[] };
+        self.flows.get_or_init(|| {
+            db.flows().unwrap_or_else(|e| {
+                self.report(format!("listing flows failed: {e}"));
+                Vec::new()
+            })
+        })
+    }
+
+    /// Connections that group flows (MPTCP), read on first use.
+    pub fn list_connections(&self) -> &[ConnectionInfo] {
+        let Some(db) = &self.store else { return &[] };
+        self.connections.get_or_init(|| {
+            db.connections().unwrap_or_else(|e| {
+                self.report(format!("listing connections failed: {e}"));
+                Vec::new()
+            })
+        })
+    }
+
+    /// The flows of all connections, ordered by connection, read on first use.
+    pub fn list_connection_flows(&self) -> &[ConnectionFlow] {
+        let Some(db) = &self.store else { return &[] };
+        self.connection_flows.get_or_init(|| {
+            db.connection_flows().unwrap_or_else(|e| {
+                self.report(format!("listing connection flows failed: {e}"));
+                Vec::new()
+            })
+        })
+    }
+
+    /// The connections a flow belongs to as "connection/subflow" (e.g. "3/2", or "3" without
+    /// subflow id), comma separated if a reused tuple belongs to several. Empty for none.
+    pub fn connection_label(&self, flow_id: i64) -> &str {
+        let labels = self.connection_labels.get_or_init(|| {
+            let mut labels: HashMap<i64, String> = HashMap::new();
+            for m in self.list_connection_flows() {
+                let label = labels.entry(m.flow_id).or_default();
+                if !label.is_empty() {
+                    label.push_str(", ");
+                }
+                label.push_str(&m.connection_id.to_string());
+                if let Some(subflow) = m.subflow_id {
+                    label.push_str(&format!("/{subflow}"));
+                }
+            }
+            labels
+        });
+        labels.get(&flow_id).map_or("", String::as_str)
+    }
+
+    /// The owners of each flow with the label `owner_label` gives, read on first use. A
+    /// database written before owners were recorded has none.
+    fn owners(&self) -> &HashMap<i64, (String, Vec<FlowOwner>)> {
+        self.owners.get_or_init(|| {
+            let Some(db) = &self.store else {
+                return HashMap::new();
+            };
+            let owners = db.flow_owners().unwrap_or_else(|e| {
+                self.report(format!("listing flow owners failed: {e}"));
+                Vec::new()
+            });
+            let mut by_flow: HashMap<i64, (String, Vec<FlowOwner>)> = HashMap::new();
+            let mut named = HashSet::new();
+            // Ordered by flow and time, so the labels list the processes in time order
+            for owner in owners {
+                let (label, list) = by_flow.entry(owner.flow_id).or_default();
+                // A comm may hold ", " itself, so the label is not split to find a process
+                if named.insert((owner.flow_id, owner.comm.clone(), owner.pid)) {
+                    if !label.is_empty() {
+                        label.push_str(", ");
+                    }
+                    label.push_str(&owner_name(&owner));
+                }
+                list.push(owner);
+            }
+            by_flow
+        })
+    }
+
+    /// Whether the database knows the process of any flow
+    pub fn has_owners(&self) -> bool {
+        !self.owners().is_empty()
+    }
+
+    /// The processes that owned a flow, in time order; empty if none is known
+    pub fn flow_owners(&self, flow_id: i64) -> &[FlowOwner] {
+        self.owners()
+            .get(&flow_id)
+            .map_or(&[], |(_, owners)| owners.as_slice())
+    }
+
+    /// The processes of a flow as "comm[pid]", comma separated if several owned it (a reused
+    /// tuple, a socket that processes share). Empty for none.
+    pub fn owner_label(&self, flow_id: i64) -> &str {
+        self.owners()
+            .get(&flow_id)
+            .map_or("", |(label, _)| label.as_str())
+    }
+
+    /// All meta entries ordered by key, read on first use.
+    pub fn meta(&self) -> &[(String, String)] {
+        let Some(db) = &self.store else { return &[] };
+        self.meta.get_or_init(|| {
+            db.meta().unwrap_or_else(|e| {
+                self.report(format!("reading the meta table failed: {e}"));
+                Vec::new()
+            })
+        })
+    }
+
+    pub fn get_flow_by_id(&self, id: i64) -> Option<&Flow> {
+        self.list_flows().iter().find(|f| f.id == id)
+    }
+
+    pub fn flow_exists(&self, id: i64) -> bool {
+        self.get_flow_by_id(id).is_some()
+    }
+
+    /// The catalog rows of a flow's series. This queries the file; callers keep the result.
+    pub fn list_series_for_flow(&self, flow_id: i64) -> Vec<SeriesInfo> {
+        let Some(db) = &self.store else {
+            return Vec::new();
+        };
+        db.series(flow_id).unwrap_or_else(|e| {
+            self.report(format!("listing series failed: {e}"));
+            Vec::new()
+        })
+    }
+
+    /// Whether a series is an on-change step series: a watched field of a file tagged
+    /// `sampling.<source>.<dir> = on_change(fields)` in the catalog meta by tcbee-process.
+    /// The other columns of such a file are samples taken when a watched field changed, not
+    /// change points, and are drawn as plain points.
+    pub fn is_step_series(&self, series: &SeriesInfo) -> bool {
+        let tagged = self.step_sources.get_or_init(|| {
+            let Some(db) = &self.store else {
+                return Vec::new();
+            };
+            let meta = db.meta().unwrap_or_else(|e| {
+                self.report(format!("reading the catalog meta failed: {e}"));
+                Vec::new()
+            });
+            meta.into_iter()
+                .filter_map(|(k, v)| {
+                    let (source, dir) = k.strip_prefix("sampling.")?.rsplit_once('.')?;
+                    let fields = v.strip_prefix("on_change(")?.split(')').next()?;
+                    Some((
+                        source.to_string(),
+                        dir.parse().ok()?,
+                        fields.split(',').map(str::to_string).collect(),
+                    ))
+                })
+                .collect()
+        });
+        tagged.iter().any(|(source, dir, fields)| {
+            *source == series.source
+                && *dir == series.dir.code()
+                && fields.iter().any(|f| *f == series.name)
+        })
+    }
+
+    /// The missing events of a series, read once per hook_seq counter. A read error is logged
+    /// and counts as unknown until the next call.
+    pub fn seq_gaps(&self, series: &SeriesInfo) -> Gaps {
+        let (Some(db), Some(tbl)) = (&self.store, &series.tbl) else {
+            return Gaps::Unavailable;
+        };
+        let key = (tbl.clone(), series.flow_id, series.dir.code());
+        if let Some(gaps) = self.gaps.borrow().get(&key) {
+            return gaps.clone();
+        }
+        match db.seq_gaps(series, None) {
+            Ok(gaps) => {
+                self.gaps.borrow_mut().insert(key, gaps.clone());
+                gaps
+            }
+            // Not cached: the next call retries
+            Err(e) => {
+                self.report(format!(
+                    "reading the gaps of {} failed: {e}",
+                    series_label(series)
+                ));
+                Gaps::Unavailable
+            }
+        }
+    }
+
+    /// End of a flow: the last timestamp of any of its series
+    pub fn flow_end(&self, flow_id: i64) -> Option<f64> {
+        self.list_series_for_flow(flow_id)
+            .iter()
+            .filter_map(|s| s.t_max)
+            .max()
+            .map(|t| t as f64)
+    }
+
+    /// Every point of a step series in a range, preceded by the last point before it, so the
+    /// value at the start of the range is known. Finding that point reads the series from its
+    /// start; on-change series are small (only their changes), shadow-mode ones are not.
+    pub fn load_range_steps(&self, series: &SeriesInfo, t_min: f64, t_max: f64) -> Vec<(f64, f64)> {
+        let mut out = Vec::new();
+        let mut before: Option<(f64, f64)> = None;
+        let start = series.t_min.map_or(t_min, |t| t as f64).min(t_min);
+        let result = self.for_each(series, Some((start, t_max)), &mut |p| {
+            let Some(v) = datavalue_as_f64(&p.value) else {
+                return;
+            };
+            if p.timestamp < t_min {
+                before = Some((p.timestamp, v));
+            } else {
+                out.push((p.timestamp, v));
+            }
+        });
+        if let Err(e) = result {
+            self.report(e);
+            return Vec::new();
+        }
+        if let Some(b) = before {
+            out.insert(0, b);
+        }
+        out
+    }
+
+    /// Reads the points of one series, ordered by (ts, seq). `range` is inclusive.
+    fn for_each(
+        &self,
+        series: &SeriesInfo,
+        range: Option<(f64, f64)>,
+        f: &mut dyn FnMut(DataPoint),
+    ) -> Result<(), String> {
+        let Some(db) = &self.store else {
+            return Err("No database connection".to_string());
+        };
+        db.for_each_point(series, range, f)
+            .map_err(|e| format!("reading {} failed: {}", series_label(series), e))
+    }
+
+    /// Points in a time range for plotting, keeping at most one point per sample interval.
+    /// `map` turns a value into the plotted one or drops it. A read error is logged once and
+    /// leaves the plot empty.
+    fn load_sampled<T>(
+        &self,
+        series: &SeriesInfo,
+        t_min: f64,
+        t_max: f64,
+        sample_interval: f64,
+        map: impl Fn(DataValue) -> Option<T>,
+    ) -> Vec<(f64, T)> {
+        let mut out = Vec::new();
+        let mut next_timestamp = f64::NEG_INFINITY;
+        let result = self.for_each(series, Some((t_min, t_max)), &mut |p| {
+            if sample_interval <= 0.0 || p.timestamp >= next_timestamp {
+                if let Some(v) = map(p.value) {
+                    next_timestamp = p.timestamp + sample_interval;
+                    out.push((p.timestamp, v));
+                }
+            }
+        });
+        if let Err(e) = result {
+            self.report(e);
+            out.clear();
+        }
+        out
+    }
+
+    /// Numeric points in a range at the resolution of `columns` time slices: the first, lowest,
+    /// highest and last point of each (see `Envelope`). Reads every point of the range.
+    pub fn load_range_envelope(
+        &self,
+        series: &SeriesInfo,
+        t_min: f64,
+        t_max: f64,
+        columns: usize,
+    ) -> Vec<(f64, f64)> {
+        let mut env = Envelope::new(t_min, t_max, columns);
+        let result = self.for_each(series, Some((t_min, t_max)), &mut |p| {
+            if let Some(v) = datavalue_as_f64(&p.value) {
+                env.push(p.timestamp, v);
+            }
+        });
+        if let Err(e) = result {
+            self.report(e);
+            return Vec::new();
+        }
+        env.finish()
+    }
+
+    /// Numeric points (booleans as 0/1) in a range.
+    pub fn load_range_sampled(
+        &self,
+        series: &SeriesInfo,
+        t_min: f64,
+        t_max: f64,
+        sample_interval: f64,
+    ) -> Vec<(f64, f64)> {
+        self.load_sampled(series, t_min, t_max, sample_interval, |v| {
+            datavalue_as_f64(&v)
+        })
+    }
+
+    /// String points in a range.
+    pub fn load_range_strings_sampled(
+        &self,
+        series: &SeriesInfo,
+        t_min: f64,
+        t_max: f64,
+        sample_interval: f64,
+    ) -> Vec<(f64, String)> {
+        self.load_sampled(series, t_min, t_max, sample_interval, |v| match v {
+            DataValue::String(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// True boolean events in a range (as 1.0).
+    pub fn load_range_bool_events_sampled(
+        &self,
+        series: &SeriesInfo,
+        t_min: f64,
+        t_max: f64,
+        sample_interval: f64,
+    ) -> Vec<(f64, f64)> {
+        self.load_sampled(series, t_min, t_max, sample_interval, |v| {
+            matches!(v, DataValue::Boolean(true)).then_some(1.0)
+        })
+    }
+
+    /// Load ALL data points for a series (used by plugins, they need the full dataset).
+    pub fn load_all(&self, series: &SeriesInfo) -> Result<Vec<(f64, DataValue)>, String> {
+        let mut out = Vec::with_capacity(series.n.max(0) as usize);
+        self.for_each(series, None, &mut |p| out.push((p.timestamp, p.value)))?;
+        Ok(out)
+    }
+
+    /// Loads the full data of the selected series as plugin inputs (`raw_data` and `points`).
+    /// Any read error fails the whole call, so a plugin never runs on partial data.
+    pub fn load_inputs(
+        &self,
+        available: &[SeriesInfo],
+        series_ids: &[i64],
+        colors: &[egui::Color32],
+    ) -> Result<Vec<SeriesData>, String> {
+        let (x_min, x_max) = flow_x_bounds(available).unwrap_or((0.0, 1.0));
+        let mut out = Vec::with_capacity(series_ids.len());
+        for (i, &sid) in series_ids.iter().enumerate() {
+            let info = available
+                .iter()
+                .find(|s| s.id == sid)
+                .ok_or_else(|| format!("series {sid} is not available in this flow"))?;
+            let color = colors.get(i).copied().unwrap_or(egui::Color32::WHITE);
+            let mut sd = SeriesData::from_info(info, x_min, x_max, color);
+            sd.raw_data = self.load_all(info)?;
+            sd.points = sd
+                .raw_data
+                .iter()
+                .filter_map(|(t, v)| datavalue_as_f64(v).map(|f| (*t, f)))
+                .collect();
+            sd.loaded_range = Some((x_min, x_max));
+            out.push(sd);
+        }
+        Ok(out)
+    }
+
+    /// Persist a newly computed series as a derived series of the flow.
+    pub fn create_series_for_flow(&self, flow_id: i64, series: &SeriesData) -> Result<(), String> {
+        let db = self.store.as_ref().ok_or("No database connection")?;
+        db.create_derived(flow_id, &series.name, series.val_type, &to_points(series))
+            .map_err(|e| format!("saving series {} failed: {}", series.name, e))?;
+        self.saved.set(self.saved.get() + 1);
+        Ok(())
+    }
+
+    /// Replace the derived series of the same name (its id is kept), or create it if there is
+    /// none. Raw series are never touched.
+    pub fn replace_series_for_flow(&self, flow_id: i64, series: &SeriesData) -> Result<(), String> {
+        let db = self.store.as_ref().ok_or("No database connection")?;
+        let existing =
+            self.existing_series_for_flow(flow_id, std::slice::from_ref(&series.name))?;
+        match existing.first() {
+            Some(old) => {
+                db.replace_derived(old, &to_points(series))
+                    .map_err(|e| format!("replacing series {} failed: {}", series.name, e))?;
+                self.saved.set(self.saved.get() + 1);
+                Ok(())
+            }
+            None => self.create_series_for_flow(flow_id, series),
+        }
+    }
+
+    /// The DERIVED series of the flow with one of the given names. Raw series do not count.
+    pub fn existing_series_for_flow(
+        &self,
+        flow_id: i64,
+        names: &[String],
+    ) -> Result<Vec<SeriesInfo>, String> {
+        let db = self.store.as_ref().ok_or("No database connection")?;
+        let all = db
+            .series(flow_id)
+            .map_err(|e| format!("listing series failed: {}", e))?;
+        Ok(all
+            .into_iter()
+            .filter(|s| s.kind == SeriesKind::Derived && names.contains(&s.name))
+            .collect())
+    }
+}
+
+fn to_points(series: &SeriesData) -> Vec<DataPoint> {
+    series
+        .raw_data
+        .iter()
+        .map(|(t, v)| DataPoint {
+            timestamp: *t,
+            value: v.clone(),
+        })
+        .collect()
+}
+
+/// Min and max timestamp over the series that have points (catalog values, no query).
+pub fn flow_x_bounds<'a>(series: impl IntoIterator<Item = &'a SeriesInfo>) -> Option<(f64, f64)> {
+    let mut t_min = f64::MAX;
+    let mut t_max = f64::MIN;
+    for s in series.into_iter().filter(|s| s.n > 0) {
+        if let (Some(lo), Some(hi)) = (s.t_min, s.t_max) {
+            t_min = t_min.min(lo as f64);
+            t_max = t_max.max(hi as f64);
+        }
+    }
+    (t_min <= t_max).then_some((t_min, t_max))
+}
+
+pub fn datavalue_as_f64(v: &DataValue) -> Option<f64> {
+    match v {
+        DataValue::Float(f) => Some(*f),
+        DataValue::Int(i) => Some(*i as f64),
+        DataValue::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
+        DataValue::String(_) => None,
+    }
+}
+
+/// A process as "comm[pid]"; a kernel thread's name in brackets, as ps shows it
+fn owner_name(owner: &FlowOwner) -> String {
+    if owner.kthread {
+        format!("[{}][{}]", owner.comm, owner.pid)
+    } else {
+        format!("{}[{}]", owner.comm, owner.pid)
+    }
+}
+
+pub fn format_flow(flow: &Flow) -> String {
+    format!(
+        "ID:{} {}:{} -> {}:{}",
+        flow.id, flow.tuple.src, flow.tuple.sport, flow.tuple.dst, flow.tuple.dport,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::binding::resolve_inputs;
+    use crate::backend::plugin::PluginKind;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::path::Path;
+    use ts_storage::{
+        Catalog, ColType, Column, CreateOptions, Dir, EventBatch, EventTable, IpTuple,
+        StatsAccumulator, ValueKind,
+    };
+
+    const fn col(name: &'static str, ty: ColType) -> Column {
+        Column { name, ty }
+    }
+
+    static PROBE_COLS: [Column; 4] = [
+        col("SND_NXT", ColType::U32),
+        col("SND_UNA", ColType::U32),
+        col("SND_WND", ColType::U32),
+        col("SND_CWND", ColType::U32),
+    ];
+    static PROBE: EventTable = EventTable {
+        source: "tcp_probe",
+        columns: &PROBE_COLS,
+    };
+
+    static SOCK_COLS: [Column; 3] = [
+        col("advmss", ColType::U16),
+        col("total_retrans", ColType::U32),
+        col("snd_cwnd", ColType::U32),
+    ];
+    static SOCK: EventTable = EventTable {
+        source: "sock",
+        columns: &SOCK_COLS,
+    };
+
+    static TCP4_COLS: [Column; 3] = [
+        col("SEQ_NUM", ColType::U32),
+        col("ACK_NUM", ColType::U32),
+        col("FLAGS", ColType::U8),
+    ];
+    static TCP4: EventTable = EventTable {
+        source: "tcp4",
+        columns: &TCP4_COLS,
+    };
+
+    const N: i64 = 60;
+
+    fn ts(i: i64) -> i64 {
+        1_000_000 + i * 1000
+    }
+
+    /// One flow with the inputs of every plugin. tcp4 and sock exist as send and recv copies
+    /// with different values; the recv copies must never be picked.
+    fn build(engine: Engine, path: &Path) {
+        let s = ts_storage::create(engine, path, CreateOptions::default()).unwrap();
+        s.create_tables(&[&PROBE, &SOCK, &TCP4]).unwrap();
+        let mut acc = StatsAccumulator::new();
+        let mut w = s.writer().unwrap();
+
+        let mut b = EventBatch::new(&PROBE, N as usize);
+        for i in 0..N {
+            b.push_header(1, Dir::None, ts(i), i);
+            b.u32(0).push((i * 100 + 500) as u32);
+            b.u32(1).push((i * 100) as u32);
+            b.u32(2).push(10_000);
+            b.u32(3).push(10 + (i / 10) as u32);
+        }
+        acc.observe(&b).unwrap();
+        w.write(b).unwrap();
+
+        for (dir, add) in [(Dir::Send, 0u32), (Dir::Recv, 7)] {
+            let mut b = EventBatch::new(&SOCK, N as usize);
+            for i in 0..N {
+                b.push_header(1, dir, ts(i), i);
+                b.u16(0).push(1448 + add as u16);
+                b.u32(1).push(add + (i / 20) as u32);
+                b.u32(2).push(add + 10);
+            }
+            acc.observe(&b).unwrap();
+            w.write(b).unwrap();
+
+            let mut b = EventBatch::new(&TCP4, N as usize);
+            for i in 0..N {
+                b.push_header(1, dir, ts(i), i);
+                // Row 31 repeats the sequence number of row 30 (retransmission, duplicate ack).
+                let k = if i == 31 { 30 } else { i } as u32;
+                b.u32(0).push(add + k * 100);
+                b.u32(1).push(add + 1000);
+                b.u8(2).push(0x10);
+            }
+            acc.observe(&b).unwrap();
+            w.write(b).unwrap();
+        }
+        w.close().unwrap();
+
+        let flow = Flow::new(
+            1,
+            IpTuple {
+                src: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                dst: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                sport: 1234,
+                dport: 80,
+                l4proto: 6,
+            },
+        );
+        let owner = |ts, pid, comm: &str| FlowOwner {
+            flow_id: 1,
+            ts,
+            source: FlowOwner::SOURCE_CONNECT.into(),
+            pid,
+            comm: comm.into(),
+            ..FlowOwner::default()
+        };
+        s.finish(Catalog {
+            flows: vec![flow],
+            owners: vec![
+                FlowOwner {
+                    uid: Some(1000),
+                    cmdline: Some("curl -O http://10.0.0.2/x".into()),
+                    ..owner(5, 42, "curl")
+                },
+                // The same process again (another snapshot holder), and a kernel thread
+                owner(6, 42, "curl"),
+                FlowOwner {
+                    kthread: true,
+                    ..owner(900, 77, "kworker/0:1")
+                },
+            ],
+            series: acc.into_series(1),
+            meta: vec![
+                ("writer".into(), "tcbee-viz test".into()),
+                // As tcbee-process tags on-change files (here the recv sock copy)
+                ("sampling.sock.2".into(), "on_change(total_retrans)".into()),
+            ],
+            ..Catalog::default()
+        })
+        .unwrap();
+    }
+
+    /// Engines this build includes, with a file extension for the fixture.
+    fn engines() -> Vec<(Engine, &'static str)> {
+        [
+            (cfg!(feature = "sqlite"), Engine::Sqlite, "sqlite"),
+            (cfg!(feature = "duckdb"), Engine::DuckDb, "duck"),
+        ]
+        .into_iter()
+        .filter(|(enabled, ..)| *enabled)
+        .map(|(_, engine, ext)| (engine, ext))
+        .collect()
+    }
+
+    fn fixture(engine: Engine, ext: &str) -> (tempfile::TempDir, DbBackend) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("t.{ext}"));
+        build(engine, &path);
+        let db = DbBackend::open(path).unwrap();
+        (dir, db)
+    }
+
+    fn find<'a>(all: &'a [SeriesInfo], source: &str, dir: Dir, name: &str) -> &'a SeriesInfo {
+        all.iter()
+            .find(|s| s.source == source && s.dir == dir && s.name == name)
+            .unwrap_or_else(|| panic!("no {source}/{dir:?}/{name}"))
+    }
+
+    fn colors(n: usize) -> Vec<egui::Color32> {
+        crate::data::preprocessing::generate_colors(n)
+    }
+
+    /// Resolved input ids of a plugin; panics if one is unbound.
+    fn bound_ids(kind: PluginKind, available: &[SeriesInfo]) -> Vec<i64> {
+        let required = kind.create().required_series();
+        resolve_inputs(&required, available)
+            .into_iter()
+            .map(|id| id.unwrap_or_else(|| panic!("{kind:?}: unbound input")))
+            .collect()
+    }
+
+    #[test]
+    fn flow_labels_use_ascii_arrows() {
+        // The default egui font has no arrow glyphs
+        let flow = Flow::new(
+            3,
+            IpTuple {
+                src: IpAddr::V4(Ipv4Addr::new(10, 31, 2, 1)),
+                dst: IpAddr::V4(Ipv4Addr::new(10, 31, 1, 2)),
+                sport: 58139,
+                dport: 5501,
+                l4proto: 6,
+            },
+        );
+        assert_eq!(format_flow(&flow), "ID:3 10.31.2.1:58139 -> 10.31.1.2:5501");
+    }
+
+    #[test]
+    fn flows_are_labelled_with_their_processes() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            assert!(db.has_owners());
+            assert_eq!(db.owner_label(1), "curl[42], [kworker/0:1][77]");
+            assert_eq!(db.flow_owners(1).len(), 3);
+            assert_eq!(db.owner_label(2), "");
+            assert!(db.flow_owners(2).is_empty());
+        }
+        let closed = DbBackend::default();
+        assert!(!closed.has_owners());
+        assert_eq!(closed.owner_label(1), "");
+    }
+
+    #[test]
+    fn meta_has_the_writer() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let meta = db.meta();
+            assert!(meta.contains(&("writer".into(), "tcbee-viz test".into())));
+            assert!(meta.windows(2).all(|w| w[0].0 < w[1].0));
+        }
+        assert!(DbBackend::default().meta().is_empty());
+    }
+
+    #[test]
+    fn on_change_series_load_as_steps() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let all = db.list_series_for_flow(1);
+            let send = find(&all, "sock", Dir::Send, "total_retrans");
+            let recv = find(&all, "sock", Dir::Recv, "total_retrans");
+            assert!(!db.is_step_series(send));
+            assert!(db.is_step_series(recv));
+            // Unwatched columns of the same file are samples, not steps
+            assert!(!db.is_step_series(find(&all, "sock", Dir::Recv, "advmss")));
+            assert_eq!(db.flow_end(1), Some(ts(N - 1) as f64));
+
+            // The point before the range carries the value at its start
+            let pts = db.load_range_steps(send, ts(25) as f64, ts(45) as f64);
+            assert_eq!(pts.first(), Some(&(ts(24) as f64, 1.0)));
+            assert_eq!(pts.len(), 1 + 21);
+            assert_eq!(pts.last(), Some(&(ts(45) as f64, 2.0)));
+        }
+    }
+
+    #[test]
+    fn gaps_of_a_run_numbered_from_zero_are_unknown_and_derived_have_none() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let series = db.list_series_for_flow(1);
+            let una = find(&series, "tcp_probe", Dir::None, "SND_UNA");
+            // The fixture numbers its rows from 0, as a run without hook_seq does.
+            assert_eq!(db.seq_gaps(una), Gaps::Unavailable);
+            let mut derived = una.clone();
+            derived.tbl = None;
+            assert_eq!(db.seq_gaps(&derived), Gaps::Unavailable);
+        }
+    }
+
+    #[test]
+    fn opening_again_gives_a_new_open_number() {
+        for (engine, ext) in engines() {
+            let (dir, db) = fixture(engine, ext);
+            let again = DbBackend::open(dir.path().join(format!("t.{ext}"))).unwrap();
+            assert_ne!(db.opened(), again.opened());
+            assert_ne!(again.opened(), DbBackend::default().opened());
+        }
+    }
+
+    #[test]
+    fn open_lists_flows_series_and_catalog_bounds() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            assert_eq!(db.engine(), Some(engine));
+            assert_eq!(db.list_flows().len(), 1);
+            let series = db.list_series_for_flow(1);
+            // 4 probe + 3 sock send + 3 sock recv + 3 tcp4 send + 3 tcp4 recv
+            assert_eq!(series.len(), 16);
+            assert!(series.iter().all(|s| s.n == N));
+            assert_eq!(
+                flow_x_bounds(&series),
+                Some((ts(0) as f64, ts(N - 1) as f64))
+            );
+            let una = find(&series, "tcp_probe", Dir::None, "SND_UNA");
+            assert_eq!(
+                (una.v_min, una.v_max),
+                (Some(0.0), Some(((N - 1) * 100) as f64))
+            );
+            assert_eq!(una.value_type.value_kind(), ValueKind::Int);
+            assert_eq!(flow_x_bounds(&db.list_series_for_flow(99)), None);
+            assert!(db.get_flow_by_id(99).is_none());
+            assert!(db.flow_exists(1) && !db.flow_exists(99));
+        }
+    }
+
+    #[test]
+    fn range_loading_and_downsampling() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let series = db.list_series_for_flow(1);
+            let una = find(&series, "tcp_probe", Dir::None, "SND_UNA");
+
+            let all = db.load_range_sampled(una, 0.0, f64::MAX / 2.0, 0.0);
+            assert_eq!(all.len(), N as usize);
+            assert_eq!(all[3], (ts(3) as f64, 300.0));
+
+            // Inclusive range.
+            let r = db.load_range_sampled(una, ts(10) as f64, ts(12) as f64, 0.0);
+            assert_eq!(
+                r.iter().map(|p| p.1).collect::<Vec<_>>(),
+                vec![1000.0, 1100.0, 1200.0]
+            );
+
+            // One point per 5000 ns interval keeps every fifth sample.
+            let sampled = db.load_range_sampled(una, 0.0, f64::MAX / 2.0, 5000.0);
+            assert_eq!(sampled.len(), (N as usize).div_ceil(5));
+            assert_eq!(sampled[1].0, ts(5) as f64);
+
+            assert_eq!(db.load_all(una).unwrap().len(), N as usize);
+        }
+    }
+
+    /// Every plugin finds all its inputs, never binds a recv copy, and takes the inputs of one
+    /// run from one `(source, dir)` group where the names allow it.
+    #[test]
+    fn every_plugin_binds_its_inputs() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let available = db.list_series_for_flow(1);
+            let by_id = |id: i64| available.iter().find(|s| s.id == id).unwrap();
+
+            for kind in PluginKind::ALL {
+                let required = kind.create().required_series();
+                let ids = bound_ids(*kind, &available);
+                assert!(ids.iter().all(|&id| by_id(id).dir != Dir::Recv), "{kind:?}");
+                if required.iter().any(|r| r == "SEQ_NUM") {
+                    assert!(ids.iter().all(|&id| by_id(id).source == "tcp4"), "{kind:?}");
+                }
+                if required.iter().any(|r| r == "advmss") {
+                    // SenderLimitation: SND_* from tcp_probe, advmss from sock/send.
+                    assert_eq!(by_id(ids[0]).source, "tcp_probe");
+                    assert_eq!(by_id(*ids.last().unwrap()).source, "sock");
+                }
+            }
+        }
+    }
+
+    /// Every plugin runs on the loaded inputs and saves; saving again replaces the derived
+    /// series and keeps its id.
+    #[test]
+    fn every_plugin_saves_and_replaces() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let available = db.list_series_for_flow(1);
+            let raw_count = available.len();
+
+            for kind in PluginKind::ALL {
+                let plugin = kind.create();
+                let ids = bound_ids(*kind, &available);
+                let inputs = db
+                    .load_inputs(&available, &ids, &colors(ids.len()))
+                    .unwrap();
+                assert_eq!(inputs.len(), ids.len());
+                assert!(inputs.iter().all(|s| s.raw_data.len() == N as usize));
+                // Labels carry source and dir so that legends are unambiguous.
+                assert!(inputs[0].name.contains(" · "));
+
+                let out = plugin
+                    .compute(&inputs)
+                    .unwrap_or_else(|e| panic!("{}: {e}", plugin.name()));
+                assert!(!out.is_empty(), "{}", plugin.name());
+
+                for s in &out {
+                    db.create_series_for_flow(1, s).unwrap();
+                    // A second create is an error; the UI asks to overwrite instead.
+                    assert!(db.create_series_for_flow(1, s).is_err());
+                }
+                let names: Vec<String> = out.iter().map(|s| s.name.clone()).collect();
+                let before = db.existing_series_for_flow(1, &names).unwrap();
+                assert_eq!(before.len(), out.len(), "{}", plugin.name());
+                assert!(before.iter().all(|s| s.kind == SeriesKind::Derived));
+
+                for s in &out {
+                    db.replace_series_for_flow(1, s).unwrap();
+                }
+                let after = db.existing_series_for_flow(1, &names).unwrap();
+                let mut ids_before: Vec<i64> = before.iter().map(|s| s.id).collect();
+                let mut ids_after: Vec<i64> = after.iter().map(|s| s.id).collect();
+                ids_before.sort();
+                ids_after.sort();
+                assert_eq!(ids_before, ids_after, "replace must keep ids");
+
+                for s in &out {
+                    let saved = after.iter().find(|x| x.name == s.name).unwrap();
+                    assert_eq!(saved.value_type.value_kind(), s.val_type, "{}", s.name);
+                    assert_eq!(saved.n as usize, s.raw_data.len());
+                    assert_eq!(db.load_all(saved).unwrap().len(), s.raw_data.len());
+                }
+            }
+
+            // Derived series are in the list, raw ones untouched.
+            let now = db.list_series_for_flow(1);
+            assert!(now.len() > raw_count);
+            assert_eq!(
+                now.iter().filter(|s| s.kind == SeriesKind::Raw).count(),
+                raw_count
+            );
+            // A string series (SENDER_LIMITATION_LABEL) saved.
+            assert!(now
+                .iter()
+                .any(|s| s.kind == SeriesKind::Derived && s.value_type == ColType::Text));
+        }
+    }
+
+    /// A series that cannot be read fails `load_all` and `load_inputs`; nothing is computed or
+    /// saved from an empty result.
+    #[test]
+    fn failing_read_is_an_error_not_an_empty_series() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let mut available = db.list_series_for_flow(1);
+            let ids = bound_ids(PluginKind::BytesInFlight, &available);
+            let broken_id = ids[0];
+            let broken = available.iter_mut().find(|s| s.id == broken_id).unwrap();
+            broken.col = Some("no_such_column".to_string());
+            let broken = broken.clone();
+
+            let err = db.load_all(&broken).unwrap_err();
+            assert!(err.contains("reading"), "{err}");
+            let err = db
+                .load_inputs(&available, &ids, &colors(ids.len()))
+                .err()
+                .expect("load_inputs must fail");
+            assert!(err.contains("reading"), "{err}");
+            // Plot loaders log and draw nothing, they do not panic.
+            assert!(db.load_range_sampled(&broken, 0.0, 1e12, 0.0).is_empty());
+            // An id that is not in the list is an error too.
+            assert!(db.load_inputs(&available, &[-1], &colors(1)).is_err());
+            // Nothing was saved.
+            assert!(db
+                .list_series_for_flow(1)
+                .iter()
+                .all(|s| s.kind == SeriesKind::Raw));
+        }
+    }
+
+    #[test]
+    fn replace_changes_points_and_overwrite_ignores_raw() {
+        for (engine, ext) in engines() {
+            let (_d, db) = fixture(engine, ext);
+            let mk = |name: &str, n: usize| {
+                let mut s = SeriesData::new(
+                    name.to_string(),
+                    -1,
+                    ValueKind::Int,
+                    0.0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    egui::Color32::WHITE,
+                );
+                s.raw_data = (0..n)
+                    .map(|i| (i as f64 * 10.0, DataValue::Int(i as i64)))
+                    .collect();
+                s
+            };
+            // A derived series named like a raw one does not count as a raw conflict.
+            let names = vec!["SND_UNA".to_string()];
+            assert!(db.existing_series_for_flow(1, &names).unwrap().is_empty());
+            assert_eq!(db.saved(), 0);
+            db.replace_series_for_flow(1, &mk("SND_UNA", 5)).unwrap(); // nothing to replace: creates
+            assert_eq!(db.saved(), 1);
+            let old = db.existing_series_for_flow(1, &names).unwrap();
+            assert_eq!(old.len(), 1);
+            assert_eq!(old[0].n, 5);
+
+            db.replace_series_for_flow(1, &mk("SND_UNA", 8)).unwrap();
+            assert_eq!(db.saved(), 2);
+            let new = db.existing_series_for_flow(1, &names).unwrap();
+            assert_eq!(new.len(), 1);
+            assert_eq!(new[0].id, old[0].id);
+            assert_eq!(new[0].n, 8);
+            // The raw SND_UNA is untouched.
+            let all = db.list_series_for_flow(1);
+            assert_eq!(find(&all, "tcp_probe", Dir::None, "SND_UNA").n, N);
+            // With the derived duplicate in the list, binding still prefers the raw series.
+            let id = resolve_inputs(&names, &all)[0].unwrap();
+            assert_eq!(
+                all.iter().find(|s| s.id == id).unwrap().kind,
+                SeriesKind::Raw
+            );
+        }
+    }
+
+    #[test]
+    fn open_errors_are_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let junk = dir.path().join("junk.sqlite");
+        std::fs::write(&junk, b"definitely not a database").unwrap();
+        assert!(DbBackend::open(junk).is_err());
+        assert!(DbBackend::open(dir.path().join("missing.db")).is_err());
+
+        let p = Path::new("x.db");
+        let msg = describe_open_error(&StoreError::EngineDisabled(Engine::DuckDb), p).summary;
+        assert_eq!(
+            msg,
+            "This file is a DuckDB database, but this build does not include DuckDB support. \
+             Rebuild with `--features duckdb`."
+        );
+        let msg = describe_open_error(&StoreError::EngineDisabled(Engine::Sqlite), p).summary;
+        assert!(msg.contains("--features sqlite"), "{msg}");
+        let msg = describe_open_error(&StoreError::UnsupportedSchema { found: None }, p).summary;
+        assert!(msg.contains("reprocess the trace"), "{msg}");
+    }
+
+    #[test]
+    fn long_errors_get_a_one_line_summary_and_details() {
+        let full = format!(
+            "DuckDB error: {}\nStack Trace:\n/usr/lib/libduckdb.so+0x56",
+            "x".repeat(400)
+        );
+        let err = OpenError::from_text(full.clone());
+        assert!(!err.summary.contains('\n'));
+        assert!(
+            err.summary.chars().count() <= SUMMARY_CHARS + 1,
+            "{}",
+            err.summary
+        );
+        assert_eq!(err.details.as_deref(), Some(full.as_str()));
+
+        let err = OpenError::from_text("no such file".to_string());
+        assert_eq!(err.summary, "no such file");
+        assert_eq!(err.details, None);
+    }
+
+    #[test]
+    fn stale_wal_is_named_in_the_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("old.duck");
+        let cause = StoreError::Io(std::io::Error::other(
+            "INTERNAL Error: Failure while replaying WAL file \"old.duck.wal\"\nStack Trace:",
+        ));
+
+        let without_wal = describe_open_error(&cause, &db);
+        assert!(!without_wal.summary.contains("Delete it"), "{without_wal}");
+
+        std::fs::write(wal_path(&db), b"x").unwrap();
+        let with_wal = describe_open_error(&cause, &db);
+        assert!(with_wal.summary.contains("Delete it"), "{with_wal}");
+        assert!(with_wal.summary.chars().count() < 160, "{with_wal}");
+        assert!(with_wal.details.unwrap().contains("Stack Trace"));
+    }
+
+    #[test]
+    fn extension_text() {
+        assert_eq!(extensions_text(), ".sqlite, .db, .duck or .duckdb");
+    }
+
+    /// A file of an engine that is not built in gives the disabled-engine message.
+    #[cfg(any(not(feature = "duckdb"), not(feature = "sqlite")))]
+    #[test]
+    fn disabled_engine_message() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(not(feature = "duckdb"))]
+        {
+            let p = dir.path().join("x.duck");
+            let mut bytes = vec![0u8; 8];
+            bytes.extend(b"DUCK");
+            bytes.extend([0u8; 64]);
+            std::fs::write(&p, bytes).unwrap();
+            let err = DbBackend::open(p).err().unwrap();
+            assert!(
+                err.summary.contains("does not include DuckDB support"),
+                "{err}"
+            );
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let p = dir.path().join("x.sqlite");
+            let mut bytes = b"SQLite format 3\0".to_vec();
+            bytes.extend([0u8; 64]);
+            std::fs::write(&p, bytes).unwrap();
+            let err = DbBackend::open(p).err().unwrap();
+            assert!(
+                err.summary.contains("does not include SQLite support"),
+                "{err}"
+            );
+        }
+    }
+}

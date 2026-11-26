@@ -3,11 +3,12 @@
 Plots TCP congestion window (CWND) over time for a selected flow.
 
 Usage:
-    ./plot_cwnd.py <cubic-events-file> [flow-index]
+    ./plot_cwnd.py <cubic-events-file> [flow-index] [--output plot.png]
 
-If flow-index is not provided, lists available flows and prompts for selection.
+If flow-index is not provided, lists the available flows.
 """
 
+import argparse
 import struct
 import sys
 from pathlib import Path
@@ -79,8 +80,8 @@ def unpack_ports(packed: int) -> tuple[int, int]:
 
 def read_flow_data(file_path: Path) -> dict[FlowKey, list[CwndDataPoint]]:
     """Read all events and group by flow."""
-    CUBIC_EVENT_FORMAT = "<QQ16s16sIHIIIIIIIIIIIIII4s"
-    CUBIC_EVENT_SIZE = 114
+    CUBIC_EVENT_FORMAT = "<QQQ16s16sIHIIIIIIIIIIIIII4s"
+    CUBIC_EVENT_SIZE = 122
 
     flow_data = defaultdict(list)
 
@@ -98,7 +99,7 @@ def read_flow_data(file_path: Path) -> dict[FlowKey, list[CwndDataPoint]]:
 
             # Unpack event
             unpacked = struct.unpack(CUBIC_EVENT_FORMAT, data)
-            time, addr_v4, src_v6, dst_v6, ports, family, \
+            time, hook_seq, addr_v4, src_v6, dst_v6, ports, family, \
                 cnt, last_max_cwnd, last_cwnd, last_time, \
                 bic_origin_point, bic_K, delay_min, epoch_start, \
                 ack_cnt, tcp_cwnd, round_start, end_seq, \
@@ -163,23 +164,21 @@ def plot_cwnd(flow: FlowKey, data: list[CwndDataPoint], output_file: Path = None
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <cubic-events-file> [flow-index] [--output <filename.png>]")
-        print("\nIf flow-index is not provided, lists available flows.")
-        sys.exit(1)
-
-    file_path = Path(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description="Plot the congestion window of one flow from a CUBIC trace file. "
+        "Without a flow index, list the flows."
+    )
+    parser.add_argument("file", type=Path, help="CUBIC events file of tcbee-record")
+    parser.add_argument("flow_index", type=int, nargs="?", help="flow number from the list")
+    parser.add_argument("--output", type=Path, help="save the plot to this file instead of showing it")
+    args = parser.parse_args()
+    file_path = args.file
+    output_file = args.output
+    flow_index = args.flow_index
 
     if not file_path.exists():
         print(f"Error: File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
-
-    # Parse optional output file
-    output_file = None
-    if "--output" in sys.argv:
-        output_idx = sys.argv.index("--output")
-        if output_idx + 1 < len(sys.argv):
-            output_file = Path(sys.argv[output_idx + 1])
 
     print(f"Reading flows from: {file_path}")
     flow_data = read_flow_data(file_path)
@@ -187,15 +186,8 @@ def main():
     # Sort flows by event count
     sorted_flows = sorted(flow_data.items(), key=lambda x: len(x[1]), reverse=True)
 
-    # Check if flow index was provided
-    flow_index = None
-    for arg in sys.argv[2:]:
-        if arg.isdigit():
-            flow_index = int(arg)
-            break
-
     if flow_index is None:
-        # List flows and prompt for selection
+        # List the flows
         print(f"\nFound {len(sorted_flows)} flows:\n")
         print(f"{'#':<4} {'Flow':<60} {'Events':<10}")
         print("=" * 80)
