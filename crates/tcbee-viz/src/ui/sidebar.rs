@@ -1,4 +1,4 @@
-//! Widgets shared by the sidebars of the single and multi flow tabs.
+//! Widgets shared by the sidebars of the flow tabs and the MPTCP tab.
 
 use egui::{RichText, Ui};
 use ts_storage::Flow;
@@ -53,8 +53,7 @@ pub fn flow_picker(
 }
 
 /// The selected flow as a card, `label` from `format_flow`, with the process below it if
-/// known. The button reads "Change" while the table is hidden and "Done" while `choosing`.
-/// Returns true when it was clicked.
+/// known. Returns true when its button was clicked, see [`picker_card`].
 fn selected_flow_card(
     ui: &mut Ui,
     db: &DbBackend,
@@ -62,13 +61,20 @@ fn selected_flow_card(
     label: &str,
     choosing: bool,
 ) -> bool {
-    let dark_mode = ui.visuals().dark_mode;
     // The label is empty if the flow is missing from the database
     let label = if label.is_empty() {
         format!("Flow {flow_id}")
     } else {
         label.to_string()
     };
+    picker_card(ui, &label, &db.owner_label(flow_id), choosing)
+}
+
+/// A picked item as a card: `title`, and `detail` below it unless empty. The button reads
+/// "Change" while the table to pick from is hidden and "Done" while `choosing`. Returns true
+/// when it was clicked.
+pub fn picker_card(ui: &mut Ui, title: &str, detail: &str, choosing: bool) -> bool {
+    let dark_mode = ui.visuals().dark_mode;
     let mut clicked = false;
     let response = table::frame(dark_mode)
         .fill(theme::table_row_selected(dark_mode))
@@ -87,16 +93,15 @@ fn selected_flow_card(
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.add(
                             egui::Label::new(
-                                RichText::new(&label).strong().color(theme::text(dark_mode)),
+                                RichText::new(title).strong().color(theme::text(dark_mode)),
                             )
                             .truncate(),
                         )
-                        .on_hover_text(&label);
-                        let owner = db.owner_label(flow_id);
-                        if !owner.is_empty() {
+                        .on_hover_text(title);
+                        if !detail.is_empty() {
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(owner)
+                                    RichText::new(detail)
                                         .small()
                                         .color(theme::muted_text(dark_mode)),
                                 )
